@@ -285,7 +285,7 @@ PATH="$fake_bin:$PATH" "$ROOT_DIR/scripts/deploy/render-runtime.sh" \
   --skip-compose-validate
 
 assert_contains "$caddy_file" 'reverse_proxy vaultwarden:80' "full Vaultwarden route"
-assert_contains "$caddy_file" 'reverse_proxy portal:8080' "full Portal route"
+assert_contains "$caddy_file" 'reverse_proxy portal:3000' "full Portal route"
 assert_contains "$caddy_file" 'redir https://portal' "full Homepage compatibility redirect"
 assert_contains "$caddy_file" 'reverse_proxy progression:8130' "full Progression route"
 assert_contains "$keycloak_configure" 'ensure_confidential_client "vaultwarden"' "full Vaultwarden Keycloak client"
