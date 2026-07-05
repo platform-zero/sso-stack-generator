@@ -7,16 +7,13 @@ RUNTIME_CLEANUP_IMAGE="${RUNTIME_CLEANUP_IMAGE:-alpine:3.20@sha256:d9e853e87e555
 
 ensure_runtime_links() {
   local deploy_root="$1"
-  local runtime_target="/run/user/$(id -u)/webservices-runtime"
-  local fallback_runtime_target="${XDG_STATE_HOME:-$HOME/.local/state}/webservices/runtime"
+  local persistent_runtime_target="${XDG_STATE_HOME:-$HOME/.local/state}/webservices/runtime"
+  local runtime_target="${WEBSERVICES_RUNTIME_TARGET:-$persistent_runtime_target}"
   local runtime_link="$deploy_root/runtime"
   local stale_runtime=""
 
   if ! mkdir -p "$runtime_target" 2>/dev/null || ! chmod 700 "$runtime_target" 2>/dev/null || [ ! -w "$runtime_target" ]; then
-    printf '[webservices-runtime] warning: using external state runtime directory because %s is not writable\n' "$runtime_target" >&2
-    runtime_target="$fallback_runtime_target"
-    mkdir -p "$runtime_target"
-    chmod 700 "$runtime_target"
+    die "runtime target is not writable: $runtime_target"
   fi
 
   if [ -L "$runtime_link" ] || [ -e "$runtime_link" ]; then

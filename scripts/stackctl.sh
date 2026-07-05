@@ -11,6 +11,10 @@ else
   DEPLOY_ROOT="$(cd "$BUNDLE_ROOT/.." && pwd -P)"
 fi
 
+if [ "${1:-}" = "users" ]; then
+  exec "$SCRIPT_DIR/lib/stackctl-users.sh" "${@:2}"
+fi
+
 JAR_PATH="$BUNDLE_ROOT/stack.kotlin/progression/build/libs/progression-1.0.0-all.jar"
 if [ ! -f "$JAR_PATH" ]; then
   printf 'stackctl: missing progression jar: %s\n' "$JAR_PATH" >&2

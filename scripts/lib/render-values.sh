@@ -317,7 +317,7 @@ build_derived_render_values() {
   render_set SYSTEMD_USER_UID "$(id -u)"
   render_set SYSTEMD_USER_GID "$(id -g)"
   render_set SYSTEMD_USER_RUNTIME_DIR "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-  render_set STACK_RUNTIME_DIR "${STACK_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/webservices-runtime}"
+  render_set STACK_RUNTIME_DIR "${STACK_RUNTIME_DIR:-${WEBSERVICES_RUNTIME_TARGET:-${XDG_STATE_HOME:-$HOME/.local/state}/webservices/runtime}}"
   if ! render_has PLAYWRIGHT_IGNORE_HTTPS_ERRORS || [ -z "$(render_get PLAYWRIGHT_IGNORE_HTTPS_ERRORS)" ]; then
     render_set PLAYWRIGHT_IGNORE_HTTPS_ERRORS "false"
   fi
@@ -447,9 +447,6 @@ PY
   fi
   if ! render_has INFERENCE_CONTROLLER_API_TOKEN || [ -z "$(render_get INFERENCE_CONTROLLER_API_TOKEN)" ]; then
     render_set INFERENCE_CONTROLLER_API_TOKEN "$(derive_stack_secret inference-controller-api 64)"
-  fi
-  if ! render_has INFERENCE_GATEWAY_INTERNAL_API_TOKEN || [ -z "$(render_get INFERENCE_GATEWAY_INTERNAL_API_TOKEN)" ]; then
-    render_set INFERENCE_GATEWAY_INTERNAL_API_TOKEN "$(derive_stack_secret inference-gateway-internal 64)"
   fi
   if ! render_has GPU_ARBITER_API_TOKEN || [ -z "$(render_get GPU_ARBITER_API_TOKEN)" ]; then
     render_set GPU_ARBITER_API_TOKEN "$(derive_stack_secret gpu-arbiter-api 64)"
