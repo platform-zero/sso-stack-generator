@@ -45,7 +45,11 @@ cd "$SOURCE_ROOT"
 require_clean_git_tree "$SOURCE_ROOT"
 
 contract_test_seed="${WEBSERVICES_CONTRACT_ROOT:-$SOURCE_ROOT}"
-if [ "$contract_test_seed" = "$SOURCE_ROOT" ] && [ ! -f "$contract_test_seed/stack.config/components.json" ] && [ -f "$SOURCE_ROOT/dist/build/stack.config/components.json" ]; then
+external_modules_ready=0
+if [ -d "$EXTERNAL_MODULES_MATERIALIZED_DIR" ] && find "$EXTERNAL_MODULES_MATERIALIZED_DIR" -type f -print -quit | grep -q .; then
+  external_modules_ready=1
+fi
+if [ "$contract_test_seed" = "$SOURCE_ROOT" ] && [ "$external_modules_ready" = "0" ] && [ ! -f "$contract_test_seed/stack.config/components.json" ] && [ -f "$SOURCE_ROOT/dist/build/stack.config/components.json" ]; then
   log "using materialized dist/build tree for contract tests"
   contract_test_seed="$SOURCE_ROOT/dist/build"
 fi
@@ -56,7 +60,7 @@ needs_contract_test_tmp=0
 if [ "$contract_test_seed" != "$SOURCE_ROOT" ]; then
   needs_contract_test_tmp=1
 fi
-if [ -d "$EXTERNAL_MODULES_MATERIALIZED_DIR" ] && find "$EXTERNAL_MODULES_MATERIALIZED_DIR" -type f -print -quit | grep -q .; then
+if [ "$external_modules_ready" = "1" ]; then
   needs_contract_test_tmp=1
 fi
 
@@ -89,7 +93,7 @@ if [ "$needs_contract_test_tmp" = "1" ]; then
   if [ -d "$SOURCE_ROOT/gradle" ]; then
     cp -a "$SOURCE_ROOT/gradle" "$contract_test_tmp/gradle"
   fi
-  if [ -d "$EXTERNAL_MODULES_MATERIALIZED_DIR" ] && find "$EXTERNAL_MODULES_MATERIALIZED_DIR" -type f -print -quit | grep -q .; then
+  if [ "$external_modules_ready" = "1" ]; then
     external_modules_overlay_into "$contract_test_tmp"
     component_catalog_merge_external "$contract_test_tmp/stack.config/components.json"
   fi
@@ -120,7 +124,7 @@ WEBSERVICES_CONTRACT_ROOT="$contract_test_root" "$SCRIPT_DIR/test-service-contra
 log "running contract report checks"
 WEBSERVICES_CONTRACT_ROOT="$contract_test_root" "$SCRIPT_DIR/test-contract-reports.sh" >&2
 
-if [ -d "$EXTERNAL_MODULES_MATERIALIZED_DIR" ] && find "$EXTERNAL_MODULES_MATERIALIZED_DIR" -mindepth 2 -maxdepth 2 -name stack.module.json -print -quit | grep -q .; then
+if [ "$external_modules_ready" = "1" ] && find "$EXTERNAL_MODULES_MATERIALIZED_DIR" -mindepth 2 -maxdepth 2 -name stack.module.json -print -quit | grep -q .; then
   log "running materialized module contract checks"
   "$SCRIPT_DIR/test-module-group.sh" --contract "$EXTERNAL_MODULES_MATERIALIZED_DIR" >&2
 fi
