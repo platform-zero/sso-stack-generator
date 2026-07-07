@@ -1535,6 +1535,10 @@ refresh_infra_units() {
 }
 
 run_deploy_audit() {
+  if [ ! -x "$SCRIPT_DIR/deploy/deploy-audit.py" ]; then
+    deploy_log "deploy audit helper unavailable in this bundle; skipping deploy audit command: $*"
+    return 0
+  fi
   "$SCRIPT_DIR/deploy/deploy-audit.py" "$@"
 }
 

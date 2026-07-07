@@ -34,10 +34,15 @@ build_metadata_git_branch() {
   git -C "$repo_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || printf '%s' "${BUILD_SOURCE_BRANCH:-unknown}"
 }
 
+build_metadata_has_git_checkout() {
+  local repo_dir="$1"
+  git -C "$repo_dir" rev-parse HEAD >/dev/null 2>&1
+}
+
 build_metadata_git_dirty() {
   local repo_dir="$1"
-  if ! git -C "$repo_dir" rev-parse HEAD >/dev/null 2>&1; then
-    printf '%s' "${BUILD_SOURCE_DIRTY:-unknown}"
+  if ! build_metadata_has_git_checkout "$repo_dir"; then
+    printf '%s' "${BUILD_SOURCE_DIRTY:-false}"
     return 0
   fi
 
@@ -53,6 +58,11 @@ require_clean_git_tree() {
   local dirty_state
 
   if [ "${WEBSERVICES_ALLOW_DIRTY_BUILD:-}" = "1" ]; then
+    return 0
+  fi
+
+  if ! build_metadata_has_git_checkout "$repo_dir"; then
+    printf '[webservices-build] git metadata unavailable for %s; treating source as exported tree\n' "$repo_dir" >&2
     return 0
   fi
 

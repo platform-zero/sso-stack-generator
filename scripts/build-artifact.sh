@@ -44,29 +44,55 @@ require_cmd tar
 cd "$SOURCE_ROOT"
 require_clean_git_tree "$SOURCE_ROOT"
 
-contract_test_root="${WEBSERVICES_CONTRACT_ROOT:-$SOURCE_ROOT}"
+contract_test_seed="${WEBSERVICES_CONTRACT_ROOT:-$SOURCE_ROOT}"
+if [ "$contract_test_seed" = "$SOURCE_ROOT" ] && [ ! -f "$contract_test_seed/stack.config/components.json" ] && [ -f "$SOURCE_ROOT/dist/build/stack.config/components.json" ]; then
+  log "using materialized dist/build tree for contract tests"
+  contract_test_seed="$SOURCE_ROOT/dist/build"
+fi
+
+contract_test_root="$contract_test_seed"
 contract_test_tmp=""
+needs_contract_test_tmp=0
+if [ "$contract_test_seed" != "$SOURCE_ROOT" ]; then
+  needs_contract_test_tmp=1
+fi
 if [ -d "$EXTERNAL_MODULES_MATERIALIZED_DIR" ] && find "$EXTERNAL_MODULES_MATERIALIZED_DIR" -type f -print -quit | grep -q .; then
+  needs_contract_test_tmp=1
+fi
+
+if [ "$needs_contract_test_tmp" = "1" ]; then
   contract_test_tmp="$(mktemp -d)"
   cleanup_contract_test_root() {
     [ -z "$contract_test_tmp" ] || rm -rf "$contract_test_tmp"
   }
   trap cleanup_contract_test_root EXIT
-  for root in global.settings stack.compose stack.config stack.containers stack.kotlin stack.js stack.systemd scripts docs; do
-    if [ -e "$contract_test_root/$root" ]; then
-      cp -a "$contract_test_root/$root" "$contract_test_tmp/$root"
+
+  for root in global.settings stack.compose stack.config stack.containers stack.kotlin stack.js stack.systemd; do
+    if [ -e "$contract_test_seed/$root" ]; then
+      cp -a "$contract_test_seed/$root" "$contract_test_tmp/$root"
+    elif [ -e "$SOURCE_ROOT/$root" ]; then
+      cp -a "$SOURCE_ROOT/$root" "$contract_test_tmp/$root"
     fi
   done
+
+  for root in scripts docs; do
+    if [ -e "$SOURCE_ROOT/$root" ]; then
+      cp -a "$SOURCE_ROOT/$root" "$contract_test_tmp/$root"
+    fi
+  done
+
   for file in .bazelrc BUILD.bazel MODULE.bazel build.gradle.kts settings.gradle.kts gradlew gradlew.bat; do
-    if [ -e "$contract_test_root/$file" ]; then
-      cp -a "$contract_test_root/$file" "$contract_test_tmp/$file"
+    if [ -e "$SOURCE_ROOT/$file" ]; then
+      cp -a "$SOURCE_ROOT/$file" "$contract_test_tmp/$file"
     fi
   done
-  if [ -d "$contract_test_root/gradle" ]; then
-    cp -a "$contract_test_root/gradle" "$contract_test_tmp/gradle"
+  if [ -d "$SOURCE_ROOT/gradle" ]; then
+    cp -a "$SOURCE_ROOT/gradle" "$contract_test_tmp/gradle"
   fi
-  external_modules_overlay_into "$contract_test_tmp"
-  component_catalog_merge_external "$contract_test_tmp/stack.config/components.json"
+  if [ -d "$EXTERNAL_MODULES_MATERIALIZED_DIR" ] && find "$EXTERNAL_MODULES_MATERIALIZED_DIR" -type f -print -quit | grep -q .; then
+    external_modules_overlay_into "$contract_test_tmp"
+    component_catalog_merge_external "$contract_test_tmp/stack.config/components.json"
+  fi
   contract_test_root="$contract_test_tmp"
 fi
 
