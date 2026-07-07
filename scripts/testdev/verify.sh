@@ -21,7 +21,7 @@ testdev_run_cli sh -lc '
   cd /workspace-home/deploy/bundle
   services="$(docker compose --env-file runtime/stack.env --project-directory . -f build/docker-compose.yml config --services)"
   refresh_services=
-  for service in caddy workspace-provisioner; do
+  for service in caddy; do
     if printf "%s\n" "$services" | grep -qx "$service"; then
       refresh_services="$refresh_services $service"
     fi

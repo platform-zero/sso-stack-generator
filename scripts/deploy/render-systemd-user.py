@@ -62,21 +62,8 @@ class PathContract:
     kind: str
 
 
-VM_IDENTITY_DEPENDENT_DOMAINS = {
-    "docker-vm-proxy",
-    "docker-vm-controller-proxy",
-    "workspace-provisioner",
-    "forgejo-runner",
-    "chatgpt-connector",
-}
-VM_IDENTITY_DEPENDENT_SERVICES = {
-    "isolated-docker-vm-tunnel",
-    "docker-vm-socket-proxy",
-    "docker-vm-controller-proxy",
-    "workspace-provisioner",
-    "forgejo-runner",
-    "chatgpt-connector",
-}
+VM_IDENTITY_DEPENDENT_DOMAINS: Set[str] = set()
+VM_IDENTITY_DEPENDENT_SERVICES: Set[str] = set()
 OPTIONAL_CAPABILITIES_PATH = Path("scripts/lib/optional-capabilities.json")
 
 SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -435,14 +422,6 @@ def infer_path_kind(source_path: Path, local_deploy_root: Path, local_bundle_roo
 
 def collect_path_contracts(domain: Domain, compose_config: dict, local_deploy_root: Path, local_bundle_root: Path, deploy_root_template: str, vm_identity_domains: Set[str], vm_identity_services: Set[str]) -> List[PathContract]:
     contracts: Dict[str, PathContract] = {}
-    if (
-        domain.name in vm_identity_domains
-        or any(service_name in vm_identity_services for service_name in domain.services)
-    ):
-        contracts["${ISOLATED_DOCKER_VM_SSH_DIR:?Set ISOLATED_DOCKER_VM_SSH_DIR for isolated Docker VM access}"] = PathContract(
-            path="${ISOLATED_DOCKER_VM_SSH_DIR:?Set ISOLATED_DOCKER_VM_SSH_DIR for isolated Docker VM access}",
-            kind="dir",
-        )
     for service_name in domain.services:
         for mount in compose_config["services"][service_name].get("volumes") or []:
             if not isinstance(mount, dict) or mount.get("type") != "bind":
@@ -660,8 +639,6 @@ def render_path_contract_condition(contract: PathContract, runtime_env_file: str
         if "$(" in contract.path or "`" in contract.path:
             raise ValueError(f"path contract contains disallowed shell substitution: {contract.path}")
         quoted_path = contract.path.replace("\\", "\\\\").replace('"', '\\"')
-        if "ISOLATED_DOCKER_VM_SSH_DIR" in contract.path:
-            return f"ExecCondition=/bin/sh -c {shlex.quote(f'. {runtime_env_file}; test -r \"{quoted_path}/id_ed25519\"')}"
         return f"ExecCondition=/bin/sh -c {shlex.quote(f'. {runtime_env_file}; test {test_flag} \"{quoted_path}\"')}"
     return f"ExecCondition=/usr/bin/test {test_flag} {contract.path}"
 

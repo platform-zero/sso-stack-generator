@@ -23,17 +23,9 @@ EXCLUDED_SERVICES = {
     "airflow-scheduler",
     "ingestion-runner",
     "nats",
-    # External isolated Docker VM tunnel/proxies. Testdev uses the local DinD
-    # daemon through the normal docker-socket proxies instead.
-    "isolated-docker-vm-tunnel",
-    "docker-vm-socket-proxy",
-    "docker-vm-controller-proxy",
 }
 
-DOCKER_VM_REPLACEMENTS = {
-    "tcp://docker-vm-controller-proxy:2375": "tcp://docker-socket-controller-proxy:2375",
-    "tcp://docker-vm-socket-proxy:2375": "tcp://docker-socket-proxy:2375",
-}
+DOCKER_VM_REPLACEMENTS: dict[str, str] = {}
 
 CACHE_IMAGE_REPLACEMENTS = {
     "alpine:testdev-cache": "alpine:3.21",
@@ -235,28 +227,6 @@ def write_json_as_yaml_compatible(output_file: Path, compose: dict[str, Any]) ->
     )
 
 
-def align_workspace_build_contexts(service: dict[str, Any]) -> None:
-    """Make workspace build contexts visible to both the Docker client and DinD daemon."""
-    context_targets = {
-        "/workspace/stack.containers/agent-workspace": "/workspace-home/deploy/bundle/build/stack.containers/agent-workspace",
-        "/workspace/stack.containers/agent-workspace-notebook": "/workspace-home/deploy/bundle/build/stack.containers/agent-workspace-notebook",
-    }
-
-    env = service.setdefault("environment", {})
-    if isinstance(env, dict):
-        env["WORKSPACE_PROVISIONER_WORKSPACE_CONTEXT"] = context_targets["/workspace/stack.containers/agent-workspace"]
-        env["WORKSPACE_PROVISIONER_NOTEBOOK_CONTEXT"] = context_targets["/workspace/stack.containers/agent-workspace-notebook"]
-
-    volumes = service.get("volumes")
-    if isinstance(volumes, list):
-        for volume in volumes:
-            if isinstance(volume, dict):
-                target = volume.get("target")
-                replacement = context_targets.get(target)
-                if replacement:
-                    volume["target"] = replacement
-
-
 def main() -> int:
     args = parse_args()
     compose_file = Path(args.compose_file)
@@ -283,10 +253,8 @@ def main() -> int:
         service.clear()
         service.update(normalized)
 
-        if name in {"workspace-provisioner", "forgejo-runner"} and "docker-socket-controller-proxy" in existing:
+        if name == "forgejo-runner" and "docker-socket-controller-proxy" in existing:
             add_dependency(service, "docker-socket-controller-proxy")
-        if name == "workspace-provisioner":
-            align_workspace_build_contexts(service)
         if name == "jupyterhub":
             env = service.setdefault("environment", {})
             if isinstance(env, dict):

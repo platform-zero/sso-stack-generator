@@ -45,12 +45,7 @@ ALLOWED_HOST_BINDS = {
 }
 
 DEFAULT_OPTIONAL_VM_SERVICES = [
-    "isolated-docker-vm-tunnel",
-    "docker-vm-socket-proxy",
-    "docker-vm-controller-proxy",
-    "workspace-provisioner",
     "forgejo-runner",
-    "chatgpt-connector",
 ]
 
 
@@ -126,11 +121,9 @@ def optional_services(bundle_root: Path) -> List[str]:
     return sorted(set(services))
 
 
-def isolated_vm_identity_configured(env_values: Dict[str, str]) -> bool:
-    if env_values.get("ISOLATED_DOCKER_VM_IDENTITY_CONFIGURED") == "true":
-        return True
-    ssh_dir = env_values.get("ISOLATED_DOCKER_VM_SSH_DIR")
-    return bool(ssh_dir and (Path(ssh_dir) / "id_ed25519").is_file())
+def optional_runtime_configured(env_values: Dict[str, str]) -> bool:
+    runner_ssh_dir = env_values.get("FORGEJO_RUNNER_SSH_DIR")
+    return bool(runner_ssh_dir and (Path(runner_ssh_dir) / "id_ed25519").is_file())
 
 
 def completion_job_services(compose: dict) -> List[str]:
@@ -192,10 +185,7 @@ def classify_bind(source: str, deploy_root: Path, env_values: Dict[str, str]) ->
         return "legacy-host-storage"
     if source in ALLOWED_HOST_BINDS:
         return "host-system"
-    ssh_dir = env_values.get("ISOLATED_DOCKER_VM_SSH_DIR")
     runner_ssh_dir = env_values.get("FORGEJO_RUNNER_SSH_DIR")
-    if ssh_dir and source == ssh_dir.rstrip("/"):
-        return "optional-identity"
     if runner_ssh_dir and source == runner_ssh_dir.rstrip("/"):
         return "optional-identity"
     return "other-bind"
@@ -265,7 +255,7 @@ def module_report(bundle_root: Path, env_file: Path, output: Path, project_name:
     graph = load_json(bundle_root / "stack.systemd" / "graph.json")
     excluded = set(graph.get("excludedServices") or [])
     optional = set(optional_services(bundle_root))
-    optional_disabled = not isolated_vm_identity_configured(env_values)
+    optional_disabled = not optional_runtime_configured(env_values)
     jobs = set(completion_job_services(config))
     statuses = docker_ps_all()
     services = []
@@ -313,8 +303,8 @@ def module_report(bundle_root: Path, env_file: Path, output: Path, project_name:
 
 def cleanup_optional_orphans(bundle_root: Path, env_file: Path, project_name: str) -> int:
     env_values = load_env_file(env_file)
-    if isolated_vm_identity_configured(env_values):
-        print("[webservices-audit] optional VM identity configured; no optional orphan cleanup needed", file=sys.stderr)
+    if optional_runtime_configured(env_values):
+        print("[webservices-audit] optional runtime identity configured; no optional orphan cleanup needed", file=sys.stderr)
         return 0
     config = compose_config(bundle_root, env_file, project_name)
     removed = []

@@ -1351,7 +1351,7 @@ restart_post_reconcile_units() {
 
 reload_deploy_sensitive_units() {
   local unit_name units=()
-  local configured_units="${DEPLOY_RELOAD_UNITS:-webservices-caddy.service webservices-onboarding.service webservices-synapse.service webservices-forgejo.service webservices-homeassistant.service webservices-sogo.service webservices-jellyfin.service webservices-donetick.service webservices-erpnext-backend.service webservices-erpnext-websocket.service webservices-erpnext-queue-short.service webservices-erpnext-queue-long.service webservices-erpnext-scheduler.service webservices-erpnext.service webservices-workspace-provisioner.service webservices-chatgpt-connector.service}"
+  local configured_units="${DEPLOY_RELOAD_UNITS:-webservices-caddy.service webservices-onboarding.service webservices-synapse.service webservices-forgejo.service webservices-homeassistant.service webservices-sogo.service webservices-jellyfin.service webservices-donetick.service webservices-erpnext-backend.service webservices-erpnext-websocket.service webservices-erpnext-queue-short.service webservices-erpnext-queue-long.service webservices-erpnext-scheduler.service webservices-erpnext.service}"
 
   if [ "${DEPLOY_SKIP_SENSITIVE_RELOADS:-1}" = "1" ]; then
     deploy_log "skipping deploy-sensitive reloads; target reconcile will handle final state"
@@ -1464,7 +1464,7 @@ reload_runtime_config_units() {
 
 recreate_env_sensitive_containers() {
   local container_name
-  local configured_containers="${DEPLOY_RECREATE_ENV_CONTAINERS:-opensearch nats airflow-init airflow-webserver airflow-scheduler ingestion-runner embedding-gpu keycloak bookstack bookstack-procedural-docs onlyoffice mailserver seafile workspace-provisioner chatgpt-connector}"
+  local configured_containers="${DEPLOY_RECREATE_ENV_CONTAINERS:-opensearch nats airflow-init airflow-webserver airflow-scheduler ingestion-runner embedding-gpu keycloak bookstack bookstack-procedural-docs onlyoffice mailserver seafile}"
 
   for container_name in $configured_containers; do
     if docker container inspect "$container_name" >/dev/null 2>&1; then

@@ -126,42 +126,12 @@ systemd_unit_is_oneshot() {
   [ "$(systemd_unit_type "$unit_name")" = "oneshot" ]
 }
 
-isolated_docker_vm_identity_file() {
-  (
-    set -a
-    # shellcheck disable=SC1090
-    . "$RUNTIME_ENV_FILE"
-    if [ -n "${ISOLATED_DOCKER_VM_SSH_DIR:-}" ]; then
-      printf '%s/id_ed25519\n' "$ISOLATED_DOCKER_VM_SSH_DIR"
-    fi
-  )
-}
-
-isolated_docker_vm_identity_configured() {
-  local identity_file
-  identity_file="$(isolated_docker_vm_identity_file)"
-  [ -n "$identity_file" ] && [ -r "$identity_file" ]
-}
-
 optional_capability_services() {
-  local metadata_file="$BUNDLE_DIR/scripts/lib/optional-capabilities.json"
-  if [ -f "$metadata_file" ]; then
-    jq -r '.capabilities.isolatedDockerVm.services[]?' "$metadata_file"
-    return 0
-  fi
-  printf '%s\n' \
-    isolated-docker-vm-tunnel \
-    docker-vm-socket-proxy \
-    docker-vm-controller-proxy \
-    workspace-provisioner \
-    forgejo-runner \
-    chatgpt-connector
+  return 0
 }
 
 service_is_optional_without_isolated_docker_vm_identity() {
-  local service_name="$1"
-  optional_capability_services | grep -Fxq "$service_name" || return 1
-  ! isolated_docker_vm_identity_configured
+  return 1
 }
 
 systemd_unit_successful_oneshot() {

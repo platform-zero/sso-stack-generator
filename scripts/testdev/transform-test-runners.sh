@@ -11,7 +11,5 @@ tmp="$(mktemp)"
 sed \
   -e '/^[[:space:]]*container_name:[[:space:]]*test-runner[[:space:]]*$/d' \
   -e 's|^\([[:space:]]*context:[[:space:]]*\)\.\([[:space:]]*\)$|\1./build\2|' \
-  -e 's|tcp://docker-vm-controller-proxy:2375|tcp://docker-socket-controller-proxy:2375|g' \
-  -e 's|tcp://docker-vm-socket-proxy:2375|tcp://docker-socket-proxy:2375|g' \
   "$file" > "$tmp"
 mv "$tmp" "$file"
