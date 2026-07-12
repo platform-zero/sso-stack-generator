@@ -112,7 +112,7 @@ extra_runtime_env_keys=(
   SYNAPSE_REGISTRATION_SECRET
   TEST_RUNNER_OAUTH_SECRET
 )
-if component_is_selected inference || component_is_selected search || component_is_selected pipeline; then
+if component_is_selected inference || component_is_selected pipeline; then
   extra_runtime_env_keys+=(
     QDRANT_ADMIN_API_KEY
     VECTOR_EMBED_SIZE
