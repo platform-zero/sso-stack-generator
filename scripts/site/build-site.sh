@@ -84,6 +84,9 @@ PY
   source "$payload/scripts/lib/common.sh"
   source "$payload/scripts/lib/components.sh"
   component_catalog_merge_external "$payload/stack.config/components.json"
+  # The legacy test suite reads the base catalog directly.  Catalog fragments
+  # have already been merged, so do not leave a second mutable input behind.
+  rm -rf "$payload/stack.config/components.external"
   git -C "$payload" init -q
   git -C "$payload" add -A
   git -C "$payload" -c user.name=site-builder -c user.email=site-builder@invalid commit -qm 'clean site build input'
