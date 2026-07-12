@@ -33,9 +33,12 @@ component_catalog_merge_external() {
   external_dir="$(dirname "$catalog")/components.external"
   [ -d "$external_dir" ] || return 0
 
+  if [ -f "$external_dir/stack-foundation.json" ]; then
+    external_catalogs+=( "$external_dir/stack-foundation.json" )
+  fi
   while IFS= read -r external_catalog; do
     external_catalogs+=( "$external_catalog" )
-  done < <(find "$external_dir" -maxdepth 1 -type f -name '*.json' | sort)
+  done < <(find "$external_dir" -maxdepth 1 -type f -name '*.json' ! -name 'stack-foundation.json' | sort)
   [ "${#external_catalogs[@]}" -gt 0 ] || return 0
 
   if [ ! -f "$catalog" ]; then

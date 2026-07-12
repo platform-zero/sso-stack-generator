@@ -92,7 +92,8 @@ import json, sys
 from pathlib import Path
 catalog, fragments = map(Path, sys.argv[1:])
 merged = {"schemaVersion": 1, "defaultComponents": [], "components": {}}
-for path in [catalog, *sorted(fragments.glob("*.json"))]:
+fragment_paths = sorted(fragments.glob("*.json"), key=lambda path: (path.name != "stack-foundation.json", path.name))
+for path in [catalog, *fragment_paths]:
     data = json.loads(path.read_text())
     merged["defaultComponents"] = sorted(set(merged["defaultComponents"] + data.get("defaultComponents", [])))
     merged["components"].update(data.get("components", {}))
