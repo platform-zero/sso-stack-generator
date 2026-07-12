@@ -113,7 +113,10 @@ if [ -f "$local_test_dir/package.json" ]; then
 fi
 
 log "running component selection checks"
+component_catalog_backup="$(mktemp)"
+cp "$contract_test_root/stack.config/components.json" "$component_catalog_backup"
 WEBSERVICES_CONTRACT_ROOT="$contract_test_root" "$SCRIPT_DIR/test-component-selection.sh" >&2
+mv "$component_catalog_backup" "$contract_test_root/stack.config/components.json"
 
 log "running external module checks"
 "$SCRIPT_DIR/test-external-modules.sh" >&2
