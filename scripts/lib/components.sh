@@ -93,6 +93,7 @@ service_contracts_merge_external() {
       | .components = (.components + ($contracts.components // {}))
     )
   ' "$contracts" "${external_contracts[@]}" > "$temp_contracts"
+  chmod --reference="$contracts" "$temp_contracts"
   mv "$temp_contracts" "$contracts"
 }
 
