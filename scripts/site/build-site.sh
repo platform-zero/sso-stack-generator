@@ -84,6 +84,17 @@ PY
   source "$payload/scripts/lib/common.sh"
   source "$payload/scripts/lib/components.sh"
   component_catalog_merge_external "$payload/stack.config/components.json"
+  python3 - "$payload/stack.config/components.json" "$payload/stack.config/components.external" <<'PY'
+import json, sys
+from pathlib import Path
+catalog, fragments = map(Path, sys.argv[1:])
+merged = {"schemaVersion": 1, "defaultComponents": [], "components": {}}
+for path in [catalog, *sorted(fragments.glob("*.json"))]:
+    data = json.loads(path.read_text())
+    merged["defaultComponents"] = sorted(set(merged["defaultComponents"] + data.get("defaultComponents", [])))
+    merged["components"].update(data.get("components", {}))
+catalog.write_text(json.dumps(merged, indent=2, sort_keys=True) + "\n")
+PY
   # The legacy test suite reads the base catalog directly.  Catalog fragments
   # have already been merged, so do not leave a second mutable input behind.
   rm -rf "$payload/stack.config/components.external"
