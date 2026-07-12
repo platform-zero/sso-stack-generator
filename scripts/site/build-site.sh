@@ -95,9 +95,6 @@ for path in [catalog, *sorted(fragments.glob("*.json"))]:
     merged["components"].update(data.get("components", {}))
 catalog.write_text(json.dumps(merged, indent=2, sort_keys=True) + "\n")
 PY
-  # The legacy test suite reads the base catalog directly.  Catalog fragments
-  # have already been merged, so do not leave a second mutable input behind.
-  rm -rf "$payload/stack.config/components.external"
   git -C "$payload" init -q
   git -C "$payload" add -A
   git -C "$payload" -c user.name=site-builder -c user.email=site-builder@invalid commit -qm 'clean site build input'
