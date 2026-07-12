@@ -16,6 +16,7 @@ filegroup(
             ".bazelrc",
             "BUILD.bazel",
             "MODULE.bazel",
+            "WORKSPACE",
             "build.gradle.kts",
             "gradlew",
             "gradlew.bat",
