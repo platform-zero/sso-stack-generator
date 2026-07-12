@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
-BUNDLE="" LOCK="" HOST="gerald@192.168.0.11" REMOTE_ROOT='${HOME}/webservices' READINESS=""
-usage() { echo "Usage: $0 --bundle-dir <directory> --site-lock <site.lock.json> --readiness-command <command> [--host gerald@192.168.0.11]" >&2; }
-while [ "$#" -gt 0 ]; do case "$1" in --bundle-dir) BUNDLE="$2"; shift;; --site-lock) LOCK="$2"; shift;; --host) HOST="$2"; shift;; --readiness-command) READINESS="$2"; shift;; -h|--help) usage; exit 0;; *) usage; exit 2;; esac; shift; done
+BUNDLE="" LOCK="" HOST="gerald@192.168.0.11" REMOTE_ROOT="" READINESS=""
+usage() { echo "Usage: $0 --bundle-dir <directory> --site-lock <site.lock.json> --readiness-command <command> [--host gerald@192.168.0.11] [--remote-root /absolute/path]" >&2; }
+while [ "$#" -gt 0 ]; do case "$1" in --bundle-dir) BUNDLE="$2"; shift;; --site-lock) LOCK="$2"; shift;; --host) HOST="$2"; shift;; --remote-root) REMOTE_ROOT="$2"; shift;; --readiness-command) READINESS="$2"; shift;; -h|--help) usage; exit 0;; *) usage; exit 2;; esac; shift; done
 [ -n "$BUNDLE" ] && [ -n "$LOCK" ] && [ -n "$READINESS" ] || { usage; exit 2; }
 BUNDLE="$(realpath "$BUNDLE")"; LOCK="$(realpath "$LOCK")"; hash="$(sha256sum "$LOCK" | awk '{print $1}')"; stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+if [ -z "$REMOTE_ROOT" ]; then
+  REMOTE_ROOT="$(ssh "$HOST" 'printf %s "$HOME"')/webservices"
+fi
+case "$REMOTE_ROOT" in /*) ;; *) echo '--remote-root must be an absolute remote path' >&2; exit 2;; esac
 ssh "$HOST" "mkdir -p $REMOTE_ROOT/incoming/$stamp"
 scp "$BUNDLE/bundle.tar" "$BUNDLE/bundle.tar.sha256" "$BUNDLE/bundle.json" "$HOST:$REMOTE_ROOT/incoming/$stamp/"
 scp "$ROOT/scripts/site/activate-release.sh" "$HOST:$REMOTE_ROOT/incoming/$stamp/activate-release.sh"
