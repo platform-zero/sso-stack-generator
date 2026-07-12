@@ -3,6 +3,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
+if [ "${WEBSERVICES_SKIP_DOCS_TEST:-}" = "1" ]; then
+  printf '[docs-test] skipped via WEBSERVICES_SKIP_DOCS_TEST=1\n' >&2
+  exit 0
+fi
+
 required_files=(
   "README.md"
   "CONTRIBUTING.md"

@@ -103,7 +103,18 @@ prepare_runtime_dir "$runtime_root"
 render_config_tree "$BUNDLE_ROOT/stack.config" "$runtime_configs_dir"
 component_selection_filter_contracts_file "$runtime_configs_dir/service-contracts.json"
 mapfile -t runtime_env_keys < <(collect_runtime_env_keys "$runtime_configs_dir" "$BUNDLE_ROOT/global.settings" "$BUNDLE_ROOT/docker-compose.yml")
-mapfile -t runtime_env_keys < <(printf '%s\n' "${runtime_env_keys[@]}" STACK_RUNTIME_DIR | sort -u)
+mapfile -t runtime_env_keys < <(
+  printf '%s\n' \
+    "${runtime_env_keys[@]}" \
+    STACK_RUNTIME_DIR \
+    MODEL_CONTEXT_PROXY_AUTH_SECRET \
+    PLAYWRIGHT_IGNORE_HTTPS_ERRORS \
+    GPU_ARBITER_API_TOKEN \
+    INFERENCE_CONTROLLER_API_TOKEN \
+    SYNAPSE_REGISTRATION_SECRET \
+    TEST_RUNNER_OAUTH_SECRET \
+    | sort -u
+)
 write_env_file "$runtime_env_file" "${runtime_env_keys[@]}"
 write_build_info "$BUNDLE_ROOT/build-info.json" "$runtime_root/build-info.json"
 

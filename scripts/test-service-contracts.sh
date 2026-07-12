@@ -179,7 +179,7 @@ grep -Fq 'documentserver-pluginsmanager.sh.orig' "$ROOT_DIR/stack.compose/onlyof
 jq -e '.components.observability.dependencies | index("crowdsec")' "$catalog" >/dev/null
 jq -e '.components.crowdsec.composeFiles == ["crowdsec.yml"]' "$catalog" >/dev/null
 jq -e '.components.crowdsec.evidence.expectations | index("crowdsec.simulated_decision")' "$contracts" >/dev/null
-grep -Fq './configs/portal-profiles.json:/contracts/portal-profiles.json:ro' "$ROOT_DIR/stack.compose/portal.yml"
+grep -Fq './configs/homepage:/app/config' "$ROOT_DIR/stack.compose/portal.yml"
 
 grep -Fq './configs/crowdsec/acquis.yaml:/etc/crowdsec/acquis.yaml:ro' "$ROOT_DIR/stack.compose/crowdsec.yml"
 grep -Fq './configs/crowdsec/simulate-alert.sh:/usr/local/bin/webservices-crowdsec-simulate-alert:ro' "$ROOT_DIR/stack.compose/crowdsec.yml"
@@ -194,8 +194,8 @@ if grep -Eq 'request>(remote_ip|client_ip)[[:space:]]+ip_mask' "$ROOT_DIR/stack.
   exit 1
 fi
 
-if rg -n 'gethomepage|homepage:3000|ghcr\.io/gethomepage' "$ROOT_DIR/stack.compose" "$ROOT_DIR/stack.config/caddy" >/dev/null; then
-  printf '[service-contract-test] gethomepage runtime references must not remain in compose or Caddy\n' >&2
+if ! rg -n 'ghcr\.io/gethomepage/homepage|portal:3000' "$ROOT_DIR/stack.compose/portal.yml" "$ROOT_DIR/stack.config/caddy/Caddyfile" >/dev/null; then
+  printf '[service-contract-test] portal must run gethomepage and proxy to Homepage port 3000\n' >&2
   exit 1
 fi
 

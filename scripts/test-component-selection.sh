@@ -51,11 +51,9 @@ validate_caddy_file() {
   if ! docker run --rm \
     -v "$caddy_file:/etc/caddy/Caddyfile:ro" \
     -e DOMAIN=example.test \
-    -e WORKSPACE_PROXY_AUTH_SECRET=test \
     -e ONBOARDING_TRUSTED_PROXY_SECRET=test \
     -e KOPIA_PROXY_AUTHORIZATION=test \
     -e BOOKSTACK_INTERNAL_API_TOKEN=test \
-    -e CHATGPT_CONNECTOR_TRUSTED_PROXY_SECRET=test \
     -e OPENSEARCH_BASIC_AUTH=test \
     -e HOMEASSISTANT_TRUSTED_PROXY_SECRET=test \
     -e VAULTWARDEN_ORG_ID=00000000-0000-0000-0000-000000000000 \
@@ -78,7 +76,6 @@ fake_bin="$tmp_root/bin"
 bundle_root="$tmp_root/bundle/build"
 site_root="$bundle_root/site"
 runtime_root="$tmp_root/runtime"
-isolated_docker_vm_ssh_dir="$tmp_root/isolated-docker-vm-ssh"
 test_runner_runtime_dir="$tmp_root/test-runner-runtime"
 test_results_dir="$tmp_root/test-results"
 forgejo_runner_ssh_dir="$tmp_root/forgejo-runner-ssh"
@@ -88,22 +85,18 @@ mkdir -p \
   "$bundle_root" \
   "$site_root" \
   "$runtime_root" \
-  "$isolated_docker_vm_ssh_dir" \
   "$test_runner_runtime_dir" \
   "$test_results_dir" \
   "$forgejo_runner_ssh_dir" \
   "$host_paths_dir"
-export ISOLATED_DOCKER_VM_SSH_DIR="$isolated_docker_vm_ssh_dir"
 export FORGEJO_RUNNER_SSH_DIR="$forgejo_runner_ssh_dir"
 export TEST_RESULTS_HOST_DIR="$test_results_dir"
 export TEST_RUNNER_HOST_XDG_RUNTIME_DIR="$test_runner_runtime_dir"
 export TEST_RUNNER_RUNTIME_HOST_DIR="$test_runner_runtime_dir"
-export CHATGPT_CONNECTOR_TRUSTED_PROXY_SECRET=component-test-secret
 export DOMAIN=example.test
 export DONETICK_JWT_SECRET=component-test-secret
 export DONETICK_OAUTH_SECRET=component-test-secret
 export ERPNEXT_OAUTH_SECRET=component-test-secret
-export ISOLATED_DOCKER_VM_HOST=
 export JELLYFIN_OIDC_SECRET=component-test-secret
 export KEYCLOAK_ADMIN_PASSWORD=component-test-secret
 export KOPIA_PROXY_AUTHORIZATION=component-test-secret
@@ -126,7 +119,6 @@ export MASTODON_VAPID_PRIVATE_KEY=component-test-secret
 export MASTODON_VAPID_PUBLIC_KEY=component-test-secret
 export MEDIA_WRITER_GID="$(id -g)"
 export MEDIA_WRITER_UID="$(id -u)"
-export NOCOW_DB_DIR="$host_paths_dir/nocow"
 export NTFY_PASSWORD=component-test-secret
 export NTFY_USERNAME=component-test
 export PG_SSD_ROOT="$host_paths_dir/pg-ssd"
@@ -139,10 +131,6 @@ export VAULTWARDEN_ORG_ID=00000000-0000-0000-0000-000000000000
 export VAULTWARDEN_ORG_IDENTIFIER=component-test
 export VAULTWARDEN_SMTP_PASSWORD=component-test-secret
 export VECTOR_DB_ROOT="$host_paths_dir/vector"
-export WORKSPACE_AGENT_TOKEN_SECRET=component-test-secret
-export WORKSPACE_PROXY_AUTH_SECRET=component-test-secret
-export WORKSPACE_RUNTIME_PUBLIC_ADDRESS=127.0.0.1
-export WORKSPACE_RUNTIME_PUBLIC_HOST=workspace.example.test
 
 cat > "$fake_bin/sops" <<'EOF_SOPS'
 #!/usr/bin/env bash
@@ -241,7 +229,7 @@ if [ -f "$runtime_contracts" ]; then
   assert_not_private_mode "$runtime_contracts" "filtered runtime service contracts"
 fi
 
-assert_not_contains "$caddy_file" 'reverse_proxy (vaultwarden|grafana|portal:8080|bookstack|matrix-authentication-service|mastodon|jupyterhub|homeassistant|search-service|chatgpt-connector|kopia|progression)' "disabled app Caddy upstream"
+assert_not_contains "$caddy_file" 'reverse_proxy (vaultwarden|grafana|portal:8080|bookstack|matrix-authentication-service|mastodon|jupyterhub|homeassistant|search-service|kopia|progression)' "disabled app Caddy upstream"
 assert_not_contains "$keycloak_configure" 'ensure_confidential_client "(bookstack|vaultwarden|matrix|planka|forgejo|mastodon|sogo|jellyfin|donetick|erpnext)' "disabled app Keycloak client"
 validate_caddy_file "$caddy_file"
 
@@ -275,6 +263,8 @@ assert_contains "$progression_unit" '%h/webservices/build/build-info.json' "Prog
 assert_contains "$progression_unit" '%h/webservices/build/docker-compose.yml' "Progression compose preflight"
 assert_contains "$progression_unit" '%h/webservices/build/stack.config/progression' "Progression registry preflight"
 assert_not_contains "$progression_unit" '%h/webservices/build-info.json|%h/webservices/docker-compose.yml|%h/webservices/stack.config/progression' "root-level Progression preflight"
+assert_contains "$bundle_root/systemd-user/webservices.target" 'PropagatesStopTo=webservices-core.target' "core target stop propagation"
+assert_contains "$bundle_root/systemd-user/webservices.target" 'PropagatesStopTo=webservices-apps.target' "apps target stop propagation"
 
 PATH="$fake_bin:$PATH" "$ROOT_DIR/scripts/deploy/render-runtime.sh" \
   --bundle-root "$bundle_root" \
@@ -284,7 +274,7 @@ PATH="$fake_bin:$PATH" "$ROOT_DIR/scripts/deploy/render-runtime.sh" \
   --skip-compose-validate
 
 assert_contains "$caddy_file" 'reverse_proxy vaultwarden:80' "full Vaultwarden route"
-assert_contains "$caddy_file" 'reverse_proxy portal:8080' "full Portal route"
+assert_contains "$caddy_file" 'reverse_proxy portal:3000' "full Portal route"
 assert_contains "$caddy_file" 'redir https://portal' "full Homepage compatibility redirect"
 assert_contains "$caddy_file" 'reverse_proxy progression:8130' "full Progression route"
 assert_contains "$keycloak_configure" 'ensure_confidential_client "vaultwarden"' "full Vaultwarden Keycloak client"

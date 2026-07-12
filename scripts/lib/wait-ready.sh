@@ -126,6 +126,14 @@ systemd_unit_is_oneshot() {
   [ "$(systemd_unit_type "$unit_name")" = "oneshot" ]
 }
 
+optional_capability_services() {
+  return 0
+}
+
+service_is_optional_without_isolated_docker_vm_identity() {
+  return 1
+}
+
 systemd_unit_successful_oneshot() {
   local unit_name="$1"
   local active_state sub_state result
@@ -145,6 +153,10 @@ service_state() {
   local compose_config="$1"
   local service_name="$2"
   local container_name unit_name
+  if service_is_optional_without_isolated_docker_vm_identity "$service_name"; then
+    printf 'skipped\n'
+    return 0
+  fi
   container_name="$(service_container_name "$compose_config" "$service_name")"
   unit_name="$(systemd_unit_name_for_service "$service_name")"
   [ -n "$container_name" ] || {
@@ -181,6 +193,10 @@ service_exit_code() {
   local compose_config="$1"
   local service_name="$2"
   local container_name unit_name result
+  if service_is_optional_without_isolated_docker_vm_identity "$service_name"; then
+    printf '0\n'
+    return 0
+  fi
   container_name="$(service_container_name "$compose_config" "$service_name")"
   unit_name="$(systemd_unit_name_for_service "$service_name")"
   [ -n "$container_name" ] || {

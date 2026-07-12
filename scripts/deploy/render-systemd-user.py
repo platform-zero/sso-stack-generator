@@ -62,6 +62,10 @@ class PathContract:
     kind: str
 
 
+VM_IDENTITY_DEPENDENT_DOMAINS: Set[str] = set()
+VM_IDENTITY_DEPENDENT_SERVICES: Set[str] = set()
+OPTIONAL_CAPABILITIES_PATH = Path("scripts/lib/optional-capabilities.json")
+
 SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 SAFE_TARGET_UNIT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@:-]*\.target$")
 SAFE_UNIT_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@:-]*\.(?:service|target)$")
@@ -91,6 +95,19 @@ def write_text_within(root: Path, file_name: str, content: str) -> None:
 
 def load_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_vm_identity_dependent_sets(local_bundle_root: Path) -> Tuple[Set[str], Set[str]]:
+    metadata_path = local_bundle_root / OPTIONAL_CAPABILITIES_PATH
+    if not metadata_path.exists():
+        return set(VM_IDENTITY_DEPENDENT_DOMAINS), set(VM_IDENTITY_DEPENDENT_SERVICES)
+    metadata = load_json(metadata_path)
+    capability = (metadata.get("capabilities") or {}).get("isolatedDockerVm") or {}
+    domains = set(capability.get("domains") or [])
+    services = set(capability.get("services") or [])
+    if not domains and not services:
+        return set(VM_IDENTITY_DEPENDENT_DOMAINS), set(VM_IDENTITY_DEPENDENT_SERVICES)
+    return domains, services
 
 
 def ensure_no_control_chars(value: str, label: str) -> None:
@@ -403,7 +420,7 @@ def infer_path_kind(source_path: Path, local_deploy_root: Path, local_bundle_roo
     return "exists"
 
 
-def collect_path_contracts(domain: Domain, compose_config: dict, local_deploy_root: Path, local_bundle_root: Path, deploy_root_template: str) -> List[PathContract]:
+def collect_path_contracts(domain: Domain, compose_config: dict, local_deploy_root: Path, local_bundle_root: Path, deploy_root_template: str, vm_identity_domains: Set[str], vm_identity_services: Set[str]) -> List[PathContract]:
     contracts: Dict[str, PathContract] = {}
     for service_name in domain.services:
         for mount in compose_config["services"][service_name].get("volumes") or []:
@@ -574,7 +591,7 @@ def compose_shard(domain: Domain, compose_config: dict, service_to_domain: dict,
     return top_level
 
 
-def render_target(target: Target, wanted_units: List[str]) -> str:
+def render_target(target: Target, wanted_units: List[str], stop_propagates_to: Optional[List[str]] = None) -> str:
     lines = ["[Unit]", f"Description={target.description}"]
     for unit in wanted_units:
         lines.append(f"Wants={unit}")
@@ -586,6 +603,8 @@ def render_target(target: Target, wanted_units: List[str]) -> str:
         lines.append(f"Conflicts={target_name}")
     for target_name in target.part_of_targets:
         lines.append(f"PartOf={target_name}")
+    for target_name in sorted(dict.fromkeys(stop_propagates_to or [])):
+        lines.append(f"PropagatesStopTo={target_name}")
     lines.extend(["", "[Install]"])
     if target.install:
         lines.append("WantedBy=default.target")
@@ -768,6 +787,7 @@ def main() -> int:
     compose_config = load_json(Path(args.compose_config_json))
     graph = load_json(Path(args.graph_path))
     base_networks = load_json(Path(args.base_networks_json))
+    vm_identity_domains, vm_identity_services = load_vm_identity_dependent_sets(local_bundle_root)
     compose_services = compose_config["services"]
     validate_graph_identifiers(graph, compose_services)
 
@@ -803,6 +823,7 @@ def main() -> int:
         for domain in domains
     }
     ordered_domains = topo_sort_domains(domains, dependency_map)
+    vm_identity_domains, vm_identity_services = load_vm_identity_dependent_sets(local_bundle_root)
 
     base_network_configs = (base_networks.get("networks") or {})
     shared_networks = []
@@ -904,7 +925,15 @@ def main() -> int:
         write_text_within(compose_dir, f"{domain.name}.compose.json", json.dumps(shard, indent=2, sort_keys=True) + "\n")
 
         runtime_compose_path = f"{args.unit_root_template}/compose/{domain.name}.compose.json"
-        path_contracts = collect_path_contracts(domain, compose_config, local_deploy_root, local_bundle_root, args.deploy_root_template)
+        path_contracts = collect_path_contracts(
+            domain,
+            compose_config,
+            local_deploy_root,
+            local_bundle_root,
+            args.deploy_root_template,
+            vm_identity_domains,
+            vm_identity_services,
+        )
         unit_preflight_lines, service_preflight_lines = render_preflight_lines(
             args.runtime_env_file_template,
             runtime_compose_path,
@@ -1036,6 +1065,7 @@ def main() -> int:
     write_text_within(output_dir, default_target.name, render_target(
         default_target,
         sorted(dict.fromkeys(target_units[default_target.name])),
+        [target.name for target in auxiliary_targets if target.name in default_target.wants_targets],
     ))
 
     for target in auxiliary_targets:

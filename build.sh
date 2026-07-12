@@ -58,6 +58,7 @@ esac
 site_manifest_path="$(resolve_site_manifest_file "$SITE_MANIFEST_PATH")"
 
 external_modules_resolve "$site_manifest_path"
+"$SCRIPT_DIR/scripts/verify-module-lock-overrides.sh" "$site_manifest_path"
 "$SCRIPT_DIR/scripts/verify-service-ownership.sh" "$site_manifest_path"
 artifact_path="$("$SCRIPT_DIR/scripts/build-artifact.sh")"
 mkdir -p "$OUT_DIR"
@@ -154,6 +155,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 exec "$SCRIPT_DIR/build/scripts/stackctl.sh" "$@"
 EOF_STACKCTL
+
+  cat > "$DIST_DIR/install.sh" <<'EOF_INSTALL'
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+exec "$SCRIPT_DIR/build/scripts/install-bundle.sh" "$@"
+EOF_INSTALL
 else
   cat > "$DIST_DIR/deploy.sh" <<'EOF_DEPLOY'
 #!/usr/bin/env bash
@@ -183,9 +191,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 exec "$SCRIPT_DIR/build/scripts/stackctl.sh" "$@"
 EOF_STACKCTL
+
+  cat > "$DIST_DIR/install.sh" <<'EOF_INSTALL'
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+exec "$SCRIPT_DIR/build/scripts/install-bundle.sh" "$@"
+EOF_INSTALL
 fi
 
-chmod +x "$DIST_DIR/deploy.sh" "$DIST_DIR/verify.sh" "$DIST_DIR/run-tests.sh" "$DIST_DIR/stackctl"
+chmod +x "$DIST_DIR/deploy.sh" "$DIST_DIR/verify.sh" "$DIST_DIR/run-tests.sh" "$DIST_DIR/stackctl" "$DIST_DIR/install.sh"
 
 if [ "$BUILD_PROFILE" = "testdev" ]; then
   cat > "$DIST_DIR/testdev-up.sh" <<'EOF_TESTDEV_UP'

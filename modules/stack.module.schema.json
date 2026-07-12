@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/geraldsummers/sso-stack-generator/modules/stack.module.schema.json",
+  "$id": "https://github.com/platform-zero/sso-stack-generator/modules/stack.module.schema.json",
   "title": "SSO stack module metadata",
   "type": "object",
   "additionalProperties": false,

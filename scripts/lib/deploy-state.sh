@@ -51,6 +51,21 @@ deploy_state_runtime_config_manifest_path() {
   printf '%s/runtime-config-files.sha256\n' "$(deploy_state_dir "$deploy_root")"
 }
 
+deploy_state_path_ignored() {
+  local path="$1"
+
+  case "$path" in
+    stack.containers/test-runner/playwright-tests/node_modules/*|\
+    stack.containers/test-runner/playwright-tests/test-results/*|\
+    stack.containers/test-runner/playwright-tests/playwright-report/*|\
+    stack.containers/test-runner/playwright-tests/.auth/*)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
 deploy_state_manifest_for_root() {
   local root="$1"
   shift
@@ -67,6 +82,7 @@ deploy_state_manifest_for_root() {
         printf '%s\n' "$path"
       fi
     done | LC_ALL=C sort | while IFS= read -r path; do
+      deploy_state_path_ignored "$path" && continue
       sha256sum "$path"
     done
   )

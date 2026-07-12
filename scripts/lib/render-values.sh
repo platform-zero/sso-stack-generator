@@ -123,30 +123,20 @@ load_site_values() {
 
   render_set VECTOR_DB_ROOT "$(normalize_host_path "$(yaml_get_scalar "$site_config_file" 'storage.vector_dbs')")"
   render_set PG_SSD_ROOT "$(normalize_host_path "$(yaml_get_scalar "$site_config_file" 'storage.pg_ssd_root')")"
-  render_set NOCOW_DB_DIR "$(normalize_host_path "$(yaml_get_scalar "$site_config_file" 'storage.nocow_db_dir')")"
+  render_set STACK_VOLUME_ROOT "$(normalize_host_path "$(yaml_get_scalar "$site_config_file" 'storage.volume_root')")"
+  render_set QBITTORRENT_DATA_ROOT "$(normalize_host_path "$(yaml_get_scalar "$site_config_file" 'storage.custom.qbittorrent_data')")"
   render_set SEAFILE_MEDIA_ROOT "$(normalize_host_path "$(yaml_get_scalar "$site_config_file" 'storage.custom.seafile_media')")"
   render_set JELLYFIN_MEDIA_ROOT "$(normalize_host_path "$(yaml_get_scalar "$site_config_file" 'storage.custom.jellyfin_media')")"
   render_set MEDIA_WRITER_UID "$(yaml_get_scalar "$site_config_file" 'storage.media_writer_uid')"
   render_set MEDIA_WRITER_GID "$(yaml_get_scalar "$site_config_file" 'storage.media_writer_gid')"
 
-  [ -n "$(render_get PG_SSD_ROOT)" ] || render_set PG_SSD_ROOT "/mnt/pg_ssd"
-  [ -n "$(render_get NOCOW_DB_DIR)" ] || render_set NOCOW_DB_DIR "/mnt/raid/docker/nocow"
+  [ -n "$(render_get PG_SSD_ROOT)" ] || render_set PG_SSD_ROOT "/mnt/stack/pg-ssd"
+  [ -n "$(render_get STACK_VOLUME_ROOT)" ] || render_set STACK_VOLUME_ROOT "/mnt/stack/volumes"
+  [ -n "$(render_get QBITTORRENT_DATA_ROOT)" ] || render_set QBITTORRENT_DATA_ROOT "/mnt/media/qbittorrent"
   [ -n "$(render_get SEAFILE_MEDIA_ROOT)" ] || render_set SEAFILE_MEDIA_ROOT "/mnt/media/seafile-media"
   [ -n "$(render_get JELLYFIN_MEDIA_ROOT)" ] || render_set JELLYFIN_MEDIA_ROOT "/mnt/media/jellyfin-media"
   [ -n "$(render_get MEDIA_WRITER_UID)" ] || render_set MEDIA_WRITER_UID "1000"
   [ -n "$(render_get MEDIA_WRITER_GID)" ] || render_set MEDIA_WRITER_GID "1000"
-
-  local isolated_docker_vm_host
-  isolated_docker_vm_host="$(yaml_get_scalar "$site_config_file" 'runtime.isolated_docker_vm_host')"
-  if [ -n "$isolated_docker_vm_host" ]; then
-    render_set ISOLATED_DOCKER_VM_HOST "$isolated_docker_vm_host"
-  fi
-
-  local isolated_docker_vm_ssh_dir
-  isolated_docker_vm_ssh_dir="$(yaml_get_scalar "$site_config_file" 'runtime.isolated_docker_vm_ssh_dir')"
-  if [ -n "$isolated_docker_vm_ssh_dir" ]; then
-    render_set ISOLATED_DOCKER_VM_SSH_DIR "$(normalize_host_path "$isolated_docker_vm_ssh_dir")"
-  fi
 
   local forgejo_runner_ssh_dir
   forgejo_runner_ssh_dir="$(yaml_get_scalar "$site_config_file" 'runtime.forgejo_runner_ssh_dir')"
@@ -154,63 +144,8 @@ load_site_values() {
     render_set FORGEJO_RUNNER_SSH_DIR "$(normalize_host_path "$forgejo_runner_ssh_dir")"
   fi
 
-  local workspace_runtime_public_host
-  workspace_runtime_public_host="$(yaml_get_scalar "$site_config_file" 'runtime.isolated_docker_vm_public_host')"
-  if [ -n "$workspace_runtime_public_host" ]; then
-    render_set WORKSPACE_RUNTIME_PUBLIC_HOST "$workspace_runtime_public_host"
-  elif [ -n "$isolated_docker_vm_host" ]; then
-    render_set WORKSPACE_RUNTIME_PUBLIC_HOST "${isolated_docker_vm_host##*@}"
-  else
-    render_set WORKSPACE_RUNTIME_PUBLIC_HOST "localhost"
-  fi
-
-  local workspace_runtime_public_address
-  workspace_runtime_public_address="$(yaml_get_scalar "$site_config_file" 'runtime.isolated_docker_vm_public_address')"
-  if [ -z "$workspace_runtime_public_address" ]; then
-    local workspace_runtime_resolved_host
-    workspace_runtime_resolved_host="$(render_get WORKSPACE_RUNTIME_PUBLIC_HOST)"
-    if printf '%s\n' "$workspace_runtime_resolved_host" | grep -Eq '^[0-9]+(\.[0-9]+){3}$'; then
-      workspace_runtime_public_address="$workspace_runtime_resolved_host"
-    elif command -v getent >/dev/null 2>&1; then
-      workspace_runtime_public_address="$(
-        { getent ahostsv4 "$workspace_runtime_resolved_host" 2>/dev/null || true; } | awk 'NR == 1 { print $1 }'
-      )"
-    fi
-  fi
-  [ -n "$workspace_runtime_public_address" ] || workspace_runtime_public_address="host-gateway"
-  render_set WORKSPACE_RUNTIME_PUBLIC_ADDRESS "$workspace_runtime_public_address"
-
-  local workspace_runtime_http_bind_address
-  workspace_runtime_http_bind_address="$(yaml_get_scalar "$site_config_file" 'runtime.workspace_runtime_http_bind_address')"
-  if [ -z "$workspace_runtime_http_bind_address" ]; then
-    if printf '%s\n' "$workspace_runtime_public_address" | grep -Eq '^[0-9]+(\.[0-9]+){3}$'; then
-      workspace_runtime_http_bind_address="$workspace_runtime_public_address"
-    else
-      workspace_runtime_http_bind_address="127.0.0.1"
-    fi
-  fi
-  render_set WORKSPACE_RUNTIME_HTTP_BIND_ADDRESS "$workspace_runtime_http_bind_address"
-
-  render_set WORKSPACE_RUNTIME_SSH_PORT_START "$(yaml_get_scalar "$site_config_file" 'runtime.workspace_runtime_ssh_port_start')"
-  [ -n "$(render_get WORKSPACE_RUNTIME_SSH_PORT_START)" ] || render_set WORKSPACE_RUNTIME_SSH_PORT_START "47000"
-
-  render_set WORKSPACE_RUNTIME_SSH_PORT_END "$(yaml_get_scalar "$site_config_file" 'runtime.workspace_runtime_ssh_port_end')"
-  [ -n "$(render_get WORKSPACE_RUNTIME_SSH_PORT_END)" ] || render_set WORKSPACE_RUNTIME_SSH_PORT_END "47999"
-
-  render_set WORKSPACE_RUNTIME_NOTEBOOK_PORT_START "$(yaml_get_scalar "$site_config_file" 'runtime.workspace_runtime_notebook_port_start')"
-  [ -n "$(render_get WORKSPACE_RUNTIME_NOTEBOOK_PORT_START)" ] || render_set WORKSPACE_RUNTIME_NOTEBOOK_PORT_START "48000"
-
-  render_set WORKSPACE_RUNTIME_NOTEBOOK_PORT_END "$(yaml_get_scalar "$site_config_file" 'runtime.workspace_runtime_notebook_port_end')"
-  [ -n "$(render_get WORKSPACE_RUNTIME_NOTEBOOK_PORT_END)" ] || render_set WORKSPACE_RUNTIME_NOTEBOOK_PORT_END "48999"
-
-  render_set WORKSPACE_LEASE_DAYS "$(yaml_get_scalar "$site_config_file" 'runtime.workspace_lease_days')"
-  [ -n "$(render_get WORKSPACE_LEASE_DAYS)" ] || render_set WORKSPACE_LEASE_DAYS "14"
-
-  render_set WORKSPACE_CERT_TTL "$(yaml_get_scalar "$site_config_file" 'runtime.workspace_cert_ttl')"
-  [ -n "$(render_get WORKSPACE_CERT_TTL)" ] || render_set WORKSPACE_CERT_TTL "12h"
-
   render_set CADDY_IP "$(yaml_get_scalar "$site_config_file" 'runtime.caddy_ip')"
-  [ -n "$(render_get CADDY_IP)" ] || render_set CADDY_IP "192.168.16.20"
+  [ -n "$(render_get CADDY_IP)" ] || render_set CADDY_IP "127.0.0.1"
 
   render_set CADDY_TLS_MODE "$(yaml_get_scalar "$site_config_file" 'runtime.caddy_tls_mode')"
   [ -n "$(render_get CADDY_TLS_MODE)" ] || render_set CADDY_TLS_MODE "local"
@@ -265,6 +200,19 @@ derive_if_missing() {
   fi
 }
 
+derive_laravel_app_key_if_missing() {
+  local key="$1"
+  local label="$2"
+  local current=""
+  if render_has "$key"; then
+    current="$(render_get "$key")"
+  fi
+  if [ -n "$current" ] && printf '%s' "$current" | grep -Eq '^base64:[A-Za-z0-9+/]{43}=?$'; then
+    return 0
+  fi
+  render_set "$key" "base64:$(python3 -c 'import base64, sys; print(base64.b64encode(bytes.fromhex(sys.argv[1])).decode().rstrip("="))' "$(derive_stack_secret "$label" 64)")"
+}
+
 derive_policy_secret() {
   local label="$1"
   local length="${2:-32}"
@@ -291,16 +239,14 @@ build_derived_render_values() {
   if ! render_has FORGEJO_RUNNER_SSH_DIR || [ -z "$(render_get FORGEJO_RUNNER_SSH_DIR)" ]; then
     render_set FORGEJO_RUNNER_SSH_DIR "$(default_forgejo_runner_ssh_dir)"
   fi
-  if render_has ISOLATED_DOCKER_VM_HOST && { ! render_has ISOLATED_DOCKER_VM_SSH_DIR || [ -z "$(render_get ISOLATED_DOCKER_VM_SSH_DIR)" ]; }; then
-    render_set ISOLATED_DOCKER_VM_SSH_DIR "$(normalize_host_path "$HOME/.ssh")"
-  fi
   render_set SYSTEMD_USER_UID "$(id -u)"
   render_set SYSTEMD_USER_GID "$(id -g)"
   render_set SYSTEMD_USER_RUNTIME_DIR "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-  render_set STACK_RUNTIME_DIR "${STACK_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/webservices-runtime}"
+  render_set STACK_RUNTIME_DIR "${STACK_RUNTIME_DIR:-${WEBSERVICES_RUNTIME_TARGET:-${XDG_STATE_HOME:-$HOME/.local/state}/webservices/runtime}}"
   if ! render_has PLAYWRIGHT_IGNORE_HTTPS_ERRORS || [ -z "$(render_get PLAYWRIGHT_IGNORE_HTTPS_ERRORS)" ]; then
     render_set PLAYWRIGHT_IGNORE_HTTPS_ERRORS "false"
   fi
+  derive_if_missing MODEL_CONTEXT_PROXY_AUTH_SECRET model-context-proxy-auth 64
   if ! render_has ADMIN_SSHA_PASSWORD || [ -z "$(render_get ADMIN_SSHA_PASSWORD)" ]; then
     render_set ADMIN_SSHA_PASSWORD "$(compute_ssha "$(render_get STACK_ADMIN_PASSWORD)")"
   fi
@@ -331,10 +277,15 @@ build_derived_render_values() {
   derive_if_missing VALKEY_MASTODON_PASSWORD valkey-mastodon 48
   derive_if_missing OAUTH2_PROXY_CLIENT_SECRET oauth2-proxy-client 48
   derive_if_missing OAUTH2_PROXY_COOKIE_SECRET oauth2-proxy-cookie 32
-  derive_if_missing BOOKSTACK_APP_KEY bookstack-app-key 48
+  derive_laravel_app_key_if_missing BOOKSTACK_APP_KEY bookstack-app-key
   derive_if_missing BOOKSTACK_OAUTH_SECRET bookstack-oauth 48
   derive_if_missing FORGEJO_OAUTH_SECRET forgejo-oauth 48
   derive_if_missing MASTODON_OAUTH_SECRET mastodon-oauth 48
+  derive_if_missing MASTODON_SECRET_KEY_BASE mastodon-secret-key-base 64
+  derive_if_missing MASTODON_OTP_SECRET mastodon-otp-secret 64
+  derive_if_missing MASTODON_ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY mastodon-active-record-deterministic 64
+  derive_if_missing MASTODON_ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT mastodon-active-record-salt 64
+  derive_if_missing MASTODON_ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY mastodon-active-record-primary 64
   derive_if_missing MATRIX_OAUTH_SECRET matrix-oauth 48
   derive_if_missing PLANKA_OAUTH_SECRET planka-oauth 48
   derive_if_missing TEST_RUNNER_OAUTH_SECRET test-runner-oauth 48
@@ -349,6 +300,13 @@ build_derived_render_values() {
   derive_if_missing ONLYOFFICE_JWT_SECRET onlyoffice-jwt 48
   derive_if_missing SEAFILE_EMAIL_PASSWORD seafile-email 48
   derive_if_missing SEAFILE_SECRET_KEY seafile-secret 48
+  derive_if_missing KOPIA_PASSWORD kopia-password 64
+  if ! render_has KOPIA_SERVER_USERNAME || [ -z "$(render_get KOPIA_SERVER_USERNAME)" ]; then
+    render_set KOPIA_SERVER_USERNAME "kopia"
+  fi
+  if ! render_has KOPIA_PROXY_AUTHORIZATION || [ -z "$(render_get KOPIA_PROXY_AUTHORIZATION)" ]; then
+    render_set KOPIA_PROXY_AUTHORIZATION "Basic $(printf '%s:%s' "$(render_get KOPIA_SERVER_USERNAME)" "$(render_get KOPIA_PASSWORD)" | base64 | tr -d '\n')"
+  fi
   derive_if_missing SYNAPSE_FORM_SECRET synapse-form 48
   derive_if_missing SYNAPSE_MACAROON_SECRET synapse-macaroon 48
   derive_if_missing SYNAPSE_REGISTRATION_SECRET synapse-registration 48
@@ -366,9 +324,6 @@ build_derived_render_values() {
   fi
   if ! render_has DONETICK_OAUTH_SECRET || [ -z "$(render_get DONETICK_OAUTH_SECRET)" ]; then
     render_set DONETICK_OAUTH_SECRET "$(derive_stack_secret donetick-oauth 48)"
-  fi
-  if ! render_has WORKSPACE_PROXY_AUTH_SECRET || [ -z "$(render_get WORKSPACE_PROXY_AUTH_SECRET)" ]; then
-    render_set WORKSPACE_PROXY_AUTH_SECRET "$(derive_stack_secret workspace-proxy-auth 64)"
   fi
   if ! render_has NATS_USER || [ -z "$(render_get NATS_USER)" ]; then
     render_set NATS_USER "webservices"
@@ -397,12 +352,6 @@ PY
     render_set MASTODON_API_TOKEN "$(derive_stack_secret mastodon-api-token 64)"
   fi
   render_set OPENSEARCH_BASIC_AUTH "$(printf 'admin:%s' "$(render_get OPENSEARCH_ADMIN_PASSWORD)" | base64 | tr -d '\n')"
-  if ! render_has WORKSPACE_AGENT_TOKEN_SECRET || [ -z "$(render_get WORKSPACE_AGENT_TOKEN_SECRET)" ]; then
-    render_set WORKSPACE_AGENT_TOKEN_SECRET "$(derive_stack_secret workspace-agent-token 64)"
-  fi
-  if ! render_has CHATGPT_CONNECTOR_TRUSTED_PROXY_SECRET || [ -z "$(render_get CHATGPT_CONNECTOR_TRUSTED_PROXY_SECRET)" ]; then
-    render_set CHATGPT_CONNECTOR_TRUSTED_PROXY_SECRET "$(derive_stack_secret chatgpt-connector-trusted-proxy 64)"
-  fi
   if ! render_has ONBOARDING_TRUSTED_PROXY_SECRET || [ -z "$(render_get ONBOARDING_TRUSTED_PROXY_SECRET)" ]; then
     render_set ONBOARDING_TRUSTED_PROXY_SECRET "$(derive_stack_secret onboarding-trusted-proxy 64)"
   fi
@@ -414,9 +363,6 @@ PY
   fi
   if ! render_has INFERENCE_CONTROLLER_API_TOKEN || [ -z "$(render_get INFERENCE_CONTROLLER_API_TOKEN)" ]; then
     render_set INFERENCE_CONTROLLER_API_TOKEN "$(derive_stack_secret inference-controller-api 64)"
-  fi
-  if ! render_has INFERENCE_GATEWAY_INTERNAL_API_TOKEN || [ -z "$(render_get INFERENCE_GATEWAY_INTERNAL_API_TOKEN)" ]; then
-    render_set INFERENCE_GATEWAY_INTERNAL_API_TOKEN "$(derive_stack_secret inference-gateway-internal 64)"
   fi
   if ! render_has GPU_ARBITER_API_TOKEN || [ -z "$(render_get GPU_ARBITER_API_TOKEN)" ]; then
     render_set GPU_ARBITER_API_TOKEN "$(derive_stack_secret gpu-arbiter-api 64)"

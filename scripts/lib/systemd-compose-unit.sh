@@ -83,6 +83,7 @@ require_cmd docker
 require_cmd jq
 
 compose() {
+  COMPOSE_IGNORE_ORPHANS="${COMPOSE_IGNORE_ORPHANS:-true}" \
   docker compose \
     --project-name "$PROJECT_NAME" \
     --project-directory "$PROJECT_DIRECTORY" \

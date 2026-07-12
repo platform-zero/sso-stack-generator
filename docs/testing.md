@@ -76,3 +76,21 @@ After deployment, the generated `verify.sh` script runs readiness checks and the
 blocking stack-contract suite. Full end-to-end and visual suites should be run
 against representative deployed environments before release decisions that
 touch authentication, routing, screenshots, or service startup behavior.
+
+The bundled `run-tests.sh` uses the managed test-runner container. Commands that
+look like metadata queries, including `list` and `plan`, may still build the
+test-runner image and start a short-lived container so suite discovery matches
+the materialized bundle.
+
+Full-suite orchestration should keep running independent suites after an
+individual suite fails, then report the complete status set at the end.
+Deployment-safe `all` runs should not include non-deployment source suites such
+as `source-unit` or recovery-only suites unless the target explicitly asks for
+them.
+
+Artifact collection is part of the test contract. A completed run should retain
+the wrapper log, per-suite reports, JSON/JUnit files, screenshots, and failure
+attachments such as `test-failed-*.png`, `video.webm`, traces, and
+`error-context.md`. If the top-level log reports a failure, copied per-suite
+JSON/JUnit artifacts must preserve that failure rather than showing a clean
+subgroup.

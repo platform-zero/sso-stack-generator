@@ -5,12 +5,21 @@ filegroup(
     srcs = glob(
         [
             "global.settings/**",
+            "gradle/**",
             "scripts/**",
             "stack.compose/**",
             "stack.config/**",
             "stack.containers/**",
+            "stack.js/**",
             "stack.kotlin/progression/src/main/resources/static/**",
             "stack.systemd/**",
+            ".bazelrc",
+            "BUILD.bazel",
+            "MODULE.bazel",
+            "build.gradle.kts",
+            "gradlew",
+            "gradlew.bat",
+            "settings.gradle.kts",
         ],
         exclude = [
             "**/__pycache__/**",

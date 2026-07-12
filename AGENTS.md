@@ -110,6 +110,12 @@ Rules:
 - keep secret-store selection in the site manifest, not in repo-local discovery logic
 - treat `~/webservices/runtime` as ephemeral runtime state backed by user tmpfs storage
 
+## Onboarding Contract
+
+- Membership is admin-created only. Do not ship public invite signup, self-service registration, or unauthenticated onboarding entrypoints.
+- `onboarding.$DOMAIN` exists only for already-created authenticated users who still have Keycloak required actions to complete.
+- Users marked with `onboarding_required` must be redirected to the authenticated onboarding page at `https://onboarding.$DOMAIN/`.
+
 ## Testing
 
 Preferred generator test entrypoints:

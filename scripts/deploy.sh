@@ -22,6 +22,10 @@ source "$SCRIPT_DIR/lib/systemd-user.sh"
 source "$SCRIPT_DIR/lib/components.sh"
 
 PROJECT_NAME="${PROJECT_NAME:-webservices}"
+: "${COMPOSE_PARALLEL_LIMIT:=2}"
+export COMPOSE_PARALLEL_LIMIT
+EXPECTED_DEPLOY_ROOT="${WEBSERVICES_DEPLOY_ROOT:-$HOME/webservices}"
+ALLOW_NONSTANDARD_DEPLOY_ROOT="${WEBSERVICES_ALLOW_NONSTANDARD_DEPLOY_ROOT:-0}"
 PREFLIGHT_ONLY=0
 PARTIAL_DEPLOY=0
 AUTO_PARTIAL_DEPLOY=0
@@ -125,10 +129,11 @@ set_phase() {
 }
 
 dump_deploy_diagnostics() {
-  local failed_units unit_name
+  local failed_units unit_name stack_targets=()
   deploy_log "diagnostics begin (phase=$CURRENT_PHASE)"
-  deploy_log "systemd target status"
-  user_systemd_show_status webservices.target >&2
+  mapfile -t stack_targets < <(user_systemd_default_stack_targets "$BUNDLE_ROOT/stack.systemd/graph.json")
+  deploy_log "systemd stack target status"
+  user_systemd_show_status "${stack_targets[@]}" >&2
 
   deploy_log "systemd dependency tree"
   user_systemd_list_dependencies webservices.target >&2
@@ -173,6 +178,98 @@ on_deploy_error() {
 
 trap 'on_deploy_error' ERR
 
+canonicalize_existing_or_parent() {
+  local path="$1"
+  local parent basename
+  if [ -e "$path" ]; then
+    cd "$path" && pwd -P
+    return
+  fi
+  parent="$(dirname "$path")"
+  basename="$(basename "$path")"
+  mkdir -p "$parent"
+  printf '%s/%s\n' "$(cd "$parent" && pwd -P)" "$basename"
+}
+
+validate_deploy_root() {
+  local expected_root
+  expected_root="$(canonicalize_existing_or_parent "$EXPECTED_DEPLOY_ROOT")"
+  if [ "$DEPLOY_ROOT" = "$expected_root" ]; then
+    return 0
+  fi
+  if [ "$ALLOW_NONSTANDARD_DEPLOY_ROOT" = "1" ]; then
+    deploy_log "nonstandard deploy root allowed: actual=$DEPLOY_ROOT expected=$expected_root"
+    return 0
+  fi
+
+  cat >&2 <<EOF_DEPLOY_ROOT
+[webservices-deploy] This bundle is running from:
+  $DEPLOY_ROOT
+
+[webservices-deploy] The generated systemd units are rendered for:
+  $expected_root
+
+[webservices-deploy] Stage the bundle before deploying:
+  ./install.sh --target "$expected_root"
+  cd "$expected_root" && ./deploy.sh
+
+[webservices-deploy] Set WEBSERVICES_ALLOW_NONSTANDARD_DEPLOY_ROOT=1 only when the systemd templates were intentionally rendered for another root.
+EOF_DEPLOY_ROOT
+  die "deploy root does not match rendered systemd unit root"
+}
+
+component_selected() {
+  local component="$1"
+  jq -e --arg component "$component" '(.components // []) | index($component) != null' \
+    "$BUNDLE_ROOT/site/components.lock.json" >/dev/null 2>&1
+}
+
+print_nvidia_toolkit_help() {
+  cat >&2 <<'EOF_NVIDIA_HELP'
+[webservices-deploy] GPU inference requires the NVIDIA Container Toolkit. Install and configure it with:
+  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+    | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+
+  curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+    | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+    | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null
+
+  sudo apt-get update
+  sudo apt-get install -y nvidia-container-toolkit
+  sudo nvidia-ctk runtime configure --runtime=docker
+  sudo systemctl restart docker
+EOF_NVIDIA_HELP
+}
+
+docker_has_nvidia_runtime() {
+  docker info --format '{{json .Runtimes}}' 2>/dev/null | jq -e 'has("nvidia")' >/dev/null 2>&1
+}
+
+check_gpu_preflight() {
+  if [ "${DEPLOY_SKIP_GPU_PREFLIGHT:-0}" = "1" ]; then
+    deploy_log "GPU preflight skipped by DEPLOY_SKIP_GPU_PREFLIGHT=1"
+    return 0
+  fi
+  component_selected inference || return 0
+
+  command -v nvidia-smi >/dev/null 2>&1 || {
+    print_nvidia_toolkit_help
+    die "selected inference component requires nvidia-smi on the deployment host"
+  }
+  nvidia-smi >/dev/null 2>&1 || {
+    print_nvidia_toolkit_help
+    die "nvidia-smi failed on the deployment host"
+  }
+  docker_has_nvidia_runtime || {
+    print_nvidia_toolkit_help
+    die "Docker is missing the nvidia runtime required by --gpus services"
+  }
+
+  if [ "${DEPLOY_GPU_SMOKE_TEST:-0}" = "1" ]; then
+    docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi >/dev/null
+  fi
+}
+
 preflight() {
   require_cmd docker
   require_cmd jq
@@ -180,11 +277,13 @@ preflight() {
   require_cmd sops
   require_cmd systemctl
   docker compose version >/dev/null 2>&1 || die "docker compose plugin is unavailable"
+  validate_deploy_root
   resolve_site_manifest_file "$site_manifest_path" >/dev/null
+  check_gpu_preflight
   ensure_runtime_links "$DEPLOY_ROOT" >/dev/null
   mkdir -p "$DEPLOY_ROOT/runtime/progression"
   ensure_user_systemd_env
-  deploy_log "preflight ok (bundle=$BUNDLE_ROOT siteManifestPath=$site_manifest_path)"
+  deploy_log "preflight ok (bundle=$BUNDLE_ROOT siteManifestPath=$site_manifest_path composeParallelLimit=$COMPOSE_PARALLEL_LIMIT)"
 }
 
 model_prep_services() {
@@ -338,7 +437,7 @@ path_requires_full_deploy() {
   local path="$1"
 
   case "$path" in
-    .dockerignore|global.settings/*|site/manifest.json|stack.systemd/*|systemd-user/infra/*|systemd-user/*.target)
+    .dockerignore|global.settings/*|site/manifest.json|stack.systemd/*|systemd-user/infra/*)
       return 0
       ;;
   esac
@@ -349,7 +448,7 @@ path_is_deploy_state_only() {
   local path="$1"
 
   case "$path" in
-    docker-compose.yml|site/components.lock.json|scripts/*|systemd-user/compose/*.stopping)
+    docker-compose.yml|site/components.lock.json|scripts/*|systemd-user/*.target|systemd-user/compose/*.stopping|stack.compose/test-runners.yml|stack.config/test-runner/*|stack.containers/test-runner/*|stack.kotlin/test-runner/*)
       return 0
       ;;
   esac
@@ -379,7 +478,7 @@ services_for_runtime_config_path() {
   config_path="${config_path#./}"
   jq -r --arg config "$config_path" '
     def rel_config_source:
-      (.source // "")
+      (if type == "object" then (.source // "") else "" end)
       | sub("^.*runtime/configs/?"; "")
       | sub("^\\./"; "");
 
@@ -387,7 +486,8 @@ services_for_runtime_config_path() {
     | to_entries[]
     | select(
         any((.value.volumes // [])[]?;
-          (.type == "bind")
+          (type == "object")
+          and (.type == "bind")
           and (((.source // "") | test("(^|/)runtime/configs($|/)")))
           and (
             (rel_config_source == "")
@@ -1129,8 +1229,21 @@ wait_for_target_reconcile() {
     target_state="$(user_systemctl is-active webservices.target 2>/dev/null || true)"
 
     if [ "${#failed_units[@]}" -gt 0 ]; then
-      deploy_log "systemd reconcile failed units: $(join_array_limited "$SYSTEMD_PROGRESS_MAX_ITEMS" "${failed_units[@]}")"
-      return 1
+      local failed_unit has_restart_job filtered_failed=()
+      for failed_unit in "${failed_units[@]}"; do
+        has_restart_job=0
+        for job in "${jobs[@]}"; do
+          if [ "${job%%:*}" = "$failed_unit" ]; then
+            has_restart_job=1
+            break
+          fi
+        done
+        [ "$has_restart_job" = "1" ] || filtered_failed+=("$failed_unit")
+      done
+      if [ "${#filtered_failed[@]}" -gt 0 ]; then
+        deploy_log "systemd reconcile failed units: $(join_array_limited "$SYSTEMD_PROGRESS_MAX_ITEMS" "${filtered_failed[@]}")"
+        return 1
+      fi
     fi
 
     if [ "${#jobs[@]}" -eq 0 ]; then
@@ -1169,13 +1282,7 @@ wait_for_target_reconcile() {
 reconcile_target() {
   local graph_file aux_targets=() excluded_aux_targets=() main_action aux_action
   graph_file="$BUNDLE_ROOT/stack.systemd/graph.json"
-  mapfile -t aux_targets < <(
-    jq -r '
-      (.defaultTarget.wantsTargets // []) as $wanted
-      | [(.auxiliaryTargets // [] | .[]?.name | . as $target | select($target != null and ($wanted | index($target)) != null))]
-      | .[]
-    ' "$graph_file"
-  )
+  mapfile -t aux_targets < <(default_auxiliary_targets_from_graph "$graph_file")
   mapfile -t excluded_aux_targets < <(
     jq -r '
       (.defaultTarget.wantsTargets // []) as $wanted
@@ -1244,7 +1351,7 @@ restart_post_reconcile_units() {
 
 reload_deploy_sensitive_units() {
   local unit_name units=()
-  local configured_units="${DEPLOY_RELOAD_UNITS:-webservices-caddy.service webservices-onboarding.service webservices-synapse.service webservices-forgejo.service webservices-homeassistant.service webservices-sogo.service webservices-jellyfin.service webservices-donetick.service webservices-erpnext-backend.service webservices-erpnext-websocket.service webservices-erpnext-queue-short.service webservices-erpnext-queue-long.service webservices-erpnext-scheduler.service webservices-erpnext.service webservices-workspace-provisioner.service webservices-chatgpt-connector.service}"
+  local configured_units="${DEPLOY_RELOAD_UNITS:-webservices-caddy.service webservices-onboarding.service webservices-synapse.service webservices-forgejo.service webservices-homeassistant.service webservices-sogo.service webservices-jellyfin.service webservices-donetick.service webservices-erpnext-backend.service webservices-erpnext-websocket.service webservices-erpnext-queue-short.service webservices-erpnext-queue-long.service webservices-erpnext-scheduler.service webservices-erpnext.service}"
 
   if [ "${DEPLOY_SKIP_SENSITIVE_RELOADS:-1}" = "1" ]; then
     deploy_log "skipping deploy-sensitive reloads; target reconcile will handle final state"
@@ -1304,7 +1411,8 @@ reload_runtime_config_units() {
           | to_entries[]
           | select(
               any((.value.volumes // [])[]?;
-                (.type == "bind")
+                (type == "object")
+                and (.type == "bind")
                 and (((.source // "") | test("(^|/)runtime/configs/")))
               )
             )
@@ -1356,7 +1464,7 @@ reload_runtime_config_units() {
 
 recreate_env_sensitive_containers() {
   local container_name
-  local configured_containers="${DEPLOY_RECREATE_ENV_CONTAINERS:-opensearch nats airflow-init airflow-webserver airflow-scheduler ingestion-runner embedding-gpu keycloak bookstack bookstack-procedural-docs onlyoffice mailserver seafile workspace-provisioner chatgpt-connector}"
+  local configured_containers="${DEPLOY_RECREATE_ENV_CONTAINERS:-opensearch nats airflow-init airflow-webserver airflow-scheduler ingestion-runner embedding-gpu keycloak bookstack bookstack-procedural-docs onlyoffice mailserver seafile}"
 
   for container_name in $configured_containers; do
     if docker container inspect "$container_name" >/dev/null 2>&1; then
@@ -1426,6 +1534,60 @@ refresh_infra_units() {
     --env-file "$DEPLOY_ROOT/runtime/stack.env"
 }
 
+run_deploy_audit() {
+  if [ ! -x "$SCRIPT_DIR/deploy/deploy-audit.py" ]; then
+    deploy_log "deploy audit helper unavailable in this bundle; skipping deploy audit command: $*"
+    return 0
+  fi
+  "$SCRIPT_DIR/deploy/deploy-audit.py" "$@"
+}
+
+validate_runtime_secrets() {
+  run_deploy_audit validate-secrets \
+    --bundle-root "$BUNDLE_ROOT" \
+    --env-file "$DEPLOY_ROOT/runtime/stack.env" \
+    --project-name "$PROJECT_NAME"
+}
+
+write_storage_report() {
+  run_deploy_audit storage-report \
+    --bundle-root "$BUNDLE_ROOT" \
+    --env-file "$DEPLOY_ROOT/runtime/stack.env" \
+    --project-name "$PROJECT_NAME" \
+    --output "$BUNDLE_ROOT/reports/storage-audit.json"
+}
+
+cleanup_optional_orphan_containers() {
+  run_deploy_audit cleanup-optional-orphans \
+    --bundle-root "$BUNDLE_ROOT" \
+    --env-file "$DEPLOY_ROOT/runtime/stack.env" \
+    --project-name "$PROJECT_NAME"
+}
+
+write_module_deployment_report() {
+  run_deploy_audit module-report \
+    --bundle-root "$BUNDLE_ROOT" \
+    --env-file "$DEPLOY_ROOT/runtime/stack.env" \
+    --project-name "$PROJECT_NAME" \
+    --output "$BUNDLE_ROOT/reports/module-deployment.json" \
+    --strict
+}
+
+validate_qdrant_schema() {
+  run_deploy_audit qdrant-schema \
+    --env-file "$DEPLOY_ROOT/runtime/stack.env" \
+    --project-name "$PROJECT_NAME"
+}
+
+wait_for_final_readiness() {
+  "$SCRIPT_DIR/lib/wait-ready.sh" \
+    --bundle-dir "$BUNDLE_ROOT" \
+    --runtime-env-file "$DEPLOY_ROOT/runtime/stack.env" \
+    --project-name "$PROJECT_NAME" \
+    --timeout-seconds "${DEPLOY_FINAL_READINESS_TIMEOUT_SECONDS:-900}" \
+    --interval-seconds "${DEPLOY_FINAL_READINESS_INTERVAL_SECONDS:-5}"
+}
+
 preflight
 if [ "$PREFLIGHT_ONLY" = "1" ]; then
   set_phase "preflight-only"
@@ -1435,6 +1597,8 @@ fi
 set_phase "render-runtime"
 ensure_runtime_links "$DEPLOY_ROOT" >/dev/null
 "$SCRIPT_DIR/deploy/render-runtime.sh" --bundle-root "$BUNDLE_ROOT" --deploy-root "$DEPLOY_ROOT" --site-manifest "$site_manifest_path"
+validate_runtime_secrets
+write_storage_report
 if runtime_config_changes="$(deploy_state_changed_runtime_config_paths "$DEPLOY_ROOT")"; then
   RUNTIME_CONFIG_CHANGE_STATUS="known"
   read_lines_into_array "$runtime_config_changes" RUNTIME_CONFIG_CHANGED_PATHS
@@ -1461,6 +1625,11 @@ if [ "$PLAN_ONLY" = "1" ]; then
   exit 0
 fi
 if [ "$NOOP_DEPLOY" = "1" ]; then
+  set_phase "final-readiness"
+  wait_for_final_readiness
+  validate_qdrant_schema
+  write_module_deployment_report
+
   set_phase "complete"
   deploy_state_write_global_signature "$BUNDLE_ROOT" "$DEPLOY_ROOT"
   deploy_state_write_file_manifest "$BUNDLE_ROOT" "$DEPLOY_ROOT"
@@ -1500,6 +1669,7 @@ if [ "$PARTIAL_DEPLOY" = "1" ]; then
 else
   cleanup_excluded_service_containers
   recreate_env_sensitive_containers
+  cleanup_optional_orphan_containers
 fi
 
 set_phase "bootstrap-scaffolds"
@@ -1575,6 +1745,11 @@ else
   restart_post_reconcile_units
 fi
 reload_deploy_reconcile_units
+
+set_phase "final-readiness"
+wait_for_final_readiness
+validate_qdrant_schema
+write_module_deployment_report
 
 set_phase "complete"
 deploy_state_write_global_signature "$BUNDLE_ROOT" "$DEPLOY_ROOT"

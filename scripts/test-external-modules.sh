@@ -202,6 +202,10 @@ services:
   app-test:
     image: caddy:2.11.3
 EOF_V2_APP_COMPOSE
+mkdir -p "$app_repo/stack.config/app-test"
+cat > "$app_repo/stack.config/app-test/stale.yml" <<'EOF_V2_APP_STALE'
+stale: true
+EOF_V2_APP_STALE
 cat > "$app_repo/stack.module.json" <<'EOF_V2_APP'
 {
   "schemaVersion": 1,
@@ -249,7 +253,8 @@ cat > "$manifest_repo/modules.json" <<EOF_V2_MODULES
       "repo": "app-test-stack-module",
       "git": "$app_repo",
       "ref": "main",
-      "commit": "$app_commit"
+      "commit": "$app_commit",
+      "overrides": ["stack.compose/app-test.yml"]
     }
   ]
 }
@@ -258,10 +263,92 @@ v2_manifest_commit="$(git_commit_all "$manifest_repo" "Add v2 module lock")"
 jq --arg commit "$v2_manifest_commit" '.moduleManifestCommit = $commit' "$site_root/.webservices-generator.json" > "$site_root/pin.tmp"
 mv "$site_root/pin.tmp" "$site_root/.webservices-generator.json"
 external_modules_resolve "$site_root/manifest.json"
+trap - ERR
+set +e
+( "$ROOT_DIR/scripts/verify-module-lock-overrides.sh" "$site_root/manifest.json" ) >/dev/null 2>&1
+undeclared_surface_status=$?
+set -e
+trap 'status=$?; printf "[external-modules-test] failed at line %s: %s (exit %s)\n" "$LINENO" "$BASH_COMMAND" "$status" >&2' ERR
+if [ "$undeclared_surface_status" -eq 0 ]; then
+  printf '[external-modules-test] undeclared v2 deploy-surface file was accepted\n' >&2
+  exit 1
+fi
 assert_file "$EXTERNAL_MODULES_MATERIALIZED_DIR/stack.config/components.external/foundation-test.json"
 assert_file "$EXTERNAL_MODULES_MATERIALIZED_DIR/stack.compose/app-test.yml"
 jq -e '.schemaVersion == 2 and (.modules | map(.id)) == ["foundation-test", "app-test"]' \
   "$EXTERNAL_MODULES_METADATA_FILE" >/dev/null
+
+git -C "$app_repo" rm stack.config/app-test/stale.yml >/dev/null
+app_clean_commit="$(git_commit_all "$app_repo" "Remove undeclared app v2 module surface")"
+
+cat > "$manifest_repo/modules.json" <<EOF_V2_MODULES_CLEAN
+{
+  "schemaVersion": 2,
+  "roots": ["app-test"],
+  "modules": [
+    {
+      "id": "foundation-test",
+      "repo": "foundation-test-stack-module",
+      "git": "$foundation_repo",
+      "ref": "main",
+      "commit": "$foundation_commit",
+      "overrides": ["stack.config/components.json"]
+    },
+    {
+      "id": "app-test",
+      "repo": "app-test-stack-module",
+      "git": "$app_repo",
+      "ref": "main",
+      "commit": "$app_clean_commit",
+      "overrides": ["stack.compose/app-test.yml"]
+    }
+  ]
+}
+EOF_V2_MODULES_CLEAN
+v2_clean_manifest_commit="$(git_commit_all "$manifest_repo" "Add clean v2 module lock")"
+jq --arg commit "$v2_clean_manifest_commit" '.moduleManifestCommit = $commit' "$site_root/.webservices-generator.json" > "$site_root/pin.tmp"
+mv "$site_root/pin.tmp" "$site_root/.webservices-generator.json"
+external_modules_resolve "$site_root/manifest.json"
+"$ROOT_DIR/scripts/verify-module-lock-overrides.sh" "$site_root/manifest.json"
+
+cat > "$manifest_repo/modules.json" <<EOF_V2_STALE_OVERRIDES
+{
+  "schemaVersion": 2,
+  "roots": ["app-test"],
+  "modules": [
+    {
+      "id": "foundation-test",
+      "repo": "foundation-test-stack-module",
+      "git": "$foundation_repo",
+      "ref": "main",
+      "commit": "$foundation_commit",
+      "overrides": ["stack.config/components.json"]
+    },
+    {
+      "id": "app-test",
+      "repo": "app-test-stack-module",
+      "git": "$app_repo",
+      "ref": "main",
+      "commit": "$app_clean_commit",
+      "overrides": ["stack.compose/missing.yml"]
+    }
+  ]
+}
+EOF_V2_STALE_OVERRIDES
+stale_override_commit="$(git_commit_all "$manifest_repo" "Add stale v2 override lock")"
+jq --arg commit "$stale_override_commit" '.moduleManifestCommit = $commit' "$site_root/.webservices-generator.json" > "$site_root/pin.tmp"
+mv "$site_root/pin.tmp" "$site_root/.webservices-generator.json"
+external_modules_resolve "$site_root/manifest.json"
+trap - ERR
+set +e
+( "$ROOT_DIR/scripts/verify-module-lock-overrides.sh" "$site_root/manifest.json" ) >/dev/null 2>&1
+stale_override_status=$?
+set -e
+trap 'status=$?; printf "[external-modules-test] failed at line %s: %s (exit %s)\n" "$LINENO" "$BASH_COMMAND" "$status" >&2' ERR
+if [ "$stale_override_status" -eq 0 ]; then
+  printf '[external-modules-test] stale v2 override was accepted\n' >&2
+  exit 1
+fi
 
 cat > "$manifest_repo/modules.json" <<EOF_V2_BAD_NAME
 {

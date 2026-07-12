@@ -69,10 +69,11 @@ set_phase() {
 }
 
 dump_verify_diagnostics() {
-  local failed_user_units unit_name
+  local failed_user_units unit_name stack_targets=()
   verify_log "diagnostics begin (phase=$CURRENT_PHASE)"
-  verify_log "target status"
-  user_systemd_show_status webservices.target >&2
+  mapfile -t stack_targets < <(user_systemd_default_stack_targets "$BUNDLE_ROOT/stack.systemd/graph.json")
+  verify_log "stack target status"
+  user_systemd_show_status "${stack_targets[@]}" >&2
 
   verify_log "dependency tree"
   user_systemd_list_dependencies webservices.target >&2
@@ -167,11 +168,23 @@ filtered_failed_user_units() {
   done
 }
 
+inactive_default_stack_targets() {
+  local stack_targets=()
+  local unit_name
+  mapfile -t stack_targets < <(user_systemd_default_stack_targets "$BUNDLE_ROOT/stack.systemd/graph.json")
+  for unit_name in "${stack_targets[@]}"; do
+    if ! user_systemctl is-active --quiet "$unit_name"; then
+      printf '%s\n' "$unit_name"
+    fi
+  done
+}
+
 set_phase "pre-readiness"
 verify_log "running readiness gate"
-if ! user_systemctl is-active --quiet webservices.target; then
-  user_systemctl --no-pager --full status webservices.target || true
-  die "webservices.target is not active under systemd --user"
+mapfile -t inactive_stack_targets < <(inactive_default_stack_targets)
+if [ "${#inactive_stack_targets[@]}" -gt 0 ]; then
+  user_systemctl --no-pager --full status "${inactive_stack_targets[@]}" || true
+  die "default stack targets are not active under systemd --user: ${inactive_stack_targets[*]}"
 fi
 
 mapfile -t failed_user_units < <(filtered_failed_user_units)

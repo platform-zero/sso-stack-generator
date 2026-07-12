@@ -105,10 +105,21 @@ current_hostname="$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf 'u
 
 command -v docker >/dev/null 2>&1 || die "missing required command: docker"
 command -v getent >/dev/null 2>&1 || die "missing required command: getent"
+command -v jq >/dev/null 2>&1 || die "missing required command: jq"
 
 stack_user_home="$(getent passwd "$STACK_USER" | cut -d: -f6)"
 [ -n "$stack_user_home" ] || die "unable to resolve home directory for user $STACK_USER"
 STACK_DEPLOY_DIR="${STACK_DEPLOY_DIR:-$stack_user_home/webservices}"
+
+default_auxiliary_targets() {
+  local graph_file="$STACK_DEPLOY_DIR/build/stack.systemd/graph.json"
+  if [ -f "$graph_file" ]; then
+    jq -r '
+      (.defaultTarget.wantsTargets // []) as $wanted
+      | (.auxiliaryTargets // [] | .[]?.name | . as $target | select($target != null and ($wanted | index($target)) != null))
+    ' "$graph_file"
+  fi
+}
 
 print_docker_targets() {
   printf 'Stack purge target:\n'
@@ -308,6 +319,10 @@ purge_labware_runtime
 
 log "stopping systemd --user webservices target for $STACK_USER if present"
 if [ -S "/run/user/$(id -u "$STACK_USER")/bus" ]; then
+  mapfile -t auxiliary_targets < <(default_auxiliary_targets)
+  if [ "${#auxiliary_targets[@]}" -gt 0 ]; then
+    run_user_systemctl stop "${auxiliary_targets[@]}" >/dev/null 2>&1 || true
+  fi
   run_user_systemctl stop webservices.target >/dev/null 2>&1 || true
   run_user_systemctl disable webservices.target >/dev/null 2>&1 || true
   run_user_systemctl reset-failed >/dev/null 2>&1 || true

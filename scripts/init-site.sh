@@ -246,12 +246,13 @@ runtime:
   caddy_tls_mode: "$tls_mode"
 
 storage:
-  vector_dbs: "/mnt/vector"
-  pg_ssd_root: "/mnt/pg_ssd"
-  nocow_db_dir: "/mnt/raid/docker/nocow"
+  volume_root: "/mnt/stack/volumes"
+  vector_dbs: "/mnt/stack/vector-dbs"
+  pg_ssd_root: "/mnt/stack/pg-ssd"
   media_writer_uid: "1000"
   media_writer_gid: "1000"
   custom:
+    qbittorrent_data: "/mnt/media/qbittorrent"
     seafile_media: "/mnt/media/seafile-media"
     jellyfin_media: "/mnt/media/jellyfin-media"
 

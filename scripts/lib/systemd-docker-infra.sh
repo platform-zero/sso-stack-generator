@@ -159,7 +159,7 @@ ensure_networks() {
 
 ensure_volumes() {
   local volume_name driver desired_opts_json actual_opts_json actual_driver
-  local desired_opts_rows_json desired_opts_json_raw opt_key opt_value opt_resolved
+  local desired_opts_rows_json desired_opts_json_raw opt_key opt_value opt_resolved bind_device
   jq -c '.[]' "$CONFIG_FILE" | while IFS= read -r row; do
     volume_name="$(printf '%s\n' "$row" | jq -r '.name')"
     driver="$(printf '%s\n' "$row" | jq -r '.driver // "local"')"
@@ -187,6 +187,12 @@ ensure_volumes() {
       fi
       printf '[webservices-infra] volume matches desired state: %s\n' "$volume_name" >&2
       continue
+    fi
+
+    bind_device="$(printf '%s\n' "$desired_opts_json_raw" | jq -r 'select(.type == "bind" and .o == "bind" and (.device // "") != "") | .device // empty')"
+    if [ -n "$bind_device" ]; then
+      printf '[webservices-infra] ensuring bind volume device directory: %s\n' "$bind_device" >&2
+      mkdir -p "$bind_device"
     fi
 
     cmd=(docker volume create --driver "$driver")

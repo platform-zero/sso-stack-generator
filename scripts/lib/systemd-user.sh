@@ -74,3 +74,23 @@ user_systemd_list_matching_jobs() {
   ensure_user_systemd_env
   systemctl --user list-jobs --all --no-pager 2>/dev/null | awk 'NR == 1 || /^[-[:space:]]*$/ || /^([0-9]+[[:space:]]+webservices[-.])/ {print}'
 }
+
+default_auxiliary_targets_from_graph() {
+  local graph_file="$1"
+  jq -r '
+    (.defaultTarget.wantsTargets // []) as $wanted
+    | [(.auxiliaryTargets // [] | .[]?.name | . as $target | select($target != null and ($wanted | index($target)) != null))]
+    | .[]
+  ' "$graph_file"
+}
+
+default_stack_targets_from_graph() {
+  local graph_file="$1"
+  jq -r '.defaultTarget.name // "webservices.target"' "$graph_file"
+  default_auxiliary_targets_from_graph "$graph_file"
+}
+
+user_systemd_default_stack_targets() {
+  local graph_file="$1"
+  default_stack_targets_from_graph "$graph_file"
+}

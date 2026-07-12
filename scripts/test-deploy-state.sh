@@ -16,6 +16,10 @@ mkdir -p \
   "$bundle_root/site" \
   "$bundle_root/stack.config/caddy" \
   "$bundle_root/stack.compose" \
+  "$bundle_root/stack.containers/test-runner/playwright-tests/node_modules/pkg" \
+  "$bundle_root/stack.containers/test-runner/playwright-tests/test-results/run" \
+  "$bundle_root/stack.containers/test-runner/playwright-tests/playwright-report" \
+  "$bundle_root/stack.containers/test-runner/playwright-tests/.auth" \
   "$bundle_root/stack.systemd" \
   "$bundle_root/systemd-user/infra" \
   "$deploy_root/runtime/configs/caddy" \
@@ -49,6 +53,18 @@ example.test {
   respond "ok"
 }
 EOF_CADDY
+cat > "$bundle_root/stack.containers/test-runner/playwright-tests/node_modules/pkg/index.js" <<'EOF_NODE'
+module.exports = "ok";
+EOF_NODE
+cat > "$bundle_root/stack.containers/test-runner/playwright-tests/test-results/run/output.txt" <<'EOF_TEST'
+before
+EOF_TEST
+cat > "$bundle_root/stack.containers/test-runner/playwright-tests/playwright-report/index.html" <<'EOF_REPORT'
+<html>before</html>
+EOF_REPORT
+cat > "$bundle_root/stack.containers/test-runner/playwright-tests/.auth/state.json" <<'EOF_AUTH'
+{"state":"before"}
+EOF_AUTH
 cat > "$deploy_root/runtime/configs/caddy/Caddyfile" <<'EOF_CADDY'
 example.test {
   respond "ok"
@@ -68,6 +84,25 @@ fi
 
 if [ -n "$(deploy_state_changed_file_paths "$bundle_root" "$deploy_root")" ]; then
   printf '[deploy-state-test] unchanged bundle manifest reported changed paths\n' >&2
+  exit 1
+fi
+
+cat > "$bundle_root/stack.containers/test-runner/playwright-tests/node_modules/pkg/index.js" <<'EOF_NODE'
+module.exports = "changed";
+EOF_NODE
+cat > "$bundle_root/stack.containers/test-runner/playwright-tests/test-results/run/output.txt" <<'EOF_TEST'
+after
+EOF_TEST
+cat > "$bundle_root/stack.containers/test-runner/playwright-tests/playwright-report/index.html" <<'EOF_REPORT'
+<html>after</html>
+EOF_REPORT
+cat > "$bundle_root/stack.containers/test-runner/playwright-tests/.auth/state.json" <<'EOF_AUTH'
+{"state":"after"}
+EOF_AUTH
+
+if [ -n "$(deploy_state_changed_file_paths "$bundle_root" "$deploy_root")" ]; then
+  printf '[deploy-state-test] ignored playwright artifacts affected bundle change detection\n' >&2
+  deploy_state_changed_file_paths "$bundle_root" "$deploy_root" >&2 || true
   exit 1
 fi
 
