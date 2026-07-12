@@ -57,7 +57,8 @@ state, and writes `bundle.tar`, `bundle.tar.sha256`, and `bundle.json`.
 
 ```bash
 ./site-build.sh --site-lock /path/to/site.lock.json --output /tmp/site-release
-./scripts/site/deploy-site.sh --site-lock /path/to/site.lock.json --bundle-dir /tmp/site-release
+./scripts/site/deploy-site.sh --site-lock /path/to/site.lock.json --bundle-dir /tmp/site-release \
+  --readiness-command './verify.sh'
 ```
 
 The deploy command uploads only the completed bundle to `gerald@192.168.0.11`.

@@ -9,6 +9,7 @@ SECRET_RENDER="${WEBSERVICES_SECRET_RENDER_COMMAND:-}"
 usage() { echo "Usage: $0 --incoming <directory> --site-lock-sha256 <hash> [--readiness-command <command>]" >&2; }
 while [ "$#" -gt 0 ]; do case "$1" in --incoming) INCOMING="$2"; shift;; --site-lock-sha256) EXPECTED_LOCK="$2"; shift;; --readiness-command) READINESS="$2"; shift;; -h|--help) usage; exit 0;; *) usage; exit 2;; esac; shift; done
 [ -n "$INCOMING" ] && [ -n "$EXPECTED_LOCK" ] || { usage; exit 2; }
+[ -n "$READINESS" ] || { echo 'a readiness command is required for activation' >&2; exit 2; }
 INCOMING="$(realpath "$INCOMING")"; mkdir -p "$ROOT/releases"
 [ -f "$INCOMING/bundle.tar" ] && [ -f "$INCOMING/bundle.tar.sha256" ] && [ -f "$INCOMING/bundle.json" ] || { echo 'incomplete bundle' >&2; exit 1; }
 (cd "$INCOMING" && sha256sum -c bundle.tar.sha256)
@@ -35,7 +36,7 @@ PY
 # Secrets are rendered only into this release after artifact verification. The
 # command is host-provided so no plaintext secret source enters the bundle.
 if [ -n "$SECRET_RENDER" ]; then (cd "$release" && sh -c "$SECRET_RENDER"); fi
-if [ -n "$READINESS" ]; then (cd "$release" && sh -c "$READINESS"); fi
+(cd "$release" && sh -c "$READINESS")
 previous=""; [ -L "$ROOT/current" ] && previous="$(basename "$(readlink "$ROOT/current")")"
 cp "$INCOMING/bundle.json" "$release/bundle.json"
 printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$release/verified-release"

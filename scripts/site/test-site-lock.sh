@@ -34,7 +34,7 @@ WEBSERVICES_RELEASE_ROOT="$release_root" "$ROOT/scripts/site/activate-release.sh
 [ -L "$release_root/current" ]
 [ -f "$(realpath "$release_root/current")/verified-release" ]
 first="$(basename "$(realpath "$release_root/current")")"
-WEBSERVICES_RELEASE_ROOT="$release_root" "$ROOT/scripts/site/activate-release.sh" --incoming "$tmp/b" --site-lock-sha256 "$(sha256sum "$tmp/site.lock.json" | awk '{print $1}')" >/dev/null
+WEBSERVICES_RELEASE_ROOT="$release_root" "$ROOT/scripts/site/activate-release.sh" --incoming "$tmp/b" --site-lock-sha256 "$(sha256sum "$tmp/site.lock.json" | awk '{print $1}')" --readiness-command 'test -f resolved-modules.json' >/dev/null
 WEBSERVICES_RELEASE_ROOT="$release_root" "$ROOT/scripts/site/rollback-release.sh" >/dev/null
 [ "$(basename "$(realpath "$release_root/current")")" = "$first" ]
 cp -a "$tmp/a" "$tmp/tampered"; printf x >> "$tmp/tampered/bundle.tar"
