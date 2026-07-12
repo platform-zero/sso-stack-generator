@@ -656,7 +656,28 @@ def render_preflight_lines(runtime_env_file: str, compose_file: str, project_dir
     return unit_lines, service_lines
 
 
-def render_job_unit(description: str, exec_start: str, exec_stop: str, requires: List[str], after: List[str], part_of_targets: List[str], unit_preflight_lines: List[str], service_preflight_lines: List[str], on_failure_unit: str) -> str:
+def service_systemd_timeout_start_sec(service_config: dict, default: int) -> int:
+    value = None
+    extension = service_config.get("x-webservices-systemd")
+    if isinstance(extension, dict):
+        value = extension.get("timeoutStartSec")
+    labels = labels_as_list(service_config.get("labels") or [])
+    for label in labels:
+        key, separator, raw_value = label.partition("=")
+        if separator and key == "org.webservices.systemd.timeout-start-sec":
+            value = raw_value
+    if value is None:
+        return default
+    try:
+        timeout = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"systemd timeoutStartSec must be an integer: {value!r}") from exc
+    if timeout < 1 or timeout > 86400:
+        raise ValueError(f"systemd timeoutStartSec must be between 1 and 86400 seconds: {timeout}")
+    return timeout
+
+
+def render_job_unit(description: str, exec_start: str, exec_stop: str, requires: List[str], after: List[str], part_of_targets: List[str], unit_preflight_lines: List[str], service_preflight_lines: List[str], on_failure_unit: str, timeout_start_sec: int = 1800) -> str:
     lines = ["[Unit]", f"Description={description}", f"OnFailure={on_failure_unit}"]
     for line in unit_preflight_lines:
         lines.append(line)
@@ -672,7 +693,7 @@ def render_job_unit(description: str, exec_start: str, exec_stop: str, requires:
         "Type=oneshot",
         "NoNewPrivileges=yes",
         "RemainAfterExit=yes",
-        "TimeoutStartSec=1800",
+        f"TimeoutStartSec={timeout_start_sec}",
     ])
     for line in service_preflight_lines:
         lines.append(line)
@@ -987,6 +1008,7 @@ def main() -> int:
 
         if domain.is_job:
             service_name = domain.services[0]
+            timeout_start_sec = service_systemd_timeout_start_sec(compose_services[service_name], 1800)
             unit_text = render_job_unit(
                 f"Web Services job domain ({domain.name})",
                 shell_join([
@@ -1014,6 +1036,7 @@ def main() -> int:
                 unit_preflight_lines,
                 service_preflight_lines,
                 diagnostics_on_failure,
+                timeout_start_sec,
             )
             write_text_within(output_dir, primary_unit, unit_text)
             continue
