@@ -143,6 +143,11 @@ def container_name_for(service: str, config: dict) -> str:
     return ((config.get("services") or {}).get(service) or {}).get("container_name") or service
 
 
+def compose_service_names(bundle_root: Path, env_file: Path, project_name: str) -> List[str]:
+    config = compose_config(bundle_root, env_file, project_name)
+    return sorted((config.get("services") or {}).keys())
+
+
 def validate_secrets(env_file: Path) -> int:
     values = load_env_file(env_file)
     missing = [key for key in REQUIRED_SECRET_KEYS if not values.get(key)]
@@ -347,7 +352,10 @@ def vector_size_from_collection(payload: dict) -> int:
     return 0
 
 
-def validate_qdrant_schema(env_file: Path) -> int:
+def validate_qdrant_schema(bundle_root: Path, env_file: Path, project_name: str) -> int:
+    if "qdrant" not in compose_service_names(bundle_root, env_file, project_name):
+        print("[webservices-audit] qdrant is not selected in this bundle; skipping vector schema audit", file=sys.stderr)
+        return 0
     env_values = load_env_file(env_file)
     expected = int(env_values.get("VECTOR_EMBED_SIZE") or "0")
     if expected <= 0:
@@ -392,8 +400,7 @@ def main() -> int:
     for name in ("validate-secrets", "storage-report", "module-report", "cleanup-optional-orphans", "qdrant-schema"):
         command = sub.add_parser(name)
         command.add_argument("--env-file", required=True, type=Path)
-        if name != "qdrant-schema":
-            command.add_argument("--bundle-root", required=True, type=Path)
+        command.add_argument("--bundle-root", required=True, type=Path)
         command.add_argument("--project-name", default="webservices")
         if name in {"storage-report", "module-report"}:
             command.add_argument("--output", required=True, type=Path)
@@ -409,7 +416,7 @@ def main() -> int:
     if args.command == "cleanup-optional-orphans":
         return cleanup_optional_orphans(args.bundle_root, args.env_file, args.project_name)
     if args.command == "qdrant-schema":
-        return validate_qdrant_schema(args.env_file)
+        return validate_qdrant_schema(args.bundle_root, args.env_file, args.project_name)
     raise AssertionError(args.command)
 
 

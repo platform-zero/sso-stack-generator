@@ -103,18 +103,25 @@ prepare_runtime_dir "$runtime_root"
 render_config_tree "$BUNDLE_ROOT/stack.config" "$runtime_configs_dir"
 component_selection_filter_contracts_file "$runtime_configs_dir/service-contracts.json"
 mapfile -t runtime_env_keys < <(collect_runtime_env_keys "$runtime_configs_dir" "$BUNDLE_ROOT/global.settings" "$BUNDLE_ROOT/docker-compose.yml")
+extra_runtime_env_keys=(
+  STACK_RUNTIME_DIR
+  MODEL_CONTEXT_PROXY_AUTH_SECRET
+  PLAYWRIGHT_IGNORE_HTTPS_ERRORS
+  GPU_ARBITER_API_TOKEN
+  INFERENCE_CONTROLLER_API_TOKEN
+  SYNAPSE_REGISTRATION_SECRET
+  TEST_RUNNER_OAUTH_SECRET
+)
+if component_is_selected inference || component_is_selected search || component_is_selected pipeline; then
+  extra_runtime_env_keys+=(
+    QDRANT_ADMIN_API_KEY
+    VECTOR_EMBED_SIZE
+  )
+fi
 mapfile -t runtime_env_keys < <(
   printf '%s\n' \
     "${runtime_env_keys[@]}" \
-    STACK_RUNTIME_DIR \
-    MODEL_CONTEXT_PROXY_AUTH_SECRET \
-    PLAYWRIGHT_IGNORE_HTTPS_ERRORS \
-    GPU_ARBITER_API_TOKEN \
-    INFERENCE_CONTROLLER_API_TOKEN \
-    QDRANT_ADMIN_API_KEY \
-    VECTOR_EMBED_SIZE \
-    SYNAPSE_REGISTRATION_SECRET \
-    TEST_RUNNER_OAUTH_SECRET \
+    "${extra_runtime_env_keys[@]}" \
     | sort -u
 )
 write_env_file "$runtime_env_file" "${runtime_env_keys[@]}"
