@@ -5,9 +5,9 @@ set -euo pipefail
 # deployment host, or a checkout cache.  All mutable state is under one mktemp
 # directory which is removed on exit.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
-LOCK="" OUTPUT=""
-usage() { echo "Usage: $0 --site-lock <site.lock.json> --output <directory>" >&2; }
-while [ "$#" -gt 0 ]; do case "$1" in --site-lock) LOCK="$2"; shift;; --output) OUTPUT="$2"; shift;; -h|--help) usage; exit 0;; *) usage; exit 2;; esac; shift; done
+LOCK="" OUTPUT="" METADATA_ONLY=0
+usage() { echo "Usage: $0 --site-lock <site.lock.json> --output <directory> [--metadata-only]" >&2; }
+while [ "$#" -gt 0 ]; do case "$1" in --site-lock) LOCK="$2"; shift;; --output) OUTPUT="$2"; shift;; --metadata-only) METADATA_ONLY=1;; -h|--help) usage; exit 0;; *) usage; exit 2;; esac; shift; done
 [ -n "$LOCK" ] && [ -n "$OUTPUT" ] || { usage; exit 2; }
 LOCK="$(realpath "$LOCK")"; mkdir -p "$OUTPUT"; OUTPUT="$(realpath "$OUTPUT")"
 command -v git >/dev/null; command -v python3 >/dev/null; command -v tar >/dev/null
@@ -48,6 +48,39 @@ for entry in resolved['modules']:
 Path(tests_path).write_text(json.dumps(results,indent=2,sort_keys=True)+'\n')
 PY
 
+if [ "$METADATA_ONLY" = "0" ]; then
+  # Site inputs remain outside generator source.  The lock is the sole input;
+  # this creates a private, compatibility-only manifest for the established
+  # renderer without discovering any legacy manifest or pin file.
+  python3 - "$LOCK" "$payload/site/manifest.json" "$payload/site" <<'PY'
+import json, shutil, sys
+from pathlib import Path
+lock_path, manifest_path, site_dir=map(Path,sys.argv[1:])
+lock=json.loads(lock_path.read_text())
+manifest={key:lock[key] for key in ('site','components','stackConfig','secretStore') if key in lock}
+if not isinstance(manifest.get('site'),str): raise SystemExit('site lock must declare site for runtime rendering')
+site_dir.mkdir(parents=True,exist_ok=True)
+for key in ('stackConfig','secretStore'):
+    value=manifest.get(key)
+    if not isinstance(value,str): raise SystemExit(f'site lock must declare {key} for runtime rendering')
+    source=(lock_path.parent/value).resolve()
+    if lock_path.parent.resolve() not in (source,*source.parents) or not source.is_file(): raise SystemExit(f'unsafe or missing {key}: {value}')
+    relative=Path(value)
+    if relative.is_absolute() or '..' in relative.parts: raise SystemExit(f'unsafe {key}: {value}')
+    target=site_dir/relative
+    target.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(source,target)
+manifest_path.write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+PY
+  # Existing generation code correctly owns Compose/systemd rendering.  Run it
+  # only inside this fresh tree and package its output, never a source snapshot.
+  git -C "$payload" init -q
+  git -C "$payload" add -A
+  git -C "$payload" -c user.name=site-builder -c user.email=site-builder@invalid commit -qm 'clean site build input'
+  "$payload/build.sh" --manifest "$payload/site/manifest.json"
+  rendered="$tmp/rendered"
+  mv "$payload/dist" "$rendered"
+  payload="$rendered"
+fi
 cp "$resolved" "$payload/resolved-modules.json"
 cp "$tests" "$payload/test-results.json"
 site_hash="$(sha256sum "$LOCK" | awk '{print $1}')"

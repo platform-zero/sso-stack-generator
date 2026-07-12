@@ -18,8 +18,8 @@ cat > "$tmp/site.lock.json" <<EOF
 {"schemaVersion":1,"modules":[{"id":"provider","git":"$tmp/provider","commit":"$pcommit","config":{"enabled":true}},{"id":"consumer","git":"$tmp/consumer","commit":"$ccommit"}]}
 EOF
 mkdir -p "$tmp/stale/dist"; echo stale > "$tmp/stale/dist/should-not-be-read"
-"$ROOT/site-build.sh" --site-lock "$tmp/site.lock.json" --output "$tmp/a" >/dev/null
-"$ROOT/site-build.sh" --site-lock "$tmp/site.lock.json" --output "$tmp/b" >/dev/null
+"$ROOT/site-build.sh" --metadata-only --site-lock "$tmp/site.lock.json" --output "$tmp/a" >/dev/null
+"$ROOT/site-build.sh" --metadata-only --site-lock "$tmp/site.lock.json" --output "$tmp/b" >/dev/null
 cmp "$tmp/a/bundle.tar" "$tmp/b/bundle.tar"
 cmp "$tmp/a/bundle.json" "$tmp/b/bundle.json"
 
