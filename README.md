@@ -46,6 +46,31 @@ verify.sh and run-tests.sh prove the deployed contract
 Local build is intentionally secret-free. SOPS-backed site inputs are bundled in
 encrypted form and decrypted only by `deploy.sh` on the target host.
 
+## Clean site-lock flow
+
+The foundation migration uses one `site.lock.json` as the sole composition
+input. Each entry pins a module Git URL and commit; each module provides a
+`module.json` descriptor with versioned capabilities, service routes/volumes,
+configuration schema, overlays, and verification commands. The builder creates
+a temporary checkout for every module, never reads `dist/`, `out/`, or host
+state, and writes `bundle.tar`, `bundle.tar.sha256`, and `bundle.json`.
+
+```bash
+./site-build.sh --site-lock /path/to/site.lock.json --output /tmp/site-release
+./scripts/site/deploy-site.sh --site-lock /path/to/site.lock.json --bundle-dir /tmp/site-release
+```
+
+The deploy command uploads only the completed bundle to `gerald@192.168.0.11`.
+The host verifies the checksum, artifact manifest, and lock hash, extracts a
+new release under `~/webservices/releases`, runs the configured readiness
+command, then atomically updates `~/webservices/current`. It never clones or
+builds modules. The prior release target is recorded for rollback; activating
+it is a symlink update after its own verification:
+
+```bash
+WEBSERVICES_RELEASE_ROOT=~/webservices ./scripts/site/rollback-release.sh
+```
+
 ## Command Surface
 
 Build from a source checkout:

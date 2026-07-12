@@ -3,6 +3,13 @@
 This directory is the generator-owned inventory for active source and stack-module
 repositories.
 
+New site-lock modules use `module.json` (schema in `module.schema.json`). The
+descriptor is module-local and declares explicit, versioned provided/required
+capabilities, services/routes/volumes, configuration schema, allowed overlays,
+and module verification commands. `site.lock.json` is the only site-level
+composition authority; legacy manifests and generator pin files are not inputs
+to `site-build.sh`.
+
 - `catalog.json` is the master repository list.
 - `groups/*.json` define generic pull groups for local development.
 - `stack.module.schema.json` documents the metadata interface for a module repo.
