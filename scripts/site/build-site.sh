@@ -35,7 +35,13 @@ for entry in resolved['modules']:
         for file in sources:
             rel=file.relative_to(source).as_posix()
             if not rel.startswith(allowed): raise SystemExit(f"module '{entry['id']}' overlay is not allowed: {rel}")
-            dest=payload/rel; dest.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(file,dest)
+            # Catalog fragments are merged deterministically below.  Treating
+            # them as ordinary overlays would silently discard earlier modules.
+            if rel in ('stack.config/components.json','stack.config/components.overlay.json'):
+                dest=payload/'stack.config'/'components.external'/f"{entry['id']}.json"
+            else:
+                dest=payload/rel
+            dest.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(file,dest)
     for command in entry.get('verificationCommands',[]):
         if not isinstance(command,str) or not command: raise SystemExit(f"module '{entry['id']}' has an invalid verification command")
         cache=workspace.parent/'test-cache'/entry['id']
@@ -73,6 +79,11 @@ manifest_path.write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
 PY
   # Existing generation code correctly owns Compose/systemd rendering.  Run it
   # only inside this fresh tree and package its output, never a source snapshot.
+  # Reuse the generator-owned, deterministic catalog merger before any build
+  # tests resolve selected components.
+  source "$payload/scripts/lib/common.sh"
+  source "$payload/scripts/lib/components.sh"
+  component_catalog_merge_external "$payload/stack.config/components.json"
   git -C "$payload" init -q
   git -C "$payload" add -A
   git -C "$payload" -c user.name=site-builder -c user.email=site-builder@invalid commit -qm 'clean site build input'
