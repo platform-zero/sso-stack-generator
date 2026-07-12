@@ -29,12 +29,10 @@ DOCKER_VM_REPLACEMENTS: dict[str, str] = {}
 
 CACHE_IMAGE_REPLACEMENTS = {
     "alpine:testdev-cache": "alpine:3.21",
-    "containrrr/watchtower:testdev-cache": "containrrr/watchtower@sha256:6dd50763bbd632a83cb154d5451700530d1e44200b268a4e9488fefdfcf2b038",
     "fviolence/docker-health-exporter:testdev-cache": "fviolence/docker-health-exporter@sha256:14116e61c73c868a6c244a6729dd0e1e556988d99d1b2c1475aaa968fcddaed7",
     "grafana/alloy:testdev-cache": "grafana/alloy@sha256:8f5666aebb871ba43ee2d65159c5d1c26c903720efafaf2d9ed4e237afc3bc88",
     "timescale/timescaledb:testdev-cache": "timescale/timescaledb@sha256:0af03ecf697825f6ddae76fd275d16bf46007bed6d00eb3d754779cb7db96fa6",
     "vaultwarden/server:testdev-cache": "vaultwarden/server@sha256:9a8eec71f4a52411cc43edc7a50f33e9b6f62b5baca0dd95f0c6e7fd60f1a341",
-    "willfarrell/autoheal:testdev-cache": "willfarrell/autoheal@sha256:47d3323895a3a21e507bb4eeba912d0362b4532bb434ff40b3ae200d651aa0a5",
     "zenika/kotlin:testdev-cache": "zenika/kotlin@sha256:6aa73e11c07b361e4cf068dce3745a4bc9f8b0b7d8d0b8cbbcc385539184d46a",
 }
 

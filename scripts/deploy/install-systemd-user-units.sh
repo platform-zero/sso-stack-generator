@@ -44,11 +44,11 @@ mkdir -p -m 700 "$USER_UNIT_DIR"
 chmod go-w "$USER_UNIT_DIR"
 printf '[webservices-deploy] installing rendered user units from %s into %s\n' "$UNIT_DIR" "$USER_UNIT_DIR" >&2
 
-mapfile -t rendered_units < <(find "$UNIT_DIR" -maxdepth 1 -type f \( -name 'webservices*.service' -o -name 'webservices*.target' \) -printf '%f\n' | sort)
+mapfile -t rendered_units < <(find "$UNIT_DIR" -maxdepth 1 -type f \( -name 'webservices*.service' -o -name 'webservices*.target' -o -name 'webservices*.timer' \) -printf '%f\n' | sort)
 [ "${#rendered_units[@]}" -gt 0 ] || die "no rendered user units found in $UNIT_DIR"
 printf '[webservices-deploy] rendered user units (%s): %s\n' "${#rendered_units[@]}" "${rendered_units[*]}" >&2
 
-for existing_unit in "$USER_UNIT_DIR"/webservices*.service "$USER_UNIT_DIR"/webservices*.target; do
+for existing_unit in "$USER_UNIT_DIR"/webservices*.service "$USER_UNIT_DIR"/webservices*.target "$USER_UNIT_DIR"/webservices*.timer; do
   [ -e "$existing_unit" ] || [ -L "$existing_unit" ] || continue
   existing_name="$(basename "$existing_unit")"
   keep_unit=0

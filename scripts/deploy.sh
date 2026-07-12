@@ -437,7 +437,7 @@ path_requires_full_deploy() {
   local path="$1"
 
   case "$path" in
-    .dockerignore|global.settings/*|site/manifest.json|stack.systemd/*|systemd-user/infra/*)
+    .dockerignore|global.settings/*|site/manifest.json|stack.systemd/*|systemd-user/*.timer|systemd-user/infra/*)
       return 0
       ;;
   esac
@@ -936,6 +936,22 @@ cleanup_excluded_service_containers() {
       "$BUNDLE_ROOT" \
       "$DEPLOY_ROOT/runtime/stack.env" \
       rm -f -s "$service" >/dev/null 2>&1 || true
+    docker rm -f "$service" "${PROJECT_NAME}-${service}-1" >/dev/null 2>&1 || true
+  done
+}
+
+cleanup_retired_service_containers() {
+  local service unit_name
+  local configured_services="${DEPLOY_RETIRED_SERVICES:-qdrant nats airflow-init airflow-webserver airflow-scheduler ingestion-runner embedding-gpu autoheal watchtower docker-socket-lifecycle-proxy}"
+
+  for service in $configured_services; do
+    if compose_service_exists "$service"; then
+      continue
+    fi
+    unit_name="webservices-${service}.service"
+    deploy_log "stopping retired service state for $service"
+    user_systemctl stop "$unit_name" >/dev/null 2>&1 || true
+    user_systemctl disable "$unit_name" >/dev/null 2>&1 || true
     docker rm -f "$service" "${PROJECT_NAME}-${service}-1" >/dev/null 2>&1 || true
   done
 }
@@ -1575,6 +1591,7 @@ write_module_deployment_report() {
 
 validate_qdrant_schema() {
   run_deploy_audit qdrant-schema \
+    --bundle-root "$BUNDLE_ROOT" \
     --env-file "$DEPLOY_ROOT/runtime/stack.env" \
     --project-name "$PROJECT_NAME"
 }
@@ -1668,6 +1685,7 @@ if [ "$PARTIAL_DEPLOY" = "1" ]; then
   deploy_log "skipping excluded-service cleanup for scoped deploy after deploy signature guard"
 else
   cleanup_excluded_service_containers
+  cleanup_retired_service_containers
   recreate_env_sensitive_containers
   cleanup_optional_orphan_containers
 fi
@@ -1688,6 +1706,12 @@ user_systemctl reset-failed
 user_systemctl enable webservices.target >/dev/null
 
 deploy_log "enabled target: webservices.target"
+for timer_unit in webservices-host-autoheal.timer webservices-update-deploy.timer; do
+  if [ -f "$BUNDLE_ROOT/systemd-user/$timer_unit" ]; then
+    user_systemctl enable --now "$timer_unit" >/dev/null
+    deploy_log "enabled timer: $timer_unit"
+  fi
+done
 
 set_phase "seafile-volume-migration"
 if [ "$PARTIAL_DEPLOY" = "1" ]; then

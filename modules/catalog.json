@@ -3,101 +3,884 @@
   "defaultRemoteBase": "https://github.com/geraldsummers",
   "defaultBranch": "main",
   "repositories": [
-    {"name": "sso-stack-generator", "kind": "core", "groups": ["core", "dev-all"], "remote": "https://github.com/platform-zero/sso-stack-generator.git", "defaultBranch": "dev", "lifecycle": "active"},
-    {"name": "site-config", "kind": "site-config", "groups": ["core", "dev-all"], "remote": "https://github.com/platform-zero/site-config.git", "defaultBranch": "main", "lifecycle": "active"},
-
-    {"name": "autobattler", "kind": "source", "groups": ["sources", "custom", "dev-all"], "lifecycle": "active"},
-    {"name": "tas-dashboard", "kind": "source", "groups": ["sources", "custom", "dev-all"], "lifecycle": "active"},
-    {"name": "portal", "kind": "source", "groups": ["sources", "custom", "dev-all"], "lifecycle": "active"},
-    {"name": "progression", "kind": "source", "groups": ["sources", "custom", "dev-all"], "lifecycle": "active"},
-    {"name": "test-runner", "kind": "source", "groups": ["sources", "custom", "dev-all"], "lifecycle": "active"},
-    {"name": "test-manager", "kind": "source", "groups": ["sources", "custom", "dev-all"], "lifecycle": "active"},
-    {"name": "keycloak-onboarding-listener", "kind": "source", "groups": ["sources", "custom", "dev-all"], "lifecycle": "active"},
-    {"name": "pipeline-common", "kind": "source", "groups": ["sources", "custom", "dev-all"], "lifecycle": "active"},
-
-    {"name": "autobattler-stack-module", "kind": "stack-module", "moduleId": "autobattler", "sourceRepo": "autobattler", "groups": ["custom", "dev-all"], "lifecycle": "active"},
-    {"name": "tas-dashboard-stack-module", "kind": "stack-module", "moduleId": "tas-dashboard", "sourceRepo": "tas-dashboard", "groups": ["custom", "dev-all"], "lifecycle": "active"},
-    {"name": "portal-stack-module", "kind": "stack-module", "moduleId": "portal", "sourceRepo": "portal", "groups": ["custom", "dev-all"], "lifecycle": "active"},
-    {"name": "progression-stack-module", "kind": "stack-module", "moduleId": "progression", "sourceRepo": "progression", "groups": ["custom", "dev-all"], "lifecycle": "active"},
-    {"name": "test-runners-stack-module", "kind": "stack-module", "moduleId": "test-runners", "sourceRepo": "test-runner", "groups": ["custom", "dev-all"], "lifecycle": "active"},
-    {"name": "test-manager-stack-module", "kind": "stack-module", "moduleId": "test-manager", "sourceRepo": "test-manager", "groups": ["custom", "dev-all"], "lifecycle": "active"},
-    {"name": "keycloak-onboarding-listener-stack-module", "kind": "stack-module", "moduleId": "keycloak-onboarding-listener", "sourceRepo": "keycloak-onboarding-listener", "groups": ["custom", "dev-all"], "lifecycle": "active"},
-    {"name": "pipeline-stack-module", "kind": "stack-module", "moduleId": "pipeline", "sourceRepo": "pipeline-common", "groups": ["custom", "dev-all"], "lifecycle": "active"},
-
-    {"name": "caddy-stack-module", "kind": "stack-module", "moduleId": "caddy", "groups": ["platform", "dev-all"], "lifecycle": "active"},
-    {"name": "keycloak-stack-module", "kind": "stack-module", "moduleId": "keycloak", "groups": ["platform", "dev-all"], "lifecycle": "active"},
-    {"name": "keycloak-auth-gateway-stack-module", "kind": "stack-module", "moduleId": "keycloak-auth-gateway", "groups": ["platform", "dev-all"], "lifecycle": "active"},
-    {"name": "onboarding-stack-module", "kind": "stack-module", "moduleId": "onboarding", "groups": ["platform", "dev-all"], "lifecycle": "active"},
-    {"name": "docker-proxy-stack-module", "kind": "stack-module", "moduleId": "docker-proxy", "groups": ["platform", "dev-all"], "lifecycle": "active"},
-    {"name": "autoheal-stack-module", "kind": "stack-module", "moduleId": "autoheal", "groups": ["platform", "dev-all"], "lifecycle": "active"},
-    {"name": "watchtower-stack-module", "kind": "stack-module", "moduleId": "watchtower", "groups": ["platform", "dev-all"], "lifecycle": "active"},
-
-    {"name": "postgres-stack-module", "kind": "stack-module", "moduleId": "postgres", "groups": ["datastores", "dev-all"], "lifecycle": "active"},
-    {"name": "postgres-ssd-stack-module", "kind": "stack-module", "moduleId": "postgres-ssd", "groups": ["datastores", "dev-all"], "lifecycle": "active"},
-    {"name": "mariadb-stack-module", "kind": "stack-module", "moduleId": "mariadb", "groups": ["datastores", "dev-all"], "lifecycle": "active"},
-    {"name": "valkey-stack-module", "kind": "stack-module", "moduleId": "valkey", "groups": ["datastores", "dev-all"], "lifecycle": "active"},
-    {"name": "memcached-stack-module", "kind": "stack-module", "moduleId": "memcached", "groups": ["datastores", "dev-all"], "lifecycle": "active"},
-    {"name": "opensearch-stack-module", "kind": "stack-module", "moduleId": "opensearch", "groups": ["datastores", "dev-all"], "lifecycle": "active"},
-    {"name": "qdrant-stack-module", "kind": "stack-module", "moduleId": "qdrant", "groups": ["datastores", "dev-all"], "lifecycle": "active"},
-    {"name": "kopia-stack-module", "kind": "stack-module", "moduleId": "kopia", "groups": ["datastores", "dev-all"], "lifecycle": "active"},
-
-    {"name": "prometheus-stack-module", "kind": "stack-module", "moduleId": "prometheus", "groups": ["observability", "dev-all"], "lifecycle": "active"},
-    {"name": "alertmanager-stack-module", "kind": "stack-module", "moduleId": "alertmanager", "groups": ["observability", "dev-all"], "lifecycle": "active"},
-    {"name": "grafana-stack-module", "kind": "stack-module", "moduleId": "grafana", "groups": ["observability", "dev-all"], "lifecycle": "active"},
-    {"name": "loki-stack-module", "kind": "stack-module", "moduleId": "loki", "groups": ["observability", "dev-all"], "lifecycle": "active"},
-    {"name": "alloy-stack-module", "kind": "stack-module", "moduleId": "alloy", "groups": ["observability", "dev-all"], "lifecycle": "active"},
-    {"name": "cadvisor-stack-module", "kind": "stack-module", "moduleId": "cadvisor", "groups": ["observability", "dev-all"], "lifecycle": "active"},
-    {"name": "node-exporter-stack-module", "kind": "stack-module", "moduleId": "node-exporter", "groups": ["observability", "dev-all"], "lifecycle": "active"},
-    {"name": "docker-exporter-stack-module", "kind": "stack-module", "moduleId": "docker-exporter", "groups": ["observability", "dev-all"], "lifecycle": "active"},
-    {"name": "crowdsec-stack-module", "kind": "stack-module", "moduleId": "crowdsec", "groups": ["observability", "dev-all"], "lifecycle": "active"},
-
-    {"name": "bookstack-stack-module", "kind": "stack-module", "moduleId": "bookstack", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "donetick-stack-module", "kind": "stack-module", "moduleId": "donetick", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "dozzle-stack-module", "kind": "stack-module", "moduleId": "dozzle", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "element-stack-module", "kind": "stack-module", "moduleId": "element", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "erpnext-stack-module", "kind": "stack-module", "moduleId": "erpnext", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "forgejo-stack-module", "kind": "stack-module", "moduleId": "forgejo", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "forgejo-runner-stack-module", "kind": "stack-module", "moduleId": "forgejo-runner", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "homeassistant-stack-module", "kind": "stack-module", "moduleId": "homeassistant", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "huly-stack-module", "kind": "stack-module", "moduleId": "huly", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "jellyfin-stack-module", "kind": "stack-module", "moduleId": "jellyfin", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "jupyter-notebook-stack-module", "kind": "stack-module", "moduleId": "jupyter-notebook", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "jupyterhub-stack-module", "kind": "stack-module", "moduleId": "jupyterhub", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "livekit-stack-module", "kind": "stack-module", "moduleId": "livekit", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "mailserver-stack-module", "kind": "stack-module", "moduleId": "mailserver", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "mastodon-stack-module", "kind": "stack-module", "moduleId": "mastodon", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "mastodon-rss-publisher-stack-module", "kind": "stack-module", "moduleId": "mastodon-rss-publisher", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "mastodon-rss-aus-stack-module", "kind": "stack-module", "moduleId": "mastodon-rss-aus", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "mastodon-rss-aus-state-stack-module", "kind": "stack-module", "moduleId": "mastodon-rss-aus-state", "groups": ["wrapped"], "lifecycle": "active"},
-    {"name": "mastodon-rss-tas-stack-module", "kind": "stack-module", "moduleId": "mastodon-rss-tas", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "mastodon-rss-world-stack-module", "kind": "stack-module", "moduleId": "mastodon-rss-world", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "mastodon-rss-china-stack-module", "kind": "stack-module", "moduleId": "mastodon-rss-china-independent", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "mastodon-rss-china-state-stack-module", "kind": "stack-module", "moduleId": "mastodon-rss-china-state", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "mastodon-rss-analysis-stack-module", "kind": "stack-module", "moduleId": "mastodon-rss-analysis", "groups": ["wrapped"], "lifecycle": "active"},
-    {"name": "mastodon-rss-us-stack-module", "kind": "stack-module", "moduleId": "mastodon-rss-us", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "mastodon-rss-us-state-stack-module", "kind": "stack-module", "moduleId": "mastodon-rss-us-state", "groups": ["wrapped"], "lifecycle": "active"},
-    {"name": "mastodon-follows-australia-stack-module", "kind": "stack-module", "moduleId": "mastodon-follows-australia", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "mastodon-follows-global-stack-module", "kind": "stack-module", "moduleId": "mastodon-follows-global", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "matrix-authentication-service-stack-module", "kind": "stack-module", "moduleId": "matrix-authentication-service", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "ntfy-stack-module", "kind": "stack-module", "moduleId": "ntfy", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "onlyoffice-stack-module", "kind": "stack-module", "moduleId": "onlyoffice", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "planka-stack-module", "kind": "stack-module", "moduleId": "planka", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "qbittorrent-stack-module", "kind": "stack-module", "moduleId": "qbittorrent", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "seafile-stack-module", "kind": "stack-module", "moduleId": "seafile", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "sogo-stack-module", "kind": "stack-module", "moduleId": "sogo", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "synapse-stack-module", "kind": "stack-module", "moduleId": "synapse", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-    {"name": "vaultwarden-stack-module", "kind": "stack-module", "moduleId": "vaultwarden", "groups": ["wrapped", "dev-all"], "lifecycle": "active"},
-
-    {"name": "stack-foundation-module", "kind": "stack-module", "moduleId": "stack-foundation", "groups": ["foundation", "dev-all"], "lifecycle": "active"},
-    {"name": "latium-integrations-stack-module", "kind": "stack-module", "moduleId": "latium-integrations", "groups": ["site-integrations", "dev-all"], "lifecycle": "active"},
-
-    {"name": "gpu-bootstrap-arbiter", "kind": "destruction-yard", "groups": ["destruction"], "lifecycle": "retired", "localOnly": true},
-    {"name": "gpu-workload-monitor", "kind": "destruction-yard", "groups": ["destruction"], "lifecycle": "retired", "localOnly": true},
-    {"name": "inference-controller", "kind": "destruction-yard", "groups": ["destruction"], "lifecycle": "retired", "localOnly": true},
-    {"name": "inference-gateway", "kind": "destruction-yard", "groups": ["destruction"], "lifecycle": "retired", "localOnly": true},
-    {"name": "content-publisher", "kind": "destruction-yard", "groups": ["destruction"], "lifecycle": "retired", "localOnly": true},
-    {"name": "embedding-worker", "kind": "destruction-yard", "groups": ["destruction"], "lifecycle": "retired", "localOnly": true},
-    {"name": "knowledge-ingestion", "kind": "destruction-yard", "groups": ["destruction"], "lifecycle": "retired", "localOnly": true},
-    {"name": "search-service", "kind": "destruction-yard", "groups": ["destruction"], "lifecycle": "retired", "localOnly": true}
+    {
+      "name": "sso-stack-generator",
+      "kind": "core",
+      "groups": [
+        "core",
+        "dev-all"
+      ],
+      "remote": "https://github.com/platform-zero/sso-stack-generator.git",
+      "defaultBranch": "dev",
+      "lifecycle": "active"
+    },
+    {
+      "name": "site-config",
+      "kind": "site-config",
+      "groups": [
+        "core",
+        "dev-all"
+      ],
+      "remote": "https://github.com/platform-zero/site-config.git",
+      "defaultBranch": "main",
+      "lifecycle": "active"
+    },
+    {
+      "name": "autobattler",
+      "kind": "source",
+      "groups": [
+        "sources",
+        "custom",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "tas-dashboard",
+      "kind": "source",
+      "groups": [
+        "sources",
+        "custom",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "portal",
+      "kind": "source",
+      "groups": [
+        "sources",
+        "custom",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "progression",
+      "kind": "source",
+      "groups": [
+        "sources",
+        "custom",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "test-runner",
+      "kind": "source",
+      "groups": [
+        "sources",
+        "custom",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "test-manager",
+      "kind": "source",
+      "groups": [
+        "sources",
+        "custom",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "keycloak-onboarding-listener",
+      "kind": "source",
+      "groups": [
+        "sources",
+        "custom",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "pipeline-common",
+      "kind": "source",
+      "groups": [
+        "sources",
+        "custom",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "autobattler-stack-module",
+      "kind": "stack-module",
+      "moduleId": "autobattler",
+      "sourceRepo": "autobattler",
+      "groups": [
+        "custom",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "tas-dashboard-stack-module",
+      "kind": "stack-module",
+      "moduleId": "tas-dashboard",
+      "sourceRepo": "tas-dashboard",
+      "groups": [
+        "custom",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "portal-stack-module",
+      "kind": "stack-module",
+      "moduleId": "portal",
+      "sourceRepo": "portal",
+      "groups": [
+        "custom",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "progression-stack-module",
+      "kind": "stack-module",
+      "moduleId": "progression",
+      "sourceRepo": "progression",
+      "groups": [
+        "custom",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "test-runners-stack-module",
+      "kind": "stack-module",
+      "moduleId": "test-runners",
+      "sourceRepo": "test-runner",
+      "groups": [
+        "custom",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "test-manager-stack-module",
+      "kind": "stack-module",
+      "moduleId": "test-manager",
+      "sourceRepo": "test-manager",
+      "groups": [
+        "custom",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "keycloak-onboarding-listener-stack-module",
+      "kind": "stack-module",
+      "moduleId": "keycloak-onboarding-listener",
+      "sourceRepo": "keycloak-onboarding-listener",
+      "groups": [
+        "custom",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "pipeline-stack-module",
+      "kind": "stack-module",
+      "moduleId": "pipeline",
+      "sourceRepo": "pipeline-common",
+      "groups": [
+        "custom",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "caddy-stack-module",
+      "kind": "stack-module",
+      "moduleId": "caddy",
+      "groups": [
+        "platform",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "keycloak-stack-module",
+      "kind": "stack-module",
+      "moduleId": "keycloak",
+      "groups": [
+        "platform",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "keycloak-auth-gateway-stack-module",
+      "kind": "stack-module",
+      "moduleId": "keycloak-auth-gateway",
+      "groups": [
+        "platform",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "onboarding-stack-module",
+      "kind": "stack-module",
+      "moduleId": "onboarding",
+      "groups": [
+        "platform",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "docker-proxy-stack-module",
+      "kind": "stack-module",
+      "moduleId": "docker-proxy",
+      "groups": [
+        "platform",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "autoheal-stack-module",
+      "kind": "stack-module",
+      "moduleId": "autoheal",
+      "groups": [
+        "platform",
+        "dev-all"
+      ],
+      "lifecycle": "retired"
+    },
+    {
+      "name": "watchtower-stack-module",
+      "kind": "stack-module",
+      "moduleId": "watchtower",
+      "groups": [
+        "platform",
+        "dev-all"
+      ],
+      "lifecycle": "retired"
+    },
+    {
+      "name": "postgres-stack-module",
+      "kind": "stack-module",
+      "moduleId": "postgres",
+      "groups": [
+        "datastores",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "postgres-ssd-stack-module",
+      "kind": "stack-module",
+      "moduleId": "postgres-ssd",
+      "groups": [
+        "datastores",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "mariadb-stack-module",
+      "kind": "stack-module",
+      "moduleId": "mariadb",
+      "groups": [
+        "datastores",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "valkey-stack-module",
+      "kind": "stack-module",
+      "moduleId": "valkey",
+      "groups": [
+        "datastores",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "memcached-stack-module",
+      "kind": "stack-module",
+      "moduleId": "memcached",
+      "groups": [
+        "datastores",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "opensearch-stack-module",
+      "kind": "stack-module",
+      "moduleId": "opensearch",
+      "groups": [
+        "datastores",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "qdrant-stack-module",
+      "kind": "stack-module",
+      "moduleId": "qdrant",
+      "groups": [
+        "datastores",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "kopia-stack-module",
+      "kind": "stack-module",
+      "moduleId": "kopia",
+      "groups": [
+        "datastores",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "prometheus-stack-module",
+      "kind": "stack-module",
+      "moduleId": "prometheus",
+      "groups": [
+        "observability",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "alertmanager-stack-module",
+      "kind": "stack-module",
+      "moduleId": "alertmanager",
+      "groups": [
+        "observability",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "grafana-stack-module",
+      "kind": "stack-module",
+      "moduleId": "grafana",
+      "groups": [
+        "observability",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "loki-stack-module",
+      "kind": "stack-module",
+      "moduleId": "loki",
+      "groups": [
+        "observability",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "alloy-stack-module",
+      "kind": "stack-module",
+      "moduleId": "alloy",
+      "groups": [
+        "observability",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "cadvisor-stack-module",
+      "kind": "stack-module",
+      "moduleId": "cadvisor",
+      "groups": [
+        "observability",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "node-exporter-stack-module",
+      "kind": "stack-module",
+      "moduleId": "node-exporter",
+      "groups": [
+        "observability",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "docker-exporter-stack-module",
+      "kind": "stack-module",
+      "moduleId": "docker-exporter",
+      "groups": [
+        "observability",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "crowdsec-stack-module",
+      "kind": "stack-module",
+      "moduleId": "crowdsec",
+      "groups": [
+        "observability",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "bookstack-stack-module",
+      "kind": "stack-module",
+      "moduleId": "bookstack",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "donetick-stack-module",
+      "kind": "stack-module",
+      "moduleId": "donetick",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "dozzle-stack-module",
+      "kind": "stack-module",
+      "moduleId": "dozzle",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "element-stack-module",
+      "kind": "stack-module",
+      "moduleId": "element",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "erpnext-stack-module",
+      "kind": "stack-module",
+      "moduleId": "erpnext",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "forgejo-stack-module",
+      "kind": "stack-module",
+      "moduleId": "forgejo",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "forgejo-runner-stack-module",
+      "kind": "stack-module",
+      "moduleId": "forgejo-runner",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "homeassistant-stack-module",
+      "kind": "stack-module",
+      "moduleId": "homeassistant",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "huly-stack-module",
+      "kind": "stack-module",
+      "moduleId": "huly",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "jellyfin-stack-module",
+      "kind": "stack-module",
+      "moduleId": "jellyfin",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "jupyter-notebook-stack-module",
+      "kind": "stack-module",
+      "moduleId": "jupyter-notebook",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "jupyterhub-stack-module",
+      "kind": "stack-module",
+      "moduleId": "jupyterhub",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "livekit-stack-module",
+      "kind": "stack-module",
+      "moduleId": "livekit",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "mailserver-stack-module",
+      "kind": "stack-module",
+      "moduleId": "mailserver",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "mastodon-stack-module",
+      "kind": "stack-module",
+      "moduleId": "mastodon",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "mastodon-rss-publisher-stack-module",
+      "kind": "stack-module",
+      "moduleId": "mastodon-rss-publisher",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "mastodon-rss-aus-stack-module",
+      "kind": "stack-module",
+      "moduleId": "mastodon-rss-aus",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "mastodon-rss-aus-state-stack-module",
+      "kind": "stack-module",
+      "moduleId": "mastodon-rss-aus-state",
+      "groups": [
+        "wrapped"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "mastodon-rss-tas-stack-module",
+      "kind": "stack-module",
+      "moduleId": "mastodon-rss-tas",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "mastodon-rss-world-stack-module",
+      "kind": "stack-module",
+      "moduleId": "mastodon-rss-world",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "mastodon-rss-china-stack-module",
+      "kind": "stack-module",
+      "moduleId": "mastodon-rss-china-independent",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "mastodon-rss-china-state-stack-module",
+      "kind": "stack-module",
+      "moduleId": "mastodon-rss-china-state",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "mastodon-rss-analysis-stack-module",
+      "kind": "stack-module",
+      "moduleId": "mastodon-rss-analysis",
+      "groups": [
+        "wrapped"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "mastodon-rss-us-stack-module",
+      "kind": "stack-module",
+      "moduleId": "mastodon-rss-us",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "mastodon-rss-us-state-stack-module",
+      "kind": "stack-module",
+      "moduleId": "mastodon-rss-us-state",
+      "groups": [
+        "wrapped"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "mastodon-follows-australia-stack-module",
+      "kind": "stack-module",
+      "moduleId": "mastodon-follows-australia",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "mastodon-follows-global-stack-module",
+      "kind": "stack-module",
+      "moduleId": "mastodon-follows-global",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "matrix-authentication-service-stack-module",
+      "kind": "stack-module",
+      "moduleId": "matrix-authentication-service",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "ntfy-stack-module",
+      "kind": "stack-module",
+      "moduleId": "ntfy",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "onlyoffice-stack-module",
+      "kind": "stack-module",
+      "moduleId": "onlyoffice",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "planka-stack-module",
+      "kind": "stack-module",
+      "moduleId": "planka",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "qbittorrent-stack-module",
+      "kind": "stack-module",
+      "moduleId": "qbittorrent",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "seafile-stack-module",
+      "kind": "stack-module",
+      "moduleId": "seafile",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "sogo-stack-module",
+      "kind": "stack-module",
+      "moduleId": "sogo",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "synapse-stack-module",
+      "kind": "stack-module",
+      "moduleId": "synapse",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "vaultwarden-stack-module",
+      "kind": "stack-module",
+      "moduleId": "vaultwarden",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "stack-foundation-module",
+      "kind": "stack-module",
+      "moduleId": "stack-foundation",
+      "groups": [
+        "foundation",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "latium-integrations-stack-module",
+      "kind": "stack-module",
+      "moduleId": "latium-integrations",
+      "groups": [
+        "site-integrations",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "gpu-bootstrap-arbiter",
+      "kind": "destruction-yard",
+      "groups": [
+        "destruction"
+      ],
+      "lifecycle": "retired",
+      "localOnly": true
+    },
+    {
+      "name": "gpu-workload-monitor",
+      "kind": "destruction-yard",
+      "groups": [
+        "destruction"
+      ],
+      "lifecycle": "retired",
+      "localOnly": true
+    },
+    {
+      "name": "inference-controller",
+      "kind": "destruction-yard",
+      "groups": [
+        "destruction"
+      ],
+      "lifecycle": "retired",
+      "localOnly": true
+    },
+    {
+      "name": "inference-gateway",
+      "kind": "destruction-yard",
+      "groups": [
+        "destruction"
+      ],
+      "lifecycle": "retired",
+      "localOnly": true
+    },
+    {
+      "name": "content-publisher",
+      "kind": "destruction-yard",
+      "groups": [
+        "destruction"
+      ],
+      "lifecycle": "retired",
+      "localOnly": true
+    },
+    {
+      "name": "embedding-worker",
+      "kind": "destruction-yard",
+      "groups": [
+        "destruction"
+      ],
+      "lifecycle": "retired",
+      "localOnly": true
+    },
+    {
+      "name": "knowledge-ingestion",
+      "kind": "destruction-yard",
+      "groups": [
+        "destruction"
+      ],
+      "lifecycle": "retired",
+      "localOnly": true
+    },
+    {
+      "name": "search-service",
+      "kind": "destruction-yard",
+      "groups": [
+        "destruction"
+      ],
+      "lifecycle": "retired",
+      "localOnly": true
+    }
   ]
 }

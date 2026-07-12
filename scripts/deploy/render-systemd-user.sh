@@ -69,7 +69,7 @@ GRAPH_PATH="$LOCAL_BUNDLE_ROOT/stack.systemd/graph.json"
 [ -f "$GRAPH_PATH" ] || die "missing systemd graph source: $GRAPH_PATH"
 
 mkdir -p "$OUTPUT_DIR"
-rm -f "$OUTPUT_DIR"/*.service "$OUTPUT_DIR"/*.target
+rm -f "$OUTPUT_DIR"/*.service "$OUTPUT_DIR"/*.target "$OUTPUT_DIR"/*.timer
 printf '[webservices-build] rendering systemd user units from %s into %s\n' "$GRAPH_PATH" "$OUTPUT_DIR" >&2
 
 require_cmd docker
@@ -124,4 +124,6 @@ python3 "$SCRIPT_DIR/render-systemd-user.py" \
   --compose-helper "$DEPLOY_ROOT_TEMPLATE/build/scripts/lib/systemd-compose-unit.sh" \
   --infra-helper "$DEPLOY_ROOT_TEMPLATE/build/scripts/lib/systemd-docker-infra.sh" \
   --diagnostics-helper "$DEPLOY_ROOT_TEMPLATE/build/scripts/lib/systemd-diagnostics.sh" \
+  --host-autoheal-helper "$DEPLOY_ROOT_TEMPLATE/build/scripts/host/host-autoheal.sh" \
+  --update-deploy-helper "$DEPLOY_ROOT_TEMPLATE/build/scripts/host/update-deploy.sh" \
   --base-networks-json "$base_networks_json"

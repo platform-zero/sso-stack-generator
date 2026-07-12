@@ -656,7 +656,28 @@ def render_preflight_lines(runtime_env_file: str, compose_file: str, project_dir
     return unit_lines, service_lines
 
 
-def render_job_unit(description: str, exec_start: str, exec_stop: str, requires: List[str], after: List[str], part_of_targets: List[str], unit_preflight_lines: List[str], service_preflight_lines: List[str], on_failure_unit: str) -> str:
+def service_systemd_timeout_start_sec(service_config: dict, default: int) -> int:
+    value = None
+    extension = service_config.get("x-webservices-systemd")
+    if isinstance(extension, dict):
+        value = extension.get("timeoutStartSec")
+    labels = labels_as_list(service_config.get("labels") or [])
+    for label in labels:
+        key, separator, raw_value = label.partition("=")
+        if separator and key == "org.webservices.systemd.timeout-start-sec":
+            value = raw_value
+    if value is None:
+        return default
+    try:
+        timeout = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"systemd timeoutStartSec must be an integer: {value!r}") from exc
+    if timeout < 1 or timeout > 86400:
+        raise ValueError(f"systemd timeoutStartSec must be between 1 and 86400 seconds: {timeout}")
+    return timeout
+
+
+def render_job_unit(description: str, exec_start: str, exec_stop: str, requires: List[str], after: List[str], part_of_targets: List[str], unit_preflight_lines: List[str], service_preflight_lines: List[str], on_failure_unit: str, timeout_start_sec: int = 1800) -> str:
     lines = ["[Unit]", f"Description={description}", f"OnFailure={on_failure_unit}"]
     for line in unit_preflight_lines:
         lines.append(line)
@@ -672,7 +693,7 @@ def render_job_unit(description: str, exec_start: str, exec_stop: str, requires:
         "Type=oneshot",
         "NoNewPrivileges=yes",
         "RemainAfterExit=yes",
-        "TimeoutStartSec=1800",
+        f"TimeoutStartSec={timeout_start_sec}",
     ])
     for line in service_preflight_lines:
         lines.append(line)
@@ -760,6 +781,67 @@ def render_diagnostics_unit(diagnostics_helper: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_host_autoheal_unit(host_autoheal_helper: str) -> str:
+    lines = [
+        "[Unit]",
+        "Description=Web Services host-side autoheal",
+        "",
+        "[Service]",
+        "Type=oneshot",
+        "NoNewPrivileges=yes",
+        f"ExecStart={shell_join([host_autoheal_helper])}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def render_host_autoheal_timer() -> str:
+    lines = [
+        "[Unit]",
+        "Description=Run Web Services host-side autoheal every minute",
+        "",
+        "[Timer]",
+        "OnBootSec=1min",
+        "OnUnitActiveSec=1min",
+        "AccuracySec=15s",
+        "Unit=webservices-host-autoheal.service",
+        "",
+        "[Install]",
+        "WantedBy=timers.target",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def render_update_deploy_unit(update_deploy_helper: str) -> str:
+    lines = [
+        "[Unit]",
+        "Description=Web Services stable GitHub update deploy",
+        "",
+        "[Service]",
+        "Type=oneshot",
+        "NoNewPrivileges=yes",
+        "TimeoutStartSec=7200",
+        f"ExecStart={shell_join([update_deploy_helper])}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def render_update_deploy_timer() -> str:
+    lines = [
+        "[Unit]",
+        "Description=Run Web Services stable GitHub update deploy daily",
+        "",
+        "[Timer]",
+        "OnCalendar=04:00",
+        "RandomizedDelaySec=30min",
+        "Persistent=true",
+        "Unit=webservices-update-deploy.service",
+        "",
+        "[Install]",
+        "WantedBy=timers.target",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--local-bundle-root", required=True)
@@ -775,6 +857,8 @@ def main() -> int:
     parser.add_argument("--compose-helper", required=True)
     parser.add_argument("--infra-helper", required=True)
     parser.add_argument("--diagnostics-helper", required=True)
+    parser.add_argument("--host-autoheal-helper", required=True)
+    parser.add_argument("--update-deploy-helper", required=True)
     parser.add_argument("--base-networks-json", required=True)
     args = parser.parse_args()
 
@@ -806,6 +890,8 @@ def main() -> int:
     for path in output_dir.glob("webservices*.service"):
         path.unlink()
     for path in output_dir.glob("webservices*.target"):
+        path.unlink()
+    for path in output_dir.glob("webservices*.timer"):
         path.unlink()
 
     unit_prefix = graph["unitPrefix"]
@@ -870,10 +956,18 @@ def main() -> int:
 
     default_target_name = default_target.name
     diagnostics_unit = f"{unit_prefix}-diagnostics@.service"
+    host_autoheal_unit = f"{unit_prefix}-host-autoheal.service"
+    host_autoheal_timer = f"{unit_prefix}-host-autoheal.timer"
+    update_deploy_unit = f"{unit_prefix}-update-deploy.service"
+    update_deploy_timer = f"{unit_prefix}-update-deploy.timer"
     networks_unit = infra_unit_name(unit_prefix, "networks")
     volumes_unit = infra_unit_name(unit_prefix, "volumes")
     infra_units = [networks_unit, volumes_unit]
     write_text_within(output_dir, diagnostics_unit, render_diagnostics_unit(args.diagnostics_helper))
+    write_text_within(output_dir, host_autoheal_unit, render_host_autoheal_unit(args.host_autoheal_helper))
+    write_text_within(output_dir, host_autoheal_timer, render_host_autoheal_timer())
+    write_text_within(output_dir, update_deploy_unit, render_update_deploy_unit(args.update_deploy_helper))
+    write_text_within(output_dir, update_deploy_timer, render_update_deploy_timer())
     write_text_within(output_dir, networks_unit, render_infra_unit(
         "Web Services Docker networks",
         shell_join([
@@ -987,6 +1081,7 @@ def main() -> int:
 
         if domain.is_job:
             service_name = domain.services[0]
+            timeout_start_sec = service_systemd_timeout_start_sec(compose_services[service_name], 1800)
             unit_text = render_job_unit(
                 f"Web Services job domain ({domain.name})",
                 shell_join([
@@ -1014,6 +1109,7 @@ def main() -> int:
                 unit_preflight_lines,
                 service_preflight_lines,
                 diagnostics_on_failure,
+                timeout_start_sec,
             )
             write_text_within(output_dir, primary_unit, unit_text)
             continue

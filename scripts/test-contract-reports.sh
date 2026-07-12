@@ -30,7 +30,7 @@ for report in contracts module-selection evidence-coverage backup-topology acces
   jq empty "$reports_dir/$report.json"
 done
 
-jq -e '.components.portal.name == "Homepage Dashboard"' "$reports_dir/contracts.json" >/dev/null
+jq -e '.components.portal.name == "Stack Portal"' "$reports_dir/contracts.json" >/dev/null
 jq -e '.modules[] | select(.component == "portal" and .portal.visible == true)' "$reports_dir/module-selection.json" >/dev/null
 jq -e '.components[] | select(.component == "onlyoffice" and (.evidence.expectations | index("seafile.docx.edit")))' "$reports_dir/evidence-coverage.json" >/dev/null
 jq -e '.components[] | select(.component == "seafile" and .backup.policy == "kopia")' "$reports_dir/backup-topology.json" >/dev/null
