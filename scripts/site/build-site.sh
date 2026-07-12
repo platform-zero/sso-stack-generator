@@ -39,6 +39,8 @@ for entry in resolved['modules']:
             # them as ordinary overlays would silently discard earlier modules.
             if rel in ('stack.config/components.json','stack.config/components.overlay.json'):
                 dest=payload/'stack.config'/'components.external'/f"{entry['id']}.json"
+            elif rel == 'stack.config/service-contracts.json':
+                dest=payload/'stack.config'/'service-contracts.external'/f"{entry['id']}.json"
             else:
                 dest=payload/rel
             dest.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(file,dest)
@@ -84,6 +86,7 @@ PY
   source "$payload/scripts/lib/common.sh"
   source "$payload/scripts/lib/components.sh"
   component_catalog_merge_external "$payload/stack.config/components.json"
+  service_contracts_merge_external "$payload/stack.config/service-contracts.json"
   python3 - "$payload/stack.config/components.json" "$payload/stack.config/components.external" <<'PY'
 import json, sys
 from pathlib import Path

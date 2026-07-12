@@ -60,6 +60,42 @@ component_catalog_merge_external() {
   mv "$temp_catalog" "$catalog"
 }
 
+service_contracts_merge_external() {
+  local contracts="$1"
+  local external_dir
+  local temp_contracts
+  local -a external_contracts=()
+
+  external_dir="$(dirname "$contracts")/service-contracts.external"
+  [ -d "$external_dir" ] || return 0
+
+  while IFS= read -r external_contract; do
+    external_contracts+=( "$external_contract" )
+  done < <(find "$external_dir" -maxdepth 1 -type f -name '*.json' | sort)
+  [ "${#external_contracts[@]}" -gt 0 ] || return 0
+
+  if [ ! -f "$contracts" ]; then
+    mkdir -p "$(dirname "$contracts")"
+    printf '%s\n' '{"contractVersion":1,"components":{}}' > "$contracts"
+  fi
+
+  require_cmd jq
+  jq -e '.contractVersion == 1 and (.components | type == "object")' "$contracts" >/dev/null || die "invalid service contracts: $contracts"
+  for external_contract in "${external_contracts[@]}"; do
+    jq -e '.contractVersion == 1 and (.components | type == "object")' "$external_contract" >/dev/null || die "invalid service contract fragment: $external_contract"
+  done
+
+  temp_contracts="$(mktemp)"
+  jq -s '
+    reduce .[] as $contracts (
+      {contractVersion: 1, components: {}};
+      .contractVersion = 1
+      | .components = (.components + ($contracts.components // {}))
+    )
+  ' "$contracts" "${external_contracts[@]}" > "$temp_contracts"
+  mv "$temp_contracts" "$contracts"
+}
+
 component_manifest_requested() {
   local manifest_path="$1"
   local catalog="$2"

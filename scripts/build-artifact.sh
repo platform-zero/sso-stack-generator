@@ -96,6 +96,7 @@ if [ "$needs_contract_test_tmp" = "1" ]; then
   if [ "$external_modules_ready" = "1" ]; then
     external_modules_overlay_into "$contract_test_tmp"
     component_catalog_merge_external "$contract_test_tmp/stack.config/components.json"
+    service_contracts_merge_external "$contract_test_tmp/stack.config/service-contracts.json"
   fi
   contract_test_root="$contract_test_tmp"
 fi
@@ -118,6 +119,7 @@ cp "$contract_test_root/stack.config/components.json" "$component_catalog_backup
 WEBSERVICES_CONTRACT_ROOT="$contract_test_root" "$SCRIPT_DIR/test-component-selection.sh" >&2
 mv "$component_catalog_backup" "$contract_test_root/stack.config/components.json"
 component_catalog_merge_external "$contract_test_root/stack.config/components.json"
+service_contracts_merge_external "$contract_test_root/stack.config/service-contracts.json"
 
 log "running external module checks"
 "$SCRIPT_DIR/test-external-modules.sh" >&2

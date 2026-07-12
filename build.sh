@@ -84,6 +84,7 @@ sha256sum "$DIST_DIR/build/artifact.tar" | awk '{print $1}' > "$DIST_DIR/build/a
 stage_site_manifest_bundle "$site_manifest_path" "$DIST_DIR/build/site"
 component_catalog="$DIST_DIR/build/stack.config/components.json"
 component_catalog_merge_external "$component_catalog"
+service_contracts_merge_external "$DIST_DIR/build/stack.config/service-contracts.json"
 component_selection_write_metadata "$site_manifest_path" "$component_catalog" "$DIST_DIR/build/site/components.lock.json"
 "$SCRIPT_DIR/scripts/generate-contract-reports.sh" \
   --catalog "$component_catalog" \
