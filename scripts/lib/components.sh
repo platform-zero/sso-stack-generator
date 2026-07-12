@@ -72,9 +72,12 @@ service_contracts_merge_external() {
   external_dir="$(dirname "$contracts")/service-contracts.external"
   [ -d "$external_dir" ] || return 0
 
+  if [ -f "$external_dir/stack-foundation.json" ]; then
+    external_contracts+=( "$external_dir/stack-foundation.json" )
+  fi
   while IFS= read -r external_contract; do
     external_contracts+=( "$external_contract" )
-  done < <(find "$external_dir" -maxdepth 1 -type f -name '*.json' | sort)
+  done < <(find "$external_dir" -maxdepth 1 -type f -name '*.json' ! -name 'stack-foundation.json' | sort)
   [ "${#external_contracts[@]}" -gt 0 ] || return 0
 
   if [ ! -f "$contracts" ]; then
