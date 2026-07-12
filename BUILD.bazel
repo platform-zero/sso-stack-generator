@@ -1,5 +1,3 @@
-load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
-
 filegroup(
     name = "release_static_files",
     srcs = glob(
