@@ -194,7 +194,7 @@ if grep -Eq 'request>(remote_ip|client_ip)[[:space:]]+ip_mask' "$ROOT_DIR/stack.
   exit 1
 fi
 
-if ! rg -n 'ghcr\.io/gethomepage/homepage|portal:3000' "$ROOT_DIR/stack.compose/portal.yml" "$ROOT_DIR/stack.config/caddy/Caddyfile" >/dev/null; then
+if ! grep -REn 'ghcr\.io/gethomepage/homepage|portal:3000' "$ROOT_DIR/stack.compose/portal.yml" "$ROOT_DIR/stack.config/caddy/Caddyfile" >/dev/null; then
   printf '[service-contract-test] portal must run gethomepage and proxy to Homepage port 3000\n' >&2
   exit 1
 fi
