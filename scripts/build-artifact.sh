@@ -180,14 +180,8 @@ fi
 log "packaging immutable release artifact with Bazel"
 (cd "$contract_test_root" && bazel build "$TARGET") >&2
 
-artifact_rel="$(cd "$contract_test_root" && bazel cquery --output=files "$TARGET" | tail -n 1)"
-[ -n "$artifact_rel" ] || die "failed to resolve Bazel artifact path for $TARGET"
-if [[ "$artifact_rel" = /* ]]; then
-  artifact_path="$artifact_rel"
-else
-  execution_root="$(cd "$contract_test_root" && bazel info execution_root)"
-  artifact_path="$execution_root/$artifact_rel"
-fi
+artifact_path="$(cd "$contract_test_root" && bazel info bazel-bin)/web_services_release.tar"
+[ -f "$artifact_path" ] || die "failed to resolve Bazel artifact path for $TARGET"
 
 artifact_listing="$(mktemp)"
 tar -tf "$artifact_path" > "$artifact_listing"
