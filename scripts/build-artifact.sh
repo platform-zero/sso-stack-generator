@@ -160,7 +160,7 @@ log "running Gradle tests and shadow jars"
 mapfile -t shadow_projects < <(
   find "$contract_test_root/stack.kotlin" -mindepth 2 -maxdepth 2 -name build.gradle.kts -print 2>/dev/null \
     | while IFS= read -r build_file; do
-        if rg -q 'tasks\.shadowJar' "$build_file"; then
+        if grep -Eq 'tasks\.shadowJar' "$build_file"; then
           dirname "$build_file"
         fi
       done \
