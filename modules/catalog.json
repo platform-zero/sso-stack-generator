@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "defaultRemoteBase": "https://github.com/geraldsummers",
+  "defaultRemoteBase": "https://github.com/platform-zero",
   "defaultBranch": "main",
   "repositories": [
     {
@@ -21,7 +21,7 @@
         "core",
         "dev-all"
       ],
-      "remote": "https://github.com/platform-zero/site-config.git",
+      "remote": "https://github.com/geraldsummers/site-config.git",
       "defaultBranch": "main",
       "lifecycle": "active"
     },
@@ -29,21 +29,21 @@
       "name": "autobattler",
       "kind": "source",
       "groups": [
-        "sources",
-        "custom",
-        "dev-all"
+        "destruction"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired",
+      "remote": "https://github.com/geraldsummers/autobattler.git",
+      "defaultBranch": "main"
     },
     {
       "name": "tas-dashboard",
       "kind": "source",
       "groups": [
-        "sources",
-        "custom",
-        "dev-all"
+        "destruction"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired",
+      "remote": "https://github.com/geraldsummers/tas-dashboard.git",
+      "defaultBranch": "main"
     },
     {
       "name": "portal",
@@ -59,11 +59,11 @@
       "name": "progression",
       "kind": "source",
       "groups": [
-        "sources",
-        "custom",
-        "dev-all"
+        "destruction"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired",
+      "remote": "https://github.com/geraldsummers/progression-stack-module.git",
+      "defaultBranch": "main"
     },
     {
       "name": "test-runner",
@@ -79,11 +79,11 @@
       "name": "test-manager",
       "kind": "source",
       "groups": [
-        "sources",
-        "custom",
-        "dev-all"
+        "destruction"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired",
+      "remote": "https://github.com/geraldsummers/test-manager-stack-module.git",
+      "defaultBranch": "main"
     },
     {
       "name": "keycloak-onboarding-listener",
@@ -99,11 +99,9 @@
       "name": "pipeline-common",
       "kind": "source",
       "groups": [
-        "sources",
-        "custom",
-        "dev-all"
+        "destruction"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired"
     },
     {
       "name": "autobattler-stack-module",
@@ -111,10 +109,11 @@
       "moduleId": "autobattler",
       "sourceRepo": "autobattler",
       "groups": [
-        "custom",
-        "dev-all"
+        "destruction"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired",
+      "remote": "https://github.com/geraldsummers/autobattler-stack-module.git",
+      "defaultBranch": "main"
     },
     {
       "name": "tas-dashboard-stack-module",
@@ -122,10 +121,11 @@
       "moduleId": "tas-dashboard",
       "sourceRepo": "tas-dashboard",
       "groups": [
-        "custom",
-        "dev-all"
+        "destruction"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired",
+      "remote": "https://github.com/geraldsummers/tas-dashboard-stack-module.git",
+      "defaultBranch": "main"
     },
     {
       "name": "portal-stack-module",
@@ -144,10 +144,11 @@
       "moduleId": "progression",
       "sourceRepo": "progression",
       "groups": [
-        "custom",
-        "dev-all"
+        "destruction"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired",
+      "remote": "https://github.com/geraldsummers/progression-stack-module.git",
+      "defaultBranch": "main"
     },
     {
       "name": "test-runners-stack-module",
@@ -166,10 +167,11 @@
       "moduleId": "test-manager",
       "sourceRepo": "test-manager",
       "groups": [
-        "custom",
-        "dev-all"
+        "destruction"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired",
+      "remote": "https://github.com/geraldsummers/test-manager-stack-module.git",
+      "defaultBranch": "main"
     },
     {
       "name": "keycloak-onboarding-listener-stack-module",
@@ -188,10 +190,9 @@
       "moduleId": "pipeline",
       "sourceRepo": "pipeline-common",
       "groups": [
-        "custom",
-        "dev-all"
+        "destruction"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired"
     },
     {
       "name": "caddy-stack-module",
@@ -328,10 +329,11 @@
       "kind": "stack-module",
       "moduleId": "qdrant",
       "groups": [
-        "datastores",
-        "dev-all"
+        "destruction"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired",
+      "remote": "https://github.com/geraldsummers/qdrant-stack-module.git",
+      "defaultBranch": "main"
     },
     {
       "name": "kopia-stack-module",
@@ -401,7 +403,7 @@
         "observability",
         "dev-all"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired"
     },
     {
       "name": "node-exporter-stack-module",
@@ -421,7 +423,7 @@
         "observability",
         "dev-all"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired"
     },
     {
       "name": "crowdsec-stack-module",
@@ -461,7 +463,7 @@
         "wrapped",
         "dev-all"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired"
     },
     {
       "name": "element-stack-module",

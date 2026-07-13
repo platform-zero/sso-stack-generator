@@ -29,17 +29,20 @@ component_catalog_merge_external() {
   local external_dir
   local temp_catalog
   local -a external_catalogs=()
+  local -a merge_catalogs=()
 
   external_dir="$(dirname "$catalog")/components.external"
   [ -d "$external_dir" ] || return 0
 
   if [ -f "$external_dir/stack-foundation.json" ]; then
-    external_catalogs+=( "$external_dir/stack-foundation.json" )
+    merge_catalogs+=( "$external_dir/stack-foundation.json" )
+  else
+    merge_catalogs+=( "$catalog" )
   fi
   while IFS= read -r external_catalog; do
     external_catalogs+=( "$external_catalog" )
   done < <(find "$external_dir" -maxdepth 1 -type f -name '*.json' ! -name 'stack-foundation.json' | sort)
-  [ "${#external_catalogs[@]}" -gt 0 ] || return 0
+  [ "${#external_catalogs[@]}" -gt 0 ] || [ -f "$external_dir/stack-foundation.json" ] || return 0
 
   if [ ! -f "$catalog" ]; then
     mkdir -p "$(dirname "$catalog")"
@@ -47,9 +50,13 @@ component_catalog_merge_external() {
   fi
 
   component_catalog_validate "$catalog"
+  if [ -f "$external_dir/stack-foundation.json" ]; then
+    component_catalog_validate "$external_dir/stack-foundation.json"
+  fi
   for external_catalog in "${external_catalogs[@]}"; do
     component_catalog_validate "$external_catalog"
   done
+  merge_catalogs+=( "${external_catalogs[@]}" )
 
   temp_catalog="$(mktemp)"
   jq -s '
@@ -59,7 +66,7 @@ component_catalog_merge_external() {
       | .defaultComponents = ((.defaultComponents + ($catalog.defaultComponents // [])) | unique)
       | .components = (.components + ($catalog.components // {}))
     )
-  ' "$catalog" "${external_catalogs[@]}" > "$temp_catalog"
+  ' "${merge_catalogs[@]}" > "$temp_catalog"
   mv "$temp_catalog" "$catalog"
 }
 
@@ -68,17 +75,20 @@ service_contracts_merge_external() {
   local external_dir
   local temp_contracts
   local -a external_contracts=()
+  local -a merge_contracts=()
 
   external_dir="$(dirname "$contracts")/service-contracts.external"
   [ -d "$external_dir" ] || return 0
 
   if [ -f "$external_dir/stack-foundation.json" ]; then
-    external_contracts+=( "$external_dir/stack-foundation.json" )
+    merge_contracts+=( "$external_dir/stack-foundation.json" )
+  else
+    merge_contracts+=( "$contracts" )
   fi
   while IFS= read -r external_contract; do
     external_contracts+=( "$external_contract" )
   done < <(find "$external_dir" -maxdepth 1 -type f -name '*.json' ! -name 'stack-foundation.json' | sort)
-  [ "${#external_contracts[@]}" -gt 0 ] || return 0
+  [ "${#external_contracts[@]}" -gt 0 ] || [ -f "$external_dir/stack-foundation.json" ] || return 0
 
   if [ ! -f "$contracts" ]; then
     mkdir -p "$(dirname "$contracts")"
@@ -87,9 +97,13 @@ service_contracts_merge_external() {
 
   require_cmd jq
   jq -e '.contractVersion == 1 and (.components | type == "object")' "$contracts" >/dev/null || die "invalid service contracts: $contracts"
+  if [ -f "$external_dir/stack-foundation.json" ]; then
+    jq -e '.contractVersion == 1 and (.components | type == "object")' "$external_dir/stack-foundation.json" >/dev/null || die "invalid service contract fragment: $external_dir/stack-foundation.json"
+  fi
   for external_contract in "${external_contracts[@]}"; do
     jq -e '.contractVersion == 1 and (.components | type == "object")' "$external_contract" >/dev/null || die "invalid service contract fragment: $external_contract"
   done
+  merge_contracts+=( "${external_contracts[@]}" )
 
   temp_contracts="$(mktemp)"
   jq -s '
@@ -98,7 +112,7 @@ service_contracts_merge_external() {
       .contractVersion = 1
       | .components = (.components + ($contracts.components // {}))
     )
-  ' "$contracts" "${external_contracts[@]}" > "$temp_contracts"
+  ' "${merge_contracts[@]}" > "$temp_contracts"
   chmod --reference="$contracts" "$temp_contracts"
   mv "$temp_contracts" "$contracts"
 }

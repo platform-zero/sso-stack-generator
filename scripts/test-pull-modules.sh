@@ -66,7 +66,7 @@ EOF_GROUP
 cat > "$catalog_dir/groups/destruction.json" <<'EOF_DESTRUCTION'
 {
   "schemaVersion": 1,
-  "includeCatalogGroups": ["destruction"]
+  "repositories": ["retired-local"]
 }
 EOF_DESTRUCTION
 

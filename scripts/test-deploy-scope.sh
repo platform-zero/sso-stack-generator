@@ -22,7 +22,7 @@ cat > "$graph_file" <<'EOF_JSON'
     {
       "name": "webservices-apps.target",
       "domains": ["mastodon-runtime"],
-      "services": ["autobattler"]
+      "services": ["sample-app"]
     }
   ],
   "lifecycleDomains": [
@@ -37,7 +37,7 @@ EOF_JSON
 cat > "$compose_config_json" <<'EOF_JSON'
 {
   "services": {
-    "autobattler": {},
+    "sample-app": {},
     "homepage": {},
     "mastodon-web": {},
     "mastodon-streaming": {},
@@ -73,18 +73,18 @@ assert_rejects_target_scope() {
 }
 
 assert_eq \
-  "$(deploy_scope_normalize_unit autobattler webservices)" \
-  "webservices-autobattler.service" \
+  "$(deploy_scope_normalize_unit sample-app webservices)" \
+  "webservices-sample-app.service" \
   "short unit normalization"
 
 assert_eq \
-  "$(deploy_scope_normalize_unit webservices-autobattler webservices)" \
-  "webservices-autobattler.service" \
+  "$(deploy_scope_normalize_unit webservices-sample-app webservices)" \
+  "webservices-sample-app.service" \
   "prefixed unit normalization"
 
 assert_eq \
-  "$(deploy_scope_services_for_unit autobattler webservices "$graph_file" "$compose_config_json")" \
-  "autobattler" \
+  "$(deploy_scope_services_for_unit sample-app webservices "$graph_file" "$compose_config_json")" \
+  "sample-app" \
   "single-service unit service derivation"
 
 assert_eq \
@@ -94,12 +94,12 @@ assert_eq \
 
 assert_eq \
   "$(deploy_scope_services_for_unit webservices-apps.target webservices "$graph_file" "$compose_config_json")" \
-  $'autobattler\nmastodon-sidekiq\nmastodon-streaming\nmastodon-web' \
+  $'mastodon-sidekiq\nmastodon-streaming\nmastodon-web\nsample-app' \
   "auxiliary target service derivation"
 
 assert_eq \
   "$(deploy_scope_services_for_unit webservices.target webservices "$graph_file" "$compose_config_json")" \
-  $'autobattler\nmastodon-sidekiq\nmastodon-streaming\nmastodon-web' \
+  $'mastodon-sidekiq\nmastodon-streaming\nmastodon-web\nsample-app' \
   "nested target service derivation"
 
 assert_rejects_unit "../evil.service"

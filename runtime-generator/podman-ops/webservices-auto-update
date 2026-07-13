@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+freeze_file="${WEBSERVICES_UPDATE_FREEZE_FILE:-/var/lib/webservices/updates.frozen}"
+if [ -e "$freeze_file" ]; then
+  printf '[podman-auto-update] updates frozen: %s\n' "$freeze_file"
+  exit 0
+fi
+
+output_file="$(mktemp)"
+trap 'rm -f "$output_file"' EXIT
+if ! podman auto-update --rollback --format json | tee "$output_file"; then
+  install -m 0644 /dev/null "$freeze_file"
+  printf '[podman-auto-update] update failed; future updates frozen\n' >&2
+  exit 1
+fi
+
+if systemctl --quiet is-failed webservices.target; then
+  install -m 0644 /dev/null "$freeze_file"
+  printf '[podman-auto-update] stack target failed after update; future updates frozen\n' >&2
+  exit 1
+fi

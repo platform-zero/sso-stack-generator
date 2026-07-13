@@ -71,6 +71,14 @@ metadata_path = Path(sys.argv[1])
 module_dir = Path(sys.argv[2])
 catalog_path = Path(sys.argv[3])
 metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+catalog_modules = {}
+if catalog_path.exists():
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    catalog_modules = {
+        repo_entry.get("moduleId"): repo_entry.get("name")
+        for repo_entry in catalog.get("repositories", [])
+        if repo_entry.get("kind") == "stack-module"
+    }
 
 allowed_keys = {
     "schemaVersion",
@@ -104,7 +112,8 @@ if not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9._-]+", repo):
     raise SystemExit("repo must be a repository name")
 
 expected_repos = {module_id, f"{module_id}-stack-module", f"{module_id}-module"}
-if repo not in expected_repos:
+catalog_repo = catalog_modules.get(module_id)
+if repo not in expected_repos and repo != catalog_repo:
     expected = " or ".join(sorted(expected_repos))
     raise SystemExit(f"repo must match module id: expected {expected}, got {repo}")
 
@@ -154,7 +163,7 @@ allowed_prefixes = (
     "docs/modules/",
     "tests/fixtures/",
 )
-allowed_roots = {prefix.rstrip("/") for prefix in allowed_prefixes}
+allowed_roots = {prefix.rstrip("/") for prefix in allowed_prefixes} | {"stack.runtime.yaml"}
 
 def validate_relative_path(path_value: str, key: str) -> None:
     if not isinstance(path_value, str) or not path_value:
@@ -196,13 +205,6 @@ if (has_kotlin or has_js or has_containers) and not (metadata.get("contracts") o
     raise SystemExit("modules with stack.kotlin, stack.js, or stack.containers must declare contracts or ciProfiles")
 
 if catalog_path.exists():
-    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-    catalog_modules = {
-        repo_entry.get("moduleId"): repo_entry.get("name")
-        for repo_entry in catalog.get("repositories", [])
-        if repo_entry.get("kind") == "stack-module"
-    }
-    catalog_repo = catalog_modules.get(module_id)
     if catalog_repo and catalog_repo != repo:
         raise SystemExit(f"catalog maps module {module_id} to {catalog_repo}, metadata says {repo}")
 PY

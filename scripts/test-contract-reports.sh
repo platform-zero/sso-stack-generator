@@ -2,9 +2,30 @@
 set -Eeuo pipefail
 trap 'status=$?; printf "[contract-reports-test] failed at line %s: %s (exit %s)\n" "$LINENO" "$BASH_COMMAND" "$status" >&2' ERR
 
-ROOT_DIR="${WEBSERVICES_CONTRACT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)}"
+SOURCE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+ROOT_DIR="${WEBSERVICES_CONTRACT_ROOT:-$SOURCE_ROOT}"
+CONTRACT_ROOT=""
+tmp_dir=""
+cleanup() {
+  [ -z "$CONTRACT_ROOT" ] || rm -rf "$CONTRACT_ROOT"
+  [ -z "$tmp_dir" ] || rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+if [ "$ROOT_DIR" = "$SOURCE_ROOT" ] && [ ! -f "$ROOT_DIR/stack.config/components.json" ] && [ -f "$SOURCE_ROOT/dist/build/build/stack.config/components.json" ]; then
+  ROOT_DIR="$SOURCE_ROOT/dist/build/build"
+elif [ "$ROOT_DIR" = "$SOURCE_ROOT" ] && [ ! -f "$ROOT_DIR/stack.config/components.json" ] && [ -f "$SOURCE_ROOT/dist/build/stack.config/components.json" ]; then
+  ROOT_DIR="$SOURCE_ROOT/dist/build"
+fi
+if [ -d "$ROOT_DIR/stack.config/components.external" ] || [ -d "$ROOT_DIR/stack.config/service-contracts.external" ]; then
+  CONTRACT_ROOT="$(mktemp -d)"
+  cp -a "$ROOT_DIR/." "$CONTRACT_ROOT/"
+  ROOT_DIR="$CONTRACT_ROOT"
+  # shellcheck source=scripts/lib/components.sh
+  source "$SOURCE_ROOT/scripts/lib/components.sh"
+  component_catalog_merge_external "$ROOT_DIR/stack.config/components.json"
+  service_contracts_merge_external "$ROOT_DIR/stack.config/service-contracts.json"
+fi
 tmp_dir="$(mktemp -d)"
-trap 'rm -rf "$tmp_dir"' EXIT
 
 lock_file="$tmp_dir/components.lock.json"
 reports_dir="$tmp_dir/reports"
@@ -16,7 +37,7 @@ cat > "$lock_file" <<'EOF_JSON'
 }
 EOF_JSON
 
-"$ROOT_DIR/scripts/generate-contract-reports.sh" \
+"$SOURCE_ROOT/scripts/generate-contract-reports.sh" \
   --catalog "$ROOT_DIR/stack.config/components.json" \
   --contracts "$ROOT_DIR/stack.config/service-contracts.json" \
   --profiles "$ROOT_DIR/stack.config/portal-profiles.json" \

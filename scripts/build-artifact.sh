@@ -49,7 +49,10 @@ external_modules_ready=0
 if [ -d "$EXTERNAL_MODULES_MATERIALIZED_DIR" ] && find "$EXTERNAL_MODULES_MATERIALIZED_DIR" -type f -print -quit | grep -q .; then
   external_modules_ready=1
 fi
-if [ "$contract_test_seed" = "$SOURCE_ROOT" ] && [ "$external_modules_ready" = "0" ] && [ ! -f "$contract_test_seed/stack.config/components.json" ] && [ -f "$SOURCE_ROOT/dist/build/stack.config/components.json" ]; then
+if [ "$contract_test_seed" = "$SOURCE_ROOT" ] && [ ! -f "$contract_test_seed/stack.config/components.json" ] && [ -f "$SOURCE_ROOT/dist/build/build/stack.config/components.json" ]; then
+  log "using materialized dist/build/build tree for contract tests"
+  contract_test_seed="$SOURCE_ROOT/dist/build/build"
+elif [ "$contract_test_seed" = "$SOURCE_ROOT" ] && [ ! -f "$contract_test_seed/stack.config/components.json" ] && [ -f "$SOURCE_ROOT/dist/build/stack.config/components.json" ]; then
   log "using materialized dist/build tree for contract tests"
   contract_test_seed="$SOURCE_ROOT/dist/build"
 fi
@@ -71,7 +74,7 @@ if [ "$needs_contract_test_tmp" = "1" ]; then
   }
   trap cleanup_contract_test_root EXIT
 
-  for root in global.settings stack.compose stack.config stack.containers stack.kotlin stack.js stack.systemd; do
+  for root in global.settings runtime-generator stack.compose stack.config stack.containers stack.kotlin stack.js stack.systemd; do
     if [ -e "$contract_test_seed/$root" ]; then
       cp -a "$contract_test_seed/$root" "$contract_test_tmp/$root"
     elif [ -e "$SOURCE_ROOT/$root" ]; then
@@ -84,6 +87,11 @@ if [ "$needs_contract_test_tmp" = "1" ]; then
       cp -a "$SOURCE_ROOT/$root" "$contract_test_tmp/$root"
     fi
   done
+
+  rm -rf "$contract_test_tmp/stack.containers/test-runner/playwright-tests/node_modules"
+  rm -rf \
+    "$contract_test_tmp/stack.config/components.external" \
+    "$contract_test_tmp/stack.config/service-contracts.external"
 
   for file in .bazelrc BUILD.bazel MODULE.bazel MODULE.bazel.lock build.gradle.kts settings.gradle.kts gradlew gradlew.bat; do
     if [ -e "$SOURCE_ROOT/$file" ]; then

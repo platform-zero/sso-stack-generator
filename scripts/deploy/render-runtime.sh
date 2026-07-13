@@ -102,7 +102,7 @@ prepare_host_runtime_dirs
 prepare_runtime_dir "$runtime_root"
 render_config_tree "$BUNDLE_ROOT/stack.config" "$runtime_configs_dir"
 component_selection_filter_contracts_file "$runtime_configs_dir/service-contracts.json"
-mapfile -t runtime_env_keys < <(collect_runtime_env_keys "$runtime_configs_dir" "$BUNDLE_ROOT/global.settings" "$BUNDLE_ROOT/docker-compose.yml")
+mapfile -t runtime_env_keys < <(collect_runtime_env_keys "$runtime_configs_dir" "$BUNDLE_ROOT/global.settings" "$BUNDLE_ROOT/docker-compose.yml" "$BUNDLE_ROOT/runtime-env")
 extra_runtime_env_keys=(
   STACK_RUNTIME_DIR
   MODEL_CONTEXT_PROXY_AUTH_SECRET
@@ -124,7 +124,11 @@ mapfile -t runtime_env_keys < <(
     "${extra_runtime_env_keys[@]}" \
     | sort -u
 )
-write_env_file "$runtime_env_file" "${runtime_env_keys[@]}"
+if [ "${RENDER_ALL_ENV:-0}" = "1" ]; then
+  write_env_file "$runtime_env_file"
+else
+  write_env_file "$runtime_env_file" "${runtime_env_keys[@]}"
+fi
 write_build_info "$BUNDLE_ROOT/build-info.json" "$runtime_root/build-info.json"
 
 if [ "$SKIP_COMPOSE_VALIDATE" = "0" ]; then
