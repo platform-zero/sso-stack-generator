@@ -264,13 +264,6 @@ if [ -f "$bundle_root/stack.systemd/graph.json" ]; then
     --unit-root-template "%h/webservices/build/systemd-user" \
     --runtime-env-file-template "%h/webservices/runtime/stack.env" >/dev/null
 
-  progression_unit="$bundle_root/systemd-user/webservices-progression.service"
-  if [ -f "$progression_unit" ]; then
-    assert_contains "$progression_unit" '%h/webservices/build/build-info.json' "Progression build-info preflight"
-    assert_contains "$progression_unit" '%h/webservices/build/docker-compose.yml' "Progression compose preflight"
-    assert_contains "$progression_unit" '%h/webservices/build/stack.config/progression' "Progression registry preflight"
-    assert_not_contains "$progression_unit" '%h/webservices/build-info.json|%h/webservices/docker-compose.yml|%h/webservices/stack.config/progression' "root-level Progression preflight"
-  fi
   assert_contains "$bundle_root/systemd-user/webservices.target" 'PropagatesStopTo=webservices-core.target' "core target stop propagation"
   assert_contains "$bundle_root/systemd-user/webservices.target" 'PropagatesStopTo=webservices-apps.target' "apps target stop propagation"
 fi
@@ -285,10 +278,9 @@ PATH="$fake_bin:$PATH" "$ROOT_DIR/scripts/deploy/render-runtime.sh" \
 assert_contains "$caddy_file" 'reverse_proxy vaultwarden:80' "full Vaultwarden route"
 assert_contains "$caddy_file" 'reverse_proxy portal:3000' "full Portal route"
 assert_contains "$caddy_file" 'redir https://portal' "full Homepage compatibility redirect"
-assert_contains "$caddy_file" 'reverse_proxy progression:8130' "full Progression route"
 assert_contains "$keycloak_configure" 'ensure_confidential_client "vaultwarden"' "full Vaultwarden Keycloak client"
 if [ -f "$runtime_contracts" ]; then
-  jq -e '.components.vaultwarden and .components.progression and (.components | has("huly") | not)' "$runtime_contracts" >/dev/null
+  jq -e '.components.vaultwarden and (.components | has("progression") | not) and (.components | has("huly") | not)' "$runtime_contracts" >/dev/null
   assert_not_private_mode "$runtime_contracts" "filtered runtime service contracts"
 fi
 assert_not_contains "$caddy_file" 'webservices-component-(start|end)' "component marker"

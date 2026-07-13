@@ -281,7 +281,6 @@ preflight() {
   resolve_site_manifest_file "$site_manifest_path" >/dev/null
   check_gpu_preflight
   ensure_runtime_links "$DEPLOY_ROOT" >/dev/null
-  mkdir -p "$DEPLOY_ROOT/runtime/progression"
   ensure_user_systemd_env
   deploy_log "preflight ok (bundle=$BUNDLE_ROOT siteManifestPath=$site_manifest_path composeParallelLimit=$COMPOSE_PARALLEL_LIMIT)"
 }
@@ -942,7 +941,7 @@ cleanup_excluded_service_containers() {
 
 cleanup_retired_service_containers() {
   local service unit_name
-  local configured_services="${DEPLOY_RETIRED_SERVICES:-qdrant nats airflow-init airflow-webserver airflow-scheduler ingestion-runner embedding-gpu autoheal watchtower docker-socket-lifecycle-proxy autobattler autobattler-db-bootstrap tas-dashboard}"
+  local configured_services="${DEPLOY_RETIRED_SERVICES:-qdrant progression nats airflow-init airflow-webserver airflow-scheduler ingestion-runner embedding-gpu autoheal watchtower docker-socket-lifecycle-proxy autobattler autobattler-db-bootstrap tas-dashboard}"
 
   for service in $configured_services; do
     if compose_service_exists "$service"; then

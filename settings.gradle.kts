@@ -19,7 +19,6 @@ includeProjectIfPresent("inference-gateway", "stack.kotlin/inference-gateway")
 includeProjectIfPresent("inference-controller", "stack.kotlin/inference-controller")
 includeProjectIfPresent("test-runner", "stack.kotlin/test-runner")
 includeProjectIfPresent("keycloak-onboarding-listener", "stack.kotlin/keycloak-onboarding-listener")
-includeProjectIfPresent("progression", "stack.kotlin/progression")
 includeProjectIfPresent("portal", "stack.kotlin/portal")
 
 file("stack.kotlin")
