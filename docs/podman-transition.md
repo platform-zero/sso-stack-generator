@@ -75,9 +75,9 @@ podman ps --all
 podman auto-update --dry-run
 ```
 
-The Docker deployment remains the rollback runtime only until the same-session
-cutover gate passes: stateful persistence checks, representative app smoke
-checks, log/monitoring checks, backup visibility, and rollback proof. After
-that gate passes, Docker implementation paths can be removed from active source
-and rollback becomes Podman release rollback. JupyterHub, Forgejo Runner, and
-Docker-controller test suites are deliberately deferred from the first cutover.
+After the same-session cutover gate passes, Docker is stopped and masked.
+Rollback is Podman release rollback through `/var/lib/webservices/releases` and
+`/var/lib/webservices-rootless/releases`; Docker is not a runtime fallback.
+JupyterHub uses the rootless Podman API socket through DockerSpawner's
+Docker-compatible client path. Forgejo Runner and Docker-controller test suites
+remain deferred from the first no-Docker cutover.

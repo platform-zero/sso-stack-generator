@@ -309,7 +309,7 @@ fun referencedNamedVolumes(services: ObjectNode): Set<String> {
     services.fieldsMap().forEach { (_, service) ->
         service.path("volumes").forEach { volume ->
             val source = if (volume.isTextual) volume.asText().substringBefore(':') else volume.path("source").asText()
-            if (source.isNotBlank() && !source.startsWith(".") && !source.startsWith("/") && !source.contains('$')) result += source
+            if (source.isNotBlank() && !source.startsWith(".") && !source.startsWith("/") && !source.startsWith("%") && !source.contains('$')) result += source
         }
     }
     return result
@@ -536,7 +536,7 @@ fun materializeGradleBuildInputs(output: Path) {
 }
 
 fun buildLocalArtifacts(output: Path) {
-    if (System.getenv("STACK_GENERATOR_BUILD_LOCAL_ARTIFACTS") != "1") return
+    if (System.getenv("STACK_GENERATOR_BUILD_LOCAL_ARTIFACTS") == "0") return
     val buildRoot = output.resolve("build")
     if (!buildRoot.resolve("gradlew").isRegularFile()) fail("cannot build local artifacts without Gradle wrapper")
     val projects = buildRoot.resolve("stack.kotlin")
@@ -554,6 +554,17 @@ fun buildLocalArtifacts(output: Path) {
         command += listOf("-x", ":test-runner:test")
     }
     commandOutput(command, buildRoot)
+    listOf(".gradle", ".kotlin", "build").forEach { buildRoot.resolve(it).toFile().deleteRecursively() }
+    buildRoot.resolve("stack.kotlin")
+        .takeIf(Path::isDirectory)
+        ?.listDirectoryEntries()
+        ?.forEach { project ->
+            project.resolve("build")
+                .takeIf(Path::isDirectory)
+                ?.listDirectoryEntries()
+                ?.filter { it.fileName.toString() != "libs" }
+                ?.forEach { it.toFile().deleteRecursively() }
+        }
 }
 
 fun materializeSiteManifest(manifestPath: Path, output: Path) {
@@ -634,7 +645,8 @@ fun systemdQuote(value: String): String = "\"" + value
     .replace("\\", "\\\\")
     .replace("\"", "\\\"")
     .replace("\n", "\\n") + "\""
-fun quadletLiteral(value: String): String = value.replace("%", "%%")
+fun quadletLiteral(value: String): String =
+    value.replace("%", "%%").replace("%%t", "%t")
 
 data class PodmanDomain(
     val name: String,

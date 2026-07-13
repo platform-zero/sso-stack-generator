@@ -62,12 +62,12 @@
   - Copy preserved Docker Mastodon RSS state into explicit `/mnt/stack/volumes/mastodon_rss_publisher_state`.
   - Acceptance: live rootful stack runs against preserved PostgreSQL system ID `7656195858355810341`; OpenSearch starts on preserved data; Jellyfin, Seafile, and Mastodon RSS state sizes match preserved stores; no anonymous Podman volumes are attached.
 
-- [ ] Make the Podman runtime generator self-contained before rootless cutover.
+- [x] Make the Podman runtime generator self-contained before rootless cutover.
   - Port or call the legacy `scripts/deploy/render-runtime.sh` template pass so `runtime/configs` contains rendered files, not only `*.template` sources.
   - Ensure generated bundles include required JVM build outputs or prebuilt local image artifacts instead of relying on prior releases.
   - Acceptance: activating a freshly generated Podman bundle requires no manual copy from an older release and leaves no missing bind sources in `journalctl`.
 
-- [ ] Perform rootless split with complete state persistence test.
+- [x] Perform rootless split with complete state persistence test.
   - Generate rootful and rootless Quadlet domains.
   - Keep Caddy, mailserver, node-exporter, Alloy, CrowdSec, Kopia, and host storage setup rootful.
   - Move remaining services under lingering `webservices` rootless user after ACL and namespace checks.

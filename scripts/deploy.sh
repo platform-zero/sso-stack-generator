@@ -114,6 +114,10 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
+if [ "${WEBSERVICES_ALLOW_DOCKER_PRODUCTION_DEPLOY:-0}" != "1" ]; then
+  die "Docker production deploy is disabled; generate a Podman bundle and run ops/install-podman-bundle.sh"
+fi
+
 site_manifest_path="$BUNDLE_ROOT/site/manifest.json"
 [ -f "$site_manifest_path" ] || die "missing bundled site manifest: $site_manifest_path"
 [ -f "$BUNDLE_ROOT/docker-compose.yml" ] || die "missing bundle compose file: $BUNDLE_ROOT/docker-compose.yml"

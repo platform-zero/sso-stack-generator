@@ -379,6 +379,7 @@ user_systemctl() {
 systemctl stop webservices.target || true
 systemctl daemon-reload
 user_systemctl daemon-reload
+user_systemctl enable --now podman.socket
 systemctl enable --now webservices-auto-update.timer
 user_systemctl restart webservices.target
 user_systemctl --quiet is-active webservices.target
