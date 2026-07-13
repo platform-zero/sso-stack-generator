@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 deploy_script="$ROOT_DIR/scripts/deploy.sh"
+deploy_audit="$ROOT_DIR/scripts/deploy/deploy-audit.py"
 
 assert_contains() {
   local pattern="$1"
@@ -20,5 +21,10 @@ assert_contains 'nvidia-container-toolkit'
 assert_contains 'DEPLOY_GPU_SMOKE_TEST'
 assert_contains 'if type == "object" then (.source // "") else "" end'
 assert_contains '(type == "object")'
+
+grep -Fq '"/var/log/webservices/caddy"' "$deploy_audit" || {
+  printf '[test-deploy-preflight] missing CrowdSec Caddy log bind allowlist\n' >&2
+  exit 1
+}
 
 printf '[test-deploy-preflight] ok\n'

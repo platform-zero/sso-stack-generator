@@ -42,6 +42,7 @@ ALLOWED_HOST_BINDS = {
     "/var/run/docker.sock",
     "/run/docker-labware",
     "/run/docker-labware/docker.sock",
+    "/var/log/webservices/caddy",
 }
 
 DEFAULT_OPTIONAL_VM_SERVICES = [
