@@ -21,7 +21,7 @@
         "core",
         "dev-all"
       ],
-      "remote": "https://github.com/platform-zero/site-config.git",
+      "remote": "https://github.com/geraldsummers/site-config.git",
       "defaultBranch": "main",
       "lifecycle": "active"
     },
@@ -59,11 +59,11 @@
       "name": "progression",
       "kind": "source",
       "groups": [
-        "sources",
-        "custom",
-        "dev-all"
+        "destruction"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired",
+      "remote": "https://github.com/geraldsummers/progression-stack-module.git",
+      "defaultBranch": "main"
     },
     {
       "name": "test-runner",
@@ -144,10 +144,11 @@
       "moduleId": "progression",
       "sourceRepo": "progression",
       "groups": [
-        "custom",
-        "dev-all"
+        "destruction"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired",
+      "remote": "https://github.com/geraldsummers/progression-stack-module.git",
+      "defaultBranch": "main"
     },
     {
       "name": "test-runners-stack-module",
@@ -328,10 +329,11 @@
       "kind": "stack-module",
       "moduleId": "qdrant",
       "groups": [
-        "datastores",
-        "dev-all"
+        "destruction"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired",
+      "remote": "https://github.com/geraldsummers/qdrant-stack-module.git",
+      "defaultBranch": "main"
     },
     {
       "name": "kopia-stack-module",
