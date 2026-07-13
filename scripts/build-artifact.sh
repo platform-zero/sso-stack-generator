@@ -88,6 +88,8 @@ if [ "$needs_contract_test_tmp" = "1" ]; then
     fi
   done
 
+  rm -rf "$contract_test_tmp/stack.containers/test-runner/playwright-tests/node_modules"
+
   for file in .bazelrc BUILD.bazel MODULE.bazel MODULE.bazel.lock build.gradle.kts settings.gradle.kts gradlew gradlew.bat; do
     if [ -e "$SOURCE_ROOT/$file" ]; then
       cp -a "$SOURCE_ROOT/$file" "$contract_test_tmp/$file"
