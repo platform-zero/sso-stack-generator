@@ -507,6 +507,79 @@ fun materializeRuntimeRendererInputs(output: Path) {
     }
 }
 
+fun mergeComponentCatalog(output: Path): ObjectNode {
+    val catalogPath = output.resolve("stack.config/components.json")
+    val externalDir = output.resolve("stack.config/components.external")
+    val catalog = obj()
+    catalog.put("schemaVersion", 1)
+    catalog.set<ArrayNode>("defaultComponents", arr())
+    catalog.set<ObjectNode>("components", obj())
+
+    val catalogSources = mutableListOf<Path>()
+    val foundationExternal = externalDir.resolve("stack-foundation.json")
+    if (foundationExternal.isRegularFile()) catalogSources.add(foundationExternal)
+    else if (catalogPath.isRegularFile()) catalogSources.add(catalogPath)
+    if (externalDir.isDirectory()) {
+        catalogSources.addAll(externalDir.listDirectoryEntries("*.json")
+            .filter { it.fileName.toString() != "stack-foundation.json" }
+            .sorted())
+    }
+
+    catalogSources.forEach { source ->
+        val fragment = readTree(source)
+        val defaults = catalog.withArray("defaultComponents")
+        fragment.path("defaultComponents").forEach { defaults.add(it.asText()) }
+        val components = catalog.get("components") as ObjectNode
+        fragment.path("components").fieldsMap().forEach { (name, value) ->
+            components.set<JsonNode>(name, value.deepCopy())
+        }
+    }
+    return catalog
+}
+
+fun resolveComponentSelection(manifestPath: Path, catalog: ObjectNode): List<String> {
+    val manifest = readTree(manifestPath)
+    val requested = when {
+        manifest.has("components") -> {
+            val components = manifest.path("components")
+            if (!components.isArray || components.isEmpty) fail("site manifest components must be a non-empty array")
+            components.map { it.asText() }
+        }
+        else -> catalog.path("defaultComponents").map { it.asText() }
+    }
+    if (requested.isEmpty()) fail("component selection is empty")
+
+    val components = catalog.path("components") as? ObjectNode
+        ?: fail("component catalog is missing components")
+    val selected = linkedSetOf<String>()
+    val queue = ArrayDeque<String>()
+    requested.forEach { component ->
+        if (!components.has(component)) fail("site manifest selects unknown component '$component'")
+        if (selected.add(component)) queue.add(component)
+    }
+    while (queue.isNotEmpty()) {
+        val component = queue.removeFirst()
+        components.path(component).path("dependencies").forEach { dependencyNode ->
+            val dependency = dependencyNode.asText()
+            if (!components.has(dependency)) fail("component '$component' depends on unknown component '$dependency'")
+            if (selected.add(dependency)) queue.add(dependency)
+        }
+    }
+    return components.fieldNames().asSequence().filter { selected.contains(it) }.toList()
+}
+
+fun materializeComponentLock(manifestPath: Path, output: Path, ir: ObjectNode) {
+    val manifest = readTree(manifestPath)
+    val selected = if (manifest.has("components")) {
+        resolveComponentSelection(manifestPath, mergeComponentCatalog(output))
+    } else {
+        ir.path("modules").map { it.path("id").asText() }
+    }
+    val componentLock = obj().put("schemaVersion", 1)
+    componentLock.set<ArrayNode>("components", arr().addAll(selected.map(nodes::textNode)))
+    writeJson(output.resolve("site/components.lock.json"), componentLock)
+}
+
 fun materializeGradleBuildInputs(output: Path) {
     val generatorRoot = System.getenv("STACK_GENERATOR_ROOT")?.let(Path::of)?.toAbsolutePath()?.normalize()
         ?: fail("STACK_GENERATOR_ROOT is not set")
@@ -997,14 +1070,12 @@ fun commandGenerate(options: Map<String, String>) {
         if (backend == "podman") applyPodmanPlacementPolicy(ir)
         writeJson(staging.resolve("stack.ir.json"), ir)
         materializeSiteManifest(manifest, staging)
-        val componentLock = obj().put("schemaVersion", 1)
-        componentLock.set<ArrayNode>("components", ir.path("modules").map { nodes.textNode(it.path("id").asText()) }.let { arr().addAll(it) })
-        writeJson(staging.resolve("site/components.lock.json"), componentLock)
         materializeModules(modules, staging)
         materializeGradleBuildInputs(staging)
         buildLocalArtifacts(staging)
         materializeGeneratedBuildArtifacts(modules, staging)
         materializeRuntimeRendererInputs(staging)
+        materializeComponentLock(manifest, staging, ir)
         renderDocker(ir, staging)
         if (backend == "podman") renderPodman(ir, staging)
         val metadata = obj()

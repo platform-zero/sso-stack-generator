@@ -2,10 +2,14 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-SITE="${SITE_MANIFEST:-$ROOT_DIR/../site-config/sites/latium/manifest.json}"
 MODULES_DIR="${MODULES_DIR:-$ROOT_DIR/../modules}"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
+SOURCE_SITE="${SITE_MANIFEST:-$ROOT_DIR/../site-config/sites/latium/manifest.json}"
+SITE="$WORK_DIR/manifest.json"
+SOURCE_SITE_DIR="$(cd "$(dirname "$SOURCE_SITE")" && pwd -P)"
+cp -a "$SOURCE_SITE_DIR/global.settings" "$WORK_DIR/global.settings"
+jq '.modules |= map(select(. != "latium-integrations"))' "$SOURCE_SITE" > "$SITE"
 
 generate() {
   "$ROOT_DIR/generate.sh" \
@@ -27,9 +31,17 @@ diff -ru "$WORK_DIR/podman-a" "$WORK_DIR/podman-b"
 jq -e '
   (.schemaVersion == 2) and
   (.modules | type == "array" and length > 0) and
-  (has("components") | not) and
+  (.components == ["full"]) and
   (all(.modules[]; type == "string" or (type == "object" and (.id | type == "string"))))
 ' "$SITE" >/dev/null
+
+jq -e '(.components | index("search")) and (.components | index("opensearch") | not)' \
+  "$WORK_DIR/podman-a/site/components.lock.json" >/dev/null
+
+if ! rg -Fq 'search.{$DOMAIN}' "$WORK_DIR/podman-a/runtime/configs/caddy/Caddyfile"; then
+  printf '[runtime-test] rendered runtime Caddyfile is missing the OpenSearch search route\n' >&2
+  exit 1
+fi
 
 jq -r '.services | keys[]' "$WORK_DIR/docker/stack.ir.json" | sort > "$WORK_DIR/ir-services"
 docker compose -f "$WORK_DIR/docker/docker-compose.yml" config --no-interpolate --services | sort > "$WORK_DIR/docker-services"
