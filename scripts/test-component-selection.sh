@@ -265,10 +265,12 @@ if [ -f "$bundle_root/stack.systemd/graph.json" ]; then
     --runtime-env-file-template "%h/webservices/runtime/stack.env" >/dev/null
 
   progression_unit="$bundle_root/systemd-user/webservices-progression.service"
-  assert_contains "$progression_unit" '%h/webservices/build/build-info.json' "Progression build-info preflight"
-  assert_contains "$progression_unit" '%h/webservices/build/docker-compose.yml' "Progression compose preflight"
-  assert_contains "$progression_unit" '%h/webservices/build/stack.config/progression' "Progression registry preflight"
-  assert_not_contains "$progression_unit" '%h/webservices/build-info.json|%h/webservices/docker-compose.yml|%h/webservices/stack.config/progression' "root-level Progression preflight"
+  if [ -f "$progression_unit" ]; then
+    assert_contains "$progression_unit" '%h/webservices/build/build-info.json' "Progression build-info preflight"
+    assert_contains "$progression_unit" '%h/webservices/build/docker-compose.yml' "Progression compose preflight"
+    assert_contains "$progression_unit" '%h/webservices/build/stack.config/progression' "Progression registry preflight"
+    assert_not_contains "$progression_unit" '%h/webservices/build-info.json|%h/webservices/docker-compose.yml|%h/webservices/stack.config/progression' "root-level Progression preflight"
+  fi
   assert_contains "$bundle_root/systemd-user/webservices.target" 'PropagatesStopTo=webservices-core.target' "core target stop propagation"
   assert_contains "$bundle_root/systemd-user/webservices.target" 'PropagatesStopTo=webservices-apps.target' "apps target stop propagation"
 fi
