@@ -942,7 +942,7 @@ cleanup_excluded_service_containers() {
 
 cleanup_retired_service_containers() {
   local service unit_name
-  local configured_services="${DEPLOY_RETIRED_SERVICES:-qdrant nats airflow-init airflow-webserver airflow-scheduler ingestion-runner embedding-gpu autoheal watchtower docker-socket-lifecycle-proxy}"
+  local configured_services="${DEPLOY_RETIRED_SERVICES:-qdrant nats airflow-init airflow-webserver airflow-scheduler ingestion-runner embedding-gpu autoheal watchtower docker-socket-lifecycle-proxy autobattler autobattler-db-bootstrap tas-dashboard}"
 
   for service in $configured_services; do
     if compose_service_exists "$service"; then

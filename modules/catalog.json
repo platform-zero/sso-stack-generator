@@ -29,21 +29,21 @@
       "name": "autobattler",
       "kind": "source",
       "groups": [
-        "sources",
-        "custom",
-        "dev-all"
+        "destruction"
       ],
-      "lifecycle": "retired"
+      "lifecycle": "retired",
+      "remote": "https://github.com/geraldsummers/autobattler.git",
+      "defaultBranch": "main"
     },
     {
       "name": "tas-dashboard",
       "kind": "source",
       "groups": [
-        "sources",
-        "custom",
-        "dev-all"
+        "destruction"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired",
+      "remote": "https://github.com/geraldsummers/tas-dashboard.git",
+      "defaultBranch": "main"
     },
     {
       "name": "portal",
@@ -111,10 +111,11 @@
       "moduleId": "autobattler",
       "sourceRepo": "autobattler",
       "groups": [
-        "custom",
-        "dev-all"
+        "destruction"
       ],
-      "lifecycle": "retired"
+      "lifecycle": "retired",
+      "remote": "https://github.com/geraldsummers/autobattler-stack-module.git",
+      "defaultBranch": "main"
     },
     {
       "name": "tas-dashboard-stack-module",
@@ -122,10 +123,11 @@
       "moduleId": "tas-dashboard",
       "sourceRepo": "tas-dashboard",
       "groups": [
-        "custom",
-        "dev-all"
+        "destruction"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired",
+      "remote": "https://github.com/geraldsummers/tas-dashboard-stack-module.git",
+      "defaultBranch": "main"
     },
     {
       "name": "portal-stack-module",
