@@ -198,16 +198,16 @@ expect_failure users create --password secret
 assert_contains "$stderr_file" 'missing required flag: --username' "missing username error"
 
 reset_state
-expect_failure users create --username gerald
+expect_failure users create --username testuser
 assert_contains "$stderr_file" 'missing required flag: --password' "missing password error"
 
 reset_state
-expect_failure users create --username gerald --password secret --active --password-only
+expect_failure users create --username testuser --password secret --active --password-only
 assert_contains "$stderr_file" '--active cannot be combined with --password-only' "invalid mode error"
 
 reset_state
-run_stackctl users create --username gerald --password secret --json >"$stdout_file"
-jq -e '.email == "gerald@example.test"' "$stdout_file" >/dev/null
+run_stackctl users create --username testuser --password secret --json >"$stdout_file"
+jq -e '.email == "testuser@example.test"' "$stdout_file" >/dev/null
 jq -e '.requiredActions == ["UPDATE_PASSWORD","CONFIGURE_TOTP"]' "$stdout_file" >/dev/null
 jq -e '.onboardingRequired == true' "$stdout_file" >/dev/null
 

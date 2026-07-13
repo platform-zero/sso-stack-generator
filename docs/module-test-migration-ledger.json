@@ -12,7 +12,7 @@
     "materializedExternalModules": true,
     "deployedRuntime": false,
     "status": "migrated",
-    "validationCommand": "scripts/test-module.sh --contract /home/gerald/sso-stack-repos/modules-workspace/jellyfin-stack-module"
+    "validationCommand": "scripts/test-module.sh --contract ../modules/jellyfin"
   },
   {
     "assertion": "Progression BookStack MVP artifacts are present in release artifact",
@@ -27,7 +27,7 @@
     "materializedExternalModules": true,
     "deployedRuntime": false,
     "status": "genericized; module contract owns overlay existence",
-    "validationCommand": "scripts/test-module.sh --contract /home/gerald/sso-stack-repos/modules-workspace/progression-stack-module"
+    "validationCommand": "scripts/test-module.sh --contract ../modules.retired/progression"
   },
   {
     "assertion": "Service contract schema and cross-component aggregation remain coherent",
