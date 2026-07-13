@@ -56,6 +56,13 @@ case "$BUILD_PROFILE" in
   *) die "unsupported build profile: $BUILD_PROFILE" ;;
 esac
 site_manifest_path="$(resolve_site_manifest_file "$SITE_MANIFEST_PATH")"
+if [ -z "${WEBSERVICES_CONTRACT_ROOT:-}" ] && [ ! -f "$SCRIPT_DIR/stack.config/components.json" ]; then
+  manifest_bundle_root="$(cd "$(dirname "$site_manifest_path")/.." && pwd -P)"
+  if [ -f "$manifest_bundle_root/stack.config/components.json" ]; then
+    export WEBSERVICES_CONTRACT_ROOT="$manifest_bundle_root"
+    log "using $WEBSERVICES_CONTRACT_ROOT for materialized contract checks"
+  fi
+fi
 
 external_modules_resolve "$site_manifest_path"
 "$SCRIPT_DIR/scripts/verify-module-lock-overrides.sh" "$site_manifest_path"
