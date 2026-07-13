@@ -35,7 +35,7 @@ jq -e '
   (all(.modules[]; type == "string" or (type == "object" and (.id | type == "string"))))
 ' "$SITE" >/dev/null
 
-jq -e '(.components | index("search")) and (.components | index("opensearch") | not)' \
+jq -e '(.components | index("search")) and (.components | index("opensearch")) and (.components | index("grafana"))' \
   "$WORK_DIR/podman-a/site/components.lock.json" >/dev/null
 
 if ! rg -Fq 'search.{$DOMAIN}' "$WORK_DIR/podman-a/runtime/configs/caddy/Caddyfile"; then

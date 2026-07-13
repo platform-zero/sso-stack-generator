@@ -570,10 +570,12 @@ fun resolveComponentSelection(manifestPath: Path, catalog: ObjectNode): List<Str
 
 fun materializeComponentLock(manifestPath: Path, output: Path, ir: ObjectNode) {
     val manifest = readTree(manifestPath)
-    val selected = if (manifest.has("components")) {
-        resolveComponentSelection(manifestPath, mergeComponentCatalog(output))
-    } else {
-        ir.path("modules").map { it.path("id").asText() }
+    val moduleIds = ir.path("modules").map { it.path("id").asText() }
+    val selected = linkedSetOf<String>().apply {
+        addAll(moduleIds)
+        if (manifest.has("components")) {
+            addAll(resolveComponentSelection(manifestPath, mergeComponentCatalog(output)))
+        }
     }
     val componentLock = obj().put("schemaVersion", 1)
     componentLock.set<ArrayNode>("components", arr().addAll(selected.map(nodes::textNode)))
