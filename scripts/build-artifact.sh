@@ -49,7 +49,10 @@ external_modules_ready=0
 if [ -d "$EXTERNAL_MODULES_MATERIALIZED_DIR" ] && find "$EXTERNAL_MODULES_MATERIALIZED_DIR" -type f -print -quit | grep -q .; then
   external_modules_ready=1
 fi
-if [ "$contract_test_seed" = "$SOURCE_ROOT" ] && [ "$external_modules_ready" = "0" ] && [ ! -f "$contract_test_seed/stack.config/components.json" ] && [ -f "$SOURCE_ROOT/dist/build/stack.config/components.json" ]; then
+if [ "$contract_test_seed" = "$SOURCE_ROOT" ] && [ "$external_modules_ready" = "0" ] && [ ! -f "$contract_test_seed/stack.config/components.json" ] && [ -f "$SOURCE_ROOT/dist/build/build/stack.config/components.json" ]; then
+  log "using materialized dist/build/build tree for contract tests"
+  contract_test_seed="$SOURCE_ROOT/dist/build/build"
+elif [ "$contract_test_seed" = "$SOURCE_ROOT" ] && [ "$external_modules_ready" = "0" ] && [ ! -f "$contract_test_seed/stack.config/components.json" ] && [ -f "$SOURCE_ROOT/dist/build/stack.config/components.json" ]; then
   log "using materialized dist/build tree for contract tests"
   contract_test_seed="$SOURCE_ROOT/dist/build"
 fi

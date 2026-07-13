@@ -1,5 +1,8 @@
 rootProject.name = "webservices"
 
+include(":runtime-generator")
+project(":runtime-generator").projectDir = file("runtime-generator")
+
 val includedProjectNames = mutableSetOf<String>()
 
 fun includeProjectIfPresent(projectName: String, relativePath: String) {

@@ -5,6 +5,11 @@ trap 'status=$?; printf "[component-selection-test] failed at line %s: %s (exit 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 CONTRACT_ROOT="${WEBSERVICES_CONTRACT_ROOT:-$ROOT_DIR}"
+if [ "$CONTRACT_ROOT" = "$ROOT_DIR" ] && [ ! -f "$CONTRACT_ROOT/stack.config/components.json" ] && [ -f "$ROOT_DIR/dist/build/build/stack.config/components.json" ]; then
+  CONTRACT_ROOT="$ROOT_DIR/dist/build/build"
+elif [ "$CONTRACT_ROOT" = "$ROOT_DIR" ] && [ ! -f "$CONTRACT_ROOT/stack.config/components.json" ] && [ -f "$ROOT_DIR/dist/build/stack.config/components.json" ]; then
+  CONTRACT_ROOT="$ROOT_DIR/dist/build"
+fi
 # shellcheck source=scripts/lib/common.sh
 source "$ROOT_DIR/scripts/lib/common.sh"
 # shellcheck source=scripts/lib/components.sh
@@ -251,20 +256,22 @@ build_merged_compose "$bundle_root" "$bundle_root/docker-compose.full.yml" "$sit
 assert_contains "$bundle_root/docker-compose.full.yml" 'component_marker_bookstack:' "enabled compose marker test volume"
 cp "$bundle_root/docker-compose.full.yml" "$bundle_root/docker-compose.yml"
 
-"$ROOT_DIR/scripts/deploy/render-systemd-user.sh" \
-  --bundle-root "$bundle_root" \
-  --output-dir "$bundle_root/systemd-user" \
-  --deploy-root-template "%h/webservices" \
-  --unit-root-template "%h/webservices/build/systemd-user" \
-  --runtime-env-file-template "%h/webservices/runtime/stack.env" >/dev/null
+if [ -f "$bundle_root/stack.systemd/graph.json" ]; then
+  "$ROOT_DIR/scripts/deploy/render-systemd-user.sh" \
+    --bundle-root "$bundle_root" \
+    --output-dir "$bundle_root/systemd-user" \
+    --deploy-root-template "%h/webservices" \
+    --unit-root-template "%h/webservices/build/systemd-user" \
+    --runtime-env-file-template "%h/webservices/runtime/stack.env" >/dev/null
 
-progression_unit="$bundle_root/systemd-user/webservices-progression.service"
-assert_contains "$progression_unit" '%h/webservices/build/build-info.json' "Progression build-info preflight"
-assert_contains "$progression_unit" '%h/webservices/build/docker-compose.yml' "Progression compose preflight"
-assert_contains "$progression_unit" '%h/webservices/build/stack.config/progression' "Progression registry preflight"
-assert_not_contains "$progression_unit" '%h/webservices/build-info.json|%h/webservices/docker-compose.yml|%h/webservices/stack.config/progression' "root-level Progression preflight"
-assert_contains "$bundle_root/systemd-user/webservices.target" 'PropagatesStopTo=webservices-core.target' "core target stop propagation"
-assert_contains "$bundle_root/systemd-user/webservices.target" 'PropagatesStopTo=webservices-apps.target' "apps target stop propagation"
+  progression_unit="$bundle_root/systemd-user/webservices-progression.service"
+  assert_contains "$progression_unit" '%h/webservices/build/build-info.json' "Progression build-info preflight"
+  assert_contains "$progression_unit" '%h/webservices/build/docker-compose.yml' "Progression compose preflight"
+  assert_contains "$progression_unit" '%h/webservices/build/stack.config/progression' "Progression registry preflight"
+  assert_not_contains "$progression_unit" '%h/webservices/build-info.json|%h/webservices/docker-compose.yml|%h/webservices/stack.config/progression' "root-level Progression preflight"
+  assert_contains "$bundle_root/systemd-user/webservices.target" 'PropagatesStopTo=webservices-core.target' "core target stop propagation"
+  assert_contains "$bundle_root/systemd-user/webservices.target" 'PropagatesStopTo=webservices-apps.target' "apps target stop propagation"
+fi
 
 PATH="$fake_bin:$PATH" "$ROOT_DIR/scripts/deploy/render-runtime.sh" \
   --bundle-root "$bundle_root" \

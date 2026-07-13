@@ -73,13 +73,17 @@ render_has() {
 
 load_secret_store() {
   local secret_store="$1"
+  local decrypted_secret_store
   [ -f "$secret_store" ] || die "secret store not found: $secret_store"
   require_cmd sops
   require_cmd jq
 
+  decrypted_secret_store="$(mktemp)"
+  trap 'rm -f "$decrypted_secret_store"' RETURN
+  sops --decrypt "$secret_store" > "$decrypted_secret_store"
   while IFS= read -r -d '' key && IFS= read -r -d '' value; do
     render_set "$key" "$value"
-  done < <(sops --decrypt "$secret_store" | jq -j 'to_entries[] | .key, "\u0000", ((.value // "") | tostring), "\u0000"')
+  done < <(jq -j 'to_entries[] | .key, "\u0000", ((.value // "") | tostring), "\u0000"' "$decrypted_secret_store")
 }
 
 render_envsubst() {
@@ -269,6 +273,8 @@ build_derived_render_values() {
   derive_if_missing POSTGRES_AIRFLOW_PASSWORD postgres-airflow 48
   derive_if_missing POSTGRES_TEST_RUNNER_PASSWORD postgres-test-runner 48
   derive_if_missing POSTGRES_AUTOBATTLER_PASSWORD postgres-autobattler 48
+  derive_if_missing POSTGRES_LEGAL_RESEARCH_PASSWORD postgres-legal-research 48
+  derive_if_missing LEGAL_RESEARCH_INGESTION_TOKEN legal-research-ingestion-token 48
   derive_if_missing MARIADB_ADMIN_PASSWORD mariadb-admin 48
   derive_if_missing MARIADB_BOOKSTACK_PASSWORD mariadb-bookstack 48
   derive_if_missing MARIADB_SEAFILE_PASSWORD mariadb-seafile 48

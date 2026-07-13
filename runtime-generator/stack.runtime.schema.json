@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/platform-zero/sso-stack-generator/runtime-generator/stack.runtime.schema.json",
+  "title": "Platform Zero runtime module",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "module"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "module": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "target": {"enum": ["core", "apps", "observability"]},
+    "services": {"type": "object", "additionalProperties": {"$ref": "#/$defs/service"}},
+    "networks": {"type": "object", "additionalProperties": {"$ref": "#/$defs/network"}},
+    "volumes": {"type": "object", "additionalProperties": {"$ref": "#/$defs/volume"}}
+  },
+  "$defs": {
+    "dependency": {"enum": ["started", "healthy", "completed"]},
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "internal": {"type": "boolean"},
+        "driver": {"type": "string"}
+      }
+    },
+    "volume": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hostPath": {"type": "string"},
+        "ephemeral": {"type": "boolean"},
+        "rootlessStrategy": {"enum": ["copy", "shared", "forbidden"]}
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["lifecycle"],
+      "properties": {
+        "image": {"type": "string"},
+        "build": {"type": "object"},
+        "containerName": {"type": "string"},
+        "lifecycle": {"enum": ["daemon", "oneshot", "on-demand"]},
+        "updatePolicy": {"enum": ["pinned", "registry", "local"]},
+        "placement": {"enum": ["rootful", "rootless"]},
+        "dependencies": {"type": "object", "additionalProperties": {"$ref": "#/$defs/dependency"}},
+        "environment": {"type": "object"},
+        "networks": {"type": "object"},
+        "volumes": {"type": "array"},
+        "ports": {"type": "array"},
+        "health": {"type": "object"},
+        "command": {},
+        "entrypoint": {},
+        "restart": {"type": "string"},
+        "workingDir": {"type": "string"},
+        "user": {},
+        "hostname": {"type": "string"},
+        "dns": {},
+        "extraHosts": {"type": "array"},
+        "tmpfs": {"type": "array"},
+        "ephemeralImageVolumes": {"type": "array", "items": {"type": "string"}},
+        "readOnly": {"type": "boolean"},
+        "init": {"type": "boolean"},
+        "userns": {"type": "string"},
+        "groupAdd": {"type": "array", "items": {"type": "string"}},
+        "capAdd": {"type": "array"},
+        "capDrop": {"type": "array"},
+        "securityOpt": {"type": "array"},
+        "sysctls": {},
+        "ulimits": {},
+        "shmSize": {},
+        "stopGracePeriod": {},
+        "resources": {"type": "object"}
+      }
+    }
+  }
+}

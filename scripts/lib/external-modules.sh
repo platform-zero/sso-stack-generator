@@ -97,7 +97,7 @@ external_modules_validate_tree() {
 external_modules_path_allowed() {
   local rel_path="$1"
   case "$rel_path" in
-    README.md|stack.module.json|tests/*|.github/*)
+    README.md|stack.module.json|stack.runtime.yaml|tests/*|.github/*)
       return 0
       ;;
     global.settings/*|stack.compose/*|stack.config/*|stack.containers/*|stack.kotlin/*|stack.js/*|stack.systemd/*|scripts/lib/*|scripts/modules/*|docs/modules/*)
@@ -141,6 +141,9 @@ external_modules_materialize_one() {
       stack.config/service-contracts.json)
         dest_path="$EXTERNAL_MODULES_MATERIALIZED_DIR/stack.config/service-contracts.external/$name.json"
         ;;
+      stack.runtime.yaml)
+        dest_path="$EXTERNAL_MODULES_MATERIALIZED_DIR/stack.runtime.external/$name.yaml"
+        ;;
       README.md|stack.module.json|tests/*|.github/*)
         continue
         ;;
@@ -151,7 +154,7 @@ external_modules_materialize_one() {
     if [ -e "$dest_path" ]; then
       die "external module '$name' collides with another module output: $rel_path"
     fi
-    if [ "$rel_path" != "stack.config/components.json" ] && [ "$rel_path" != "stack.config/components.overlay.json" ] && [ "$rel_path" != "stack.config/service-contracts.json" ] && [ -e "$SOURCE_ROOT/$rel_path" ]; then
+    if [ "$rel_path" != "stack.config/components.json" ] && [ "$rel_path" != "stack.config/components.overlay.json" ] && [ "$rel_path" != "stack.config/service-contracts.json" ] && [ "$rel_path" != "stack.runtime.yaml" ] && [ -e "$SOURCE_ROOT/$rel_path" ]; then
       allowed_override="$(jq -r --argjson i "$index" --arg path "$rel_path" '(.modules[$i].overrides // []) | index($path) // empty' "$manifest_file")"
       [ -n "$allowed_override" ] || die "external module '$name' would override base file without declaring it: $rel_path"
     fi

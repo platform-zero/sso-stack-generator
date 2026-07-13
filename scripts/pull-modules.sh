@@ -118,7 +118,7 @@ if not isinstance(include_groups, list):
 include_groups = set(include_groups)
 for repo in ordered:
     repo_groups = repo.get("groups") or []
-    if any(repo_group in include_groups for repo_group in repo_groups):
+    if repo.get("lifecycle") != "retired" and any(repo_group in include_groups for repo_group in repo_groups):
         add_name(repo["name"])
 
 for name in selected_names:

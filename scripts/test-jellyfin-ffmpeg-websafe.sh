@@ -5,6 +5,11 @@ trap 'status=$?; printf "[jellyfin-ffmpeg-websafe-test] failed at line %s: %s (e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 CONTRACT_ROOT="${WEBSERVICES_CONTRACT_ROOT:-$ROOT_DIR}"
+if [ "$CONTRACT_ROOT" = "$ROOT_DIR" ] && [ ! -f "$CONTRACT_ROOT/stack.config/jellyfin/ffmpeg-websafe.sh" ] && [ -f "$ROOT_DIR/dist/build/build/stack.config/jellyfin/ffmpeg-websafe.sh" ]; then
+  CONTRACT_ROOT="$ROOT_DIR/dist/build/build"
+elif [ "$CONTRACT_ROOT" = "$ROOT_DIR" ] && [ ! -f "$CONTRACT_ROOT/stack.config/jellyfin/ffmpeg-websafe.sh" ] && [ -f "$ROOT_DIR/dist/build/stack.config/jellyfin/ffmpeg-websafe.sh" ]; then
+  CONTRACT_ROOT="$ROOT_DIR/dist/build"
+fi
 
 tmp_dir="$(mktemp -d)"
 cleanup() {

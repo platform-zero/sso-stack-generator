@@ -33,7 +33,7 @@
         "custom",
         "dev-all"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired"
     },
     {
       "name": "tas-dashboard",
@@ -103,7 +103,7 @@
         "custom",
         "dev-all"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired"
     },
     {
       "name": "autobattler-stack-module",
@@ -114,7 +114,7 @@
         "custom",
         "dev-all"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired"
     },
     {
       "name": "tas-dashboard-stack-module",
@@ -191,7 +191,7 @@
         "custom",
         "dev-all"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired"
     },
     {
       "name": "caddy-stack-module",
@@ -241,7 +241,7 @@
         "platform",
         "dev-all"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired"
     },
     {
       "name": "autoheal-stack-module",
@@ -401,7 +401,7 @@
         "observability",
         "dev-all"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired"
     },
     {
       "name": "node-exporter-stack-module",
@@ -421,7 +421,7 @@
         "observability",
         "dev-all"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired"
     },
     {
       "name": "crowdsec-stack-module",
@@ -461,7 +461,7 @@
         "wrapped",
         "dev-all"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired"
     },
     {
       "name": "element-stack-module",
@@ -808,7 +808,7 @@
         "site-integrations",
         "dev-all"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired"
     },
     {
       "name": "gpu-bootstrap-arbiter",

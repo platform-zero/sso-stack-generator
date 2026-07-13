@@ -21,7 +21,7 @@ ALLOWED_PREFIXES = (
     "docs/modules/",
     "tests/fixtures/",
 )
-ALLOWED_ROOTS = {prefix.rstrip("/") for prefix in ALLOWED_PREFIXES}
+ALLOWED_ROOTS = {prefix.rstrip("/") for prefix in ALLOWED_PREFIXES} | {"stack.runtime.yaml"}
 
 
 def die(message: str) -> None:
@@ -199,6 +199,8 @@ def dest_for(module_id: str, rel_path: str) -> str | None:
         return f"stack.config/components.external/{module_id}.json"
     if rel_path == "stack.config/service-contracts.json":
         return f"stack.config/service-contracts.external/{module_id}.json"
+    if rel_path == "stack.runtime.yaml":
+        return f"stack.runtime.external/{module_id}.yaml"
     return rel_path
 
 
@@ -227,7 +229,7 @@ def materialize(
                 if dest_rel in seen_dest:
                     die(f"module '{module_id}' collides with module '{seen_dest[dest_rel]}' at {dest_rel}")
                 if (
-                    rel_path not in {"stack.config/components.json", "stack.config/components.overlay.json", "stack.config/service-contracts.json"}
+                    rel_path not in {"stack.config/components.json", "stack.config/components.overlay.json", "stack.config/service-contracts.json", "stack.runtime.yaml"}
                     and (source_root / rel_path).exists()
                     and rel_path not in set(lock_entry.get("overrides", []))
                 ):
