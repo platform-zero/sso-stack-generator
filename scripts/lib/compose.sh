@@ -149,21 +149,33 @@ rewrite_compose_runtime_paths() {
   mv "$temp_file" "$output_file"
 }
 
+compose_config_command() {
+  if command -v podman >/dev/null 2>&1 && podman compose version >/dev/null 2>&1; then
+    printf 'podman compose\n'
+    return 0
+  fi
+  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    printf 'docker compose\n'
+    return 0
+  fi
+  die "missing required compose command: podman compose or docker compose"
+}
+
 validate_generated_compose() {
   local stage_dir="$1"
   local output_file="$2"
   local deploy_root
+  local compose_command
 
   [ -d "$stage_dir" ] || die "missing stage directory for compose validation: $stage_dir"
   [ -f "$output_file" ] || die "missing generated compose file: $output_file"
 
-  require_cmd docker
-  docker compose version >/dev/null 2>&1 || die "docker compose plugin is unavailable"
+  compose_command="$(compose_config_command)"
   deploy_root="$(cd "$stage_dir/.." && pwd -P)"
 
   (
     cd "$deploy_root"
     COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-webservices}" \
-      docker compose --project-directory "$deploy_root" -f "$output_file" config --quiet --no-interpolate >/dev/null
+      $compose_command --project-directory "$deploy_root" -f "$output_file" config --quiet --no-interpolate >/dev/null
   )
 }
