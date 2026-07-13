@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "defaultRemoteBase": "https://github.com/geraldsummers",
+  "defaultRemoteBase": "https://github.com/platform-zero",
   "defaultBranch": "main",
   "repositories": [
     {
