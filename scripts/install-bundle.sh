@@ -35,7 +35,7 @@ cleanup_stale_target_root_entries() {
     [ -e "$entry" ] || continue
     name="$(basename "$entry")"
     case "$name" in
-      build|runtime|reports|deploy.sh|verify.sh|run-tests.sh|stackctl|install.sh)
+      build|runtime|reports|quarantine|deploy.sh|verify.sh|run-tests.sh|stackctl|install.sh)
         continue
         ;;
       .|..)
