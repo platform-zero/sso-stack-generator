@@ -89,6 +89,9 @@ if [ "$needs_contract_test_tmp" = "1" ]; then
   done
 
   rm -rf "$contract_test_tmp/stack.containers/test-runner/playwright-tests/node_modules"
+  rm -rf \
+    "$contract_test_tmp/stack.config/components.external" \
+    "$contract_test_tmp/stack.config/service-contracts.external"
 
   for file in .bazelrc BUILD.bazel MODULE.bazel MODULE.bazel.lock build.gradle.kts settings.gradle.kts gradlew gradlew.bat; do
     if [ -e "$SOURCE_ROOT/$file" ]; then
