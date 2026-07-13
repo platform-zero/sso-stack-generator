@@ -138,6 +138,9 @@ external_modules_materialize_one() {
       stack.config/components.json|stack.config/components.overlay.json)
         dest_path="$EXTERNAL_MODULES_MATERIALIZED_DIR/stack.config/components.external/$name.json"
         ;;
+      stack.config/service-contracts.json)
+        dest_path="$EXTERNAL_MODULES_MATERIALIZED_DIR/stack.config/service-contracts.external/$name.json"
+        ;;
       README.md|stack.module.json|tests/*|.github/*)
         continue
         ;;
@@ -148,7 +151,7 @@ external_modules_materialize_one() {
     if [ -e "$dest_path" ]; then
       die "external module '$name' collides with another module output: $rel_path"
     fi
-    if [ "$rel_path" != "stack.config/components.json" ] && [ "$rel_path" != "stack.config/components.overlay.json" ] && [ -e "$SOURCE_ROOT/$rel_path" ]; then
+    if [ "$rel_path" != "stack.config/components.json" ] && [ "$rel_path" != "stack.config/components.overlay.json" ] && [ "$rel_path" != "stack.config/service-contracts.json" ] && [ -e "$SOURCE_ROOT/$rel_path" ]; then
       allowed_override="$(jq -r --argjson i "$index" --arg path "$rel_path" '(.modules[$i].overrides // []) | index($path) // empty' "$manifest_file")"
       [ -n "$allowed_override" ] || die "external module '$name' would override base file without declaring it: $rel_path"
     fi

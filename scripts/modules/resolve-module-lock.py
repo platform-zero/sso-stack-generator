@@ -197,6 +197,8 @@ def dest_for(module_id: str, rel_path: str) -> str | None:
         return None
     if rel_path in {"stack.config/components.json", "stack.config/components.overlay.json"}:
         return f"stack.config/components.external/{module_id}.json"
+    if rel_path == "stack.config/service-contracts.json":
+        return f"stack.config/service-contracts.external/{module_id}.json"
     return rel_path
 
 
@@ -225,7 +227,7 @@ def materialize(
                 if dest_rel in seen_dest:
                     die(f"module '{module_id}' collides with module '{seen_dest[dest_rel]}' at {dest_rel}")
                 if (
-                    rel_path not in {"stack.config/components.json", "stack.config/components.overlay.json"}
+                    rel_path not in {"stack.config/components.json", "stack.config/components.overlay.json", "stack.config/service-contracts.json"}
                     and (source_root / rel_path).exists()
                     and rel_path not in set(lock_entry.get("overrides", []))
                 ):

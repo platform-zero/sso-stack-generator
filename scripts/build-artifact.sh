@@ -85,7 +85,7 @@ if [ "$needs_contract_test_tmp" = "1" ]; then
     fi
   done
 
-  for file in .bazelrc BUILD.bazel MODULE.bazel build.gradle.kts settings.gradle.kts gradlew gradlew.bat; do
+  for file in .bazelrc BUILD.bazel MODULE.bazel MODULE.bazel.lock build.gradle.kts settings.gradle.kts gradlew gradlew.bat; do
     if [ -e "$SOURCE_ROOT/$file" ]; then
       cp -a "$SOURCE_ROOT/$file" "$contract_test_tmp/$file"
     fi
@@ -96,6 +96,7 @@ if [ "$needs_contract_test_tmp" = "1" ]; then
   if [ "$external_modules_ready" = "1" ]; then
     external_modules_overlay_into "$contract_test_tmp"
     component_catalog_merge_external "$contract_test_tmp/stack.config/components.json"
+    service_contracts_merge_external "$contract_test_tmp/stack.config/service-contracts.json"
   fi
   contract_test_root="$contract_test_tmp"
 fi
@@ -113,7 +114,12 @@ if [ -f "$local_test_dir/package.json" ]; then
 fi
 
 log "running component selection checks"
+component_catalog_backup="$(mktemp)"
+cp "$contract_test_root/stack.config/components.json" "$component_catalog_backup"
 WEBSERVICES_CONTRACT_ROOT="$contract_test_root" "$SCRIPT_DIR/test-component-selection.sh" >&2
+mv "$component_catalog_backup" "$contract_test_root/stack.config/components.json"
+component_catalog_merge_external "$contract_test_root/stack.config/components.json"
+service_contracts_merge_external "$contract_test_root/stack.config/service-contracts.json"
 
 log "running external module checks"
 "$SCRIPT_DIR/test-external-modules.sh" >&2
@@ -154,7 +160,7 @@ log "running Gradle tests and shadow jars"
 mapfile -t shadow_projects < <(
   find "$contract_test_root/stack.kotlin" -mindepth 2 -maxdepth 2 -name build.gradle.kts -print 2>/dev/null \
     | while IFS= read -r build_file; do
-        if rg -q 'tasks\.shadowJar' "$build_file"; then
+        if grep -Eq 'tasks\.shadowJar' "$build_file"; then
           dirname "$build_file"
         fi
       done \
@@ -174,14 +180,8 @@ fi
 log "packaging immutable release artifact with Bazel"
 (cd "$contract_test_root" && bazel build "$TARGET") >&2
 
-artifact_rel="$(cd "$contract_test_root" && bazel cquery --output=files "$TARGET" | tail -n 1)"
-[ -n "$artifact_rel" ] || die "failed to resolve Bazel artifact path for $TARGET"
-if [[ "$artifact_rel" = /* ]]; then
-  artifact_path="$artifact_rel"
-else
-  execution_root="$(cd "$contract_test_root" && bazel info execution_root)"
-  artifact_path="$execution_root/$artifact_rel"
-fi
+artifact_path="$(cd "$contract_test_root" && bazel info bazel-bin)/web_services_release.tar"
+[ -f "$artifact_path" ] || die "failed to resolve Bazel artifact path for $TARGET"
 
 artifact_listing="$(mktemp)"
 tar -tf "$artifact_path" > "$artifact_listing"

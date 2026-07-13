@@ -268,6 +268,7 @@ build_derived_render_values() {
   derive_if_missing POSTGRES_PIPELINE_PASSWORD postgres-pipeline 48
   derive_if_missing POSTGRES_AIRFLOW_PASSWORD postgres-airflow 48
   derive_if_missing POSTGRES_TEST_RUNNER_PASSWORD postgres-test-runner 48
+  derive_if_missing POSTGRES_AUTOBATTLER_PASSWORD postgres-autobattler 48
   derive_if_missing MARIADB_ADMIN_PASSWORD mariadb-admin 48
   derive_if_missing MARIADB_BOOKSTACK_PASSWORD mariadb-bookstack 48
   derive_if_missing MARIADB_SEAFILE_PASSWORD mariadb-seafile 48
@@ -360,6 +361,9 @@ PY
   fi
   if ! render_has HOMEASSISTANT_TRUSTED_PROXY_SECRET || [ -z "$(render_get HOMEASSISTANT_TRUSTED_PROXY_SECRET)" ]; then
     render_set HOMEASSISTANT_TRUSTED_PROXY_SECRET "$(derive_stack_secret homeassistant-trusted-proxy 64)"
+  fi
+  if ! render_has AUTOBATTLER_TRUSTED_PROXY_SECRET || [ -z "$(render_get AUTOBATTLER_TRUSTED_PROXY_SECRET)" ]; then
+    render_set AUTOBATTLER_TRUSTED_PROXY_SECRET "$(derive_stack_secret autobattler-trusted-proxy 64)"
   fi
   if ! render_has INFERENCE_CONTROLLER_API_TOKEN || [ -z "$(render_get INFERENCE_CONTROLLER_API_TOKEN)" ]; then
     render_set INFERENCE_CONTROLLER_API_TOKEN "$(derive_stack_secret inference-controller-api 64)"

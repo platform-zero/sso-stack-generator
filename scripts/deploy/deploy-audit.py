@@ -143,6 +143,11 @@ def container_name_for(service: str, config: dict) -> str:
     return ((config.get("services") or {}).get(service) or {}).get("container_name") or service
 
 
+def compose_service_names(bundle_root: Path, env_file: Path, project_name: str) -> List[str]:
+    config = compose_config(bundle_root, env_file, project_name)
+    return sorted((config.get("services") or {}).keys())
+
+
 def validate_secrets(env_file: Path) -> int:
     values = load_env_file(env_file)
     missing = [key for key in REQUIRED_SECRET_KEYS if not values.get(key)]
@@ -254,6 +259,7 @@ def module_report(bundle_root: Path, env_file: Path, output: Path, project_name:
     config = compose_config(bundle_root, env_file, project_name)
     graph = load_json(bundle_root / "stack.systemd" / "graph.json")
     excluded = set(graph.get("excludedServices") or [])
+    on_demand = set(graph.get("onDemandServices") or [])
     optional = set(optional_services(bundle_root))
     optional_disabled = not optional_runtime_configured(env_values)
     jobs = set(completion_job_services(config))
@@ -268,6 +274,9 @@ def module_report(bundle_root: Path, env_file: Path, output: Path, project_name:
         if service in excluded:
             classification = "excluded"
             ok = status is None
+        elif service in on_demand:
+            classification = "on-demand"
+            ok = status is None or not any(token in status.lower() for token in ("unhealthy", "restarting", "dead", "created"))
         elif optional_disabled and service in optional:
             classification = "skipped-optional"
             ok = status is None or status.startswith("Exited")
@@ -290,6 +299,7 @@ def module_report(bundle_root: Path, env_file: Path, output: Path, project_name:
         "services": len(services),
         "runtime": sum(1 for item in services if item["classification"] == "runtime"),
         "jobs": sum(1 for item in services if item["classification"] == "job"),
+        "onDemand": sum(1 for item in services if item["classification"] == "on-demand"),
         "skippedOptional": sum(1 for item in services if item["classification"] == "skipped-optional"),
         "excluded": sum(1 for item in services if item["classification"] == "excluded"),
         "problems": len(problems),
@@ -347,7 +357,10 @@ def vector_size_from_collection(payload: dict) -> int:
     return 0
 
 
-def validate_qdrant_schema(env_file: Path) -> int:
+def validate_qdrant_schema(bundle_root: Path, env_file: Path, project_name: str) -> int:
+    if "qdrant" not in compose_service_names(bundle_root, env_file, project_name):
+        print("[webservices-audit] qdrant is not selected in this bundle; skipping vector schema audit", file=sys.stderr)
+        return 0
     env_values = load_env_file(env_file)
     expected = int(env_values.get("VECTOR_EMBED_SIZE") or "0")
     if expected <= 0:
@@ -392,8 +405,7 @@ def main() -> int:
     for name in ("validate-secrets", "storage-report", "module-report", "cleanup-optional-orphans", "qdrant-schema"):
         command = sub.add_parser(name)
         command.add_argument("--env-file", required=True, type=Path)
-        if name != "qdrant-schema":
-            command.add_argument("--bundle-root", required=True, type=Path)
+        command.add_argument("--bundle-root", required=True, type=Path)
         command.add_argument("--project-name", default="webservices")
         if name in {"storage-report", "module-report"}:
             command.add_argument("--output", required=True, type=Path)
@@ -409,7 +421,7 @@ def main() -> int:
     if args.command == "cleanup-optional-orphans":
         return cleanup_optional_orphans(args.bundle_root, args.env_file, args.project_name)
     if args.command == "qdrant-schema":
-        return validate_qdrant_schema(args.env_file)
+        return validate_qdrant_schema(args.bundle_root, args.env_file, args.project_name)
     raise AssertionError(args.command)
 
 

@@ -28,6 +28,24 @@ log() {
   printf '[webservices-install] %s\n' "$*" >&2
 }
 
+cleanup_stale_target_root_entries() {
+  local entry name
+
+  for entry in "$TARGET_ROOT"/* "$TARGET_ROOT"/.[!.]* "$TARGET_ROOT"/..?*; do
+    [ -e "$entry" ] || continue
+    name="$(basename "$entry")"
+    case "$name" in
+      build|runtime|reports|deploy.sh|verify.sh|run-tests.sh|stackctl|install.sh)
+        continue
+        ;;
+      .|..)
+        continue
+        ;;
+    esac
+    rm -rf "$entry"
+  done
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -h|--help)
@@ -80,6 +98,8 @@ fi
 mv "$tmp_build" "$TARGET_ROOT/build"
 rm -rf "$TARGET_ROOT/build.previous"
 
+cleanup_stale_target_root_entries
+
 for wrapper in deploy.sh verify.sh run-tests.sh stackctl install.sh; do
   if [ -f "$DIST_ROOT/$wrapper" ]; then
     cp "$DIST_ROOT/$wrapper" "$TARGET_ROOT/$wrapper"
@@ -87,7 +107,8 @@ for wrapper in deploy.sh verify.sh run-tests.sh stackctl install.sh; do
   fi
 done
 
-mkdir -p "$TARGET_ROOT/runtime" "$TARGET_ROOT/repos/source"
+mkdir -p "$TARGET_ROOT/runtime"
+ln -sfn "$TARGET_ROOT/build/reports" "$TARGET_ROOT/reports"
 log "staged bundle into $TARGET_ROOT"
 
 if [ "$RUN_DEPLOY" = "1" ]; then
