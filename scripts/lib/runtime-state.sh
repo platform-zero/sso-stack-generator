@@ -37,7 +37,16 @@ ensure_runtime_links() {
 
 prepare_runtime_dir() {
   local runtime_root="$1"
-  rm -rf "$runtime_root/configs" "$runtime_root/stack.env" "$runtime_root/build-info.json"
+  if ! rm -rf "$runtime_root/configs" "$runtime_root/stack.env" "$runtime_root/build-info.json"; then
+    if ! command -v docker >/dev/null 2>&1; then
+      die "unable to clean runtime directory and docker is unavailable: $runtime_root"
+    fi
+    docker run --rm \
+      -v "$runtime_root:/runtime-root" \
+      "$RUNTIME_CLEANUP_IMAGE" \
+      sh -ceu 'rm -rf /runtime-root/configs /runtime-root/stack.env /runtime-root/build-info.json' \
+      || die "unable to clean runtime directory: $runtime_root"
+  fi
   mkdir -p "$runtime_root/configs"
   chmod 700 "$runtime_root" "$runtime_root/configs"
 }
