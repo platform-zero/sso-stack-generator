@@ -71,7 +71,7 @@ validate_caddy_file() {
     -e OPENSEARCH_BASIC_AUTH=test \
     -e HOMEASSISTANT_TRUSTED_PROXY_SECRET=test \
     -e VAULTWARDEN_ORG_ID=00000000-0000-0000-0000-000000000000 \
-    caddy:2.11.3 \
+    docker.io/library/caddy:2.11.3 \
     caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >"$caddy_log" 2>&1; then
     cat "$caddy_log" >&2
     rm -f "$caddy_log"
