@@ -13,12 +13,10 @@ fun includeProjectIfPresent(projectName: String, relativePath: String) {
     }
 }
 
-includeProjectIfPresent("pipeline-common", "stack.kotlin/pipeline-common")
 includeProjectIfPresent("gpu-bootstrap-arbiter", "stack.kotlin/gpu-bootstrap-arbiter")
 includeProjectIfPresent("gpu-workload-monitor", "stack.kotlin/gpu-workload-monitor")
 includeProjectIfPresent("inference-gateway", "stack.kotlin/inference-gateway")
 includeProjectIfPresent("inference-controller", "stack.kotlin/inference-controller")
-includeProjectIfPresent("test-manager", "stack.kotlin/test-manager")
 includeProjectIfPresent("test-runner", "stack.kotlin/test-runner")
 includeProjectIfPresent("keycloak-onboarding-listener", "stack.kotlin/keycloak-onboarding-listener")
 includeProjectIfPresent("progression", "stack.kotlin/progression")

@@ -79,11 +79,11 @@
       "name": "test-manager",
       "kind": "source",
       "groups": [
-        "sources",
-        "custom",
-        "dev-all"
+        "destruction"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired",
+      "remote": "https://github.com/geraldsummers/test-manager-stack-module.git",
+      "defaultBranch": "main"
     },
     {
       "name": "keycloak-onboarding-listener",
@@ -99,9 +99,7 @@
       "name": "pipeline-common",
       "kind": "source",
       "groups": [
-        "sources",
-        "custom",
-        "dev-all"
+        "destruction"
       ],
       "lifecycle": "retired"
     },
@@ -168,10 +166,11 @@
       "moduleId": "test-manager",
       "sourceRepo": "test-manager",
       "groups": [
-        "custom",
-        "dev-all"
+        "destruction"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired",
+      "remote": "https://github.com/geraldsummers/test-manager-stack-module.git",
+      "defaultBranch": "main"
     },
     {
       "name": "keycloak-onboarding-listener-stack-module",
@@ -190,8 +189,7 @@
       "moduleId": "pipeline",
       "sourceRepo": "pipeline-common",
       "groups": [
-        "custom",
-        "dev-all"
+        "destruction"
       ],
       "lifecycle": "retired"
     },
@@ -243,7 +241,7 @@
         "platform",
         "dev-all"
       ],
-      "lifecycle": "retired"
+      "lifecycle": "active"
     },
     {
       "name": "autoheal-stack-module",
@@ -810,7 +808,7 @@
         "site-integrations",
         "dev-all"
       ],
-      "lifecycle": "retired"
+      "lifecycle": "active"
     },
     {
       "name": "gpu-bootstrap-arbiter",
