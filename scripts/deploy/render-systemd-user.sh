@@ -5,6 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 LIB_DIR="$(cd "$SCRIPT_DIR/../lib" && pwd -P)"
 # shellcheck source=scripts/lib/common.sh
 source "$LIB_DIR/common.sh"
+# shellcheck source=scripts/lib/compose.sh
+source "$LIB_DIR/compose.sh"
 
 BUNDLE_ROOT=""
 OUTPUT_DIR=""
@@ -72,7 +74,6 @@ mkdir -p "$OUTPUT_DIR"
 rm -f "$OUTPUT_DIR"/*.service "$OUTPUT_DIR"/*.target "$OUTPUT_DIR"/*.timer
 printf '[webservices-build] rendering systemd user units from %s into %s\n' "$GRAPH_PATH" "$OUTPUT_DIR" >&2
 
-require_cmd docker
 require_cmd jq
 require_cmd python3
 SYSTEMD_NOTIFY_BIN="$(command -v systemd-notify)"
@@ -81,6 +82,7 @@ SYSTEMD_NOTIFY_BIN="$(command -v systemd-notify)"
 compose_config_json="$(mktemp)"
 base_networks_compose="$(mktemp)"
 base_networks_json="$(mktemp)"
+compose_command="$(compose_config_command)"
 cleanup() {
   rm -f "$compose_config_json" "$base_networks_compose" "$base_networks_json"
 }
@@ -88,7 +90,7 @@ trap cleanup EXIT
 
 (
   cd "$LOCAL_DEPLOY_ROOT"
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" docker compose \
+  COMPOSE_PROJECT_NAME="$PROJECT_NAME" $compose_command \
     --project-directory "$LOCAL_DEPLOY_ROOT" \
     -f "$LOCAL_BUNDLE_ROOT/docker-compose.yml" \
     config --format json --no-interpolate
@@ -104,7 +106,7 @@ trap cleanup EXIT
 
 (
   cd "$LOCAL_DEPLOY_ROOT"
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" docker compose \
+  COMPOSE_PROJECT_NAME="$PROJECT_NAME" $compose_command \
     --project-directory "$LOCAL_DEPLOY_ROOT" \
     -f "$base_networks_compose" \
     config --format json --no-interpolate

@@ -52,8 +52,17 @@ assert_not_private_mode() {
 validate_caddy_file() {
   local caddy_file="$1"
   local caddy_log
+  local container_cli
   caddy_log="$(mktemp)"
-  if ! docker run --rm \
+  if command -v podman >/dev/null 2>&1; then
+    container_cli=podman
+  elif command -v docker >/dev/null 2>&1; then
+    container_cli=docker
+  else
+    printf '[component-selection-test] missing required container CLI: podman or docker\n' >&2
+    exit 1
+  fi
+  if ! "$container_cli" run --rm \
     -v "$caddy_file:/etc/caddy/Caddyfile:ro" \
     -e DOMAIN=example.test \
     -e ONBOARDING_TRUSTED_PROXY_SECRET=test \
