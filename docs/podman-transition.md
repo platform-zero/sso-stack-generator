@@ -1,7 +1,7 @@
 # Podman transition
 
 The runtime source of truth is each selected module's `stack.runtime.yaml` plus
-the site's flat `manifest.json`. Compose files remain import/reference inputs;
+the site's flat `manifest.json`. Runtime contract files remain import/reference inputs;
 they are not the canonical runtime model.
 
 ## Integration ownership
@@ -29,11 +29,11 @@ bundles or Docker socket/controller modules.
 ./scripts/test-runtime-generator.sh
 ```
 
-Use `--backend docker` to produce a Docker Compose compatibility bundle from
-the same intermediate representation. `import-compose --module DIR` converts
-the supported Compose subset into a module runtime file. Unsupported behavior
-must be represented explicitly in the runtime model rather than hidden in a
-renderer.
+`import-compose --module DIR` converts the supported Compose subset into a
+module runtime file. Unsupported behavior must be represented explicitly in the
+runtime model rather than hidden in a renderer. The active deployment path is
+`--backend podman`; Docker compatibility bundles are transition-only and should
+not be treated as the primary deploy or verify target.
 
 ## Rootful installation
 

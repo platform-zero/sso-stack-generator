@@ -19,7 +19,7 @@ testdev_copy_bundle_to_volume
 
 testdev_run_cli sh -lc '
   cd /workspace-home/deploy/bundle
-  services="$(docker compose --env-file runtime/stack.env --project-directory . -f build/docker-compose.yml config --services)"
+  services="$(docker compose --env-file runtime/stack.env --project-directory . -f build/runtime-contract.yml config --services)"
   refresh_services=
   for service in caddy; do
     if printf "%s\n" "$services" | grep -qx "$service"; then
@@ -27,7 +27,7 @@ testdev_run_cli sh -lc '
     fi
   done
   if [ -n "$refresh_services" ]; then
-    docker compose --env-file runtime/stack.env --project-directory . -f build/docker-compose.yml up -d --force-recreate --no-deps $refresh_services
+    docker compose --env-file runtime/stack.env --project-directory . -f build/runtime-contract.yml up -d --force-recreate --no-deps $refresh_services
     for service in $refresh_services; do
       container="${COMPOSE_PROJECT_NAME}-${service}-1"
       for attempt in $(seq 1 60); do

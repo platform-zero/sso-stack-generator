@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/lib/common.sh
+source "$ROOT_DIR/scripts/lib/common.sh"
 
 have() {
   command -v "$1" >/dev/null 2>&1
@@ -15,8 +17,8 @@ cd "$ROOT_DIR"
 
 section "Repository"
 git status --short
-if have docker; then
-  docker version --format '[docker] Client={{.Client.Version}} Server={{.Server.Version}}' || true
+if have podman; then
+  podman version --format '[podman] Client={{.Client.Version}} Server={{.Server.Version}}' || true
 fi
 
 section "Secret-like files"
@@ -49,7 +51,7 @@ fi
 section "Mutable image tags"
 if have rg; then
   image_roots=()
-  for root in stack.compose global.settings stack.config; do
+  for root in runtime.contract global.settings stack.config; do
     [ -e "$root" ] && image_roots+=( "$root" )
   done
   if [ "${#image_roots[@]}" -gt 0 ]; then
@@ -69,7 +71,7 @@ fi
 section "High-risk container options"
 if have rg; then
   option_roots=()
-  for root in stack.compose global.settings; do
+  for root in runtime.contract global.settings; do
     [ -e "$root" ] && option_roots+=( "$root" )
   done
   if [ "${#option_roots[@]}" -gt 0 ]; then
@@ -80,21 +82,21 @@ else
 fi
 
 section "Compose syntax"
-if have docker && docker compose version >/dev/null 2>&1; then
+if have podman && podman compose version >/dev/null 2>&1; then
   compose_args=()
-  if [ -d stack.compose ]; then
+  if [ -d runtime.contract ]; then
     while IFS= read -r compose_file; do
       compose_args+=("-f" "$compose_file")
-    done < <(find stack.compose -maxdepth 1 -type f -name '*.yml' | sort)
+    done < <(find runtime.contract -maxdepth 1 -type f -name '*.yml' | sort)
   fi
   if [ "${#compose_args[@]}" -gt 0 ]; then
-    docker compose "${compose_args[@]}" config --no-interpolate >/dev/null
-    printf '[compose] ok\n'
+    container_contract "${compose_args[@]}" config --no-interpolate >/dev/null
+    printf '[runtime-contract] ok\n'
   else
-    printf '[skip] no stack.compose files in this checkout\n'
+    printf '[skip] no runtime.contract files in this checkout\n'
   fi
 else
-  printf '[skip] docker compose is not available\n'
+  printf '[skip] podman compose is not available\n'
 fi
 
 section "Shell syntax"

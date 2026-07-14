@@ -53,10 +53,9 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-[ -f "$BUNDLE_ROOT/docker-compose.yml" ] || die "missing docker-compose.yml in $BUNDLE_ROOT"
+[ -f "$BUNDLE_ROOT/runtime-contract.yml" ] || die "missing runtime contract in $BUNDLE_ROOT"
 [ -f "$DEPLOY_ROOT/runtime/stack.env" ] || die "missing runtime/stack.env in $DEPLOY_ROOT/runtime"
 [ -f "$BUNDLE_ROOT/stack.systemd/graph.json" ] || die "missing stack.systemd/graph.json in $BUNDLE_ROOT"
-require_cmd docker
 require_cmd jq
 
 verify_log() {
@@ -94,8 +93,8 @@ dump_verify_diagnostics() {
     verify_log "no failed user units reported"
   fi
 
-  verify_log "docker container snapshot"
-  docker ps -a --format '{{.Names}}\t{{.Status}}\t{{.Image}}' 2>&1 | sort || true
+  verify_log "container snapshot"
+  container_runtime ps -a --format '{{.Names}}\t{{.Status}}\t{{.Image}}' 2>&1 | sort || true
   if [ -x "$BUNDLE_ROOT/scripts/mount-diagnostics.sh" ]; then
     verify_log "mount diagnostics summary"
     "$BUNDLE_ROOT/scripts/mount-diagnostics.sh" \

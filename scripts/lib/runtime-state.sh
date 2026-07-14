@@ -21,12 +21,12 @@ ensure_runtime_links() {
       stale_runtime="${deploy_root}/runtime.stale.$(date +%Y%m%d_%H%M%S)"
       mv "$runtime_link" "$stale_runtime" || die "unable to replace stale runtime path $runtime_link"
       printf '[webservices-runtime] preserved previous runtime path at %s\n' "$stale_runtime" >&2
-      if command -v docker >/dev/null 2>&1; then
-        docker run --rm \
+      if command -v "$(container_cli)" >/dev/null 2>&1; then
+        container_runtime run --rm \
           -v "$deploy_root:/cleanup-root" \
           "$RUNTIME_CLEANUP_IMAGE" \
           sh -ceu 'rm -rf "/cleanup-root/$1"' -- "$(basename "$stale_runtime")" \
-          || printf '[webservices-runtime] warning: unable to delete quarantined runtime path %s via Docker\n' "$stale_runtime" >&2
+          || printf '[webservices-runtime] warning: unable to delete quarantined runtime path %s via container runtime\n' "$stale_runtime" >&2
       fi
     fi
   fi
@@ -38,10 +38,10 @@ ensure_runtime_links() {
 prepare_runtime_dir() {
   local runtime_root="$1"
   if ! rm -rf "$runtime_root/configs" "$runtime_root/stack.env" "$runtime_root/build-info.json"; then
-    if ! command -v docker >/dev/null 2>&1; then
-      die "unable to clean runtime directory and docker is unavailable: $runtime_root"
+    if ! command -v "$(container_cli)" >/dev/null 2>&1; then
+      die "unable to clean runtime directory and container runtime is unavailable: $runtime_root"
     fi
-    docker run --rm \
+    container_runtime run --rm \
       -v "$runtime_root:/runtime-root" \
       "$RUNTIME_CLEANUP_IMAGE" \
       sh -ceu 'rm -rf /runtime-root/configs /runtime-root/stack.env /runtime-root/build-info.json' \
@@ -51,7 +51,7 @@ prepare_runtime_dir() {
   chmod 700 "$runtime_root" "$runtime_root/configs"
 }
 
-run_compose_from_bundle() {
+run_contract_from_bundle() {
   local bundle_root="$1"
   local runtime_env_file="$2"
   local deploy_root
@@ -59,10 +59,10 @@ run_compose_from_bundle() {
   deploy_root="$(cd "$bundle_root/.." && pwd -P)"
   (
     cd "$deploy_root"
-    COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-webservices}" docker compose \
+    COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-webservices}" container_contract \
       --project-directory "$deploy_root" \
       --env-file "$runtime_env_file" \
-      -f "$bundle_root/docker-compose.yml" \
+      -f "$bundle_root/runtime-contract.yml" \
       "$@"
   )
 }

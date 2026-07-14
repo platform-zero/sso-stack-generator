@@ -64,7 +64,7 @@ is_allowed() {
 
 service_roots=(
   global.settings
-  stack.compose
+  runtime.contract
   stack.config
   stack.containers
   stack.kotlin

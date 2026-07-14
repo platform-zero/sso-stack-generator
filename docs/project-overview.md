@@ -8,7 +8,7 @@ choices belong outside this repository.
 
 ## Core Responsibilities
 
-- Render Docker Compose, systemd user units, service metadata, and verification
+- Render Podman bundles, systemd user units, service metadata, and verification
   scripts from a site manifest.
 - Provide contract tests for authentication, routing, health, security headers,
   runtime wiring, and generated artifacts.

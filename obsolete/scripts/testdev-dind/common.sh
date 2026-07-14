@@ -172,7 +172,7 @@ testdev_seed_host_images() {
   [ "${TESTDEV_SEED_HOST_IMAGES:-1}" = "1" ] || return 0
 
   local compose_file dind_name tmp_images seeded
-  compose_file="$(testdev_deploy_root)/build/docker-compose.yml"
+  compose_file="$(testdev_deploy_root)/build/runtime-contract.yml"
   dind_name="$(testdev_dind_name)"
   tmp_images="$(mktemp)"
   seeded=0

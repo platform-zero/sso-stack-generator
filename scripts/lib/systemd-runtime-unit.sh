@@ -7,11 +7,11 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/common.sh"
 usage() {
   cat <<'EOF_USAGE'
 Usage:
-  systemd-compose-unit.sh service-start --compose-file <path> --env-file <path> --project-directory <path> --project-name <name> --unit-name <name> [--notify-bin <path>]
-  systemd-compose-unit.sh service-stop --compose-file <path> --env-file <path> --project-directory <path> --project-name <name> --unit-name <name>
-  systemd-compose-unit.sh service-reload --compose-file <path> --env-file <path> --project-directory <path> --project-name <name> --unit-name <name>
-  systemd-compose-unit.sh service-wait-healthy --compose-file <path> --env-file <path> --project-directory <path> --project-name <name> --unit-name <name>
-  systemd-compose-unit.sh job-run --compose-file <path> --env-file <path> --project-directory <path> --service-name <name> --project-name <name>
+  systemd-runtime-unit.sh service-start --runtime-contract-file <path> --env-file <path> --project-directory <path> --project-name <name> --unit-name <name> [--notify-bin <path>]
+  systemd-runtime-unit.sh service-stop --runtime-contract-file <path> --env-file <path> --project-directory <path> --project-name <name> --unit-name <name>
+  systemd-runtime-unit.sh service-reload --runtime-contract-file <path> --env-file <path> --project-directory <path> --project-name <name> --unit-name <name>
+  systemd-runtime-unit.sh service-wait-healthy --runtime-contract-file <path> --env-file <path> --project-directory <path> --project-name <name> --unit-name <name>
+  systemd-runtime-unit.sh job-run --runtime-contract-file <path> --env-file <path> --project-directory <path> --service-name <name> --project-name <name>
 EOF_USAGE
 }
 
@@ -19,7 +19,7 @@ EOF_USAGE
 command_name="$1"
 shift
 
-COMPOSE_FILE=""
+RUNTIME_CONTRACT_FILE=""
 ENV_FILE=""
 PROJECT_DIRECTORY=""
 SERVICE_NAME=""
@@ -33,8 +33,8 @@ PREHEALTH_TRANSIENT_GRACE_SECONDS="${PREHEALTH_TRANSIENT_GRACE_SECONDS:-120}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --compose-file)
-      COMPOSE_FILE="$2"
+    --runtime-contract-file)
+      RUNTIME_CONTRACT_FILE="$2"
       shift
       ;;
     --env-file)
@@ -66,34 +66,33 @@ while [ "$#" -gt 0 ]; do
       exit 0
       ;;
     *)
-      die "unknown argument for systemd-compose-unit.sh: $1"
+      die "unknown argument for systemd-runtime-unit.sh: $1"
       ;;
   esac
   shift
 done
 
-[ -n "$COMPOSE_FILE" ] || die "--compose-file is required"
-[ -f "$COMPOSE_FILE" ] || die "missing compose file: $COMPOSE_FILE"
+[ -n "$RUNTIME_CONTRACT_FILE" ] || die "--runtime-contract-file is required"
+[ -f "$RUNTIME_CONTRACT_FILE" ] || die "missing runtime contract file: $RUNTIME_CONTRACT_FILE"
 [ -n "$ENV_FILE" ] || die "--env-file is required"
 [ -f "$ENV_FILE" ] || die "missing env file: $ENV_FILE"
 [ -n "$PROJECT_DIRECTORY" ] || die "--project-directory is required"
 [ -d "$PROJECT_DIRECTORY" ] || die "missing project directory: $PROJECT_DIRECTORY"
 [ -n "$PROJECT_NAME" ] || die "--project-name is required"
-require_cmd docker
 require_cmd jq
 
 compose() {
   COMPOSE_IGNORE_ORPHANS="${COMPOSE_IGNORE_ORPHANS:-true}" \
-  docker compose \
+  container_contract \
     --project-name "$PROJECT_NAME" \
     --project-directory "$PROJECT_DIRECTORY" \
     --env-file "$ENV_FILE" \
-    -f "$COMPOSE_FILE" \
+    -f "$RUNTIME_CONTRACT_FILE" \
     "$@"
 }
 
 compose_config_json() {
-  compose config --format json
+  runtime contract config --format json
 }
 
 docker_stop_container() {
@@ -111,14 +110,14 @@ docker_stop_container() {
       timeout_seconds=10
       ;;
   esac
-  if docker inspect "$container_name" >/dev/null 2>&1; then
-    docker stop --time "$timeout_seconds" "$container_name" >/dev/null 2>&1 || docker kill "$container_name" >/dev/null 2>&1 || true
+  if container_runtime inspect "$container_name" >/dev/null 2>&1; then
+    container_runtime stop --time "$timeout_seconds" "$container_name" >/dev/null 2>&1 || container_runtime kill "$container_name" >/dev/null 2>&1 || true
   fi
 }
 
 docker_rm_container() {
   local container_name="$1"
-  docker rm -f "$container_name" >/dev/null 2>&1 || true
+  container_runtime rm -f "$container_name" >/dev/null 2>&1 || true
 }
 
 services_from_config() {
@@ -159,32 +158,32 @@ service_has_any_healthcheck() {
 
 container_state() {
   local container_name="$1"
-  docker inspect -f '{{.State.Status}}' "$container_name" 2>/dev/null || true
+  container_runtime inspect -f '{{.State.Status}}' "$container_name" 2>/dev/null || true
 }
 
 container_health() {
   local container_name="$1"
-  docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$container_name" 2>/dev/null || true
+  container_runtime inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$container_name" 2>/dev/null || true
 }
 
 log_container_failure_details() {
   local container_name="$1"
-  if ! docker inspect "$container_name" >/dev/null 2>&1; then
+  if ! container_runtime inspect "$container_name" >/dev/null 2>&1; then
     printf '[webservices-unit] %s container=%s missing during failure inspection\n' "$UNIT_NAME" "$container_name" >&2
     return
   fi
-  docker inspect -f \
+  container_runtime inspect -f \
     '[webservices-unit] '"$UNIT_NAME"' container={{.Name}} status={{.State.Status}} exit_code={{.State.ExitCode}} oom_killed={{.State.OOMKilled}} restarting={{.State.Restarting}} error={{json .State.Error}} restart_count={{.RestartCount}}' \
     "$container_name" >&2 || true
-  docker logs --tail 160 "$container_name" >&2 || true
+  container_runtime logs --tail 160 "$container_name" >&2 || true
 }
 
 stop_marker_path() {
-  printf '%s.stopping\n' "$COMPOSE_FILE"
+  printf '%s.stopping\n' "$RUNTIME_CONTRACT_FILE"
 }
 
 reload_marker_path() {
-  printf '%s.reloading\n' "$COMPOSE_FILE"
+  printf '%s.reloading\n' "$RUNTIME_CONTRACT_FILE"
 }
 
 clear_markers() {
@@ -273,7 +272,7 @@ service_start() {
   reload_marker="$(reload_marker_path)"
   clear_markers
 
-  printf '[webservices-unit] compose up/build domain %s via %s\n' "$UNIT_NAME" "$COMPOSE_FILE" >&2
+  printf '[webservices-unit] compose up/build domain %s via %s\n' "$UNIT_NAME" "$RUNTIME_CONTRACT_FILE" >&2
   compose up -d --build --force-recreate
   config_json="$(compose_config_json)"
   health_seen_healthy=0
@@ -393,7 +392,7 @@ service_stop() {
   local stop_marker config_json service_name container_name
   stop_marker="$(stop_marker_path)"
   touch "$stop_marker"
-  printf '[webservices-unit] compose stop domain %s via %s\n' "$UNIT_NAME" "$COMPOSE_FILE" >&2
+  printf '[webservices-unit] compose stop domain %s via %s\n' "$UNIT_NAME" "$RUNTIME_CONTRACT_FILE" >&2
   config_json="$(compose_config_json)"
   while IFS= read -r service_name; do
     [ -n "$service_name" ] || continue
@@ -415,7 +414,7 @@ service_reload() {
   reload_marker="$(reload_marker_path)"
   touch "$reload_marker"
   trap 'rm -f "$reload_marker"' EXIT
-  printf '[webservices-unit] compose rebuild/recreate domain %s via %s\n' "$UNIT_NAME" "$COMPOSE_FILE" >&2
+  printf '[webservices-unit] compose rebuild/recreate domain %s via %s\n' "$UNIT_NAME" "$RUNTIME_CONTRACT_FILE" >&2
   compose up -d --build --force-recreate
   config_json="$(compose_config_json)"
   start_time="$(date +%s)"
@@ -446,7 +445,7 @@ service_reload() {
 job_run() {
   local rc
   [ -n "$SERVICE_NAME" ] || die "--service-name is required for job-run"
-  printf '[webservices-unit] compose build/run oneshot %s via %s\n' "$SERVICE_NAME" "$COMPOSE_FILE" >&2
+  printf '[webservices-unit] compose build/run oneshot %s via %s\n' "$SERVICE_NAME" "$RUNTIME_CONTRACT_FILE" >&2
   compose rm -f -s "$SERVICE_NAME" >/dev/null 2>&1 || true
   set +e
   compose up --build --force-recreate --abort-on-container-exit --exit-code-from "$SERVICE_NAME" "$SERVICE_NAME"
@@ -472,6 +471,6 @@ case "$command_name" in
     job_run
     ;;
   *)
-    die "unknown command for systemd-compose-unit.sh: $command_name"
+    die "unknown command for systemd-runtime-unit.sh: $command_name"
     ;;
 esac

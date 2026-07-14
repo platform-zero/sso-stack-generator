@@ -4,7 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 BUNDLE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 DEPLOY_ROOT="$(cd "$BUNDLE_ROOT/.." && pwd -P)"
-COMPOSE_FILE="$BUNDLE_ROOT/docker-compose.yml"
+# shellcheck source=scripts/lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+RUNTIME_CONTRACT_FILE="$BUNDLE_ROOT/runtime-contract.yml"
 COMPOSE_JSON=""
 RUNTIME_ENV_FILE="$DEPLOY_ROOT/runtime/stack.env"
 OUTPUT_FILE=""
@@ -12,11 +14,11 @@ OUTPUT_FILE=""
 usage() {
   cat <<'EOF_USAGE'
 Usage:
-  ./scripts/mount-diagnostics.sh [--bundle-root <path>] [--compose-file <path>] [--compose-json <path>] [--runtime-env-file <path>] [--output <path>]
+  ./scripts/mount-diagnostics.sh [--bundle-root <path>] [--runtime-contract-file <path>] [--compose-json <path>] [--runtime-env-file <path>] [--output <path>]
 
-Writes a JSON report describing Docker volume/bind mount sources, targets,
+Writes a JSON report describing container volume/bind mount sources, targets,
 realpaths, devices, duplicate targets, and overlapping source/target paths.
-The report is diagnostic only; it does not mutate host paths or Docker state.
+The report is diagnostic only; it does not mutate host paths or container state.
 EOF_USAGE
 }
 
@@ -25,12 +27,12 @@ while [ "$#" -gt 0 ]; do
     --bundle-root)
       BUNDLE_ROOT="$2"
       DEPLOY_ROOT="$(cd "$BUNDLE_ROOT/.." && pwd -P)"
-      COMPOSE_FILE="$BUNDLE_ROOT/docker-compose.yml"
+      RUNTIME_CONTRACT_FILE="$BUNDLE_ROOT/runtime-contract.yml"
       RUNTIME_ENV_FILE="$DEPLOY_ROOT/runtime/stack.env"
       shift
       ;;
-    --compose-file)
-      COMPOSE_FILE="$2"
+    --runtime-contract-file)
+      RUNTIME_CONTRACT_FILE="$2"
       shift
       ;;
     --compose-json)
@@ -58,13 +60,6 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-require_cmd() {
-  command -v "$1" >/dev/null 2>&1 || {
-    printf '[mount-diagnostics] ERROR: missing required command: %s\n' "$1" >&2
-    exit 1
-  }
-}
-
 require_cmd python3
 
 temp_json=""
@@ -77,23 +72,22 @@ cleanup() {
 trap cleanup EXIT
 
 if [ -z "$COMPOSE_JSON" ]; then
-  require_cmd docker
   require_cmd jq
-  [ -f "$COMPOSE_FILE" ] || {
-    printf '[mount-diagnostics] ERROR: missing compose file: %s\n' "$COMPOSE_FILE" >&2
+  [ -f "$RUNTIME_CONTRACT_FILE" ] || {
+    printf '[mount-diagnostics] ERROR: missing runtime contract file: %s\n' "$RUNTIME_CONTRACT_FILE" >&2
     exit 1
   }
   temp_json="$(mktemp)"
   if [ -f "$RUNTIME_ENV_FILE" ]; then
-    docker compose \
+    container_contract \
       --project-directory "$DEPLOY_ROOT" \
       --env-file "$RUNTIME_ENV_FILE" \
-      -f "$COMPOSE_FILE" \
+      -f "$RUNTIME_CONTRACT_FILE" \
       config --format json --no-interpolate > "$temp_json"
   else
-    docker compose \
+    container_contract \
       --project-directory "$DEPLOY_ROOT" \
-      -f "$COMPOSE_FILE" \
+      -f "$RUNTIME_CONTRACT_FILE" \
       config --format json --no-interpolate > "$temp_json"
   fi
   COMPOSE_JSON="$temp_json"

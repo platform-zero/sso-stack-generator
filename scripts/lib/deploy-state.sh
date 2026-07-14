@@ -92,11 +92,11 @@ deploy_state_file_manifest() {
   local bundle_root="$1"
   deploy_state_manifest_for_root "$bundle_root" \
     .dockerignore \
-    docker-compose.yml \
+    runtime-contract.yml \
     global.settings \
     scripts \
     site \
-    stack.compose \
+    runtime.contract \
     stack.config \
     stack.containers \
     stack.js \
@@ -256,7 +256,7 @@ deploy_state_check_global_signature() {
   diff_output="$(diff -u "$signature_file" "$current_file" || true)"
   rm -f "$current_file"
   printf '%s\n' "$diff_output" >&2
-  printf '[webservices-build] ERROR: global deployment inputs changed; run a full deploy so component selection, systemd graph, and Docker infra reconcile together\n' >&2
+  printf '[webservices-build] ERROR: global deployment inputs changed; run a full deploy so component selection, systemd graph, and container infra reconcile together\n' >&2
   return 1
 }
 

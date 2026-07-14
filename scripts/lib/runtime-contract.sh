@@ -51,7 +51,7 @@ extract_extension_blocks() {
   ' "$file"
 }
 
-compose_service_files() {
+runtime_contract_service_files() {
   local stage_dir="$1"
   local manifest_path="${2:-}"
   local catalog selected_file
@@ -66,7 +66,7 @@ compose_service_files() {
     done < <(component_selection_compose_files "$manifest_path" "$catalog")
   fi
 
-  for file in "$stage_dir"/stack.compose/*.yml; do
+  for file in "$stage_dir"/runtime.contract/*.yml; do
     [ -f "$file" ] || continue
     [ "$(basename "$file")" = "test-runners.yml" ] && continue
     if [ -n "$manifest_path" ] && [ -z "${selected_files[$(basename "$file")]+x}" ]; then
@@ -76,7 +76,7 @@ compose_service_files() {
   done | sort
 }
 
-build_merged_compose() {
+build_runtime_contract() {
   local stage_dir="$1"
   local output_file="$2"
   local manifest_path="${3:-}"
@@ -100,10 +100,10 @@ build_merged_compose() {
     else
       service_files+=( "$service_file" )
     fi
-  done < <(compose_service_files "$stage_dir" "$manifest_path")
+  done < <(runtime_contract_service_files "$stage_dir" "$manifest_path")
 
   {
-    printf '# Auto-generated docker-compose.yml\n'
+    printf '# Auto-generated runtime-contract.yml\n'
     printf '# Generated: %s\n\n' "$(iso_timestamp_utc)"
 
     for service_file in "${service_files[@]}"; do
@@ -137,7 +137,7 @@ build_merged_compose() {
   rm -rf "$temp_dir"
 }
 
-rewrite_compose_runtime_paths() {
+rewrite_runtime_contract_paths() {
   local output_file="$1"
   local temp_file
   temp_file="$(mktemp)"
@@ -149,33 +149,25 @@ rewrite_compose_runtime_paths() {
   mv "$temp_file" "$output_file"
 }
 
-compose_config_command() {
-  if command -v podman >/dev/null 2>&1 && podman compose version >/dev/null 2>&1; then
-    printf 'podman compose\n'
+runtime_contract_config_command() {
+  if container_contract version >/dev/null 2>&1; then
+    printf 'container_contract\n'
     return 0
   fi
-  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-    printf 'docker compose\n'
-    return 0
-  fi
-  die "missing required compose command: podman compose or docker compose"
+  die "missing required runtime contract command for $(container_cli)"
 }
 
-validate_generated_compose() {
+validate_runtime_contract() {
   local stage_dir="$1"
   local output_file="$2"
   local deploy_root
-  local compose_command
-
-  [ -d "$stage_dir" ] || die "missing stage directory for compose validation: $stage_dir"
-  [ -f "$output_file" ] || die "missing generated compose file: $output_file"
-
-  compose_command="$(compose_config_command)"
+  [ -d "$stage_dir" ] || die "missing stage directory for runtime contract validation: $stage_dir"
+  [ -f "$output_file" ] || die "missing generated runtime contract file: $output_file"
   deploy_root="$(cd "$stage_dir/.." && pwd -P)"
 
   (
     cd "$deploy_root"
     COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-webservices}" \
-      $compose_command --project-directory "$deploy_root" -f "$output_file" config --quiet --no-interpolate >/dev/null
+      container_contract --project-directory "$deploy_root" -f "$output_file" config --quiet --no-interpolate >/dev/null
   )
 }

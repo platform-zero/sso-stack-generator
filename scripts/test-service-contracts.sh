@@ -193,20 +193,20 @@ jq -e '.components.homepage.composeFiles == [] and (.components.homepage.depende
 jq -e '.components.apps.dependencies | index("portal") and (index("homepage") | not)' "$catalog" >/dev/null
 jq -e '.components.onlyoffice.dependencies | index("seafile")' "$catalog" >/dev/null
 jq -e '.components.onlyoffice.capabilities | index("seafile-editor-backend")' "$contracts" >/dev/null
-if [ -f "$ROOT_DIR/stack.compose/onlyoffice.yml" ]; then
-  grep -Fq 'ONLYOFFICE_DISABLE_PLUGIN_UPDATES: ${ONLYOFFICE_DISABLE_PLUGIN_UPDATES:-true}' "$ROOT_DIR/stack.compose/onlyoffice.yml"
-  grep -Fq 'documentserver-pluginsmanager.sh.orig' "$ROOT_DIR/stack.compose/onlyoffice.yml"
+if [ -f "$ROOT_DIR/runtime.contract/onlyoffice.yml" ]; then
+  grep -Fq 'ONLYOFFICE_DISABLE_PLUGIN_UPDATES: ${ONLYOFFICE_DISABLE_PLUGIN_UPDATES:-true}' "$ROOT_DIR/runtime.contract/onlyoffice.yml"
+  grep -Fq 'documentserver-pluginsmanager.sh.orig' "$ROOT_DIR/runtime.contract/onlyoffice.yml"
 fi
 jq -e '.components.observability.dependencies | index("crowdsec")' "$catalog" >/dev/null
 jq -e '.components.crowdsec.composeFiles == ["crowdsec.yml"]' "$catalog" >/dev/null
 jq -e '.components.crowdsec.evidence.expectations | index("crowdsec.simulated_decision")' "$contracts" >/dev/null
-if [ -f "$ROOT_DIR/stack.compose/portal.yml" ]; then
-  grep -Fq './configs/homepage:/app/config' "$ROOT_DIR/stack.compose/portal.yml"
+if [ -f "$ROOT_DIR/runtime.contract/portal.yml" ]; then
+  grep -Fq './configs/homepage:/app/config' "$ROOT_DIR/runtime.contract/portal.yml"
 fi
 
-if [ -f "$ROOT_DIR/stack.compose/crowdsec.yml" ]; then
-  grep -Fq './configs/crowdsec/acquis.yaml:/etc/crowdsec/acquis.yaml:ro' "$ROOT_DIR/stack.compose/crowdsec.yml"
-  grep -Fq './configs/crowdsec/simulate-alert.sh:/usr/local/bin/webservices-crowdsec-simulate-alert:ro' "$ROOT_DIR/stack.compose/crowdsec.yml"
+if [ -f "$ROOT_DIR/runtime.contract/crowdsec.yml" ]; then
+  grep -Fq './configs/crowdsec/acquis.yaml:/etc/crowdsec/acquis.yaml:ro' "$ROOT_DIR/runtime.contract/crowdsec.yml"
+  grep -Fq './configs/crowdsec/simulate-alert.sh:/usr/local/bin/webservices-crowdsec-simulate-alert:ro' "$ROOT_DIR/runtime.contract/crowdsec.yml"
 fi
 grep -Fq 'cscli decisions add' "$ROOT_DIR/stack.config/crowdsec/simulate-alert.sh"
 grep -Fq 'webservices-simulated-alert' "$ROOT_DIR/stack.config/crowdsec/simulate-alert.sh"
@@ -220,8 +220,8 @@ if grep -Eq 'request>(remote_ip|client_ip)[[:space:]]+ip_mask' "$ROOT_DIR/stack.
 fi
 
 portal_sources=("$ROOT_DIR/stack.config/caddy/Caddyfile")
-if [ -f "$ROOT_DIR/stack.compose/portal.yml" ]; then
-  portal_sources+=("$ROOT_DIR/stack.compose/portal.yml")
+if [ -f "$ROOT_DIR/runtime.contract/portal.yml" ]; then
+  portal_sources+=("$ROOT_DIR/runtime.contract/portal.yml")
 fi
 if ! grep -REn 'ghcr\.io/gethomepage/homepage|portal:3000' "${portal_sources[@]}" >/dev/null; then
   printf '[service-contract-test] portal must run gethomepage and proxy to Homepage port 3000\n' >&2

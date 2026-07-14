@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render a Docker-in-Docker friendly Compose file for disposable testdev."""
+"""Render a Docker-in-Docker friendly Runtime contract file for disposable testdev."""
 
 import argparse
 import hashlib
@@ -39,7 +39,7 @@ CACHE_IMAGE_REPLACEMENTS = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--compose-file", required=True)
+    parser.add_argument("--runtime-contract-file", required=True)
     parser.add_argument("--output-file", required=True)
     return parser.parse_args()
 
@@ -233,7 +233,7 @@ def main() -> int:
 
     services = compose.get("services")
     if not isinstance(services, dict):
-        raise SystemExit("compose file has no services map")
+        raise SystemExit("runtime contract file has no services map")
 
     excluded = {name for name in EXCLUDED_SERVICES if name in services}
     for name in excluded:

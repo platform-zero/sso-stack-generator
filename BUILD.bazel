@@ -7,7 +7,7 @@ filegroup(
             "global.settings/**",
             "gradle/**",
             "scripts/**",
-            "stack.compose/**",
+            "runtime.contract/**",
             "stack.config/**",
             "stack.containers/**",
             "stack.js/**",

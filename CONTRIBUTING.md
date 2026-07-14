@@ -48,7 +48,7 @@ ssh "$TARGET_HOST" 'cd ~/webservices && ./verify.sh'
 
 Edit source:
 
-- `stack.compose/`
+- `runtime.contract/`
 - `stack.config/`
 - `stack.containers/`
 - `stack.systemd/`

@@ -63,7 +63,7 @@ lock = json.loads(manifest_path.read_text(encoding="utf-8"))
 violations: list[str] = []
 deploy_roots = (
     "global.settings/",
-    "stack.compose/",
+    "runtime.contract/",
     "stack.config/",
     "stack.containers/",
     "stack.kotlin/",

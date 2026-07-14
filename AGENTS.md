@@ -19,7 +19,7 @@ It does not own downstream application-specific stacks, downstream-only deploy l
 Edit source, not generated output.
 
 Primary source directories:
-- `stack.compose/`
+- `runtime.contract/`
 - `stack.config/`
 - `stack.containers/`
 - `stack.systemd/`
@@ -56,8 +56,8 @@ Internal helpers:
 - `./scripts/deploy/render-systemd-user.sh`
 - `./scripts/deploy/render-systemd-user.py`
 - `./scripts/deploy/install-systemd-user-units.sh`
-- `./scripts/lib/systemd-compose-unit.sh`
-- `./scripts/lib/systemd-docker-infra.sh`
+- `./scripts/lib/systemd-runtime-unit.sh`
+- `./scripts/lib/systemd-container-infra.sh`
 - `./scripts/lib/wait-ready.sh`
 
 Do not reintroduce removed top-level wrappers such as `sync.sh`, `test.sh`, `wait-ready.sh`, `render.sh`, or `sync-dist.sh`.
@@ -92,7 +92,7 @@ Deploy:
 - writes decrypted runtime material only into `~/webservices/runtime`
 - links pre-rendered `systemd --user` units from `~/webservices/build/systemd-user`
 - uses pre-rendered per-domain compose shards from `~/webservices/build/systemd-user/compose`
-- uses `docker compose` as the per-service container backend, not as the host orchestrator
+- uses Podman-managed units as the active container backend; do not reintroduce Docker-only orchestration paths
 
 Verify:
 - runs on the target host from `~/webservices/`

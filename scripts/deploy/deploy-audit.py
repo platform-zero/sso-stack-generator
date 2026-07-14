@@ -41,11 +41,6 @@ ALLOWED_HOST_BINDS = {
     "/etc/timezone",
     "/proc",
     "/sys",
-    "/var/lib/docker",
-    "/var/lib/docker/",
-    "/var/run/docker.sock",
-    "/run/docker-labware",
-    "/run/docker-labware/docker.sock",
     "/var/log/webservices/caddy",
 }
 
@@ -75,19 +70,19 @@ def load_env_file(path: Path) -> Dict[str, str]:
     return values
 
 
-def compose_config(bundle_root: Path, env_file: Path, project_name: str) -> dict:
+def runtime_contract_config(bundle_root: Path, env_file: Path, project_name: str) -> dict:
     env = os.environ.copy()
     env["COMPOSE_PROJECT_NAME"] = project_name
     output = subprocess.check_output(
         [
-            "docker",
+            "podman",
             "compose",
             "--project-directory",
             str(bundle_root.parent),
             "--env-file",
             str(env_file),
             "-f",
-            str(bundle_root / "docker-compose.yml"),
+            str(bundle_root / "runtime-contract.yml"),
             "config",
             "--format",
             "json",
@@ -98,9 +93,9 @@ def compose_config(bundle_root: Path, env_file: Path, project_name: str) -> dict
     return json.loads(output)
 
 
-def docker_ps_all() -> Dict[str, str]:
+def podman_ps_all() -> Dict[str, str]:
     output = subprocess.check_output(
-        ["docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}"],
+        ["podman", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}"],
         text=True,
     )
     result: Dict[str, str] = {}
@@ -112,9 +107,9 @@ def docker_ps_all() -> Dict[str, str]:
     return result
 
 
-def docker_container_exists(name: str) -> bool:
+def podman_container_exists(name: str) -> bool:
     return subprocess.run(
-        ["docker", "container", "inspect", name],
+        ["podman", "container", "inspect", name],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         text=True,
@@ -155,7 +150,7 @@ def container_name_for(service: str, config: dict) -> str:
 
 
 def compose_service_names(bundle_root: Path, env_file: Path, project_name: str) -> List[str]:
-    config = compose_config(bundle_root, env_file, project_name)
+    config = runtime_contract_config(bundle_root, env_file, project_name)
     return sorted((config.get("services") or {}).keys())
 
 
@@ -248,7 +243,7 @@ def classify_bind(source: str, deploy_root: Path, env_values: Dict[str, str]) ->
 def storage_report(bundle_root: Path, env_file: Path, output: Path, project_name: str) -> int:
     env_values = load_env_file(env_file)
     deploy_root = bundle_root.parent.resolve()
-    config = compose_config(bundle_root, env_file, project_name)
+    config = runtime_contract_config(bundle_root, env_file, project_name)
     volume_infra = load_json(bundle_root / "systemd-user" / "infra" / "volumes.json")
     binds = []
     findings = []
@@ -287,11 +282,11 @@ def storage_report(bundle_root: Path, env_file: Path, output: Path, project_name
     report = {
         "summary": {
             "bindMounts": len(binds),
-            "dockerVolumes": len(volumes),
+            "containerVolumes": len(volumes),
             "findings": len(findings),
         },
         "bindMounts": binds,
-        "dockerVolumes": volumes,
+        "containerVolumes": volumes,
         "findings": findings,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -305,14 +300,14 @@ def storage_report(bundle_root: Path, env_file: Path, output: Path, project_name
 
 def module_report(bundle_root: Path, env_file: Path, output: Path, project_name: str, strict: bool) -> int:
     env_values = load_env_file(env_file)
-    config = compose_config(bundle_root, env_file, project_name)
+    config = runtime_contract_config(bundle_root, env_file, project_name)
     graph = load_json(bundle_root / "stack.systemd" / "graph.json")
     excluded = set(graph.get("excludedServices") or [])
     on_demand = set(graph.get("onDemandServices") or [])
     optional = set(optional_services(bundle_root))
     optional_disabled = not optional_runtime_configured(env_values)
     jobs = set(completion_job_services(config))
-    statuses = docker_ps_all()
+    statuses = podman_ps_all()
     services = []
     problems = []
     for service, service_config in sorted((config.get("services") or {}).items()):
@@ -365,12 +360,12 @@ def cleanup_optional_orphans(bundle_root: Path, env_file: Path, project_name: st
     if optional_runtime_configured(env_values):
         print("[webservices-audit] optional runtime identity configured; no optional orphan cleanup needed", file=sys.stderr)
         return 0
-    config = compose_config(bundle_root, env_file, project_name)
+    config = runtime_contract_config(bundle_root, env_file, project_name)
     removed = []
     for service in optional_services(bundle_root):
         container_name = container_name_for(service, config)
-        if docker_container_exists(container_name):
-            subprocess.run(["docker", "rm", "-f", container_name], check=False)
+        if podman_container_exists(container_name):
+            subprocess.run(["podman", "rm", "-f", container_name], check=False)
             removed.append(container_name)
     if removed:
         print(f"[webservices-audit] removed skipped optional container state: {' '.join(removed)}", file=sys.stderr)
@@ -379,9 +374,9 @@ def cleanup_optional_orphans(bundle_root: Path, env_file: Path, project_name: st
     return 0
 
 
-def docker_container_ip(name: str) -> str:
+def podman_container_ip(name: str) -> str:
     output = subprocess.check_output(
-        ["docker", "inspect", name, "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"],
+        ["podman", "inspect", name, "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"],
         text=True,
     ).strip()
     return output
@@ -415,11 +410,11 @@ def validate_qdrant_schema(bundle_root: Path, env_file: Path, project_name: str)
     if expected <= 0:
         print("[webservices-audit] VECTOR_EMBED_SIZE is missing or invalid", file=sys.stderr)
         return 1
-    if not docker_container_exists("qdrant"):
+    if not podman_container_exists("qdrant"):
         print("[webservices-audit] qdrant container is not present; skipping vector schema audit", file=sys.stderr)
         return 0
     try:
-        ip_address = docker_container_ip("qdrant")
+        ip_address = podman_container_ip("qdrant")
         if not ip_address:
             print("[webservices-audit] qdrant container has no IP address yet; skipping vector schema audit", file=sys.stderr)
             return 0

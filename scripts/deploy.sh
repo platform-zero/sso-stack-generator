@@ -59,12 +59,12 @@ selected lifecycle units and the dependency units required by systemd. Use them
 for small app/config updates where reconciling the whole webservices.target is
 unnecessary.
 
-Component scopes select only the component's own Compose files by default. Add
+Component scopes select only the component's own Runtime contract files by default. Add
 --include-component-dependencies when you intentionally want dependency
 components in the scoped action.
 
 Scoped deploys are guarded by the last full deploy signature. If component
-selection, the systemd graph, or Docker network/volume metadata changed, the
+selection, the systemd graph, or container network/volume metadata changed, the
 deploy aborts and asks for a full deploy so global control-plane changes are
 reconciled together.
 
@@ -120,7 +120,7 @@ fi
 
 site_manifest_path="$BUNDLE_ROOT/site/manifest.json"
 [ -f "$site_manifest_path" ] || die "missing bundled site manifest: $site_manifest_path"
-[ -f "$BUNDLE_ROOT/docker-compose.yml" ] || die "missing bundle compose file: $BUNDLE_ROOT/docker-compose.yml"
+[ -f "$BUNDLE_ROOT/runtime-contract.yml" ] || die "missing bundle runtime contract: $BUNDLE_ROOT/runtime-contract.yml"
 [ -d "$BUNDLE_ROOT/systemd-user" ] || die "missing pre-rendered systemd user units in $BUNDLE_ROOT/systemd-user (run build.sh first)"
 
 deploy_log() {
@@ -159,8 +159,8 @@ dump_deploy_diagnostics() {
   fi
 
   if [ -f "$DEPLOY_ROOT/runtime/stack.env" ]; then
-    deploy_log "docker container snapshot"
-    docker ps -a --format '{{.Names}}\t{{.Status}}\t{{.Image}}' 2>&1 | sort || true
+    deploy_log "container snapshot"
+    container_runtime ps -a --format '{{.Names}}\t{{.Status}}\t{{.Image}}' 2>&1 | sort || true
     if [ -x "$BUNDLE_ROOT/scripts/mount-diagnostics.sh" ]; then
       deploy_log "mount diagnostics summary"
       "$BUNDLE_ROOT/scripts/mount-diagnostics.sh" \
@@ -245,8 +245,8 @@ print_nvidia_toolkit_help() {
 EOF_NVIDIA_HELP
 }
 
-docker_has_nvidia_runtime() {
-  docker info --format '{{json .Runtimes}}' 2>/dev/null | jq -e 'has("nvidia")' >/dev/null 2>&1
+container_runtime_has_nvidia_runtime() {
+  container_runtime info --format '{{json .Runtimes}}' 2>/dev/null | jq -e 'has("nvidia")' >/dev/null 2>&1
 }
 
 check_gpu_preflight() {
@@ -264,23 +264,22 @@ check_gpu_preflight() {
     print_nvidia_toolkit_help
     die "nvidia-smi failed on the deployment host"
   }
-  docker_has_nvidia_runtime || {
+  container_runtime_has_nvidia_runtime || {
     print_nvidia_toolkit_help
-    die "Docker is missing the nvidia runtime required by --gpus services"
+    die "container runtime is missing the nvidia runtime required by --gpus services"
   }
 
   if [ "${DEPLOY_GPU_SMOKE_TEST:-0}" = "1" ]; then
-    docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi >/dev/null
+    container_runtime run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi >/dev/null
   fi
 }
 
 preflight() {
-  require_cmd docker
   require_cmd jq
   require_cmd python3
   require_cmd sops
   require_cmd systemctl
-  docker compose version >/dev/null 2>&1 || die "docker compose plugin is unavailable"
+  container_contract version >/dev/null 2>&1 || die "runtime contract support is unavailable for $(container_cli)"
   validate_deploy_root
   resolve_site_manifest_file "$site_manifest_path" >/dev/null
   check_gpu_preflight
@@ -290,7 +289,7 @@ preflight() {
 }
 
 model_prep_services() {
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_compose_from_bundle \
+  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
     "$DEPLOY_ROOT/runtime/stack.env" \
     config --format json | jq -r '
@@ -311,7 +310,7 @@ model_prep_services() {
 }
 
 built_image_services() {
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_compose_from_bundle \
+  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
     "$DEPLOY_ROOT/runtime/stack.env" \
     config --format json | jq -r '
@@ -326,18 +325,18 @@ built_image_services() {
 
 image_id_for_ref() {
   local image_ref="$1"
-  docker image inspect --format '{{.Id}}' "$image_ref" 2>/dev/null || true
+  container_runtime image inspect --format '{{.Id}}' "$image_ref" 2>/dev/null || true
 }
 
 container_image_id_for_service() {
   local service_name="$1"
   local container_id
-  container_id="$(COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_compose_from_bundle \
+  container_id="$(COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
     "$DEPLOY_ROOT/runtime/stack.env" \
     ps -q "$service_name" 2>/dev/null | head -n 1)"
   [ -n "$container_id" ] || return 0
-  docker inspect --format '{{.Image}}' "$container_id" 2>/dev/null || true
+  container_runtime inspect --format '{{.Image}}' "$container_id" 2>/dev/null || true
 }
 
 unit_for_compose_service() {
@@ -358,7 +357,7 @@ unit_for_compose_service() {
 
 compose_service_exists() {
   local service_name="$1"
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_compose_from_bundle \
+  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
     "$DEPLOY_ROOT/runtime/stack.env" \
     config --format json | jq -e --arg service "$service_name" '.services[$service] != null' >/dev/null
@@ -399,10 +398,10 @@ component_compose_files() {
 
 services_from_compose_file() {
   local compose_file="$1"
-  local compose_path="$BUNDLE_ROOT/stack.compose/$compose_file"
+  local compose_path="$BUNDLE_ROOT/runtime.contract/$compose_file"
 
-  [ -f "$compose_path" ] || die "component references missing compose file: $compose_file"
-  docker compose -f "$compose_path" config --format json --no-interpolate | jq -r '.services | keys[]'
+  [ -f "$compose_path" ] || die "component references missing runtime contract file: $compose_file"
+  container_contract -f "$compose_path" config --format json --no-interpolate | jq -r '.services | keys[]'
 }
 
 append_unique() {
@@ -430,7 +429,7 @@ read_lines_into_array() {
 
 compose_config_snapshot() {
   local output_file="$1"
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_compose_from_bundle \
+  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
     "$DEPLOY_ROOT/runtime/stack.env" \
     config --format json > "$output_file"
@@ -451,7 +450,7 @@ path_is_deploy_state_only() {
   local path="$1"
 
   case "$path" in
-    docker-compose.yml|site/components.lock.json|scripts/*|systemd-user/*.target|systemd-user/compose/*.stopping|stack.compose/test-runners.yml|stack.config/test-runner/*|stack.containers/test-runner/*|stack.kotlin/test-runner/*)
+    runtime-contract.yml|site/components.lock.json|scripts/*|systemd-user/*.target|systemd-user/compose/*.stopping|runtime.contract/test-runners.yml|stack.config/test-runner/*|stack.containers/test-runner/*|stack.kotlin/test-runner/*)
       return 0
       ;;
   esac
@@ -510,8 +509,8 @@ services_for_changed_bundle_path() {
   local owner compose_file config_path output
 
   case "$path" in
-    stack.compose/*)
-      compose_file="${path#stack.compose/}"
+    runtime.contract/*)
+      compose_file="${path#runtime.contract/}"
       compose_file="${compose_file%%/*}"
       services_from_compose_file "$compose_file"
       return 0
@@ -678,13 +677,13 @@ resolve_scoped_services() {
 
   for component in "${SCOPED_COMPONENTS[@]}"; do
     if ! compose_output="$(component_compose_files "$component")"; then
-      die "failed to resolve compose files for selected component: $component"
+      die "failed to resolve runtime contract files for selected component: $component"
     fi
     read_lines_into_array "$compose_output" compose_files
     for compose_file in "${compose_files[@]}"; do
       [ -n "$compose_file" ] || continue
       if ! service_output="$(services_from_compose_file "$compose_file")"; then
-        die "failed to resolve services from component compose file: $compose_file"
+        die "failed to resolve services from component runtime contract file: $compose_file"
       fi
       read_lines_into_array "$service_output" compose_services
       for service_name in "${compose_services[@]}"; do
@@ -695,7 +694,7 @@ resolve_scoped_services() {
 
   if [ "${#SCOPED_UNITS[@]}" -gt 0 ]; then
     scoped_compose_config_json="$(mktemp "${TMPDIR:-/tmp}/webservices-scoped-compose.XXXXXX.json")"
-    COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_compose_from_bundle \
+    COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
       "$BUNDLE_ROOT" \
       "$DEPLOY_ROOT/runtime/stack.env" \
       config --format json > "$scoped_compose_config_json"
@@ -769,7 +768,7 @@ build_scoped_service_images() {
   fi
 
   deploy_log "building selected compose services: $(join_array_limited "$SYSTEMD_PROGRESS_MAX_ITEMS" "${services[@]}")"
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_compose_from_bundle \
+  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
     "$DEPLOY_ROOT/runtime/stack.env" \
     build "${services[@]}"
@@ -831,7 +830,7 @@ emit_deploy_plan() {
     deploy_log "plan systemd action: reload active units with ExecReload, restart active units without it, start inactive selected units"
   else
     deploy_log "deploy plan: mode=full target=webservices.target"
-    deploy_log "plan global maintenance: model prep, image build, excluded-service cleanup, Docker infra refresh, deploy jobs, target reconcile, post-reconcile auth bootstrap"
+    deploy_log "plan global maintenance: model prep, image build, excluded-service cleanup, container infra refresh, deploy jobs, target reconcile, post-reconcile auth bootstrap"
   fi
 }
 
@@ -911,7 +910,7 @@ run_model_prep_jobs() {
 
   for service in "${prep_services[@]}"; do
     deploy_log "preparing model assets with $service"
-    COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_compose_from_bundle \
+    COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
       "$BUNDLE_ROOT" \
       "$DEPLOY_ROOT/runtime/stack.env" \
       run --rm --build --no-deps "$service"
@@ -931,15 +930,15 @@ cleanup_excluded_service_containers() {
 
   for service in "${excluded[@]}"; do
     deploy_log "stopping excluded service container state for $service"
-    COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_compose_from_bundle \
+    COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
       "$BUNDLE_ROOT" \
       "$DEPLOY_ROOT/runtime/stack.env" \
       stop "$service" >/dev/null 2>&1 || true
-    COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_compose_from_bundle \
+    COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
       "$BUNDLE_ROOT" \
       "$DEPLOY_ROOT/runtime/stack.env" \
       rm -f -s "$service" >/dev/null 2>&1 || true
-    docker rm -f "$service" "${PROJECT_NAME}-${service}-1" >/dev/null 2>&1 || true
+    container_runtime rm -f "$service" "${PROJECT_NAME}-${service}-1" >/dev/null 2>&1 || true
   done
 }
 
@@ -955,7 +954,7 @@ cleanup_retired_service_containers() {
     deploy_log "stopping retired service state for $service"
     user_systemctl stop "$unit_name" >/dev/null 2>&1 || true
     user_systemctl disable "$unit_name" >/dev/null 2>&1 || true
-    docker rm -f "$service" "${PROJECT_NAME}-${service}-1" >/dev/null 2>&1 || true
+    container_runtime rm -f "$service" "${PROJECT_NAME}-${service}-1" >/dev/null 2>&1 || true
   done
 }
 
@@ -992,10 +991,10 @@ migrate_legacy_seafile_split_volume() {
   desired_device="$(jq -r '.[] | select(.key == "seafile_files") | .driver_opts.device // empty' "$volumes_config")"
   [ -n "$volume_name" ] || return 0
   [ "$desired_device" = '${SEAFILE_MEDIA_ROOT}' ] || return 0
-  docker volume inspect "$volume_name" >/dev/null 2>&1 || return 0
+  container_runtime volume inspect "$volume_name" >/dev/null 2>&1 || return 0
 
-  actual_driver="$(docker volume inspect "$volume_name" -f '{{.Driver}}')"
-  actual_opts="$(docker volume inspect "$volume_name" | jq -cS '.[0].Options // {}')"
+  actual_driver="$(container_runtime volume inspect "$volume_name" -f '{{.Driver}}')"
+  actual_opts="$(container_runtime volume inspect "$volume_name" | jq -cS '.[0].Options // {}')"
   [ "$actual_driver" = "local" ] || return 0
   [ "$actual_opts" = "{}" ] || return 0
 
@@ -1005,17 +1004,17 @@ migrate_legacy_seafile_split_volume() {
 
   deploy_log "migrating legacy Seafile split volume $volume_name into $seafile_media_root"
   user_systemctl stop webservices-seafile.service >/dev/null 2>&1 || true
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_compose_from_bundle \
+  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
     "$DEPLOY_ROOT/runtime/stack.env" \
     stop seafile >/dev/null 2>&1 || true
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_compose_from_bundle \
+  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
     "$DEPLOY_ROOT/runtime/stack.env" \
     rm -f -s seafile >/dev/null 2>&1 || true
 
   mkdir -p "$seafile_media_root"
-  docker run --rm \
+  container_runtime run --rm \
     -v "$volume_name:/legacy-shared:ro" \
     -v "$seafile_media_root:/target-shared" \
     "$RUNTIME_CLEANUP_IMAGE" \
@@ -1040,7 +1039,7 @@ migrate_legacy_seafile_split_volume() {
       done
     '
 
-  docker volume rm "$volume_name" >/dev/null
+  container_runtime volume rm "$volume_name" >/dev/null
   deploy_log "legacy Seafile split volume migrated; $volume_name will be recreated as a bind volume"
 }
 
@@ -1080,7 +1079,7 @@ if [ "$PARTIAL_DEPLOY" = "1" ]; then
 fi
 emit_deploy_plan
 if [ "$PLAN_ONLY" = "1" ]; then
-  deploy_log "plan-only complete; no build, systemd, or Docker changes applied"
+  deploy_log "plan-only complete; no build, systemd, or container changes applied"
   exit 0
 fi
 if [ "$NOOP_DEPLOY" = "1" ]; then
@@ -1116,7 +1115,7 @@ if [ "$PARTIAL_DEPLOY" = "1" ]; then
   build_scoped_service_images
 else
   deploy_log "building service images"
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_compose_from_bundle \
+  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
     "$DEPLOY_ROOT/runtime/stack.env" \
     build
@@ -1164,7 +1163,7 @@ fi
 
 set_phase "systemd-refresh-infra"
 if [ "$PARTIAL_DEPLOY" = "1" ]; then
-  deploy_log "skipping Docker infra refresh for scoped deploy after deploy signature guard"
+  deploy_log "skipping container infra refresh for scoped deploy after deploy signature guard"
 else
   refresh_infra_units
 fi

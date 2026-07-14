@@ -5,8 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 LIB_DIR="$(cd "$SCRIPT_DIR/../lib" && pwd -P)"
 # shellcheck source=scripts/lib/common.sh
 source "$LIB_DIR/common.sh"
-# shellcheck source=scripts/lib/compose.sh
-source "$LIB_DIR/compose.sh"
+# shellcheck source=scripts/lib/runtime-contract.sh
+source "$LIB_DIR/runtime-contract.sh"
 
 BUNDLE_ROOT=""
 OUTPUT_DIR=""
@@ -60,7 +60,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$BUNDLE_ROOT" ] || die "--bundle-root is required"
-[ -f "$BUNDLE_ROOT/docker-compose.yml" ] || die "missing docker-compose.yml in $BUNDLE_ROOT"
+[ -f "$BUNDLE_ROOT/runtime-contract.yml" ] || die "missing runtime contract in $BUNDLE_ROOT"
 
 LOCAL_BUNDLE_ROOT="$(cd "$BUNDLE_ROOT" && pwd -P)"
 LOCAL_DEPLOY_ROOT="$(cd "$LOCAL_BUNDLE_ROOT/.." && pwd -P)"
@@ -82,7 +82,7 @@ SYSTEMD_NOTIFY_BIN="$(command -v systemd-notify)"
 compose_config_json="$(mktemp)"
 base_networks_compose="$(mktemp)"
 base_networks_json="$(mktemp)"
-compose_command="$(compose_config_command)"
+compose_command="$(runtime_contract_config_command)"
 cleanup() {
   rm -f "$compose_config_json" "$base_networks_compose" "$base_networks_json"
 }
@@ -92,7 +92,7 @@ trap cleanup EXIT
   cd "$LOCAL_DEPLOY_ROOT"
   COMPOSE_PROJECT_NAME="$PROJECT_NAME" $compose_command \
     --project-directory "$LOCAL_DEPLOY_ROOT" \
-    -f "$LOCAL_BUNDLE_ROOT/docker-compose.yml" \
+    -f "$LOCAL_BUNDLE_ROOT/runtime-contract.yml" \
     config --format json --no-interpolate
 ) > "$compose_config_json"
 
@@ -123,8 +123,8 @@ python3 "$SCRIPT_DIR/render-systemd-user.py" \
   --output-dir "$OUTPUT_DIR" \
   --compose-project-name "$PROJECT_NAME" \
   --systemd-notify-bin "$SYSTEMD_NOTIFY_BIN" \
-  --compose-helper "$DEPLOY_ROOT_TEMPLATE/build/scripts/lib/systemd-compose-unit.sh" \
-  --infra-helper "$DEPLOY_ROOT_TEMPLATE/build/scripts/lib/systemd-docker-infra.sh" \
+  --runtime-helper "$DEPLOY_ROOT_TEMPLATE/build/scripts/lib/systemd-runtime-unit.sh" \
+  --infra-helper "$DEPLOY_ROOT_TEMPLATE/build/scripts/lib/systemd-container-infra.sh" \
   --diagnostics-helper "$DEPLOY_ROOT_TEMPLATE/build/scripts/lib/systemd-diagnostics.sh" \
   --host-autoheal-helper "$DEPLOY_ROOT_TEMPLATE/build/scripts/host/host-autoheal.sh" \
   --update-deploy-helper "$DEPLOY_ROOT_TEMPLATE/build/scripts/host/update-deploy.sh" \

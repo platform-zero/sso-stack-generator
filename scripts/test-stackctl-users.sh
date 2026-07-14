@@ -20,7 +20,7 @@ DOMAIN=example.test
 KEYCLOAK_ADMIN_PASSWORD=test-admin-password
 EOF_ENV
 
-cat > "$fake_bin/docker" <<'EOF_DOCKER'
+cat > "$fake_bin/podman" <<'EOF_PODMAN'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -62,7 +62,7 @@ parse_username_arg() {
 }
 
 if [ "$1" != "exec" ]; then
-  printf 'unsupported docker command: %s\n' "$*" >&2
+  printf 'unsupported podman command: %s\n' "$*" >&2
   exit 1
 fi
 shift
@@ -154,8 +154,8 @@ case "$subcommand" in
     exit 1
     ;;
 esac
-EOF_DOCKER
-chmod +x "$fake_bin/docker"
+EOF_PODMAN
+chmod +x "$fake_bin/podman"
 
 assert_contains() {
   local file="$1"
@@ -175,6 +175,7 @@ EOF_STATE
 
 run_stackctl() {
   PATH="$fake_bin:$PATH" \
+    STACK_CONTAINER_CLI=podman \
     STACKCTL_RUNTIME_ENV_FILE="$runtime_dir/stack.env" \
     STACKCTL_USERS_TEST_STATE="$state_file" \
     STACKCTL_USERS_MARKER_WAIT_ATTEMPTS=1 \
@@ -190,7 +191,7 @@ expect_failure() {
 }
 
 reset_state
-PATH="$fake_bin:$PATH" "$ROOT_DIR/scripts/stackctl.sh" users create --help >"$stdout_file"
+PATH="$fake_bin:$PATH" STACK_CONTAINER_CLI=podman "$ROOT_DIR/scripts/stackctl.sh" users create --help >"$stdout_file"
 assert_contains "$stdout_file" 'stackctl users create --username <u> --password <p>' "create help output"
 
 reset_state

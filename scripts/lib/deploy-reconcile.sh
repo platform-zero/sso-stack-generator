@@ -443,9 +443,9 @@ recreate_env_sensitive_containers() {
   local configured_containers="${DEPLOY_RECREATE_ENV_CONTAINERS:-opensearch nats airflow-init airflow-webserver airflow-scheduler ingestion-runner embedding-gpu keycloak bookstack bookstack-procedural-docs onlyoffice mailserver seafile}"
 
   for container_name in $configured_containers; do
-    if docker container inspect "$container_name" >/dev/null 2>&1; then
+    if container_runtime container inspect "$container_name" >/dev/null 2>&1; then
       deploy_log "removing env-sensitive container for recreate: $container_name"
-      docker rm -f "$container_name" >/dev/null
+      container_runtime rm -f "$container_name" >/dev/null
     fi
   done
 }
@@ -501,11 +501,11 @@ restart_deploy_job_units() {
 }
 
 refresh_infra_units() {
-  deploy_log "refreshing Docker networks and volumes from rendered infra config"
-  "$SCRIPT_DIR/lib/systemd-docker-infra.sh" ensure-networks \
+  deploy_log "refreshing container networks and volumes from rendered infra config"
+  "$SCRIPT_DIR/lib/systemd-container-infra.sh" ensure-networks \
     --config-file "$BUNDLE_ROOT/systemd-user/infra/networks.json" \
     --env-file "$DEPLOY_ROOT/runtime/stack.env"
-  "$SCRIPT_DIR/lib/systemd-docker-infra.sh" ensure-volumes \
+  "$SCRIPT_DIR/lib/systemd-container-infra.sh" ensure-volumes \
     --config-file "$BUNDLE_ROOT/systemd-user/infra/volumes.json" \
     --env-file "$DEPLOY_ROOT/runtime/stack.env"
 }

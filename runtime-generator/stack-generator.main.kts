@@ -180,7 +180,7 @@ fun commandImport(options: Map<String, String>) {
     runtime.set<ObjectNode>("volumes", obj())
 
     val composeFiles = mutableListOf<Path>()
-    val composeDir = moduleDir.resolve("stack.compose")
+    val composeDir = moduleDir.resolve("runtime.contract")
     if (composeDir.isDirectory()) composeFiles += composeDir.listDirectoryEntries("*.yml").sorted()
     if (moduleId == "stack-foundation") {
         listOf("global.settings/networks.yml", "global.settings/volume-init.yml")
@@ -206,7 +206,7 @@ fun commandImportWorkspace(options: Map<String, String>) {
     if (missing.isNotEmpty()) fail("missing selected module checkouts: ${missing.joinToString()}")
     selected.forEach { id ->
         val module = discovered.getValue(id)
-        val hasRuntimeSource = module.dir.resolve("stack.compose").isDirectory() ||
+        val hasRuntimeSource = module.dir.resolve("runtime.contract").isDirectory() ||
             (id == "stack-foundation" && module.dir.resolve("global.settings/volume-init.yml").isRegularFile())
         if (hasRuntimeSource) commandImport(mapOf("module" to module.dir.toString()))
     }
@@ -373,7 +373,7 @@ fun buildIr(manifestPath: Path, modulesDir: Path): Pair<ObjectNode, List<ModuleC
     modules.forEach { module ->
         val runtimePath = module.dir.resolve("stack.runtime.yaml")
         if (!runtimePath.isRegularFile()) {
-            if (module.dir.resolve("stack.compose").isDirectory()) fail("runtime-bearing module '${module.id}' lacks stack.runtime.yaml")
+            if (module.dir.resolve("runtime.contract").isDirectory()) fail("runtime-bearing module '${module.id}' lacks stack.runtime.yaml")
             return@forEach
         }
         val runtime = readTree(runtimePath)
@@ -428,7 +428,7 @@ fun materializeModules(modules: List<ModuleCheckout>, output: Path) {
     modules.forEach { module ->
         module.metadata.path("overlays").forEach { overlayNode ->
             val relative = Path(overlayNode.asText())
-            if (relative.startsWith("stack.compose") || relative.fileName.toString() == "stack.runtime.yaml") return@forEach
+            if (relative.startsWith("runtime.contract") || relative.fileName.toString() == "stack.runtime.yaml") return@forEach
             val source = module.dir.resolve(relative).normalize()
             if (!source.startsWith(module.dir) || !source.exists()) fail("unsafe or missing overlay '${relative}' in '${module.id}'")
             val files = if (source.isDirectory()) source.walk().filter(Path::isRegularFile).toList() else listOf(source)
@@ -711,7 +711,7 @@ fun renderDocker(ir: ObjectNode, output: Path) {
         volumes.set<ObjectNode>(name, volume)
     }
     compose.set<ObjectNode>("volumes", volumes)
-    writeYaml(output.resolve("docker-compose.yml"), compose)
+    writeYaml(output.resolve("runtime-contract.yml"), compose)
 }
 
 fun renderRuntimeComposeShard(runtimePath: Path, outputDir: Path, predeclaredVolumes: Set<String>) {
@@ -1098,14 +1098,14 @@ fun commandGenerate(options: Map<String, String>) {
     val manifest = Path(required(options, "site")).toAbsolutePath().normalize()
     val modulesDir = Path(required(options, "modules-dir")).toAbsolutePath().normalize()
     val backend = required(options, "backend")
-    if (backend !in setOf("docker", "podman")) fail("backend must be docker or podman")
+    if (backend != "podman") fail("backend must be podman")
     val output = Path(required(options, "output")).toAbsolutePath().normalize()
     val staging = output.resolveSibling(".${output.fileName}.staging-${ProcessHandle.current().pid()}")
     if (staging.exists()) staging.toFile().deleteRecursively()
     staging.createDirectories()
     try {
         val (ir, modules) = buildIr(manifest, modulesDir)
-        if (backend == "podman") applyPodmanPlacementPolicy(ir)
+        applyPodmanPlacementPolicy(ir)
         writeJson(staging.resolve("stack.ir.json"), ir)
         materializeSiteManifest(manifest, staging)
         materializeModules(modules, staging)
@@ -1135,6 +1135,6 @@ when (command) {
     "generate" -> commandGenerate(options)
     "import-compose" -> commandImport(options)
     "import-workspace" -> commandImportWorkspace(options)
-    "render-runtime-compose" -> commandRenderRuntimeCompose(options)
-    else -> fail("unknown command '$command' (expected generate, import-compose, import-workspace, or render-runtime-compose)")
+    "render-runtime-contract" -> commandRenderRuntimeCompose(options)
+    else -> fail("unknown command '$command' (expected generate, import-compose, import-workspace, or render-runtime-contract)")
 }

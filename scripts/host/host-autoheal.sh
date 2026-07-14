@@ -16,7 +16,6 @@ STATE_FILE="$STATE_ROOT/state.json"
 NTFY_TOPIC="${WEBSERVICES_AUTOHEAL_NTFY_TOPIC:-webservices-autoheal}"
 
 mkdir -p "$STATE_ROOT"
-require_cmd docker
 require_cmd jq
 require_cmd python3
 
@@ -94,38 +93,54 @@ for path in sorted(compose_dir.glob("*.compose.json")):
 print(json.dumps(labelled, sort_keys=True))
 PY
 
-docker ps -a \
-  --filter "label=com.docker.compose.project=$PROJECT_NAME" \
-  --format '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Labels}}' \
-  | jq -R -s '
-      split("\n")
-      | map(select(length > 0) | split("\t") | {
-          Names: .[0],
-          State: .[1],
-          Status: .[2],
-          Labels: (.[3] // "")
-        })
-    ' > "$containers_json"
+python3 - "$tmp_dir/labelled.json" "$current_json" "$PROJECT_NAME" "$(container_cli)" <<'PY'
+import json
+import subprocess
+import sys
+from pathlib import Path
 
-jq -n \
-  --slurpfile labelled "$tmp_dir/labelled.json" \
-  --slurpfile containers "$containers_json" '
-    ($labelled[0] // {}) as $labelled
-    | ($containers[0] // [])
-    | map(
-        . as $container
-        | ($container.Labels // "" | split(",") | map(select(length > 0) | split("=") | {(.[0]): (.[1:] | join("="))}) | add // {}) as $labels
-        | ($labels["com.docker.compose.service"] // "") as $service
-        | select($labelled[$service] != null)
-        | {
-            service: $service,
-            container: ($container.Names // ""),
-            unit: $labelled[$service].unit,
-            state: ($container.State // ""),
-            status: ($container.Status // "")
-          }
-      )
-  ' > "$current_json"
+labelled_path = Path(sys.argv[1])
+current_path = Path(sys.argv[2])
+project_name = sys.argv[3]
+container_cli = sys.argv[4]
+labelled = json.loads(labelled_path.read_text())
+current = []
+
+def inspect_container(name: str):
+    result = subprocess.run(
+        [container_cli, "inspect", name, "--format", "{{.State.Status}}\t{{if .State.Health}}{{.State.Health.Status}}{{end}}\t{{.State.Error}}"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    state, health, error = (result.stdout.rstrip("\n") + "\t\t").split("\t", 2)
+    combined_status = ", ".join(part for part in (health, error) if part)
+    return {"state": state or "", "status": combined_status}
+
+for service, metadata in sorted(labelled.items()):
+    candidates = [f"{project_name}-{service}-1", service]
+    inspected = None
+    container_name = ""
+    for candidate in candidates:
+        inspected = inspect_container(candidate)
+        if inspected is not None:
+            container_name = candidate
+            break
+    if inspected is None:
+        continue
+    current.append({
+        "service": service,
+        "container": container_name,
+        "unit": metadata["unit"],
+        "state": inspected["state"],
+        "status": inspected["status"],
+    })
+
+current_path.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n")
+PY
 
 python3 - "$STATE_FILE" "$current_json" > "$tmp_dir/next.json" 3> "$restarts_file" <<'PY'
 import json

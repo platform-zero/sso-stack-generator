@@ -7,7 +7,7 @@ external module manifest.
 ## Prerequisites
 
 - Bash
-- Docker with Compose support
+- Podman
 - Node.js 22
 - Java 21
 - Bazelisk
@@ -21,8 +21,8 @@ Run a build with a site manifest:
 ```
 
 The generated bundle is written to `dist/`. Build reports, rendered systemd
-units, Compose output, service contracts, and helper scripts are written under
-`dist/build/`.
+units, Quadlet output, compatibility runtime contracts, service contracts, and
+helper scripts are written under `dist/build/`.
 
 ## Deploy
 
@@ -34,7 +34,7 @@ cd ~/webservices
 ./verify.sh
 ```
 
-`deploy.sh` applies the generated systemd user units and Compose shards.
+`deploy.sh` applies the generated systemd user units and Podman bundle runtime.
 `verify.sh` waits for readiness and runs blocking stack-contract checks.
 
 ## Iterate

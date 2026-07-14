@@ -37,7 +37,7 @@ testdev_run_cli sh -lc '
   docker compose \
     --env-file runtime/stack.env \
     --project-directory . \
-    -f build/docker-compose.yml \
+    -f build/runtime-contract.yml \
     up -d $build_args
 '
 

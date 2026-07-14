@@ -10,7 +10,7 @@ from pathlib import Path
 
 ALLOWED_PREFIXES = (
     "global.settings/",
-    "stack.compose/",
+    "runtime.contract/",
     "stack.config/",
     "stack.containers/",
     "stack.kotlin/",
@@ -22,6 +22,9 @@ ALLOWED_PREFIXES = (
     "tests/fixtures/",
 )
 ALLOWED_ROOTS = {prefix.rstrip("/") for prefix in ALLOWED_PREFIXES} | {"stack.runtime.yaml"}
+LEGACY_PREFIX_MAP = {
+    "stack.compose/": "runtime.contract/",
+}
 
 
 def die(message: str) -> None:
@@ -60,6 +63,21 @@ def validate_rel_path(value: str, label: str) -> None:
 
 def path_allowed(value: str) -> bool:
     return value in ALLOWED_ROOTS or value.startswith(ALLOWED_PREFIXES)
+
+
+def normalize_overlay_path(value: str) -> str:
+    for legacy_prefix, normalized_prefix in LEGACY_PREFIX_MAP.items():
+        if value.startswith(legacy_prefix):
+            return normalized_prefix + value.removeprefix(legacy_prefix)
+    return value
+
+
+def source_overlay_candidates(value: str) -> list[str]:
+    candidates = [value]
+    for legacy_prefix, normalized_prefix in LEGACY_PREFIX_MAP.items():
+        if value.startswith(normalized_prefix):
+            candidates.append(legacy_prefix + value.removeprefix(normalized_prefix))
+    return candidates
 
 
 def clone_at_commit(cache_dir: Path, label: str, remote: str, ref: str, commit: str) -> Path:
@@ -140,18 +158,21 @@ def validate_metadata(lock_entry: dict, metadata: dict, source_dir: Path) -> dic
     if not isinstance(overlays, list) or not overlays:
         die(f"module '{module_id}' overlays must be a non-empty array")
 
+    normalized_overlays = []
     for overlay in overlays:
         validate_rel_path(overlay, f"module '{module_id}' overlay")
-        if not path_allowed(overlay):
+        normalized_overlay = normalize_overlay_path(overlay)
+        if not path_allowed(normalized_overlay):
             die(f"module '{module_id}' overlay path is not allowed: {overlay}")
-        if not (source_dir / overlay).exists():
+        if not any((source_dir / candidate).exists() for candidate in source_overlay_candidates(normalized_overlay)):
             die(f"module '{module_id}' overlay path does not exist: {overlay}")
+        normalized_overlays.append(normalized_overlay)
 
     return {
         "id": module_id,
         "repo": repo,
         "dependencies": dependencies,
-        "overlays": overlays,
+        "overlays": normalized_overlays,
         "metadata": metadata,
     }
 
@@ -180,14 +201,22 @@ def topo_sort(modules: dict[str, dict], roots: list[str]) -> list[str]:
 
 
 def iter_overlay_files(source_dir: Path, overlay: str) -> list[tuple[Path, str]]:
-    path = source_dir / overlay
+    normalized_overlay = normalize_overlay_path(overlay)
+    path = None
+    for candidate in source_overlay_candidates(normalized_overlay):
+        candidate_path = source_dir / candidate
+        if candidate_path.exists():
+            path = candidate_path
+            break
+    if path is None:
+        die(f"overlay path does not exist: {overlay}")
     if path.is_file():
-        return [(path, overlay)]
+        return [(path, normalized_overlay)]
     files = []
     for file_path in sorted(path.rglob("*")):
         if ".git" in file_path.parts or not file_path.is_file():
             continue
-        rel = str(file_path.relative_to(source_dir))
+        rel = str(Path(normalized_overlay) / file_path.relative_to(path))
         files.append((file_path, rel))
     return files
 

@@ -74,7 +74,7 @@ if [ "$needs_contract_test_tmp" = "1" ]; then
   }
   trap cleanup_contract_test_root EXIT
 
-  for root in global.settings runtime-generator stack.compose stack.config stack.containers stack.kotlin stack.js stack.systemd; do
+  for root in global.settings runtime-generator runtime.contract stack.config stack.containers stack.kotlin stack.js stack.systemd; do
     if [ -e "$contract_test_seed/$root" ]; then
       cp -a "$contract_test_seed/$root" "$contract_test_tmp/$root"
     elif [ -e "$SOURCE_ROOT/$root" ]; then

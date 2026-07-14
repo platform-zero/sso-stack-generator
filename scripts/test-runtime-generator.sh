@@ -3,6 +3,8 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 MODULES_DIR="${MODULES_DIR:-$ROOT_DIR/../modules}"
+# shellcheck source=scripts/lib/common.sh
+source "$ROOT_DIR/scripts/lib/common.sh"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 SOURCE_SITE="${SITE_MANIFEST:-$ROOT_DIR/../site-config/sites/latium/manifest.json}"
@@ -19,13 +21,9 @@ generate() {
     --output "$2"
 }
 
-generate docker "$WORK_DIR/docker"
 generate podman "$WORK_DIR/podman-a"
 generate podman "$WORK_DIR/podman-b"
 
-jq '(.services[] | del(.placement))' "$WORK_DIR/docker/stack.ir.json" > "$WORK_DIR/docker-backend-neutral.ir.json"
-jq '(.services[] | del(.placement))' "$WORK_DIR/podman-a/stack.ir.json" > "$WORK_DIR/podman-backend-neutral.ir.json"
-cmp "$WORK_DIR/docker-backend-neutral.ir.json" "$WORK_DIR/podman-backend-neutral.ir.json"
 diff -ru "$WORK_DIR/podman-a" "$WORK_DIR/podman-b"
 
 jq -e '
@@ -43,10 +41,10 @@ if ! rg -Fq 'search.{$DOMAIN}' "$WORK_DIR/podman-a/runtime/configs/caddy/Caddyfi
   exit 1
 fi
 
-jq -r '.services | keys[]' "$WORK_DIR/docker/stack.ir.json" | sort > "$WORK_DIR/ir-services"
-docker compose -f "$WORK_DIR/docker/docker-compose.yml" config --no-interpolate --services | sort > "$WORK_DIR/docker-services"
-cmp "$WORK_DIR/ir-services" "$WORK_DIR/docker-services"
-docker compose -f "$WORK_DIR/docker/docker-compose.yml" config --no-interpolate --quiet
+jq -r '.services | keys[]' "$WORK_DIR/podman-a/stack.ir.json" | sort > "$WORK_DIR/ir-services"
+container_contract -f "$WORK_DIR/podman-a/runtime-contract.yml" config --no-interpolate --services | sort > "$WORK_DIR/runtime-contract-services"
+cmp "$WORK_DIR/ir-services" "$WORK_DIR/runtime-contract-services"
+container_contract -f "$WORK_DIR/podman-a/runtime-contract.yml" config --no-interpolate --quiet
 
 if rg -n 'docker\.sock|docker-socket|docker-controller|docker-health-exporter|cadvisor|watchtower|autoheal|dozzle' \
   "$WORK_DIR/podman-a/quadlet/rootful" "$WORK_DIR/podman-a/quadlet/rootless"; then

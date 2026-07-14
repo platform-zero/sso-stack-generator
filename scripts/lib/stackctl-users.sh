@@ -63,7 +63,6 @@ runtime_env_optional() {
 
 load_runtime_config() {
   [ -f "$RUNTIME_ENV_FILE" ] || die "missing runtime env file: $RUNTIME_ENV_FILE"
-  require_cmd docker
   require_cmd jq
 
   DOMAIN="$(runtime_env_required DOMAIN)"
@@ -76,7 +75,7 @@ load_runtime_config() {
 }
 
 kcadm() {
-  docker exec "$KEYCLOAK_CONTAINER" /opt/keycloak/bin/kcadm.sh "$@"
+  container_runtime exec "$KEYCLOAK_CONTAINER" /opt/keycloak/bin/kcadm.sh "$@"
 }
 
 keycloak_auth() {

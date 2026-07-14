@@ -12,8 +12,8 @@ source "$LIB_DIR/site-manifest.sh"
 source "$LIB_DIR/render-values.sh"
 # shellcheck source=scripts/lib/templates.sh
 source "$LIB_DIR/templates.sh"
-# shellcheck source=scripts/lib/compose.sh
-source "$LIB_DIR/compose.sh"
+# shellcheck source=scripts/lib/runtime-contract.sh
+source "$LIB_DIR/runtime-contract.sh"
 # shellcheck source=scripts/lib/runtime-state.sh
 source "$LIB_DIR/runtime-state.sh"
 # shellcheck source=scripts/lib/components.sh
@@ -102,7 +102,7 @@ prepare_host_runtime_dirs
 prepare_runtime_dir "$runtime_root"
 render_config_tree "$BUNDLE_ROOT/stack.config" "$runtime_configs_dir"
 component_selection_filter_contracts_file "$runtime_configs_dir/service-contracts.json"
-mapfile -t runtime_env_keys < <(collect_runtime_env_keys "$runtime_configs_dir" "$BUNDLE_ROOT/global.settings" "$BUNDLE_ROOT/docker-compose.yml" "$BUNDLE_ROOT/runtime-env")
+mapfile -t runtime_env_keys < <(collect_runtime_env_keys "$runtime_configs_dir" "$BUNDLE_ROOT/global.settings" "$BUNDLE_ROOT/runtime-contract.yml" "$BUNDLE_ROOT/runtime-env")
 extra_runtime_env_keys=(
   STACK_RUNTIME_DIR
   MODEL_CONTEXT_PROXY_AUTH_SECRET
@@ -132,8 +132,7 @@ fi
 write_build_info "$BUNDLE_ROOT/build-info.json" "$runtime_root/build-info.json"
 
 if [ "$SKIP_COMPOSE_VALIDATE" = "0" ]; then
-  require_cmd docker
-  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-webservices}" run_compose_from_bundle \
+  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-webservices}" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
     "$runtime_env_file" \
     config --quiet >/dev/null

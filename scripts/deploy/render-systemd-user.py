@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Render systemd user units and Compose shards for a built webservices bundle.
+"""Render systemd user units and runtime-contract shards for a built webservices bundle.
 
 Inputs:
-- a merged Docker Compose config
+- a merged compatibility runtime contract config
 - stack.systemd/graph.json
 - the local deploy root and bundle root paths selected by the build
 
 Outputs:
 - systemd user service/target units
-- per-lifecycle-domain Compose JSON shards
-- shared Docker network/volume metadata for deploy-time reconciliation
+- per-lifecycle-domain runtime-contract JSON shards
+- shared container network/volume metadata for deploy-time reconciliation
 
 The graph separates platform services into installable targets and lifecycle
 domains. A lifecycle domain is the smallest Compose shard that systemd starts
@@ -854,7 +854,7 @@ def main() -> int:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--compose-project-name", required=True)
     parser.add_argument("--systemd-notify-bin", required=True)
-    parser.add_argument("--compose-helper", required=True)
+    parser.add_argument("--runtime-helper", required=True)
     parser.add_argument("--infra-helper", required=True)
     parser.add_argument("--diagnostics-helper", required=True)
     parser.add_argument("--host-autoheal-helper", required=True)
@@ -928,8 +928,8 @@ def main() -> int:
             "labels": merge_label_lists(
                 labels_as_list(merged.get("labels")),
                 [
-                    f"com.docker.compose.project={args.compose_project_name}",
-                    f"com.docker.compose.network={network_name}",
+                    f"org.platform-zero.runtime.project={args.compose_project_name}",
+                    f"org.platform-zero.runtime.network={network_name}",
                 ],
             ),
         })
@@ -945,8 +945,8 @@ def main() -> int:
             "labels": merge_label_lists(
                 labels_as_list(volume_config.get("labels")),
                 [
-                    f"com.docker.compose.project={args.compose_project_name}",
-                    f"com.docker.compose.volume={volume_name}",
+                    f"org.platform-zero.runtime.project={args.compose_project_name}",
+                    f"org.platform-zero.runtime.volume={volume_name}",
                 ],
             ),
         })
@@ -969,7 +969,7 @@ def main() -> int:
     write_text_within(output_dir, update_deploy_unit, render_update_deploy_unit(args.update_deploy_helper))
     write_text_within(output_dir, update_deploy_timer, render_update_deploy_timer())
     write_text_within(output_dir, networks_unit, render_infra_unit(
-        "Web Services Docker networks",
+        "Web Services container networks",
         shell_join([
             args.infra_helper,
             "ensure-networks",
@@ -983,7 +983,7 @@ def main() -> int:
         diagnostics_unit.replace("@.service", "@%n.service"),
     ))
     write_text_within(output_dir, volumes_unit, render_infra_unit(
-        "Web Services Docker volumes",
+        "Web Services container volumes",
         shell_join([
             args.infra_helper,
             "ensure-volumes",
@@ -1067,7 +1067,7 @@ def main() -> int:
         project = args.compose_project_name
         diagnostics_on_failure = diagnostics_unit.replace("@.service", "@%n.service")
         common_args = [
-            "--compose-file",
+            "--runtime-contract-file",
             runtime_compose_path,
             "--env-file",
             args.runtime_env_file_template,
@@ -1085,9 +1085,9 @@ def main() -> int:
             unit_text = render_job_unit(
                 f"Web Services job domain ({domain.name})",
                 shell_join([
-                    args.compose_helper,
+                    args.runtime_helper,
                     "job-run",
-                    "--compose-file",
+                    "--runtime-contract-file",
                     runtime_compose_path,
                     "--env-file",
                     args.runtime_env_file_template,
@@ -1099,7 +1099,7 @@ def main() -> int:
                     project,
                 ]),
                 shell_join([
-                    args.compose_helper,
+                    args.runtime_helper,
                     "service-stop",
                     *common_args,
                 ]),
@@ -1117,19 +1117,19 @@ def main() -> int:
         unit_text = render_service_unit(
             f"Web Services lifecycle domain ({domain.name})",
             shell_join([
-                args.compose_helper,
+                args.runtime_helper,
                 "service-start",
                 *common_args,
                 "--notify-bin",
                 args.systemd_notify_bin,
             ]),
             shell_join([
-                args.compose_helper,
+                args.runtime_helper,
                 "service-stop",
                 *common_args,
             ]),
             shell_join([
-                args.compose_helper,
+                args.runtime_helper,
                 "service-reload",
                 *common_args,
             ]),
@@ -1145,7 +1145,7 @@ def main() -> int:
         healthy_text = render_healthy_unit(
             f"Web Services healthy gate ({domain.name})",
             shell_join([
-                args.compose_helper,
+                args.runtime_helper,
                 "service-wait-healthy",
                 *common_args,
             ]),

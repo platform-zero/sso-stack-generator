@@ -12,13 +12,13 @@ The generator owns:
 - schemas and component catalog merging
 - secret-free bundle construction under `dist/`
 - deploy-time rendering helpers
-- generated systemd user unit and Docker Compose contracts
+- generated systemd user unit and Podman bundle contracts
 - shared Caddy, Keycloak, runtime, and test-runner plumbing
 
 Modules own deployable overlays:
 
 - module `stack.config/components.json` entries
-- Compose shards, config templates, custom containers, and tests for the module
+- runtime shards, config templates, custom containers, and tests for the module
 - module-specific service documentation
 - explicit override declarations when replacing generator files
 
@@ -37,9 +37,9 @@ writes a secret-free deploy bundle to `dist/`.
 
 `./deploy.sh` runs on the target host from the synced bundle. It decrypts the
 bundled site inputs with SOPS, renders runtime material under
-`~/webservices/runtime`, validates the generated Compose file with the rendered
-env, installs generated `systemd --user` units, and reconciles the requested
-target.
+`~/webservices/runtime`, validates the generated Podman bundle with the
+rendered env, installs generated `systemd --user` units, and reconciles the
+requested target.
 
 The normal operator path is:
 
@@ -56,8 +56,9 @@ Host reset tools stay under `ops/host-admin/`. Destructive helpers such as
 workspace runtime data is intentional.
 
 `scripts/testdev/` is for disposable local validation, normally on labware with
-nested Docker. Latium remains the real deployment target and should be exercised
-through the generated deploy and verify scripts, not the testdev harness.
+nested container-runtime compatibility. Latium remains the real deployment
+target and should be exercised through the generated deploy and verify scripts,
+not the testdev harness.
 
 ## Resolver And Modules
 
@@ -67,7 +68,7 @@ The generator resolves that manifest, checks each module's metadata against
 module component catalogs with the base catalog.
 
 Allowed module contribution paths are intentionally narrow: `global.settings/`,
-`stack.compose/`, `stack.config/`, `stack.containers/`, `stack.kotlin/`,
+`runtime.contract/`, `stack.config/`, `stack.containers/`, `stack.kotlin/`,
 `stack.js/`, `stack.systemd/`, `scripts/lib/`, `scripts/modules/`, and
 `docs/modules/`. A module that replaces a generator file must declare that file
 in its `overrides` list.

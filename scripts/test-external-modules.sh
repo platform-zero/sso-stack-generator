@@ -51,7 +51,7 @@ mkdir -p "$module_repo" "$manifest_repo" "$site_root" "$bundle_root/stack.config
 git -C "$module_repo" init -b main >/dev/null
 git -C "$manifest_repo" init -b main >/dev/null
 
-mkdir -p "$module_repo/stack.compose" "$module_repo/stack.config" "$module_repo/tests"
+mkdir -p "$module_repo/runtime.contract" "$module_repo/stack.config" "$module_repo/tests"
 cat > "$module_repo/README.md" <<'EOF_README'
 # Demo module
 EOF_README
@@ -61,14 +61,14 @@ cat > "$module_repo/stack.module.json" <<'EOF_STACK_MODULE'
   "id": "demo-module",
   "repo": "demo-module-stack-module",
   "lifecycle": "active",
-  "overlays": ["stack.compose/demo.yml", "stack.config/components.json"]
+  "overlays": ["runtime.contract/demo.yml", "stack.config/components.json"]
 }
 EOF_STACK_MODULE
 cat > "$module_repo/tests/validate.sh" <<'EOF_VALIDATE'
 #!/usr/bin/env bash
 true
 EOF_VALIDATE
-cat > "$module_repo/stack.compose/demo.yml" <<'EOF_COMPOSE'
+cat > "$module_repo/runtime.contract/demo.yml" <<'EOF_COMPOSE'
 services:
   demo-module:
     image: caddy:2.11.3
@@ -130,7 +130,7 @@ cat > "$site_root/.webservices-generator.json" <<EOF_PIN
 EOF_PIN
 
 external_modules_resolve "$site_root/manifest.json"
-assert_file "$EXTERNAL_MODULES_MATERIALIZED_DIR/stack.compose/demo.yml"
+assert_file "$EXTERNAL_MODULES_MATERIALIZED_DIR/runtime.contract/demo.yml"
 assert_file "$EXTERNAL_MODULES_MATERIALIZED_DIR/stack.config/components.external/demo-module.json"
 [ ! -e "$EXTERNAL_MODULES_MATERIALIZED_DIR/stack.module.json" ] || die "stack.module.json should not be materialized"
 [ ! -e "$EXTERNAL_MODULES_MATERIALIZED_DIR/README.md" ] || die "README.md should not be materialized"
@@ -178,7 +178,7 @@ fi
 foundation_repo="$tmp_root/foundation-stack-module"
 app_repo="$tmp_root/app-stack-module"
 cycle_repo="$tmp_root/cycle-stack-module"
-mkdir -p "$foundation_repo/stack.config" "$app_repo/stack.compose" "$cycle_repo/stack.compose"
+mkdir -p "$foundation_repo/stack.config" "$app_repo/runtime.contract" "$cycle_repo/runtime.contract"
 git -C "$foundation_repo" init -b main >/dev/null
 git -C "$app_repo" init -b main >/dev/null
 git -C "$cycle_repo" init -b main >/dev/null
@@ -199,7 +199,7 @@ cat > "$foundation_repo/stack.module.json" <<'EOF_V2_FOUNDATION'
   "overlays": ["stack.config/components.json"]
 }
 EOF_V2_FOUNDATION
-cat > "$app_repo/stack.compose/app-test.yml" <<'EOF_V2_APP_COMPOSE'
+cat > "$app_repo/runtime.contract/app-test.yml" <<'EOF_V2_APP_COMPOSE'
 services:
   app-test:
     image: caddy:2.11.3
@@ -215,10 +215,10 @@ cat > "$app_repo/stack.module.json" <<'EOF_V2_APP'
   "repo": "app-test-stack-module",
   "lifecycle": "active",
   "dependencies": ["foundation-test"],
-  "overlays": ["stack.compose/app-test.yml"]
+  "overlays": ["runtime.contract/app-test.yml"]
 }
 EOF_V2_APP
-cat > "$cycle_repo/stack.compose/cycle-test.yml" <<'EOF_V2_CYCLE_COMPOSE'
+cat > "$cycle_repo/runtime.contract/cycle-test.yml" <<'EOF_V2_CYCLE_COMPOSE'
 services:
   cycle-test:
     image: caddy:2.11.3
@@ -230,7 +230,7 @@ cat > "$cycle_repo/stack.module.json" <<'EOF_V2_CYCLE'
   "repo": "cycle-test-stack-module",
   "lifecycle": "active",
   "dependencies": ["cycle-test"],
-  "overlays": ["stack.compose/cycle-test.yml"]
+  "overlays": ["runtime.contract/cycle-test.yml"]
 }
 EOF_V2_CYCLE
 foundation_commit="$(git_commit_all "$foundation_repo" "Add foundation v2 module")"
@@ -256,7 +256,7 @@ cat > "$manifest_repo/modules.json" <<EOF_V2_MODULES
       "git": "$app_repo",
       "ref": "main",
       "commit": "$app_commit",
-      "overrides": ["stack.compose/app-test.yml"]
+      "overrides": ["runtime.contract/app-test.yml"]
     }
   ]
 }
@@ -276,7 +276,7 @@ if [ "$undeclared_surface_status" -eq 0 ]; then
   exit 1
 fi
 assert_file "$EXTERNAL_MODULES_MATERIALIZED_DIR/stack.config/components.external/foundation-test.json"
-assert_file "$EXTERNAL_MODULES_MATERIALIZED_DIR/stack.compose/app-test.yml"
+assert_file "$EXTERNAL_MODULES_MATERIALIZED_DIR/runtime.contract/app-test.yml"
 jq -e '.schemaVersion == 2 and (.modules | map(.id)) == ["foundation-test", "app-test"]' \
   "$EXTERNAL_MODULES_METADATA_FILE" >/dev/null
 
@@ -302,7 +302,7 @@ cat > "$manifest_repo/modules.json" <<EOF_V2_MODULES_CLEAN
       "git": "$app_repo",
       "ref": "main",
       "commit": "$app_clean_commit",
-      "overrides": ["stack.compose/app-test.yml"]
+      "overrides": ["runtime.contract/app-test.yml"]
     }
   ]
 }
@@ -332,7 +332,7 @@ cat > "$manifest_repo/modules.json" <<EOF_V2_STALE_OVERRIDES
       "git": "$app_repo",
       "ref": "main",
       "commit": "$app_clean_commit",
-      "overrides": ["stack.compose/missing.yml"]
+      "overrides": ["runtime.contract/missing.yml"]
     }
   ]
 }

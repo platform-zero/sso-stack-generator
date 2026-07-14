@@ -7,7 +7,7 @@ deployment.
 
 Run the generator build against a representative manifest. A successful build
 must complete TypeScript checks, unit tests, Gradle tests, contract generation,
-Bazel packaging, Compose validation, and systemd rendering.
+Bazel packaging, compatibility-contract validation, and systemd/Quadlet rendering.
 
 ```bash
 ./build.sh --manifest /path/to/site/manifest.json

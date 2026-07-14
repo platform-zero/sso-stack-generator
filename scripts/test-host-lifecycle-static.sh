@@ -12,7 +12,7 @@ fi
 assert_absent() {
   local label="$1"
   shift
-  if grep -RIn "$@" "$ROOT_DIR/docker-compose.yml" "$ROOT_DIR/stack.compose" "$ROOT_DIR/stack.config" "$ROOT_DIR/stack.systemd" "$ROOT_DIR/global.settings" "$ROOT_DIR/systemd-user" >/tmp/webservices-host-lifecycle-static.grep 2>/dev/null; then
+  if grep -RIn "$@" "$ROOT_DIR/runtime-contract.yml" "$ROOT_DIR/runtime.contract" "$ROOT_DIR/stack.config" "$ROOT_DIR/stack.systemd" "$ROOT_DIR/global.settings" "$ROOT_DIR/systemd-user" >/tmp/webservices-host-lifecycle-static.grep 2>/dev/null; then
     printf '[host-lifecycle-static-test] unexpected %s\n' "$label" >&2
     cat /tmp/webservices-host-lifecycle-static.grep >&2
     rm -f /tmp/webservices-host-lifecycle-static.grep

@@ -14,11 +14,11 @@ The stack is split across three ownership layers:
 
 | Layer | Owns | Does not own |
 | --- | --- | --- |
-| Generator | Resolver, schemas, base catalog, build/deploy bundle layout, shared runtime helpers, systemd/Compose rendering, and test runners. | Site pins, plaintext secrets, downstream choices, or module-specific service source. |
-| Modules | Deployable overlays for services or service groups: Compose shards, config templates, containers, tests, and component catalog entries. | Site-specific activation or secret values. |
+| Generator | Resolver, schemas, base catalog, build/deploy bundle layout, shared runtime helpers, systemd/Podman rendering, and test runners. | Site pins, plaintext secrets, downstream choices, or module-specific service source. |
+| Modules | Deployable overlays for services or service groups: runtime shards, config templates, containers, tests, and component catalog entries. | Site-specific activation or secret values. |
 | Site config | Site manifest, encrypted inputs, generator/module pins, and deployment target choices. | Generic generator behavior or reusable module implementation. |
 
-The generated runtime namespace is still `webservices` for Compose projects,
+The generated runtime namespace is still `webservices` for container projects,
 systemd units, paths, labels, and tests. That runtime name is separate from the
 repository identity.
 
@@ -37,7 +37,7 @@ secret-free dist/ bundle
 host deploy renders secrets and runtime config
         |
         v
-systemd --user supervises Docker Compose shards
+systemd and Quadlet supervise the Podman-managed stack
         |
         v
 verify.sh and run-tests.sh prove the deployed contract
@@ -93,7 +93,7 @@ a deployment.
 | `scripts/` | Build, resolver, deploy rendering, module, and validation helpers. |
 | `modules/` | Public module catalog, group definitions, and module metadata schema. |
 | `stack.kotlin/` | Materialized Kotlin services in a built bundle. Source lives in modules. |
-| `stack.compose/` | Materialized Compose files in a built bundle. Deployable service overlays usually live in modules. |
+| `runtime.contract/` | Materialized compatibility runtime fragments in a built bundle. Deployable service overlays usually live in modules. |
 | `stack.config/` | Base config, schemas, Caddy/Keycloak templates, and runtime helper inputs. |
 | `stack.containers/` | Materialized custom container contexts in a built bundle. |
 | `stack.systemd/` | Source graph for generated systemd user units. |

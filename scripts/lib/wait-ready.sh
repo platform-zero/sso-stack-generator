@@ -55,15 +55,14 @@ done
 
 [ -n "$BUNDLE_DIR" ] || die "--bundle-dir is required"
 [ -n "$RUNTIME_ENV_FILE" ] || die "--runtime-env-file is required"
-[ -f "$BUNDLE_DIR/docker-compose.yml" ] || die "missing compose file in $BUNDLE_DIR"
+[ -f "$BUNDLE_DIR/runtime-contract.yml" ] || die "missing runtime contract in $BUNDLE_DIR"
 [ -f "$RUNTIME_ENV_FILE" ] || die "missing runtime env file: $RUNTIME_ENV_FILE"
 [ -f "$BUNDLE_DIR/stack.systemd/graph.json" ] || die "missing systemd graph in $BUNDLE_DIR/stack.systemd/graph.json"
-require_cmd docker
 require_cmd jq
 require_cmd systemctl
 
 compose_config_json() {
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_compose_from_bundle \
+  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_DIR" \
     "$RUNTIME_ENV_FILE" \
     config --format json
@@ -77,17 +76,17 @@ service_container_name() {
 
 container_state() {
   local container_name="$1"
-  docker inspect -f '{{.State.Status}}' "$container_name" 2>/dev/null || true
+  container_runtime inspect -f '{{.State.Status}}' "$container_name" 2>/dev/null || true
 }
 
 container_health() {
   local container_name="$1"
-  docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$container_name" 2>/dev/null || true
+  container_runtime inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$container_name" 2>/dev/null || true
 }
 
 container_exit_code() {
   local container_name="$1"
-  docker inspect -f '{{.State.ExitCode}}' "$container_name" 2>/dev/null || true
+  container_runtime inspect -f '{{.State.ExitCode}}' "$container_name" 2>/dev/null || true
 }
 
 systemd_unit_name_for_service() {
@@ -212,7 +211,7 @@ service_exit_code() {
     fi
     return 0
   }
-  if ! docker inspect "$container_name" >/dev/null 2>&1; then
+  if ! container_runtime inspect "$container_name" >/dev/null 2>&1; then
     if systemd_unit_skipped_exec_condition "$unit_name"; then
       printf '0\n'
       return 0

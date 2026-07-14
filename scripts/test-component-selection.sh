@@ -14,8 +14,8 @@ fi
 source "$ROOT_DIR/scripts/lib/common.sh"
 # shellcheck source=scripts/lib/components.sh
 source "$ROOT_DIR/scripts/lib/components.sh"
-# shellcheck source=scripts/lib/compose.sh
-source "$ROOT_DIR/scripts/lib/compose.sh"
+# shellcheck source=scripts/lib/runtime-contract.sh
+source "$ROOT_DIR/scripts/lib/runtime-contract.sh"
 
 assert_not_contains() {
   local file="$1"
@@ -56,10 +56,8 @@ validate_caddy_file() {
   caddy_log="$(mktemp)"
   if command -v podman >/dev/null 2>&1; then
     container_cli=podman
-  elif command -v docker >/dev/null 2>&1; then
-    container_cli=docker
   else
-    printf '[component-selection-test] missing required container CLI: podman or docker\n' >&2
+    printf '[component-selection-test] missing required container CLI: podman\n' >&2
     exit 1
   fi
   if ! "$container_cli" run --rm \
@@ -158,13 +156,13 @@ EOF_SOPS
 chmod +x "$fake_bin/sops"
 
 copy_tree "$CONTRACT_ROOT/global.settings" "$bundle_root/global.settings"
-copy_tree "$CONTRACT_ROOT/stack.compose" "$bundle_root/stack.compose"
+copy_tree "$CONTRACT_ROOT/runtime.contract" "$bundle_root/runtime.contract"
 copy_tree "$CONTRACT_ROOT/stack.config" "$bundle_root/stack.config"
 copy_tree "$CONTRACT_ROOT/stack.systemd" "$bundle_root/stack.systemd"
 copy_tree "$ROOT_DIR/scripts" "$bundle_root/scripts"
-mkdir -p "$bundle_root/stack.compose"
+mkdir -p "$bundle_root/runtime.contract"
 
-cat > "$bundle_root/stack.compose/component-marker-test.yml" <<'EOF_COMPOSE_MARKER'
+cat > "$bundle_root/runtime.contract/component-marker-test.yml" <<'EOF_COMPOSE_MARKER'
 volumes:
   component_marker_always:
   # webservices-component-start bookstack
@@ -220,9 +218,9 @@ component_selection_write_metadata \
   "$bundle_root/stack.config/components.json" \
   "$site_root/components.lock.json"
 
-build_merged_compose "$bundle_root" "$bundle_root/docker-compose.yml" "$site_root/manifest.json"
-assert_contains "$bundle_root/docker-compose.yml" 'component_marker_always:' "always-on compose marker test volume"
-assert_not_contains "$bundle_root/docker-compose.yml" 'component_marker_bookstack:' "disabled compose marker test volume"
+build_runtime_contract "$bundle_root" "$bundle_root/runtime-contract.yml" "$site_root/manifest.json"
+assert_contains "$bundle_root/runtime-contract.yml" 'component_marker_always:' "always-on compose marker test volume"
+assert_not_contains "$bundle_root/runtime-contract.yml" 'component_marker_bookstack:' "disabled compose marker test volume"
 
 PATH="$fake_bin:$PATH" "$ROOT_DIR/scripts/deploy/render-runtime.sh" \
   --bundle-root "$bundle_root" \
@@ -261,9 +259,9 @@ component_selection_write_metadata \
   "$bundle_root/stack.config/components.json" \
   "$site_root/components.lock.json"
 
-build_merged_compose "$bundle_root" "$bundle_root/docker-compose.full.yml" "$site_root/manifest.json"
-assert_contains "$bundle_root/docker-compose.full.yml" 'component_marker_bookstack:' "enabled compose marker test volume"
-cp "$bundle_root/docker-compose.full.yml" "$bundle_root/docker-compose.yml"
+build_runtime_contract "$bundle_root" "$bundle_root/runtime-contract.full.yml" "$site_root/manifest.json"
+assert_contains "$bundle_root/runtime-contract.full.yml" 'component_marker_bookstack:' "enabled runtime contract marker test volume"
+cp "$bundle_root/runtime-contract.full.yml" "$bundle_root/runtime-contract.yml"
 
 if [ -f "$bundle_root/stack.systemd/graph.json" ]; then
   "$ROOT_DIR/scripts/deploy/render-systemd-user.sh" \

@@ -27,6 +27,36 @@ require_cmd() {
   command -v "$command_name" >/dev/null 2>&1 || die "missing required command: $command_name"
 }
 
+container_cli() {
+  local cli="${STACK_CONTAINER_CLI:-}"
+  if [ -n "$cli" ]; then
+    [ "$cli" = "podman" ] || die "unsupported container CLI: $cli (Podman is required)"
+    command -v "$cli" >/dev/null 2>&1 || die "requested container CLI is unavailable: $cli"
+    printf '%s\n' "$cli"
+    return 0
+  fi
+  if command -v podman >/dev/null 2>&1; then
+    printf 'podman\n'
+    return 0
+  fi
+  die "missing required container CLI: podman"
+}
+
+container_runtime() {
+  local cli
+  cli="$(container_cli)"
+  if [ "$cli" = "podman" ] && [ -n "${CONTAINER_HOST:-}" ]; then
+    podman --remote --url "$CONTAINER_HOST" "$@"
+    return 0
+  fi
+  "$cli" "$@"
+}
+
+container_contract() {
+  container_cli >/dev/null
+  podman compose "$@"
+}
+
 iso_timestamp_utc() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
 }

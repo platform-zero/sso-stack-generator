@@ -11,12 +11,12 @@ testdev_require_virtualized_host
 
 if docker inspect "$(testdev_dind_name)" >/dev/null 2>&1; then
   testdev_run_cli sh -lc '
-    if [ -f /workspace-home/deploy/bundle/build/docker-compose.yml ]; then
+    if [ -f /workspace-home/deploy/bundle/build/runtime-contract.yml ]; then
       cd /workspace-home/deploy/bundle
       docker compose \
         --env-file runtime/stack.env \
         --project-directory . \
-        -f build/docker-compose.yml \
+        -f build/runtime-contract.yml \
         down --remove-orphans
     fi
   ' || true

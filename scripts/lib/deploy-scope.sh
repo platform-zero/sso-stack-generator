@@ -54,7 +54,7 @@ deploy_scope_services_for_unit() {
   local unit_name domain_name services
 
   [ -f "$graph_file" ] || die "missing systemd graph: $graph_file"
-  [ -f "$compose_config_json" ] || die "missing compose config JSON: $compose_config_json"
+  [ -f "$compose_config_json" ] || die "missing runtime contract config JSON: $compose_config_json"
 
   unit_name="$(deploy_scope_normalize_unit "$requested_unit" "$unit_prefix")"
   if [[ "$unit_name" == *.target ]]; then
