@@ -714,7 +714,7 @@ fun renderDocker(ir: ObjectNode, output: Path) {
     writeYaml(output.resolve("docker-compose.yml"), compose)
 }
 
-fun renderRuntimeComposeShard(runtimePath: Path, outputDir: Path) {
+fun renderRuntimeComposeShard(runtimePath: Path, outputDir: Path, predeclaredVolumes: Set<String>) {
     val runtime = readTree(runtimePath)
     if (runtime.path("schemaVersion").asInt() != 1) fail("invalid runtime schema: $runtimePath")
     val moduleId = runtime.path("module").asText().ifBlank { fail("runtime lacks module id: $runtimePath") }
@@ -726,6 +726,7 @@ fun renderRuntimeComposeShard(runtimePath: Path, outputDir: Path) {
     compose.set<ObjectNode>("services", services)
     val volumes = obj()
     runtime.path("volumes").fieldsMap().forEach { (name, value) ->
+        if (name in predeclaredVolumes) return@forEach
         val volume = obj()
         value.path("hostPath").textOrNull()?.let {
             volume.put("driver", "local")
@@ -741,8 +742,12 @@ fun renderRuntimeComposeShard(runtimePath: Path, outputDir: Path) {
 fun commandRenderRuntimeCompose(options: Map<String, String>) {
     val runtimeDir = Path(required(options, "runtime-dir")).toAbsolutePath().normalize()
     val outputDir = Path(required(options, "output-dir")).toAbsolutePath().normalize()
+    val declaredVolumes = options["global-volumes"]?.let { path ->
+        val root = readTree(Path(path).toAbsolutePath().normalize())
+        root.path("volumes").fieldsMap().map { it.first }.toSet()
+    } ?: emptySet()
     if (!runtimeDir.isDirectory()) return
-    runtimeDir.listDirectoryEntries("*.yaml").sorted().forEach { renderRuntimeComposeShard(it, outputDir) }
+    runtimeDir.listDirectoryEntries("*.yaml").sorted().forEach { renderRuntimeComposeShard(it, outputDir, declaredVolumes) }
 }
 
 fun systemdQuote(value: String): String = "\"" + value

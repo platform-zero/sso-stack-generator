@@ -79,6 +79,7 @@ external_modules_overlay_into "$DIST_DIR/build"
 if [ -d "$DIST_DIR/build/stack.runtime.external" ]; then
   "$SCRIPT_DIR/generate.sh" render-runtime-compose \
     --runtime-dir "$DIST_DIR/build/stack.runtime.external" \
+    --global-volumes "$DIST_DIR/build/global.settings/volumes.yml" \
     --output-dir "$DIST_DIR/build/stack.compose"
 fi
 cp "$OUT_DIR/latest-build.json" "$DIST_DIR/build/build-info.json"
