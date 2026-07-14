@@ -132,9 +132,9 @@ def optional_runtime_configured(env_values: Dict[str, str]) -> bool:
     return bool(runner_ssh_dir and (Path(runner_ssh_dir) / "id_ed25519").is_file())
 
 
-def completion_job_services(compose: dict) -> List[str]:
+def completion_job_services(runtime_config: dict) -> List[str]:
     jobs = set()
-    services = compose.get("services") or {}
+    services = runtime_config.get("services") or {}
     for name, config in services.items():
         if config.get("restart") == "no":
             jobs.add(name)
@@ -149,7 +149,7 @@ def container_name_for(service: str, config: dict) -> str:
     return ((config.get("services") or {}).get(service) or {}).get("container_name") or service
 
 
-def compose_service_names(bundle_root: Path, env_file: Path, project_name: str) -> List[str]:
+def runtime_service_names(bundle_root: Path, env_file: Path, project_name: str) -> List[str]:
     config = runtime_contract_config(bundle_root, env_file, project_name)
     return sorted((config.get("services") or {}).keys())
 
@@ -402,7 +402,7 @@ def vector_size_from_collection(payload: dict) -> int:
 
 
 def validate_qdrant_schema(bundle_root: Path, env_file: Path, project_name: str) -> int:
-    if "qdrant" not in compose_service_names(bundle_root, env_file, project_name):
+    if "qdrant" not in runtime_service_names(bundle_root, env_file, project_name):
         print("[webservices-audit] qdrant is not selected in this bundle; skipping vector schema audit", file=sys.stderr)
         return 0
     env_values = load_env_file(env_file)

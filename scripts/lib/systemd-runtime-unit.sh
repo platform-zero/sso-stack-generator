@@ -81,7 +81,7 @@ done
 [ -n "$PROJECT_NAME" ] || die "--project-name is required"
 require_cmd jq
 
-compose() {
+runtime_contract() {
   COMPOSE_IGNORE_ORPHANS="${COMPOSE_IGNORE_ORPHANS:-true}" \
   container_contract \
     --project-name "$PROJECT_NAME" \
@@ -91,11 +91,11 @@ compose() {
     "$@"
 }
 
-compose_config_json() {
-  runtime contract config --format json
+runtime_contract_config_json() {
+  runtime_contract config --format json
 }
 
-docker_stop_container() {
+stop_container() {
   local service_name="$1"
   local container_name="$2"
   local timeout_seconds
@@ -115,7 +115,7 @@ docker_stop_container() {
   fi
 }
 
-docker_rm_container() {
+remove_container() {
   local container_name="$1"
   container_runtime rm -f "$container_name" >/dev/null 2>&1 || true
 }
@@ -272,9 +272,9 @@ service_start() {
   reload_marker="$(reload_marker_path)"
   clear_markers
 
-  printf '[webservices-unit] compose up/build domain %s via %s\n' "$UNIT_NAME" "$RUNTIME_CONTRACT_FILE" >&2
-  compose up -d --build --force-recreate
-  config_json="$(compose_config_json)"
+  printf '[webservices-unit] runtime contract up/build domain %s via %s\n' "$UNIT_NAME" "$RUNTIME_CONTRACT_FILE" >&2
+  runtime_contract up -d --build --force-recreate
+  config_json="$(runtime_contract_config_json)"
   health_seen_healthy=0
   has_any_healthcheck="$(service_has_any_healthcheck "$config_json")"
   prehealthy_grace_seconds="$PREHEALTH_TRANSIENT_GRACE_SECONDS"
@@ -364,7 +364,7 @@ service_start() {
 service_wait_healthy() {
   local config_json start_time now elapsed
   [ -n "$UNIT_NAME" ] || die "--unit-name is required for service-wait-healthy"
-  config_json="$(compose_config_json)"
+  config_json="$(runtime_contract_config_json)"
   if [ "$(service_has_any_healthcheck "$config_json")" != "true" ]; then
     printf '[webservices-unit] %s has no healthchecks; healthy gate passes immediately\n' "$UNIT_NAME" >&2
     exit 0
@@ -392,19 +392,19 @@ service_stop() {
   local stop_marker config_json service_name container_name
   stop_marker="$(stop_marker_path)"
   touch "$stop_marker"
-  printf '[webservices-unit] compose stop domain %s via %s\n' "$UNIT_NAME" "$RUNTIME_CONTRACT_FILE" >&2
-  config_json="$(compose_config_json)"
+  printf '[webservices-unit] runtime contract stop domain %s via %s\n' "$UNIT_NAME" "$RUNTIME_CONTRACT_FILE" >&2
+  config_json="$(runtime_contract_config_json)"
   while IFS= read -r service_name; do
     [ -n "$service_name" ] || continue
     container_name="$(container_name_for_service "$config_json" "$service_name")"
     [ -n "$container_name" ] || continue
-    docker_stop_container "$service_name" "$container_name"
+    stop_container "$service_name" "$container_name"
   done < <(services_from_config "$config_json")
   while IFS= read -r service_name; do
     [ -n "$service_name" ] || continue
     container_name="$(container_name_for_service "$config_json" "$service_name")"
     [ -n "$container_name" ] || continue
-    docker_rm_container "$container_name"
+    remove_container "$container_name"
   done < <(services_from_config "$config_json")
 }
 
@@ -414,9 +414,9 @@ service_reload() {
   reload_marker="$(reload_marker_path)"
   touch "$reload_marker"
   trap 'rm -f "$reload_marker"' EXIT
-  printf '[webservices-unit] compose rebuild/recreate domain %s via %s\n' "$UNIT_NAME" "$RUNTIME_CONTRACT_FILE" >&2
-  compose up -d --build --force-recreate
-  config_json="$(compose_config_json)"
+  printf '[webservices-unit] runtime contract rebuild/recreate domain %s via %s\n' "$UNIT_NAME" "$RUNTIME_CONTRACT_FILE" >&2
+  runtime_contract up -d --build --force-recreate
+  config_json="$(runtime_contract_config_json)"
   start_time="$(date +%s)"
   while true; do
     if wait_until_running "$config_json"; then
@@ -445,10 +445,10 @@ service_reload() {
 job_run() {
   local rc
   [ -n "$SERVICE_NAME" ] || die "--service-name is required for job-run"
-  printf '[webservices-unit] compose build/run oneshot %s via %s\n' "$SERVICE_NAME" "$RUNTIME_CONTRACT_FILE" >&2
-  compose rm -f -s "$SERVICE_NAME" >/dev/null 2>&1 || true
+  printf '[webservices-unit] runtime contract build/run oneshot %s via %s\n' "$SERVICE_NAME" "$RUNTIME_CONTRACT_FILE" >&2
+  runtime_contract rm -f -s "$SERVICE_NAME" >/dev/null 2>&1 || true
   set +e
-  compose up --build --force-recreate --abort-on-container-exit --exit-code-from "$SERVICE_NAME" "$SERVICE_NAME"
+  runtime_contract up --build --force-recreate --abort-on-container-exit --exit-code-from "$SERVICE_NAME" "$SERVICE_NAME"
   rc=$?
   set -e
   exit "$rc"

@@ -8,10 +8,10 @@ trap 'rm -rf "$tmp_dir"' EXIT
 
 mkdir -p "$tmp_dir/deploy/build" "$tmp_dir/deploy/data/shared/subdir" "$tmp_dir/deploy/reports"
 
-compose_json="$tmp_dir/compose.json"
+runtime_config_json="$tmp_dir/compose.json"
 report_json="$tmp_dir/report.json"
 
-cat > "$compose_json" <<EOF_JSON
+cat > "$runtime_config_json" <<EOF_JSON
 {
   "services": {
     "alpha": {
@@ -36,7 +36,7 @@ cat > "$compose_json" <<EOF_JSON
 EOF_JSON
 
 "$ROOT_DIR/scripts/mount-diagnostics.sh" \
-  --compose-json "$compose_json" \
+  --runtime-config-json "$runtime_config_json" \
   --bundle-root "$tmp_dir/deploy/build" \
   --output "$report_json"
 

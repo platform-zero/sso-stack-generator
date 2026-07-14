@@ -360,20 +360,20 @@ reload_deploy_sensitive_units() {
 reload_runtime_config_units() {
   local service_name unit_name seen=" "
   local services=() reload_units=() restart_units=()
-  local compose_config_json changed_path service_output
+  local runtime_config_json changed_path service_output
 
-  compose_config_json="$(mktemp "${TMPDIR:-/tmp}/webservices-runtime-config-compose.XXXXXX.json")"
-  compose_config_snapshot "$compose_config_json"
+  runtime_config_json="$(mktemp "${TMPDIR:-/tmp}/webservices-runtime-config.XXXXXX.json")"
+  runtime_contract_config_snapshot "$runtime_config_json"
 
   if [ "$RUNTIME_CONFIG_CHANGE_STATUS" = "known" ]; then
     if [ "${#RUNTIME_CONFIG_CHANGED_PATHS[@]}" -eq 0 ]; then
       deploy_log "no changed runtime-config files detected"
-      rm -f "$compose_config_json"
+      rm -f "$runtime_config_json"
       return 0
     fi
     for changed_path in "${RUNTIME_CONFIG_CHANGED_PATHS[@]}"; do
       [ -n "$changed_path" ] || continue
-      service_output="$(services_for_runtime_config_path "$changed_path" "$compose_config_json")"
+      service_output="$(services_for_runtime_config_path "$changed_path" "$runtime_config_json")"
       while IFS= read -r service_name; do
         append_unique "$service_name" services
       done <<< "$service_output"
@@ -393,14 +393,14 @@ reload_runtime_config_units() {
               )
             )
           | .key
-        ' "$compose_config_json" | sort
+        ' "$runtime_config_json" | sort
     )
   fi
-  rm -f "$compose_config_json"
+  rm -f "$runtime_config_json"
 
   for service_name in "${services[@]}"; do
     [ -n "$service_name" ] || continue
-    unit_name="$(unit_for_compose_service "$service_name")"
+    unit_name="$(unit_for_runtime_service "$service_name")"
     [ -f "$BUNDLE_ROOT/systemd-user/$unit_name" ] || continue
     if ! user_systemctl is-active --quiet "$unit_name"; then
       continue
@@ -464,7 +464,7 @@ reload_changed_built_image_units() {
       continue
     fi
 
-    unit_name="$(unit_for_compose_service "$service_name")"
+    unit_name="$(unit_for_runtime_service "$service_name")"
     [ -f "$BUNDLE_ROOT/systemd-user/$unit_name" ] || continue
     if ! grep -q '^ExecReload=' "$BUNDLE_ROOT/systemd-user/$unit_name"; then
       continue

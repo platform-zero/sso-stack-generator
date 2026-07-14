@@ -49,8 +49,8 @@ notify_restart() {
   fi
 }
 
-compose_shard_dir="$DEPLOY_ROOT/build/systemd-user/compose"
-[ -d "$compose_shard_dir" ] || die "missing rendered runtime shard directory: $compose_shard_dir"
+runtime_shard_dir="$DEPLOY_ROOT/build/systemd-user/runtime-shards"
+[ -d "$runtime_shard_dir" ] || die "missing rendered runtime shard directory: $runtime_shard_dir"
 
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/webservices-host-autoheal.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -58,12 +58,12 @@ containers_json="$tmp_dir/containers.json"
 current_json="$tmp_dir/current.json"
 restarts_file="$tmp_dir/restarts.tsv"
 
-python3 - "$compose_shard_dir" "$UNIT_PREFIX" > "$tmp_dir/labelled.json" <<'PY'
+python3 - "$runtime_shard_dir" "$UNIT_PREFIX" > "$tmp_dir/labelled.json" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-compose_dir = Path(sys.argv[1])
+runtime_shard_dir = Path(sys.argv[1])
 prefix = sys.argv[2]
 labelled = {}
 
@@ -79,8 +79,8 @@ def labels_to_dict(value):
         return result
     return {}
 
-for path in sorted(compose_dir.glob("*.compose.json")):
-    domain = path.name[:-len(".compose.json")]
+for path in sorted(runtime_shard_dir.glob("*.runtime.json")):
+    domain = path.name[:-len(".runtime.json")]
     data = json.loads(path.read_text())
     for service, config in (data.get("services") or {}).items():
         labels = labels_to_dict(config.get("labels"))

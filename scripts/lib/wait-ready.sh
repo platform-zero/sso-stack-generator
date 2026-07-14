@@ -61,7 +61,7 @@ done
 require_cmd jq
 require_cmd systemctl
 
-compose_config_json() {
+runtime_contract_config_json() {
   COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_DIR" \
     "$RUNTIME_ENV_FILE" \
@@ -69,9 +69,9 @@ compose_config_json() {
 }
 
 service_container_name() {
-  local compose_config="$1"
+  local runtime_config="$1"
   local service_name="$2"
-  printf '%s\n' "$compose_config" | jq -r --arg service "$service_name" '.services[$service].container_name // ""'
+  printf '%s\n' "$runtime_config" | jq -r --arg service "$service_name" '.services[$service].container_name // ""'
 }
 
 container_state() {
@@ -149,14 +149,14 @@ systemd_unit_skipped_exec_condition() {
 }
 
 service_state() {
-  local compose_config="$1"
+  local runtime_config="$1"
   local service_name="$2"
   local container_name unit_name
   if service_is_optional_without_isolated_docker_vm_identity "$service_name"; then
     printf 'skipped\n'
     return 0
   fi
-  container_name="$(service_container_name "$compose_config" "$service_name")"
+  container_name="$(service_container_name "$runtime_config" "$service_name")"
   unit_name="$(systemd_unit_name_for_service "$service_name")"
   [ -n "$container_name" ] || {
     if systemd_unit_successful_oneshot "$unit_name"; then
@@ -180,23 +180,23 @@ service_state() {
 }
 
 service_health() {
-  local compose_config="$1"
+  local runtime_config="$1"
   local service_name="$2"
   local container_name
-  container_name="$(service_container_name "$compose_config" "$service_name")"
+  container_name="$(service_container_name "$runtime_config" "$service_name")"
   [ -n "$container_name" ] || { printf '\n'; return 0; }
   container_health "$container_name"
 }
 
 service_exit_code() {
-  local compose_config="$1"
+  local runtime_config="$1"
   local service_name="$2"
   local container_name unit_name result
   if service_is_optional_without_isolated_docker_vm_identity "$service_name"; then
     printf '0\n'
     return 0
   fi
-  container_name="$(service_container_name "$compose_config" "$service_name")"
+  container_name="$(service_container_name "$runtime_config" "$service_name")"
   unit_name="$(systemd_unit_name_for_service "$service_name")"
   [ -n "$container_name" ] || {
     if systemd_unit_skipped_exec_condition "$unit_name"; then
@@ -234,9 +234,9 @@ service_successful_terminal_state() {
 }
 
 service_is_completion_dependency_job() {
-  local compose_config="$1"
+  local runtime_config="$1"
   local service_name="$2"
-  printf '%s\n' "$compose_config" | jq -r --arg service "$service_name" '
+  printf '%s\n' "$runtime_config" | jq -r --arg service "$service_name" '
     any(
       .services[]
       | (.depends_on // {})
@@ -261,11 +261,11 @@ service_is_on_demand_domain_member() {
 }
 
 service_is_top_level_readiness_target() {
-  local compose_config="$1"
+  local runtime_config="$1"
   local graph_json="$2"
   local service_name="$3"
   local completion_job on_demand_domain_member
-  completion_job="$(service_is_completion_dependency_job "$compose_config" "$service_name")"
+  completion_job="$(service_is_completion_dependency_job "$runtime_config" "$service_name")"
   if [ "$completion_job" = "true" ]; then
     printf 'false\n'
     return 0
@@ -287,7 +287,7 @@ service_is_top_level_readiness_target() {
     return 0
   fi
 
-  printf '%s\n' "$compose_config" | jq -r --arg service "$service_name" '
+  printf '%s\n' "$runtime_config" | jq -r --arg service "$service_name" '
     if (.services[$service].restart // "") == "no" then
       "false"
     else
@@ -297,7 +297,7 @@ service_is_top_level_readiness_target() {
 }
 
 created_service_blockers() {
-  local compose_config="$1"
+  local runtime_config="$1"
   local graph_json="$2"
   local service_name="$3"
   local blockers=()
@@ -308,20 +308,20 @@ created_service_blockers() {
     systemd_oneshot_success="true"
   fi
 
-  state="$(service_state "$compose_config" "$service_name")"
-  health="$(service_health "$compose_config" "$service_name")"
-  exit_code="$(service_exit_code "$compose_config" "$service_name")"
-  restart_policy="$(printf '%s\n' "$compose_config" | jq -r --arg service "$service_name" '.services[$service].restart // ""')"
-  has_healthcheck="$(printf '%s\n' "$compose_config" | jq -r --arg service "$service_name" 'if .services[$service].healthcheck == null then "false" else "true" end')"
+  state="$(service_state "$runtime_config" "$service_name")"
+  health="$(service_health "$runtime_config" "$service_name")"
+  exit_code="$(service_exit_code "$runtime_config" "$service_name")"
+  restart_policy="$(printf '%s\n' "$runtime_config" | jq -r --arg service "$service_name" '.services[$service].restart // ""')"
+  has_healthcheck="$(printf '%s\n' "$runtime_config" | jq -r --arg service "$service_name" 'if .services[$service].healthcheck == null then "false" else "true" end')"
 
   while IFS=$'\t' read -r dep_name dep_condition; do
     [ -n "$dep_name" ] || continue
     if printf '%s\n' "$graph_json" | jq -e --arg service "$dep_name" '(.excludedServices // []) | index($service) != null' >/dev/null; then
       continue
     fi
-    dep_state="$(service_state "$compose_config" "$dep_name")"
-    dep_health="$(service_health "$compose_config" "$dep_name")"
-    dep_exit="$(service_exit_code "$compose_config" "$dep_name")"
+    dep_state="$(service_state "$runtime_config" "$dep_name")"
+    dep_health="$(service_health "$runtime_config" "$dep_name")"
+    dep_exit="$(service_exit_code "$runtime_config" "$dep_name")"
     case "$dep_condition" in
       service_healthy)
         if [ "$dep_state" = "skipped" ] && [ "$dep_exit" = "0" ]; then
@@ -341,7 +341,7 @@ created_service_blockers() {
         fi
         ;;
     esac
-  done < <(printf '%s\n' "$compose_config" | jq -r --arg service "$service_name" '.services[$service].depends_on // {} | to_entries[]? | "\(.key)\t\(.value.condition // "service_started")"')
+  done < <(printf '%s\n' "$runtime_config" | jq -r --arg service "$service_name" '.services[$service].depends_on // {} | to_entries[]? | "\(.key)\t\(.value.condition // "service_started")"')
 
   case "$state" in
     running)
@@ -370,18 +370,18 @@ created_service_blockers() {
 }
 
 start_time="$(date +%s)"
-compose_config="$(compose_config_json)"
+runtime_config="$(runtime_contract_config_json)"
 graph_json="$(cat "$BUNDLE_DIR/stack.systemd/graph.json")"
 while true; do
-  mapfile -t services < <(printf '%s\n' "$compose_config" | jq -r '.services | keys[]')
+  mapfile -t services < <(printf '%s\n' "$runtime_config" | jq -r '.services | keys[]')
   blockers=()
   for service_name in "${services[@]}"; do
-    if [ "$(service_is_top_level_readiness_target "$compose_config" "$graph_json" "$service_name")" != "true" ]; then
+    if [ "$(service_is_top_level_readiness_target "$runtime_config" "$graph_json" "$service_name")" != "true" ]; then
       continue
     fi
     while IFS= read -r blocker; do
       [ -n "$blocker" ] && blockers+=("$blocker")
-    done < <(created_service_blockers "$compose_config" "$graph_json" "$service_name")
+    done < <(created_service_blockers "$runtime_config" "$graph_json" "$service_name")
   done
 
   if [ "${#blockers[@]}" -gt 0 ]; then

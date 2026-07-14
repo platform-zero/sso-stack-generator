@@ -48,7 +48,7 @@ usage() {
   cat <<'EOF_USAGE'
 Usage:
   ./scripts/deploy.sh [--preflight-only] [--plan-only]
-  ./scripts/deploy.sh [--component <name> ...] [--service <compose-service> ...] [--unit <systemd-unit-or-domain> ...] [--include-component-dependencies]
+  ./scripts/deploy.sh [--component <name> ...] [--service <runtime-service> ...] [--unit <systemd-unit-or-domain> ...] [--include-component-dependencies]
 
 Deploys the in-place bundle under ~/webservices by rendering runtime material into
 ~/webservices/runtime, installing pre-rendered systemd user units from ./build,
@@ -284,7 +284,7 @@ preflight() {
   check_gpu_preflight
   ensure_runtime_links "$DEPLOY_ROOT" >/dev/null
   ensure_user_systemd_env
-  deploy_log "preflight ok (bundle=$BUNDLE_ROOT siteManifestPath=$site_manifest_path composeParallelLimit=$COMPOSE_PARALLEL_LIMIT)"
+  deploy_log "preflight ok (bundle=$BUNDLE_ROOT siteManifestPath=$site_manifest_path runtimeParallelLimit=$COMPOSE_PARALLEL_LIMIT)"
 }
 
 model_prep_services() {
@@ -338,7 +338,7 @@ container_image_id_for_service() {
   container_runtime inspect --format '{{.Image}}' "$container_id" 2>/dev/null || true
 }
 
-unit_for_compose_service() {
+unit_for_runtime_service() {
   local service_name="$1"
   local graph_file="$BUNDLE_ROOT/stack.systemd/graph.json"
   local unit_prefix domain_name
@@ -354,7 +354,7 @@ unit_for_compose_service() {
   printf '%s-%s.service\n' "$unit_prefix" "$domain_name"
 }
 
-compose_service_exists() {
+runtime_service_exists() {
   local service_name="$1"
   COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
@@ -362,7 +362,7 @@ compose_service_exists() {
     config --format json | jq -e --arg service "$service_name" '.services[$service] != null' >/dev/null
 }
 
-component_compose_files() {
+component_runtime_contract_files() {
   local component="$1"
   local catalog="$BUNDLE_ROOT/stack.config/components.json"
 
@@ -395,12 +395,12 @@ component_compose_files() {
   fi
 }
 
-services_from_compose_file() {
-  local compose_file="$1"
-  local compose_path="$BUNDLE_ROOT/runtime.contract/$compose_file"
+services_from_runtime_contract_file() {
+  local contract_file="$1"
+  local contract_path="$BUNDLE_ROOT/runtime.contract/$contract_file"
 
-  [ -f "$compose_path" ] || die "component references missing runtime contract file: $compose_file"
-  container_contract -f "$compose_path" config --format json --no-interpolate | jq -r '.services | keys[]'
+  [ -f "$contract_path" ] || die "component references missing runtime contract file: $contract_file"
+  container_contract -f "$contract_path" config --format json --no-interpolate | jq -r '.services | keys[]'
 }
 
 append_unique() {
@@ -426,7 +426,7 @@ read_lines_into_array() {
   mapfile -t target_array <<< "$output"
 }
 
-compose_config_snapshot() {
+runtime_contract_config_snapshot() {
   local output_file="$1"
   COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
@@ -449,7 +449,7 @@ path_is_deploy_state_only() {
   local path="$1"
 
   case "$path" in
-    runtime-contract.yml|site/components.lock.json|scripts/*|systemd-user/*.target|systemd-user/compose/*.stopping|runtime.contract/test-runners.yml|stack.config/test-runner/*|stack.containers/test-runner/*|stack.kotlin/test-runner/*)
+    runtime-contract.yml|site/components.lock.json|scripts/*|systemd-user/*.target|systemd-user/runtime-shards/*.stopping|runtime.contract/test-runners.yml|stack.config/test-runner/*|stack.containers/test-runner/*|stack.kotlin/test-runner/*)
       return 0
       ;;
   esac
@@ -458,7 +458,7 @@ path_is_deploy_state_only() {
 
 services_for_build_owner() {
   local owner="$1"
-  local compose_config_json="$2"
+  local runtime_config_json="$2"
 
   jq -r --arg owner "$owner" '
     .services
@@ -469,12 +469,12 @@ services_for_build_owner() {
         or (((.value.build // {}).context // "") | test("(^|/)" + ($owner | gsub("([][.^$*+?{}()|\\\\])"; "\\\\&")) + "(/|$)"))
       )
     | .key
-  ' "$compose_config_json"
+  ' "$runtime_config_json"
 }
 
 services_for_runtime_config_path() {
   local config_path="$1"
-  local compose_config_json="$2"
+  local runtime_config_json="$2"
 
   config_path="${config_path#./}"
   jq -r --arg config "$config_path" '
@@ -499,36 +499,36 @@ services_for_runtime_config_path() {
         )
       )
     | .key
-  ' "$compose_config_json"
+  ' "$runtime_config_json"
 }
 
 services_for_changed_bundle_path() {
   local path="$1"
-  local compose_config_json="$2"
-  local owner compose_file config_path output
+  local runtime_config_json="$2"
+  local owner contract_file config_path output
 
   case "$path" in
     runtime.contract/*)
-      compose_file="${path#runtime.contract/}"
-      compose_file="${compose_file%%/*}"
-      services_from_compose_file "$compose_file"
+      contract_file="${path#runtime.contract/}"
+      contract_file="${contract_file%%/*}"
+      services_from_runtime_contract_file "$contract_file"
       return 0
       ;;
     stack.containers/*|stack.kotlin/*|stack.js/*)
       owner="${path#*/}"
       owner="${owner%%/*}"
-      services_for_build_owner "$owner" "$compose_config_json"
+      services_for_build_owner "$owner" "$runtime_config_json"
       return 0
       ;;
     stack.config/*)
       config_path="${path#stack.config/}"
-      output="$(services_for_runtime_config_path "$config_path" "$compose_config_json")"
+      output="$(services_for_runtime_config_path "$config_path" "$runtime_config_json")"
       if [ -n "$output" ]; then
         printf '%s\n' "$output"
         return 0
       fi
       owner="${config_path%%/*}"
-      if compose_service_exists "$owner"; then
+      if runtime_service_exists "$owner"; then
         printf '%s\n' "$owner"
       fi
       return 0
@@ -540,7 +540,7 @@ services_for_changed_bundle_path() {
 
 activate_auto_partial_deploy_if_safe() {
   local changed_output path service_output service_name unit_name
-  local compose_config_json changed_paths=()
+  local runtime_config_json changed_paths=()
   local mapped_services=() mapped_units=() unmapped_paths=() full_paths=() state_only_paths=()
 
   [ "$PARTIAL_DEPLOY" = "0" ] || return 0
@@ -566,15 +566,15 @@ activate_auto_partial_deploy_if_safe() {
       return 0
     fi
     if [ "$RUNTIME_CONFIG_CHANGE_STATUS" = "known" ] && [ "${#RUNTIME_CONFIG_CHANGED_PATHS[@]}" -gt 0 ]; then
-      compose_config_json="$(mktemp "${TMPDIR:-/tmp}/webservices-auto-scope-compose.XXXXXX.json")"
-      compose_config_snapshot "$compose_config_json"
+      runtime_config_json="$(mktemp "${TMPDIR:-/tmp}/webservices-auto-scope-runtime.XXXXXX.json")"
+      runtime_contract_config_snapshot "$runtime_config_json"
       for path in "${RUNTIME_CONFIG_CHANGED_PATHS[@]}"; do
-        service_output="$(services_for_runtime_config_path "$path" "$compose_config_json")"
+        service_output="$(services_for_runtime_config_path "$path" "$runtime_config_json")"
         while IFS= read -r service_name; do
           append_unique "$service_name" mapped_services
         done <<< "$service_output"
       done
-      rm -f "$compose_config_json"
+      rm -f "$runtime_config_json"
       if [ "${#mapped_services[@]}" -gt 0 ]; then
         PARTIAL_DEPLOY=1
         AUTO_PARTIAL_DEPLOY=1
@@ -587,8 +587,8 @@ activate_auto_partial_deploy_if_safe() {
     return 0
   fi
 
-  compose_config_json="$(mktemp "${TMPDIR:-/tmp}/webservices-auto-scope-compose.XXXXXX.json")"
-  compose_config_snapshot "$compose_config_json"
+  runtime_config_json="$(mktemp "${TMPDIR:-/tmp}/webservices-auto-scope-runtime.XXXXXX.json")"
+  runtime_contract_config_snapshot "$runtime_config_json"
 
   for path in "${changed_paths[@]}"; do
     [ -n "$path" ] || continue
@@ -606,10 +606,10 @@ activate_auto_partial_deploy_if_safe() {
 	        append_unique "$unit_name" mapped_units
 	        continue
 	        ;;
-	      systemd-user/compose/*.compose.json)
-	        service_name="${path#systemd-user/compose/}"
-	        service_name="${service_name%.compose.json}"
-	        if compose_service_exists "$service_name"; then
+	      systemd-user/runtime-shards/*.runtime.json)
+	        service_name="${path#systemd-user/runtime-shards/}"
+	        service_name="${service_name%.runtime.json}"
+	        if runtime_service_exists "$service_name"; then
 	          append_unique "$service_name" mapped_services
 	        else
 	          unit_name="$(deploy_scope_normalize_unit "$service_name" "$PROJECT_NAME")"
@@ -618,7 +618,7 @@ activate_auto_partial_deploy_if_safe() {
 	        continue
 	        ;;
 	    esac
-    if service_output="$(services_for_changed_bundle_path "$path" "$compose_config_json")" && [ -n "$service_output" ]; then
+    if service_output="$(services_for_changed_bundle_path "$path" "$runtime_config_json")" && [ -n "$service_output" ]; then
       while IFS= read -r service_name; do
         append_unique "$service_name" mapped_services
       done <<< "$service_output"
@@ -626,7 +626,7 @@ activate_auto_partial_deploy_if_safe() {
       unmapped_paths+=("$path")
     fi
   done
-  rm -f "$compose_config_json"
+  rm -f "$runtime_config_json"
 
   if [ "${#full_paths[@]}" -gt 0 ]; then
     deploy_log "auto-scope using full deploy because global paths changed: $(join_array_limited "$SYSTEMD_PROGRESS_MAX_ITEMS" "${full_paths[@]}")"
@@ -662,9 +662,9 @@ activate_auto_partial_deploy_if_safe() {
 
 resolve_scoped_services() {
   local services=()
-  local component compose_file service_name compose_output service_output requested_unit unit_service_output
-  local compose_files=() compose_services=()
-  local scoped_compose_config_json="" unit_services=()
+  local component contract_file service_name contract_output service_output requested_unit unit_service_output
+  local contract_files=() runtime_services=()
+  local scoped_runtime_config_json="" unit_services=()
   local graph_file="$BUNDLE_ROOT/stack.systemd/graph.json"
   local unit_prefix
 
@@ -675,31 +675,31 @@ resolve_scoped_services() {
   done
 
   for component in "${SCOPED_COMPONENTS[@]}"; do
-    if ! compose_output="$(component_compose_files "$component")"; then
+    if ! contract_output="$(component_runtime_contract_files "$component")"; then
       die "failed to resolve runtime contract files for selected component: $component"
     fi
-    read_lines_into_array "$compose_output" compose_files
-    for compose_file in "${compose_files[@]}"; do
-      [ -n "$compose_file" ] || continue
-      if ! service_output="$(services_from_compose_file "$compose_file")"; then
-        die "failed to resolve services from component runtime contract file: $compose_file"
+    read_lines_into_array "$contract_output" contract_files
+    for contract_file in "${contract_files[@]}"; do
+      [ -n "$contract_file" ] || continue
+      if ! service_output="$(services_from_runtime_contract_file "$contract_file")"; then
+        die "failed to resolve services from component runtime contract file: $contract_file"
       fi
-      read_lines_into_array "$service_output" compose_services
-      for service_name in "${compose_services[@]}"; do
+      read_lines_into_array "$service_output" runtime_services
+      for service_name in "${runtime_services[@]}"; do
         append_unique "$service_name" services
       done
     done
   done
 
   if [ "${#SCOPED_UNITS[@]}" -gt 0 ]; then
-    scoped_compose_config_json="$(mktemp "${TMPDIR:-/tmp}/webservices-scoped-compose.XXXXXX.json")"
+    scoped_runtime_config_json="$(mktemp "${TMPDIR:-/tmp}/webservices-scoped-runtime.XXXXXX.json")"
     COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
       "$BUNDLE_ROOT" \
       "$DEPLOY_ROOT/runtime/stack.env" \
-      config --format json > "$scoped_compose_config_json"
+      config --format json > "$scoped_runtime_config_json"
     for requested_unit in "${SCOPED_UNITS[@]}"; do
-      if ! unit_service_output="$(deploy_scope_services_for_unit "$requested_unit" "$unit_prefix" "$graph_file" "$scoped_compose_config_json")"; then
-        rm -f "$scoped_compose_config_json"
+      if ! unit_service_output="$(deploy_scope_services_for_unit "$requested_unit" "$unit_prefix" "$graph_file" "$scoped_runtime_config_json")"; then
+        rm -f "$scoped_runtime_config_json"
         die "failed to resolve runtime services for selected unit: $requested_unit"
       fi
       read_lines_into_array "$unit_service_output" unit_services
@@ -707,11 +707,11 @@ resolve_scoped_services() {
         append_unique "$service_name" services
       done
     done
-    rm -f "$scoped_compose_config_json"
+    rm -f "$scoped_runtime_config_json"
   fi
 
   for service_name in "${services[@]}"; do
-    if ! compose_service_exists "$service_name"; then
+    if ! runtime_service_exists "$service_name"; then
       die "selected runtime service is not present in this bundle: $service_name"
     fi
     printf '%s\n' "$service_name"
@@ -737,7 +737,7 @@ resolve_scoped_units() {
   read_lines_into_array "$service_output" services
   for service_name in "${services[@]}"; do
     [ -n "$service_name" ] || continue
-    unit_name="$(unit_for_compose_service "$service_name")"
+    unit_name="$(unit_for_runtime_service "$service_name")"
     append_unique "$unit_name" units
   done
 
@@ -946,7 +946,7 @@ cleanup_retired_service_containers() {
   local configured_services="${DEPLOY_RETIRED_SERVICES:-qdrant progression nats airflow-init airflow-webserver airflow-scheduler ingestion-runner embedding-gpu autoheal watchtower autobattler autobattler-db-bootstrap tas-dashboard}"
 
   for service in $configured_services; do
-    if compose_service_exists "$service"; then
+    if runtime_service_exists "$service"; then
       continue
     fi
     unit_name="webservices-${service}.service"
@@ -1102,14 +1102,14 @@ else
   run_model_prep_jobs
 fi
 
-set_phase "compose-build-snapshot"
+set_phase "runtime-build-snapshot"
 if [ "$PARTIAL_DEPLOY" = "1" ]; then
   deploy_log "skipping global built-image snapshot for scoped deploy"
 else
   snapshot_built_image_ids_before
 fi
 
-set_phase "compose-build"
+set_phase "runtime-build"
 if [ "$PARTIAL_DEPLOY" = "1" ]; then
   build_scoped_service_images
 else

@@ -50,24 +50,24 @@ deploy_scope_services_for_unit() {
   local requested_unit="$1"
   local unit_prefix="$2"
   local graph_file="$3"
-  local compose_config_json="$4"
+  local runtime_config_json="$4"
   local unit_name domain_name services
 
   [ -f "$graph_file" ] || die "missing systemd graph: $graph_file"
-  [ -f "$compose_config_json" ] || die "missing runtime contract config JSON: $compose_config_json"
+  [ -f "$runtime_config_json" ] || die "missing runtime contract config JSON: $runtime_config_json"
 
   unit_name="$(deploy_scope_normalize_unit "$requested_unit" "$unit_prefix")"
   if [[ "$unit_name" == *.target ]]; then
     jq -r --arg target "$unit_name" '
       . as $graph
-      | ($compose[0]) as $composeConfig
+      | ($runtime[0]) as $runtimeConfig
       | ($graph.lifecycleDomains // []) as $lifecycleDomains
       | ($graph.onDemandServices // []) as $onDemandServices
       | ($graph.onDemandDomains // []) as $onDemandDomains
       | ($graph.excludedServices // []) as $excludedServices
       | (([$graph.defaultTarget] + ($graph.auxiliaryTargets // [])) | map(select(. != null))) as $targets
       | ($lifecycleDomains | map(.services[]?) | unique) as $assignedLifecycleServices
-      | ($composeConfig.services | keys) as $composeServices
+      | ($runtimeConfig.services | keys) as $runtimeServices
       | def target_by_name($name):
           ([$targets[]? | select(.name == $name)] | first // null);
         def lifecycle_domain_for_service($service):
@@ -77,7 +77,7 @@ deploy_scope_services_for_unit() {
         def service_domain_services($service):
           (lifecycle_domain_for_service($service) | if . == null then [$service] else (.services // []) end);
         def implicit_domain_services:
-          ($composeServices - $excludedServices - $assignedLifecycleServices);
+          ($runtimeServices - $excludedServices - $assignedLifecycleServices);
         def is_lifecycle_domain_on_demand($domain):
           (($onDemandDomains | index($domain.name)) != null)
           or (((($domain.services // []) - $onDemandServices) | length) == 0);
@@ -103,9 +103,9 @@ deploy_scope_services_for_unit() {
               end
           end;
         target_services($target; [])
-        | map(select(($composeConfig.services[.] // null) != null))
+        | map(select(($runtimeConfig.services[.] // null) != null))
         | unique[]
-    ' --slurpfile compose "$compose_config_json" "$graph_file" || return $?
+    ' --slurpfile runtime "$runtime_config_json" "$graph_file" || return $?
     return 0
   fi
 
@@ -122,7 +122,7 @@ deploy_scope_services_for_unit() {
     return 0
   fi
 
-  if jq -e --arg service "$domain_name" '.services[$service] != null' "$compose_config_json" >/dev/null; then
+  if jq -e --arg service "$domain_name" '.services[$service] != null' "$runtime_config_json" >/dev/null; then
     printf '%s\n' "$domain_name"
   fi
 }

@@ -9,7 +9,7 @@ tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 graph_file="$tmp_dir/graph.json"
-compose_config_json="$tmp_dir/compose.json"
+runtime_config_json="$tmp_dir/compose.json"
 
 cat > "$graph_file" <<'EOF_JSON'
 {
@@ -34,7 +34,7 @@ cat > "$graph_file" <<'EOF_JSON'
 }
 EOF_JSON
 
-cat > "$compose_config_json" <<'EOF_JSON'
+cat > "$runtime_config_json" <<'EOF_JSON'
 {
   "services": {
     "sample-app": {},
@@ -66,7 +66,7 @@ assert_rejects_unit() {
 
 assert_rejects_target_scope() {
   local requested="$1"
-  if deploy_scope_services_for_unit "$requested" webservices "$graph_file" "$compose_config_json" >/dev/null 2>"$tmp_dir/reject-target.log"; then
+  if deploy_scope_services_for_unit "$requested" webservices "$graph_file" "$runtime_config_json" >/dev/null 2>"$tmp_dir/reject-target.log"; then
     printf '[deploy-scope-test] resolved unknown target scope: %s\n' "$requested" >&2
     exit 1
   fi
@@ -83,22 +83,22 @@ assert_eq \
   "prefixed unit normalization"
 
 assert_eq \
-  "$(deploy_scope_services_for_unit sample-app webservices "$graph_file" "$compose_config_json")" \
+  "$(deploy_scope_services_for_unit sample-app webservices "$graph_file" "$runtime_config_json")" \
   "sample-app" \
   "single-service unit service derivation"
 
 assert_eq \
-  "$(deploy_scope_services_for_unit webservices-mastodon-runtime.service webservices "$graph_file" "$compose_config_json")" \
+  "$(deploy_scope_services_for_unit webservices-mastodon-runtime.service webservices "$graph_file" "$runtime_config_json")" \
   $'mastodon-web\nmastodon-streaming\nmastodon-sidekiq' \
   "lifecycle-domain service derivation"
 
 assert_eq \
-  "$(deploy_scope_services_for_unit webservices-apps.target webservices "$graph_file" "$compose_config_json")" \
+  "$(deploy_scope_services_for_unit webservices-apps.target webservices "$graph_file" "$runtime_config_json")" \
   $'mastodon-sidekiq\nmastodon-streaming\nmastodon-web\nsample-app' \
   "auxiliary target service derivation"
 
 assert_eq \
-  "$(deploy_scope_services_for_unit webservices.target webservices "$graph_file" "$compose_config_json")" \
+  "$(deploy_scope_services_for_unit webservices.target webservices "$graph_file" "$runtime_config_json")" \
   $'mastodon-sidekiq\nmastodon-streaming\nmastodon-web\nsample-app' \
   "nested target service derivation"
 
