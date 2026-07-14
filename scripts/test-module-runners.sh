@@ -15,6 +15,20 @@ workspace="$tmp_root/workspace"
 module_dir="$workspace/demo-stack-module"
 mkdir -p "$module_dir/stack.compose" "$module_dir/tests"
 
+schema_file="$ROOT_DIR/modules/stack.module.schema.json"
+jq -e '
+  .additionalProperties == false
+  and (.required | index("smoke") != null)
+  and (.properties.runtimeDependencies.items["$ref"] == "#/$defs/moduleId")
+  and (.properties.contracts.items["$ref"] == "#/$defs/moduleId")
+  and (.properties.ciProfiles.items["$ref"] == "#/$defs/moduleId")
+  and (.properties.smoke.enum == ["required", "external-only", "unsupported"])
+  and (.properties.smokeUnsupportedReason.minLength == 10)
+  and (.properties.overlays.minItems == 1)
+  and (.properties.overlays.items["$ref"] == "#/$defs/safeOverlayPath")
+  and (.properties.testAssets.items["$ref"] == "#/$defs/safeOverlayPath")
+' "$schema_file" >/dev/null
+
 cat > "$module_dir/stack.compose/demo.yml" <<'EOF_COMPOSE'
 services:
   demo:

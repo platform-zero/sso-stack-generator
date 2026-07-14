@@ -4,54 +4,89 @@
   "title": "SSO stack module metadata",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "id", "repo", "lifecycle", "overlays"],
-  "properties": {
-    "schemaVersion": {"const": 1},
-    "id": {
+  "required": ["schemaVersion", "id", "repo", "lifecycle", "smoke", "overlays"],
+  "$defs": {
+    "moduleId": {
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9-]*$"
     },
-    "repo": {
+    "repoName": {
       "type": "string",
       "pattern": "^[A-Za-z0-9._-]+$"
     },
-    "runtimeId": {
+    "safeOverlayPath": {
       "type": "string",
-      "pattern": "^[a-z0-9][a-z0-9-]*$"
-    },
+      "minLength": 1,
+      "pattern": "^(?!(?:/|.*(?:^|/)\\.\\.(?:/|$)|.*(?:^|/)\\.(?:/|$)))(?:stack\\.runtime\\.yaml|(?:global\\.settings|stack\\.compose|stack\\.config|stack\\.containers|stack\\.kotlin|stack\\.js|stack\\.systemd|scripts/lib|scripts/modules|docs/modules|tests/fixtures)(?:/.*)?)$"
+    }
+  },
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "id": {"$ref": "#/$defs/moduleId"},
+    "repo": {"$ref": "#/$defs/repoName"},
+    "runtimeId": {"$ref": "#/$defs/moduleId"},
     "lifecycle": {
       "type": "string",
       "enum": ["active", "experimental", "retired"]
     },
     "dependencies": {
       "type": "array",
-      "items": {
-        "type": "string",
-        "pattern": "^[a-z0-9][a-z0-9-]*$"
-      },
+      "items": {"$ref": "#/$defs/moduleId"},
+      "uniqueItems": true,
+      "default": []
+    },
+    "runtimeDependencies": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/moduleId"},
+      "uniqueItems": true,
+      "default": []
+    },
+    "contracts": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/moduleId"},
+      "uniqueItems": true,
+      "default": []
+    },
+    "smoke": {
+      "type": "string",
+      "enum": ["required", "external-only", "unsupported"]
+    },
+    "smokeUnsupportedReason": {
+      "type": "string",
+      "minLength": 10
+    },
+    "ciProfiles": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/moduleId"},
       "uniqueItems": true,
       "default": []
     },
     "overlays": {
       "type": "array",
-      "items": {
-        "type": "string",
-        "minLength": 1
-      },
+      "items": {"$ref": "#/$defs/safeOverlayPath"},
+      "minItems": 1,
       "uniqueItems": true
     },
-    "sourceRepo": {
-      "type": "string",
-      "pattern": "^[A-Za-z0-9._-]+$"
-    },
+    "sourceRepo": {"$ref": "#/$defs/repoName"},
     "testAssets": {
       "type": "array",
-      "items": {
-        "type": "string",
-        "minLength": 1
-      },
+      "items": {"$ref": "#/$defs/safeOverlayPath"},
       "uniqueItems": true,
       "default": []
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"smoke": {"const": "required"}},
+        "required": ["smoke"]
+      },
+      "then": {
+        "not": {"required": ["smokeUnsupportedReason"]}
+      },
+      "else": {
+        "required": ["smokeUnsupportedReason"]
+      }
+    }
+  ]
 }

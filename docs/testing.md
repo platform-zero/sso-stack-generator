@@ -37,6 +37,9 @@ Dockerfiles, expected artifact names, healthcheck assumptions, and local smoke
 status. The generator owns the shared schema, resolver, overlay materialization,
 component selection, bundle packaging, and deployed verification orchestration.
 
+`stack.module.json` is the only supported stack-module metadata file. Legacy
+`module.json` metadata is not consumed by the generator or module CI.
+
 Every stack module must declare `runtimeDependencies`, `contracts`, `smoke`, and
 `testAssets` in `stack.module.json`. Use the strict runner when validating a
 module checkout:
@@ -94,3 +97,11 @@ attachments such as `test-failed-*.png`, `video.webm`, traces, and
 `error-context.md`. If the top-level log reports a failure, copied per-suite
 JSON/JUnit artifacts must preserve that failure rather than showing a clean
 subgroup.
+
+## Audit Scope
+
+Routine repo-smell and module-contract audits target the active workspace:
+`site-config`, `sso-stack-generator`, and direct children of `modules/`.
+Quarantine directories and generated external-module materializations are
+historical or build outputs and should be reported as storage noise unless an
+audit explicitly asks to inspect them.

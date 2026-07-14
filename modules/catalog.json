@@ -218,8 +218,11 @@
       "name": "docker-proxy-stack-module",
       "kind": "stack-module",
       "moduleId": "docker-proxy",
-      "groups": [],
-      "lifecycle": "retired"
+      "groups": [
+        "platform",
+        "dev-all"
+      ],
+      "lifecycle": "active"
     },
     {
       "name": "autoheal-stack-module",
@@ -291,6 +294,16 @@
       "moduleId": "opensearch",
       "groups": [
         "datastores",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "legal-research-mcp-stack-module",
+      "kind": "stack-module",
+      "moduleId": "legal-research-mcp",
+      "groups": [
+        "custom",
         "dev-all"
       ],
       "lifecycle": "active"
@@ -647,20 +660,18 @@
       "kind": "stack-module",
       "moduleId": "mastodon-follows-australia",
       "groups": [
-        "wrapped",
-        "dev-all"
+        "wrapped"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired"
     },
     {
       "name": "mastodon-follows-global-stack-module",
       "kind": "stack-module",
       "moduleId": "mastodon-follows-global",
       "groups": [
-        "wrapped",
-        "dev-all"
+        "wrapped"
       ],
-      "lifecycle": "active"
+      "lifecycle": "retired"
     },
     {
       "name": "matrix-authentication-service-stack-module",

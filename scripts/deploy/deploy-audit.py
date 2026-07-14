@@ -2,6 +2,8 @@
 """Deployment validation and reporting helpers for webservices bundles."""
 
 import argparse
+import base64
+import binascii
 import json
 import os
 import subprocess
@@ -18,6 +20,8 @@ REQUIRED_SECRET_KEYS = [
     "KOPIA_PROXY_AUTHORIZATION",
     "MASTODON_SECRET_KEY_BASE",
     "MASTODON_OTP_SECRET",
+    "MASTODON_VAPID_PRIVATE_KEY",
+    "MASTODON_VAPID_PUBLIC_KEY",
     "MASTODON_ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY",
     "MASTODON_ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT",
     "MASTODON_ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY",
@@ -56,7 +60,13 @@ def load_json(path: Path) -> dict:
 
 def load_env_file(path: Path) -> Dict[str, str]:
     values: Dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    content = path.read_text(encoding="utf-8")
+    stripped = content.lstrip()
+    if stripped.startswith("{"):
+        raise ValueError(
+            f"{path} looks like JSON/SOPS input; deploy audit requires the rendered runtime env file"
+        )
+    for line in content.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -150,7 +160,11 @@ def compose_service_names(bundle_root: Path, env_file: Path, project_name: str) 
 
 
 def validate_secrets(env_file: Path) -> int:
-    values = load_env_file(env_file)
+    try:
+        values = load_env_file(env_file)
+    except ValueError as exc:
+        print(f"[webservices-audit] {exc}", file=sys.stderr)
+        return 1
     missing = [key for key in REQUIRED_SECRET_KEYS if not values.get(key)]
     invalid = []
     app_key = values.get("BOOKSTACK_APP_KEY", "")
@@ -159,6 +173,12 @@ def validate_secrets(env_file: Path) -> int:
     kopia_auth = values.get("KOPIA_PROXY_AUTHORIZATION", "")
     if kopia_auth and not kopia_auth.startswith("Basic "):
         invalid.append("KOPIA_PROXY_AUTHORIZATION must be a Basic authorization header")
+    vapid_private = values.get("MASTODON_VAPID_PRIVATE_KEY", "")
+    vapid_public = values.get("MASTODON_VAPID_PUBLIC_KEY", "")
+    if vapid_private and not valid_base64url_bytes(vapid_private, 32):
+        invalid.append("MASTODON_VAPID_PRIVATE_KEY must be a 32-byte base64url P-256 private key")
+    if vapid_public and not valid_vapid_public_key(vapid_public):
+        invalid.append("MASTODON_VAPID_PUBLIC_KEY must be a 65-byte base64url uncompressed P-256 public key")
     if missing or invalid:
         for key in missing:
             print(f"[webservices-audit] missing required runtime value: {key}", file=sys.stderr)
@@ -169,6 +189,26 @@ def validate_secrets(env_file: Path) -> int:
     return 0
 
 
+def decode_base64url(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode((value + padding).encode("ascii"))
+
+
+def valid_base64url_bytes(value: str, expected_length: int) -> bool:
+    try:
+        return len(decode_base64url(value)) == expected_length
+    except (ValueError, UnicodeEncodeError, binascii.Error):
+        return False
+
+
+def valid_vapid_public_key(value: str) -> bool:
+    try:
+        decoded = decode_base64url(value)
+    except (ValueError, UnicodeEncodeError, binascii.Error):
+        return False
+    return len(decoded) == 65 and decoded.startswith(b"\x04")
+
+
 def expand_env_path(value: str, env_values: Dict[str, str]) -> str:
     result = value
     for key, env_value in env_values.items():
@@ -176,14 +216,22 @@ def expand_env_path(value: str, env_values: Dict[str, str]) -> str:
     return result
 
 
+def path_is_or_under(path: str, root: str) -> bool:
+    root = root.rstrip("/") if root != "/" else root
+    path = path.rstrip("/") if path != "/" else path
+    if root == "/":
+        return path.startswith("/")
+    return path == root or path.startswith(f"{root}/")
+
+
 def classify_bind(source: str, deploy_root: Path, env_values: Dict[str, str]) -> str:
     source = source.rstrip("/") if source != "/" else source
     deploy_root_str = deploy_root.as_posix()
-    if source.startswith(f"{deploy_root_str}/runtime"):
+    if path_is_or_under(source, f"{deploy_root_str}/runtime"):
         return "runtime-config"
-    if source.startswith(f"{deploy_root_str}/build"):
+    if path_is_or_under(source, f"{deploy_root_str}/build"):
         return "bundle"
-    if source.startswith(f"{deploy_root_str}/reports") or source.startswith(f"{deploy_root_str}/repos"):
+    if path_is_or_under(source, f"{deploy_root_str}/reports") or path_is_or_under(source, f"{deploy_root_str}/repos"):
         return "deploy-root-data"
     if source.startswith("/mnt/media/"):
         return "media"
