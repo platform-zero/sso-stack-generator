@@ -8,12 +8,12 @@
 
 - [x] Unbundle `latium-integrations-stack-module` responsibilities.
   - The committed Podman manifest excludes the integration repository and uses the standalone Caddy module.
-  - Retired repository audit: `components.json` was the old nested selection model; `stack.systemd/graph.json` was Docker-era compose/systemd wiring; `global.settings/volumes.yml` is superseded by module runtime volume declarations; `service-contracts.json` is now represented by selected module contract fragments where still needed.
-  - Removed stale `latium-integrations` and Docker-only module entries from the site compatibility locks.
+  - Retired repository audit: `components.json` was the old nested selection model; `stack.systemd/graph.json` is superseded by the Podman runtime graph; `global.settings/volumes.yml` is superseded by module runtime volume declarations; `service-contracts.json` is now represented by selected module contract fragments where still needed.
+  - Removed stale `latium-integrations` and retired runtime module entries from the site compatibility locks.
   - Acceptance: integrations module no longer couples unrelated cross-cutting behavior into caddy concerns.
 
 - [x] Split integration-specific logic currently in `site-config`.
-  - Site config now selects the flat module set in `manifest.json`; compatibility lock artifacts mirror that selection and no longer carry retired Docker modules or integration glue.
+  - Site config now selects the flat module set in `manifest.json`; compatibility lock artifacts mirror that selection and no longer carry retired runtime modules or integration glue.
   - Keep generated artifacts deterministic: `components`, `modules`, and lock data only.
   - Acceptance: equivalent rendered stack for same component selection.
 
@@ -29,20 +29,20 @@
 
 - [x] Implement Podman backend renderer using Quadlet/systemd.
   - Generate `.container`, `.network`, `.volume`, `.service`, `.timer` where applicable.
-  - Replace runtime-unit shell wrapper dependencies on Docker CLI.
+  - Replace runtime-unit shell wrapper dependencies on legacy container CLI abstractions.
   - Acceptance: deploy produces runnable podman-native systemd unit set for a representative component subset.
 
-- [x] Remove Docker-only dependencies in generated/runtime path.
-  - Replace docker-socket-proxy/controller/lifecycle chain, watchtower/autoheal/docker-health-exporter/dozzle/cadvisor/crowdsec/docker-discovery dependencies with podman-native replacements.
+- [x] Remove retired runtime dependencies in generated/runtime path.
+  - Replace socket-proxy/controller/lifecycle chain, watchtower/autoheal/health-exporter/dozzle/cadvisor/crowdsec-discovery dependencies with Podman-native replacements.
   - Acceptance: each replacement has equivalent or documented-better behavior notes.
 
-- [x] Convert deferred controller/services with direct Docker API assumptions.
+- [x] Convert deferred controller/services with direct legacy container API assumptions.
   - JupyterHub and Forgejo runner use the rootless Podman socket in active runtime definitions.
-  - Test-runner Kotlin and shell helpers default to Podman; Docker remains only for explicitly named testdev/labware paths.
+  - Test-runner Kotlin and shell helpers default to Podman; retired testdev/labware paths are quarantined under `obsolete/`.
   - Acceptance: behavior parity where feasible; fallback strategy documented for any blockers.
 
 ## Phase 2 — Stack module cleanup
-- [x] Remove Docker-only modules from active stack modules list.
+- [x] Remove retired runtime modules from active stack modules list.
   - Archive/replace modules that are now obsolete after podman migration.
   - Acceptance: non-archive active repo list matches active podman-capable module set.
 
@@ -58,8 +58,8 @@
 - [x] Repair rootful Podman state attachment before rootless split.
   - Declare every named volume explicitly and remove generator fallback to `${STACK_VOLUME_ROOT}/<name>`.
   - Restore `jellyfin_media`, `qbittorrent_data`, `seafile_files`, `postgres_ssd_data`, and `opensearch_bind_data` to their canonical configured paths.
-  - Move newly initialized incorrect stores under `/mnt/stack/quarantine` without deleting Docker or Podman state.
-  - Copy preserved Docker Mastodon RSS state into explicit `/mnt/stack/volumes/mastodon_rss_publisher_state`.
+  - Move newly initialized incorrect stores under `/mnt/stack/quarantine` without deleting preserved container state.
+  - Copy preserved Mastodon RSS state into explicit `/mnt/stack/volumes/mastodon_rss_publisher_state`.
   - Acceptance: live rootful stack runs against preserved PostgreSQL system ID `7656195858355810341`; OpenSearch starts on preserved data; Jellyfin, Seafile, and Mastodon RSS state sizes match preserved stores; no anonymous Podman volumes are attached.
 
 - [x] Make the Podman runtime generator self-contained before rootless cutover.

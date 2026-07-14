@@ -73,9 +73,9 @@ if (repo_root / "stack.kotlin").exists():
         raise SystemExit("[module-contract] stack.kotlin exists without build.gradle.kts and is not declared as overlay-only")
 
 if (repo_root / "stack.containers").exists():
-    has_dockerfile = any(repo_root.joinpath("stack.containers").rglob("Dockerfile"))
-    if not has_dockerfile and not any(path.startswith("stack.containers/") for path in metadata.get("overlays", [])):
-        raise SystemExit("[module-contract] stack.containers exists without Dockerfile and is not declared as overlay-only")
+    has_containerfile = any(repo_root.joinpath("stack.containers").rglob("Containerfile"))
+    if not has_containerfile and not any(path.startswith("stack.containers/") for path in metadata.get("overlays", [])):
+        raise SystemExit("[module-contract] stack.containers exists without Containerfile and is not declared as overlay-only")
 PY
 
 if [ "$mode" = "contract" ]; then

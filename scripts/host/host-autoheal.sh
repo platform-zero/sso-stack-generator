@@ -50,7 +50,7 @@ notify_restart() {
 }
 
 compose_shard_dir="$DEPLOY_ROOT/build/systemd-user/compose"
-[ -d "$compose_shard_dir" ] || die "missing rendered compose shard directory: $compose_shard_dir"
+[ -d "$compose_shard_dir" ] || die "missing rendered runtime shard directory: $compose_shard_dir"
 
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/webservices-host-autoheal.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT

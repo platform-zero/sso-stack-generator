@@ -46,9 +46,9 @@ container_contract -f "$WORK_DIR/podman-a/runtime-contract.yml" config --no-inte
 cmp "$WORK_DIR/ir-services" "$WORK_DIR/runtime-contract-services"
 container_contract -f "$WORK_DIR/podman-a/runtime-contract.yml" config --no-interpolate --quiet
 
-if rg -n 'docker\.sock|docker-socket|docker-controller|docker-health-exporter|cadvisor|watchtower|autoheal|dozzle' \
+if rg -n 'container-socket|container-controller|container-health-exporter|cadvisor|watchtower|autoheal|dozzle' \
   "$WORK_DIR/podman-a/quadlet/rootful" "$WORK_DIR/podman-a/quadlet/rootless"; then
-  printf '[runtime-test] Podman bundle contains a retired Docker control-plane reference\n' >&2
+  printf '[runtime-test] Podman bundle contains a retired control-plane reference\n' >&2
   exit 1
 fi
 

@@ -45,7 +45,7 @@ If you find plaintext credentials committed to the repository, treat that as a s
 
 ## Deployment Safety
 
-The stack is intended for operators who understand Docker, systemd user services, SOPS, and reverse proxy routing. Review site-specific configuration before exposing a deployment to the public internet.
+The stack is intended for operators who understand Podman, systemd user services, SOPS, and reverse proxy routing. Review site-specific configuration before exposing a deployment to the public internet.
 
 ## Security Model
 

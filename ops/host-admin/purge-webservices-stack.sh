@@ -16,7 +16,7 @@ PRUNE_CONTAINER_CACHE=0
 PURGE_STORAGE=0
 ALL_CONTAINERS=0
 PURGE_LABWARE_RUNTIME=1
-LABWARE_CONTAINER_HOST="${LABWARE_CONTAINER_HOST:-unix:///run/docker-labware/docker.sock}"
+LABWARE_CONTAINER_HOST="${LABWARE_CONTAINER_HOST:-unix:///run/labware/podman.sock}"
 
 log() {
   printf '[%s] %s\n' "$SCRIPT_NAME" "$*" >&2
@@ -62,16 +62,16 @@ while [ "$#" -gt 0 ]; do
     --purge-storage)
       PURGE_STORAGE=1
       ;;
-    --prune-docker-cache|--prune-container-cache)
+    --prune-container-cache)
       PRUNE_CONTAINER_CACHE=1
       ;;
-    --all-docker|--all-containers)
+    --all-containers)
       ALL_CONTAINERS=1
       ;;
     --skip-labware-runtime)
       PURGE_LABWARE_RUNTIME=0
       ;;
-    --labware-docker-host|--labware-container-host)
+    --labware-container-host)
       LABWARE_CONTAINER_HOST="$2"
       shift
       ;;
@@ -315,8 +315,8 @@ fi
 command -v sudo >/dev/null 2>&1 || die "missing required command: sudo"
 command -v systemctl >/dev/null 2>&1 || die "missing required command: systemctl"
 
-# Disposable Workspaces run on the isolated Docker runtime through the stack's
-# tunnel. Purge those labeled resources before stopping the tunnel services.
+# Disposable Workspaces run on the isolated labware container runtime through
+# the stack's tunnel. Purge those labeled resources before stopping the tunnel services.
 purge_labware_runtime
 
 log "stopping systemd --user webservices target for $STACK_USER if present"
@@ -359,7 +359,7 @@ if [ "$ALL_CONTAINERS" = "1" ]; then
   log "removing all containers on the host via $CONTAINER_CLI"
   mapfile -t project_containers < <(list_target_container_ids)
 else
-  log "removing containers for project $STACK_PROJECT_NAME by compose label or ${STACK_PROJECT_NAME}_ name prefix"
+  log "removing containers for project $STACK_PROJECT_NAME by runtime label or ${STACK_PROJECT_NAME}_ name prefix"
   mapfile -t project_containers < <(list_target_container_ids)
 fi
 
@@ -369,7 +369,7 @@ else
   if [ "$ALL_CONTAINERS" = "1" ]; then
     log "no containers found on the host"
   else
-    log "no compose-labeled containers found for project $STACK_PROJECT_NAME"
+    log "no runtime-labeled containers found for project $STACK_PROJECT_NAME"
   fi
 fi
 
@@ -377,7 +377,7 @@ if [ "$ALL_CONTAINERS" = "1" ]; then
   log "removing all custom container networks on the host"
   mapfile -t project_networks < <(list_target_network_ids)
 else
-  log "removing networks for project $STACK_PROJECT_NAME by compose label or ${STACK_PROJECT_NAME}_ name prefix"
+  log "removing networks for project $STACK_PROJECT_NAME by runtime label or ${STACK_PROJECT_NAME}_ name prefix"
   mapfile -t project_networks < <(list_target_network_ids)
 fi
 
@@ -387,7 +387,7 @@ else
   if [ "$ALL_CONTAINERS" = "1" ]; then
     log "no custom container networks found on the host"
   else
-    log "no compose-labeled networks found for project $STACK_PROJECT_NAME"
+    log "no runtime-labeled networks found for project $STACK_PROJECT_NAME"
   fi
 fi
 
@@ -395,7 +395,7 @@ if [ "$ALL_CONTAINERS" = "1" ]; then
   log "removing all volumes on the host via $CONTAINER_CLI"
   mapfile -t project_volumes < <(list_target_volume_names)
 else
-  log "removing volumes for project $STACK_PROJECT_NAME by compose label or ${STACK_PROJECT_NAME}_ name prefix"
+  log "removing volumes for project $STACK_PROJECT_NAME by runtime label or ${STACK_PROJECT_NAME}_ name prefix"
   mapfile -t project_volumes < <(list_target_volume_names)
 fi
 
@@ -405,7 +405,7 @@ else
   if [ "$ALL_CONTAINERS" = "1" ]; then
     log "no volumes found on the host"
   else
-    log "no compose-labeled volumes found for project $STACK_PROJECT_NAME"
+    log "no runtime-labeled volumes found for project $STACK_PROJECT_NAME"
   fi
 fi
 

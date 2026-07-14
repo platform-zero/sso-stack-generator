@@ -1171,7 +1171,7 @@ def main() -> int:
         ))
 
     print(f"[webservices-build] rendered {len(list(output_dir.glob('webservices*.service')))} units into {output_dir}", file=sys.stderr)
-    print(f"[webservices-build] rendered compose shards into {compose_dir}", file=sys.stderr)
+    print(f"[webservices-build] rendered runtime shards into {compose_dir}", file=sys.stderr)
     return 0
 
 

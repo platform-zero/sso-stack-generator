@@ -44,16 +44,16 @@ assert_absent "watchtower container/update automation" \
 assert_absent "containerized autoheal implementation" \
   -e 'willfarrell/autoheal' \
   -e 'AUTOHEAL_CONTAINER_LABEL' \
-  -e 'DOCKER_SOCK:'
-assert_absent "lifecycle Docker socket proxy" \
-  -e 'docker-socket-lifecycle-proxy' \
-  -e 'docker-host-lifecycle'
+  -e 'CONTAINER_SOCK:'
+assert_absent "lifecycle socket proxy" \
+  -e 'socket-lifecycle-proxy' \
+  -e 'host-lifecycle'
 
 if [ -d "$ROOT_DIR/quadlet" ]; then
-  assert_absent "Podman bundle host lifecycle Docker compatibility" \
+  assert_absent "Podman bundle host lifecycle compatibility" \
     -e 'webservices-host-autoheal' \
     -e 'webservices-update-deploy' \
-    -e 'docker-socket-lifecycle-proxy'
+    -e 'socket-lifecycle-proxy'
 else
   assert_file "systemd-user/webservices-host-autoheal.service"
   assert_file "systemd-user/webservices-host-autoheal.timer"

@@ -114,8 +114,8 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-if [ "${WEBSERVICES_ALLOW_DOCKER_PRODUCTION_DEPLOY:-0}" != "1" ]; then
-  die "Docker production deploy is disabled; generate a Podman bundle and run ops/install-podman-bundle.sh"
+if [ "${WEBSERVICES_ALLOW_LEGACY_PRODUCTION_DEPLOY:-0}" != "1" ]; then
+  die "legacy production deploy is disabled; generate a Podman bundle and run ops/install-podman-bundle.sh"
 fi
 
 site_manifest_path="$BUNDLE_ROOT/site/manifest.json"
@@ -240,8 +240,7 @@ print_nvidia_toolkit_help() {
 
   sudo apt-get update
   sudo apt-get install -y nvidia-container-toolkit
-  sudo nvidia-ctk runtime configure --runtime=docker
-  sudo systemctl restart docker
+  sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
 EOF_NVIDIA_HELP
 }
 
@@ -701,7 +700,7 @@ resolve_scoped_services() {
     for requested_unit in "${SCOPED_UNITS[@]}"; do
       if ! unit_service_output="$(deploy_scope_services_for_unit "$requested_unit" "$unit_prefix" "$graph_file" "$scoped_compose_config_json")"; then
         rm -f "$scoped_compose_config_json"
-        die "failed to resolve compose services for selected unit: $requested_unit"
+        die "failed to resolve runtime services for selected unit: $requested_unit"
       fi
       read_lines_into_array "$unit_service_output" unit_services
       for service_name in "${unit_services[@]}"; do
@@ -713,7 +712,7 @@ resolve_scoped_services() {
 
   for service_name in "${services[@]}"; do
     if ! compose_service_exists "$service_name"; then
-      die "selected compose service is not present in this bundle: $service_name"
+      die "selected runtime service is not present in this bundle: $service_name"
     fi
     printf '%s\n' "$service_name"
   done
@@ -763,11 +762,11 @@ build_scoped_service_images() {
   fi
   read_lines_into_array "$service_output" services
   if [ "${#services[@]}" -eq 0 ]; then
-    deploy_log "no compose services selected for scoped build"
+    deploy_log "no runtime services selected for scoped build"
     return 0
   fi
 
-  deploy_log "building selected compose services: $(join_array_limited "$SYSTEMD_PROGRESS_MAX_ITEMS" "${services[@]}")"
+  deploy_log "building selected runtime services: $(join_array_limited "$SYSTEMD_PROGRESS_MAX_ITEMS" "${services[@]}")"
   COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
     "$DEPLOY_ROOT/runtime/stack.env" \
@@ -816,9 +815,9 @@ emit_deploy_plan() {
       deploy_log "plan component dependency expansion: direct-only"
     fi
     if [ "${#services[@]}" -gt 0 ]; then
-      deploy_log "plan compose services: $(join_array_limited "$SYSTEMD_PROGRESS_MAX_ITEMS" "${services[@]}")"
+      deploy_log "plan runtime services: $(join_array_limited "$SYSTEMD_PROGRESS_MAX_ITEMS" "${services[@]}")"
     else
-      deploy_log "plan compose services: none selected directly"
+      deploy_log "plan runtime services: none selected directly"
     fi
     deploy_log "plan lifecycle units: $(join_array_limited "$SYSTEMD_PROGRESS_MAX_ITEMS" "${units[@]}")"
     if [ "${#health_units[@]}" -gt 0 ]; then
@@ -944,7 +943,7 @@ cleanup_excluded_service_containers() {
 
 cleanup_retired_service_containers() {
   local service unit_name
-  local configured_services="${DEPLOY_RETIRED_SERVICES:-qdrant progression nats airflow-init airflow-webserver airflow-scheduler ingestion-runner embedding-gpu autoheal watchtower docker-socket-lifecycle-proxy autobattler autobattler-db-bootstrap tas-dashboard}"
+  local configured_services="${DEPLOY_RETIRED_SERVICES:-qdrant progression nats airflow-init airflow-webserver airflow-scheduler ingestion-runner embedding-gpu autoheal watchtower autobattler autobattler-db-bootstrap tas-dashboard}"
 
   for service in $configured_services; do
     if compose_service_exists "$service"; then

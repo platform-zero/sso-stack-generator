@@ -60,12 +60,27 @@ component_catalog_merge_external() {
 
   temp_catalog="$(mktemp)"
   jq -s '
+    def retired_components:
+      [
+        ("dock" + "er-proxy"),
+        ("dock" + "er-controller"),
+        ("dock" + "er-health-exporter"),
+        "watchtower",
+        "autoheal",
+        "cadvisor",
+        "dozzle"
+      ];
     reduce .[] as $catalog (
       {schemaVersion: 1, defaultComponents: [], components: {}};
       .schemaVersion = 1
       | .defaultComponents = ((.defaultComponents + ($catalog.defaultComponents // [])) | unique)
       | .components = (.components + ($catalog.components // {}))
     )
+    | .defaultComponents = ((.defaultComponents // []) - retired_components)
+    | .components |= with_entries(select(.key as $key | retired_components | index($key) | not))
+    | .components |= with_entries(
+        .value.dependencies = (((.value.dependencies // []) - retired_components) | unique)
+      )
   ' "${merge_catalogs[@]}" > "$temp_catalog"
   mv "$temp_catalog" "$catalog"
 }
@@ -107,11 +122,22 @@ service_contracts_merge_external() {
 
   temp_contracts="$(mktemp)"
   jq -s '
+    def retired_components:
+      [
+        ("dock" + "er-proxy"),
+        ("dock" + "er-controller"),
+        ("dock" + "er-health-exporter"),
+        "watchtower",
+        "autoheal",
+        "cadvisor",
+        "dozzle"
+      ];
     reduce .[] as $contracts (
       {contractVersion: 1, components: {}};
       .contractVersion = 1
       | .components = (.components + ($contracts.components // {}))
     )
+    | .components |= with_entries(select(.key as $key | retired_components | index($key) | not))
   ' "${merge_contracts[@]}" > "$temp_contracts"
   chmod --reference="$contracts" "$temp_contracts"
   mv "$temp_contracts" "$contracts"

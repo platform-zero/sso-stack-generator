@@ -75,7 +75,7 @@ if have rg; then
     [ -e "$root" ] && option_roots+=( "$root" )
   done
   if [ "${#option_roots[@]}" -gt 0 ]; then
-    rg -n '^\s*(privileged:\s*true|network_mode:\s*host|-\s*/var/run/docker\.sock:|-\s*/run/docker-labware/docker\.sock:)' "${option_roots[@]}" 2>/dev/null || true
+    rg -n '^\s*(privileged:\s*true|network_mode:\s*host|-\s*/run/podman/podman\.sock:)' "${option_roots[@]}" 2>/dev/null || true
   fi
 else
   printf '[skip] rg is not installed; container option scan not run\n'

@@ -91,8 +91,8 @@ Deploy:
 - renders with SOPS on the host
 - writes decrypted runtime material only into `~/webservices/runtime`
 - links pre-rendered `systemd --user` units from `~/webservices/build/systemd-user`
-- uses pre-rendered per-domain compose shards from `~/webservices/build/systemd-user/compose`
-- uses Podman-managed units as the active container backend; do not reintroduce Docker-only orchestration paths
+- uses pre-rendered per-domain runtime shards from `~/webservices/build/systemd-user/compose`
+- uses Podman-managed units as the active container backend; do not reintroduce alternate orchestration paths
 
 Verify:
 - runs on the target host from `~/webservices/`

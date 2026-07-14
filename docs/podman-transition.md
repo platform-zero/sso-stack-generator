@@ -10,12 +10,12 @@ they are not the canonical runtime model.
 owned by `caddy-stack-module`; the site manifest and compatibility lock files
 select that module directly. The retired integration repository was audited as
 reference material only: its component file described the old nested selection
-model, its systemd graph described Docker-era compose units, and its shared
+model, its systemd graph described legacy runtime units, and its shared
 volume file is superseded by module runtime declarations.
 
 The active site config should contain environment values, secrets references,
 and the flat module selection. It should not reintroduce hidden integration
-bundles or Docker socket/controller modules.
+bundles or socket/controller modules.
 
 ## Generate and validate
 
@@ -32,7 +32,7 @@ bundles or Docker socket/controller modules.
 `import-compose --module DIR` converts the supported Compose subset into a
 module runtime file. Unsupported behavior must be represented explicitly in the
 runtime model rather than hidden in a renderer. The active deployment path is
-`--backend podman`; Docker compatibility bundles are transition-only and should
+`--backend podman`; compatibility bundles are transition-only and should
 not be treated as the primary deploy or verify target.
 
 ## Rootful installation
@@ -75,9 +75,9 @@ podman ps --all
 podman auto-update --dry-run
 ```
 
-After the same-session cutover gate passes, Docker is stopped and masked.
+After the same-session cutover gate passes, the retired runtime is stopped and masked.
 Rollback is Podman release rollback through `/var/lib/webservices/releases` and
-`/var/lib/webservices-rootless/releases`; Docker is not a runtime fallback.
-JupyterHub uses the rootless Podman API socket through DockerSpawner's
-Docker-compatible client path. Forgejo Runner and Docker-controller test suites
-remain deferred from the first no-Docker cutover.
+`/var/lib/webservices-rootless/releases`; alternate runtimes are not fallback paths.
+JupyterHub uses the rootless Podman API socket through its compatible client
+path. Forgejo Runner and controller test suites remain deferred from the first
+Podman cutover.

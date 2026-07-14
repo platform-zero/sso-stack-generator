@@ -33,7 +33,7 @@ npm run test:unit
 ## Stack Module Contracts
 
 Stack modules own service-specific assumptions: their templates, shell scripts,
-Dockerfiles, expected artifact names, healthcheck assumptions, and local smoke
+Containerfiles, expected artifact names, healthcheck assumptions, and local smoke
 status. The generator owns the shared schema, resolver, overlay materialization,
 component selection, bundle packaging, and deployed verification orchestration.
 
