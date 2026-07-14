@@ -28,9 +28,7 @@
     {
       "name": "autobattler",
       "kind": "source",
-      "groups": [
-        "destruction"
-      ],
+      "groups": [],
       "lifecycle": "retired",
       "remote": "https://github.com/geraldsummers/autobattler.git",
       "defaultBranch": "main"
@@ -38,9 +36,7 @@
     {
       "name": "tas-dashboard",
       "kind": "source",
-      "groups": [
-        "destruction"
-      ],
+      "groups": [],
       "lifecycle": "retired",
       "remote": "https://github.com/geraldsummers/tas-dashboard.git",
       "defaultBranch": "main"
@@ -58,9 +54,7 @@
     {
       "name": "progression",
       "kind": "source",
-      "groups": [
-        "destruction"
-      ],
+      "groups": [],
       "lifecycle": "retired",
       "remote": "https://github.com/geraldsummers/progression-stack-module.git",
       "defaultBranch": "main"
@@ -78,9 +72,7 @@
     {
       "name": "test-manager",
       "kind": "source",
-      "groups": [
-        "destruction"
-      ],
+      "groups": [],
       "lifecycle": "retired",
       "remote": "https://github.com/geraldsummers/test-manager-stack-module.git",
       "defaultBranch": "main"
@@ -98,9 +90,7 @@
     {
       "name": "pipeline-common",
       "kind": "source",
-      "groups": [
-        "destruction"
-      ],
+      "groups": [],
       "lifecycle": "retired"
     },
     {
@@ -108,9 +98,7 @@
       "kind": "stack-module",
       "moduleId": "autobattler",
       "sourceRepo": "autobattler",
-      "groups": [
-        "destruction"
-      ],
+      "groups": [],
       "lifecycle": "retired",
       "remote": "https://github.com/geraldsummers/autobattler-stack-module.git",
       "defaultBranch": "main"
@@ -120,9 +108,7 @@
       "kind": "stack-module",
       "moduleId": "tas-dashboard",
       "sourceRepo": "tas-dashboard",
-      "groups": [
-        "destruction"
-      ],
+      "groups": [],
       "lifecycle": "retired",
       "remote": "https://github.com/geraldsummers/tas-dashboard-stack-module.git",
       "defaultBranch": "main"
@@ -143,9 +129,7 @@
       "kind": "stack-module",
       "moduleId": "progression",
       "sourceRepo": "progression",
-      "groups": [
-        "destruction"
-      ],
+      "groups": [],
       "lifecycle": "retired",
       "remote": "https://github.com/geraldsummers/progression-stack-module.git",
       "defaultBranch": "main"
@@ -166,9 +150,7 @@
       "kind": "stack-module",
       "moduleId": "test-manager",
       "sourceRepo": "test-manager",
-      "groups": [
-        "destruction"
-      ],
+      "groups": [],
       "lifecycle": "retired",
       "remote": "https://github.com/geraldsummers/test-manager-stack-module.git",
       "defaultBranch": "main"
@@ -189,9 +171,7 @@
       "kind": "stack-module",
       "moduleId": "pipeline",
       "sourceRepo": "pipeline-common",
-      "groups": [
-        "destruction"
-      ],
+      "groups": [],
       "lifecycle": "retired"
     },
     {
@@ -245,20 +225,14 @@
       "name": "autoheal-stack-module",
       "kind": "stack-module",
       "moduleId": "autoheal",
-      "groups": [
-        "platform",
-        "dev-all"
-      ],
+      "groups": [],
       "lifecycle": "retired"
     },
     {
       "name": "watchtower-stack-module",
       "kind": "stack-module",
       "moduleId": "watchtower",
-      "groups": [
-        "platform",
-        "dev-all"
-      ],
+      "groups": [],
       "lifecycle": "retired"
     },
     {
@@ -325,9 +299,7 @@
       "name": "qdrant-stack-module",
       "kind": "stack-module",
       "moduleId": "qdrant",
-      "groups": [
-        "destruction"
-      ],
+      "groups": [],
       "lifecycle": "retired",
       "remote": "https://github.com/geraldsummers/qdrant-stack-module.git",
       "defaultBranch": "main"
@@ -396,10 +368,7 @@
       "name": "cadvisor-stack-module",
       "kind": "stack-module",
       "moduleId": "cadvisor",
-      "groups": [
-        "observability",
-        "dev-all"
-      ],
+      "groups": [],
       "lifecycle": "retired"
     },
     {
@@ -416,10 +385,7 @@
       "name": "docker-exporter-stack-module",
       "kind": "stack-module",
       "moduleId": "docker-exporter",
-      "groups": [
-        "observability",
-        "dev-all"
-      ],
+      "groups": [],
       "lifecycle": "retired"
     },
     {
@@ -456,10 +422,7 @@
       "name": "dozzle-stack-module",
       "kind": "stack-module",
       "moduleId": "dozzle",
-      "groups": [
-        "wrapped",
-        "dev-all"
-      ],
+      "groups": [],
       "lifecycle": "retired"
     },
     {
@@ -809,72 +772,56 @@
     {
       "name": "gpu-bootstrap-arbiter",
       "kind": "destruction-yard",
-      "groups": [
-        "destruction"
-      ],
+      "groups": [],
       "lifecycle": "retired",
       "localOnly": true
     },
     {
       "name": "gpu-workload-monitor",
       "kind": "destruction-yard",
-      "groups": [
-        "destruction"
-      ],
+      "groups": [],
       "lifecycle": "retired",
       "localOnly": true
     },
     {
       "name": "inference-controller",
       "kind": "destruction-yard",
-      "groups": [
-        "destruction"
-      ],
+      "groups": [],
       "lifecycle": "retired",
       "localOnly": true
     },
     {
       "name": "inference-gateway",
       "kind": "destruction-yard",
-      "groups": [
-        "destruction"
-      ],
+      "groups": [],
       "lifecycle": "retired",
       "localOnly": true
     },
     {
       "name": "content-publisher",
       "kind": "destruction-yard",
-      "groups": [
-        "destruction"
-      ],
+      "groups": [],
       "lifecycle": "retired",
       "localOnly": true
     },
     {
       "name": "embedding-worker",
       "kind": "destruction-yard",
-      "groups": [
-        "destruction"
-      ],
+      "groups": [],
       "lifecycle": "retired",
       "localOnly": true
     },
     {
       "name": "knowledge-ingestion",
       "kind": "destruction-yard",
-      "groups": [
-        "destruction"
-      ],
+      "groups": [],
       "lifecycle": "retired",
       "localOnly": true
     },
     {
       "name": "search-service",
       "kind": "destruction-yard",
-      "groups": [
-        "destruction"
-      ],
+      "groups": [],
       "lifecycle": "retired",
       "localOnly": true
     }
