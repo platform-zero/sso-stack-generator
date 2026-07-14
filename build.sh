@@ -75,10 +75,17 @@ mkdir -p "$DIST_DIR/build"
 tar -xf "$artifact_path" -C "$DIST_DIR/build"
 external_modules_overlay_into "$DIST_DIR/build"
 if [ -d "$DIST_DIR/build/stack.runtime.external" ]; then
-  "$SCRIPT_DIR/generate.sh" render-runtime-contract \
-    --runtime-dir "$DIST_DIR/build/stack.runtime.external" \
-    --global-volumes "$DIST_DIR/build/global.settings/volumes.yml" \
+  runtime_contract_args=(
+    --runtime-dir "$DIST_DIR/build/stack.runtime.external"
     --output-dir "$DIST_DIR/build/runtime.contract"
+  )
+  if [ -f "$DIST_DIR/build/global.settings/volumes.yml" ]; then
+    runtime_contract_args+=(
+      --global-volumes "$DIST_DIR/build/global.settings/volumes.yml"
+    )
+  fi
+  "$SCRIPT_DIR/generate.sh" render-runtime-contract \
+    "${runtime_contract_args[@]}"
 fi
 cp "$OUT_DIR/latest-build.json" "$DIST_DIR/build/build-info.json"
 external_modules_metadata="$(external_modules_metadata_path)"
