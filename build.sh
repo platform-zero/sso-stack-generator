@@ -118,6 +118,24 @@ rewrite_runtime_contract_paths "$DIST_DIR/build/runtime-contract.yml"
 rewrite_runtime_contract_paths "$DIST_DIR/build/runtime.contract/test-runners.yml"
 log "validating generated runtime-contract.yml"
 validate_runtime_contract "$DIST_DIR/build" "$DIST_DIR/build/runtime-contract.yml"
+if [ ! -f "$DIST_DIR/build/stack.systemd/graph.json" ]; then
+  mkdir -p "$DIST_DIR/build/stack.systemd"
+  cat > "$DIST_DIR/build/stack.systemd/graph.json" <<'EOF_SYSTEMD_GRAPH'
+{
+  "unitPrefix": "webservices",
+  "defaultTarget": {
+    "name": "webservices.target",
+    "description": "Web Services",
+    "includeUnitsFromNonOnDemandDomains": true
+  },
+  "auxiliaryTargets": [],
+  "lifecycleDomains": [],
+  "excludedServices": [],
+  "onDemandServices": [],
+  "onDemandDomains": []
+}
+EOF_SYSTEMD_GRAPH
+fi
 log "rendering systemd user units"
 "$SCRIPT_DIR/scripts/deploy/render-systemd-user.sh" \
   --bundle-root "$DIST_DIR/build" \
