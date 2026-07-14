@@ -112,7 +112,7 @@ workspace_source_root() {
 
 legacy_container_build_file="Docker""file"
 legacy_homepage_config="dock""er.yaml"
-legacy_runtime_contract_file="runtime-""contract.yml"
+legacy_pre_model_file="runtime-""contract.yml"
 
 validate_release_input() {
   local src="$1"
@@ -131,7 +131,7 @@ validate_release_input() {
 for src in "$@"; do
   validate_relative_dest_path "$src"
   case "$src" in
-    */"$legacy_container_build_file"|*/"$legacy_container_build_file".*|*/"$legacy_homepage_config"|*/"$legacy_runtime_contract_file")
+    */"$legacy_container_build_file"|*/"$legacy_container_build_file".*|*/"$legacy_homepage_config"|*/"$legacy_pre_model_file")
       continue
       ;;
   esac
