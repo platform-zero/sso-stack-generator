@@ -704,7 +704,13 @@ fun renderDocker(ir: ObjectNode, output: Path) {
     compose.set<ObjectNode>("services", services)
     val networks = obj()
     ir.path("networks").fieldsMap().forEach { (name, value) ->
-        val network = value.deepCopy<ObjectNode>().put("name", "webservices_$name")
+        val external = value.path("external").asBoolean(false)
+        val networkName = value.path("name").textOrNull() ?: "webservices_$name"
+        val network = if (external) {
+            obj().put("external", true).put("name", networkName)
+        } else {
+            value.deepCopy<ObjectNode>().put("name", networkName)
+        }
         networks.set<ObjectNode>(name, network)
     }
     compose.set<ObjectNode>("networks", networks)
@@ -1067,7 +1073,10 @@ fun renderPodman(ir: ObjectNode, output: Path) {
             output.resolve("${domain.quadletDir}/webservices-$name.network").apply { parent.createDirectories(); writeText(lines.joinToString("\n", postfix = "\n")) }
         }
         ir.path("services").fieldsMap()
-            .filter { (_, service) -> service.path("placement").asText("rootful") == domain.name }
+            .filter { (_, service) ->
+                service.path("placement").asText("rootful") == domain.name &&
+                    service.path("lifecycle").asText() != "on-demand"
+            }
             .forEach { (name, service) -> renderQuadletService(name, service as ObjectNode, ir, output, domain, loopbacks) }
         listOf("core", "apps", "observability").forEach { target ->
             val targetServices = ir.path("services").fieldsMap()
