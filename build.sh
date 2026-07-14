@@ -87,6 +87,13 @@ if [ -d "$DIST_DIR/build/stack.runtime.external" ]; then
   "$SCRIPT_DIR/generate.sh" render-runtime-contract \
     "${runtime_contract_args[@]}"
 fi
+if [ ! -f "$DIST_DIR/build/global.settings/volumes.yml" ] && [ -f "$DIST_DIR/build/runtime.contract/stack-foundation.yml" ]; then
+  mkdir -p "$DIST_DIR/build/global.settings"
+  {
+    printf 'volumes:\n'
+    extract_top_level_section "$DIST_DIR/build/runtime.contract/stack-foundation.yml" 'volumes:'
+  } > "$DIST_DIR/build/global.settings/volumes.yml"
+fi
 cp "$OUT_DIR/latest-build.json" "$DIST_DIR/build/build-info.json"
 external_modules_metadata="$(external_modules_metadata_path)"
 if [ -f "$external_modules_metadata" ]; then
