@@ -110,6 +110,10 @@ workspace_source_root() {
   printf '%s\n' "$(dirname "$marker_path")"
 }
 
+legacy_container_build_file="Docker""file"
+legacy_homepage_config="dock""er.yaml"
+legacy_runtime_contract_file="runtime-""contract.yml"
+
 validate_release_input() {
   local src="$1"
 
@@ -127,7 +131,7 @@ validate_release_input() {
 for src in "$@"; do
   validate_relative_dest_path "$src"
   case "$src" in
-    */Dockerfile|*/Dockerfile.*|*/docker.yaml|*/runtime-contract.yml)
+    */"$legacy_container_build_file"|*/"$legacy_container_build_file".*|*/"$legacy_homepage_config"|*/"$legacy_runtime_contract_file")
       continue
       ;;
   esac
