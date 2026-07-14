@@ -100,7 +100,7 @@ external_modules_path_allowed() {
     README.md|stack.module.json|stack.runtime.yaml|tests/*|.github/*)
       return 0
       ;;
-    global.settings/*|runtime.contract/*|stack.config/*|stack.containers/*|stack.kotlin/*|stack.js/*|stack.systemd/*|scripts/lib/*|scripts/modules/*|docs/modules/*)
+    global.settings/*|runtime.overlays/*|stack.config/*|stack.containers/*|stack.kotlin/*|stack.js/*|stack.systemd/*|scripts/lib/*|scripts/modules/*|docs/modules/*)
       return 0
       ;;
   esac

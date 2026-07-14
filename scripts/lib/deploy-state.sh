@@ -92,11 +92,11 @@ deploy_state_file_manifest() {
   local bundle_root="$1"
   deploy_state_manifest_for_root "$bundle_root" \
     .dockerignore \
-    runtime-contract.yml \
+    runtime-model.yml \
     global.settings \
     scripts \
     site \
-    runtime.contract \
+    runtime.overlays \
     stack.config \
     stack.containers \
     stack.js \

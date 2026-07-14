@@ -5,8 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 LIB_DIR="$(cd "$SCRIPT_DIR/../lib" && pwd -P)"
 # shellcheck source=scripts/lib/common.sh
 source "$LIB_DIR/common.sh"
-# shellcheck source=scripts/lib/runtime-contract.sh
-source "$LIB_DIR/runtime-contract.sh"
+# shellcheck source=scripts/lib/runtime-model.sh
+source "$LIB_DIR/runtime-model.sh"
 
 BUNDLE_ROOT=""
 OUTPUT_DIR=""
@@ -60,7 +60,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$BUNDLE_ROOT" ] || die "--bundle-root is required"
-[ -f "$BUNDLE_ROOT/runtime-contract.yml" ] || die "missing runtime contract in $BUNDLE_ROOT"
+[ -f "$BUNDLE_ROOT/runtime-model.yml" ] || die "missing runtime model in $BUNDLE_ROOT"
 
 LOCAL_BUNDLE_ROOT="$(cd "$BUNDLE_ROOT" && pwd -P)"
 LOCAL_DEPLOY_ROOT="$(cd "$LOCAL_BUNDLE_ROOT/.." && pwd -P)"
@@ -82,7 +82,7 @@ SYSTEMD_NOTIFY_BIN="$(command -v systemd-notify)"
 runtime_config_json="$(mktemp)"
 base_networks_contract="$(mktemp)"
 base_networks_json="$(mktemp)"
-runtime_contract_command="$(runtime_contract_config_command)"
+runtime_model_command="$(runtime_model_config_command)"
 cleanup() {
   rm -f "$runtime_config_json" "$base_networks_contract" "$base_networks_json"
 }
@@ -90,9 +90,9 @@ trap cleanup EXIT
 
 (
   cd "$LOCAL_DEPLOY_ROOT"
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" $runtime_contract_command \
+  RUNTIME_PROJECT_NAME="$PROJECT_NAME" $runtime_model_command \
     --project-directory "$LOCAL_DEPLOY_ROOT" \
-    -f "$LOCAL_BUNDLE_ROOT/runtime-contract.yml" \
+    -f "$LOCAL_BUNDLE_ROOT/runtime-model.yml" \
     config --format json --no-interpolate
 ) > "$runtime_config_json"
 
@@ -106,7 +106,7 @@ trap cleanup EXIT
 
 (
   cd "$LOCAL_DEPLOY_ROOT"
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" $runtime_contract_command \
+  RUNTIME_PROJECT_NAME="$PROJECT_NAME" $runtime_model_command \
     --project-directory "$LOCAL_DEPLOY_ROOT" \
     -f "$base_networks_contract" \
     config --format json --no-interpolate

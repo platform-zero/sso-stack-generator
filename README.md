@@ -2,7 +2,7 @@
 
 This is the public root generator for a modular, SSO-backed self-hosted service
 stack. It owns the generic build system, schema, resolver, catalog, generated
-runtime contract, and test runners.
+runtime model, and test runners.
 
 It does not own site secrets, production-specific values, downstream-only
 customizations, or deployable service overlays that have been extracted into
@@ -93,7 +93,7 @@ a deployment.
 | `scripts/` | Build, resolver, deploy rendering, module, and validation helpers. |
 | `modules/` | Public module catalog, group definitions, and module metadata schema. |
 | `stack.kotlin/` | Materialized Kotlin services in a built bundle. Source lives in modules. |
-| `runtime.contract/` | Materialized compatibility runtime fragments in a built bundle. Deployable service overlays usually live in modules. |
+| `runtime.overlays/` | Materialized compatibility runtime fragments in a built bundle. Deployable service overlays usually live in modules. |
 | `stack.config/` | Base config, schemas, Caddy/Keycloak templates, and runtime helper inputs. |
 | `stack.containers/` | Materialized custom container contexts in a built bundle. |
 | `stack.systemd/` | Source graph for generated systemd user units. |

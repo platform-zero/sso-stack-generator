@@ -206,7 +206,7 @@ component_selection_resolve() {
   done < <(jq -r '.components | keys_unsorted[]' "$catalog")
 }
 
-component_selection_compose_files() {
+component_selection_runtime_files() {
   local manifest_path="$1"
   local catalog="$2"
   local -A files=()
@@ -216,7 +216,7 @@ component_selection_compose_files() {
     while IFS= read -r file; do
       [ -n "$file" ] || continue
       files["$file"]=1
-    done < <(jq -r --arg component "$component" '.components[$component].composeFiles[]?' "$catalog")
+    done < <(jq -r --arg component "$component" '.components[$component].runtimeFiles[]?' "$catalog")
   done < <(component_selection_resolve "$manifest_path" "$catalog")
 
   while IFS= read -r component; do
@@ -225,7 +225,7 @@ component_selection_compose_files() {
         printf '%s\n' "$file"
         unset "files[$file]"
       fi
-    done < <(jq -r --arg component "$component" '.components[$component].composeFiles[]?' "$catalog")
+    done < <(jq -r --arg component "$component" '.components[$component].runtimeFiles[]?' "$catalog")
   done < <(jq -r '.components | keys_unsorted[]' "$catalog")
 }
 

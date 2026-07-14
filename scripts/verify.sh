@@ -68,7 +68,7 @@ is_podman_bundle() {
 }
 
 if ! is_podman_bundle; then
-  [ -f "$BUNDLE_ROOT/runtime-contract.yml" ] || die "missing runtime contract in $BUNDLE_ROOT"
+  [ -f "$BUNDLE_ROOT/runtime-model.yml" ] || die "missing runtime model in $BUNDLE_ROOT"
   [ -f "$BUNDLE_ROOT/stack.systemd/graph.json" ] || die "missing stack.systemd/graph.json in $BUNDLE_ROOT"
 fi
 

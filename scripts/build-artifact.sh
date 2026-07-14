@@ -44,7 +44,7 @@ require_cmd tar
 cd "$SOURCE_ROOT"
 require_clean_git_tree "$SOURCE_ROOT"
 
-contract_test_seed="${WEBSERVICES_CONTRACT_ROOT:-$SOURCE_ROOT}"
+contract_test_seed="${WEBSERVICES_OVERLAY_ROOT:-$SOURCE_ROOT}"
 external_modules_ready=0
 if [ -d "$EXTERNAL_MODULES_MATERIALIZED_DIR" ] && find "$EXTERNAL_MODULES_MATERIALIZED_DIR" -type f -print -quit | grep -q .; then
   external_modules_ready=1
@@ -74,7 +74,7 @@ if [ "$needs_contract_test_tmp" = "1" ]; then
   }
   trap cleanup_contract_test_root EXIT
 
-  for root in global.settings runtime-generator runtime.contract stack.config stack.containers stack.kotlin stack.js stack.systemd; do
+  for root in global.settings runtime-generator runtime.overlays stack.config stack.containers stack.kotlin stack.js stack.systemd; do
     if [ -e "$contract_test_seed/$root" ]; then
       cp -a "$contract_test_seed/$root" "$contract_test_tmp/$root"
     elif [ -e "$SOURCE_ROOT/$root" ]; then
@@ -124,7 +124,7 @@ fi
 log "running component selection checks"
 component_catalog_backup="$(mktemp)"
 cp "$contract_test_root/stack.config/components.json" "$component_catalog_backup"
-WEBSERVICES_CONTRACT_ROOT="$contract_test_root" "$SCRIPT_DIR/test-component-selection.sh" >&2
+WEBSERVICES_OVERLAY_ROOT="$contract_test_root" "$SCRIPT_DIR/test-component-selection.sh" >&2
 mv "$component_catalog_backup" "$contract_test_root/stack.config/components.json"
 component_catalog_merge_external "$contract_test_root/stack.config/components.json"
 service_contracts_merge_external "$contract_test_root/stack.config/service-contracts.json"
@@ -133,10 +133,10 @@ log "running external module checks"
 "$SCRIPT_DIR/test-external-modules.sh" >&2
 
 log "running service contract checks"
-WEBSERVICES_CONTRACT_ROOT="$contract_test_root" "$SCRIPT_DIR/test-service-contracts.sh" >&2
+WEBSERVICES_OVERLAY_ROOT="$contract_test_root" "$SCRIPT_DIR/test-service-contracts.sh" >&2
 
 log "running contract report checks"
-WEBSERVICES_CONTRACT_ROOT="$contract_test_root" "$SCRIPT_DIR/test-contract-reports.sh" >&2
+WEBSERVICES_OVERLAY_ROOT="$contract_test_root" "$SCRIPT_DIR/test-contract-reports.sh" >&2
 
 if [ "$external_modules_ready" = "1" ] && find "$EXTERNAL_MODULES_MATERIALIZED_DIR" -mindepth 2 -maxdepth 2 -name stack.module.json -print -quit | grep -q .; then
   log "running materialized module contract checks"

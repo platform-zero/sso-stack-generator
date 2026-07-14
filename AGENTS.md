@@ -19,7 +19,7 @@ It does not own downstream application-specific stacks, downstream-only deploy l
 Edit source, not generated output.
 
 Primary source directories:
-- `runtime.contract/`
+- `runtime.overlays/`
 - `stack.config/`
 - `stack.containers/`
 - `stack.systemd/`
@@ -135,8 +135,8 @@ and use `smoke` metadata to distinguish local smoke from deployed-only
 verification.
 
 Important constraints:
-- Playwright and deep auth suites depend on deployed runtime env and compose DNS
-- the compose project name stays `webservices`
+- Playwright and deep auth suites depend on deployed runtime env and runtime DNS
+- the runtime project name stays `webservices`
 - remote deployment verification belongs to `./verify.sh`, not ad hoc wrappers
 
 ## Screenshot And Visual Evidence Standard

@@ -122,7 +122,7 @@ fun importService(name: String, source: ObjectNode): ObjectNode {
     return service
 }
 
-fun mergeComposeFile(runtime: ObjectNode, path: Path) {
+fun mergeRuntimeOverlayFile(runtime: ObjectNode, path: Path) {
     val compose = readTree(path)
     val anchors = Regex("(?m)^([A-Za-z0-9_.-]+):\\s*&([A-Za-z0-9_.-]+)\\s*$")
         .findAll(path.readText())
@@ -179,15 +179,15 @@ fun commandImport(options: Map<String, String>) {
     runtime.set<ObjectNode>("networks", obj())
     runtime.set<ObjectNode>("volumes", obj())
 
-    val composeFiles = mutableListOf<Path>()
-    val composeDir = moduleDir.resolve("runtime.contract")
-    if (composeDir.isDirectory()) composeFiles += composeDir.listDirectoryEntries("*.yml").sorted()
+    val runtimeFiles = mutableListOf<Path>()
+    val composeDir = moduleDir.resolve("runtime.overlays")
+    if (composeDir.isDirectory()) runtimeFiles += composeDir.listDirectoryEntries("*.yml").sorted()
     if (moduleId == "stack-foundation") {
         listOf("global.settings/networks.yml", "global.settings/volume-init.yml")
-            .map(moduleDir::resolve).filter(Path::isRegularFile).forEach(composeFiles::add)
+            .map(moduleDir::resolve).filter(Path::isRegularFile).forEach(runtimeFiles::add)
     }
-    composeFiles.forEach { mergeComposeFile(runtime, it) }
-    if (composeFiles.isEmpty()) {
+    runtimeFiles.forEach { mergeRuntimeOverlayFile(runtime, it) }
+    if (runtimeFiles.isEmpty()) {
         runtime.remove("services")
         runtime.remove("networks")
         runtime.remove("volumes")
@@ -206,7 +206,7 @@ fun commandImportWorkspace(options: Map<String, String>) {
     if (missing.isNotEmpty()) fail("missing selected module checkouts: ${missing.joinToString()}")
     selected.forEach { id ->
         val module = discovered.getValue(id)
-        val hasRuntimeSource = module.dir.resolve("runtime.contract").isDirectory() ||
+        val hasRuntimeSource = module.dir.resolve("runtime.overlays").isDirectory() ||
             (id == "stack-foundation" && module.dir.resolve("global.settings/volume-init.yml").isRegularFile())
         if (hasRuntimeSource) commandImport(mapOf("module" to module.dir.toString()))
     }
@@ -373,7 +373,7 @@ fun buildIr(manifestPath: Path, modulesDir: Path): Pair<ObjectNode, List<ModuleC
     modules.forEach { module ->
         val runtimePath = module.dir.resolve("stack.runtime.yaml")
         if (!runtimePath.isRegularFile()) {
-            if (module.dir.resolve("runtime.contract").isDirectory()) fail("runtime-bearing module '${module.id}' lacks stack.runtime.yaml")
+            if (module.dir.resolve("runtime.overlays").isDirectory()) fail("runtime-bearing module '${module.id}' lacks stack.runtime.yaml")
             return@forEach
         }
         val runtime = readTree(runtimePath)
@@ -428,7 +428,7 @@ fun materializeModules(modules: List<ModuleCheckout>, output: Path) {
     modules.forEach { module ->
         module.metadata.path("overlays").forEach { overlayNode ->
             val relative = Path(overlayNode.asText())
-            if (relative.startsWith("runtime.contract") || relative.fileName.toString() == "stack.runtime.yaml") return@forEach
+            if (relative.startsWith("runtime.overlays") || relative.fileName.toString() == "stack.runtime.yaml") return@forEach
             val source = module.dir.resolve(relative).normalize()
             if (!source.startsWith(module.dir) || !source.exists()) fail("unsafe or missing overlay '${relative}' in '${module.id}'")
             val files = if (source.isDirectory()) source.walk().filter(Path::isRegularFile).toList() else listOf(source)
@@ -697,7 +697,7 @@ fun composeService(service: ObjectNode): ObjectNode {
     return output
 }
 
-fun renderDocker(ir: ObjectNode, output: Path) {
+fun renderRuntimeModel(ir: ObjectNode, output: Path) {
     val compose = obj().put("name", "webservices")
     val services = obj()
     ir.path("services").fieldsMap().forEach { (name, service) -> services.set<ObjectNode>(name, composeService(service as ObjectNode)) }
@@ -724,10 +724,10 @@ fun renderDocker(ir: ObjectNode, output: Path) {
         volumes.set<ObjectNode>(name, volume)
     }
     compose.set<ObjectNode>("volumes", volumes)
-    writeYaml(output.resolve("runtime-contract.yml"), compose)
+    writeYaml(output.resolve("runtime-model.yml"), compose)
 }
 
-fun renderRuntimeComposeShard(runtimePath: Path, outputDir: Path, predeclaredVolumes: Set<String>) {
+fun renderRuntimeOverlayShard(runtimePath: Path, outputDir: Path, predeclaredVolumes: Set<String>) {
     val runtime = readTree(runtimePath)
     if (runtime.path("schemaVersion").asInt() != 1) fail("invalid runtime schema: $runtimePath")
     val moduleId = runtime.path("module").asText().ifBlank { fail("runtime lacks module id: $runtimePath") }
@@ -752,7 +752,7 @@ fun renderRuntimeComposeShard(runtimePath: Path, outputDir: Path, predeclaredVol
     writeYaml(outputDir.resolve("$moduleId.yml"), compose)
 }
 
-fun commandRenderRuntimeCompose(options: Map<String, String>) {
+fun commandRenderRuntimeOverlays(options: Map<String, String>) {
     val runtimeDir = Path(required(options, "runtime-dir")).toAbsolutePath().normalize()
     val outputDir = Path(required(options, "output-dir")).toAbsolutePath().normalize()
     val declaredVolumes = options["global-volumes"]?.let { path ->
@@ -760,7 +760,7 @@ fun commandRenderRuntimeCompose(options: Map<String, String>) {
         root.path("volumes").fieldsMap().map { it.first }.toSet()
     } ?: emptySet()
     if (!runtimeDir.isDirectory()) return
-    runtimeDir.listDirectoryEntries("*.yaml").sorted().forEach { renderRuntimeComposeShard(it, outputDir, declaredVolumes) }
+    runtimeDir.listDirectoryEntries("*.yaml").sorted().forEach { renderRuntimeOverlayShard(it, outputDir, declaredVolumes) }
 }
 
 fun systemdQuote(value: String): String = "\"" + value
@@ -1130,7 +1130,7 @@ fun commandGenerate(options: Map<String, String>) {
         materializeGeneratedBuildArtifacts(modules, staging)
         materializeRuntimeRendererInputs(staging)
         materializeComponentLock(manifest, staging, ir)
-        renderDocker(ir, staging)
+        renderRuntimeModel(ir, staging)
         if (backend == "podman") renderPodman(ir, staging)
         val metadata = obj()
         metadata.put("schemaVersion", 1)
@@ -1149,8 +1149,8 @@ fun commandGenerate(options: Map<String, String>) {
 val (command, options) = parseArgs(args)
 when (command) {
     "generate" -> commandGenerate(options)
-    "import-compose" -> commandImport(options)
+    "import-runtime-overlays" -> commandImport(options)
     "import-workspace" -> commandImportWorkspace(options)
-    "render-runtime-contract" -> commandRenderRuntimeCompose(options)
-    else -> fail("unknown command '$command' (expected generate, import-compose, import-workspace, or render-runtime-contract)")
+    "render-runtime-model" -> commandRenderRuntimeOverlays(options)
+    else -> fail("unknown command '$command' (expected generate, import-runtime-overlays, import-workspace, or render-runtime-model)")
 }

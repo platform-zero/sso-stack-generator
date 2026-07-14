@@ -3,11 +3,11 @@ set -Eeuo pipefail
 trap 'status=$?; printf "[contract-reports-test] failed at line %s: %s (exit %s)\n" "$LINENO" "$BASH_COMMAND" "$status" >&2' ERR
 
 SOURCE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-ROOT_DIR="${WEBSERVICES_CONTRACT_ROOT:-$SOURCE_ROOT}"
-CONTRACT_ROOT=""
+ROOT_DIR="${WEBSERVICES_OVERLAY_ROOT:-$SOURCE_ROOT}"
+OVERLAY_ROOT=""
 tmp_dir=""
 cleanup() {
-  [ -z "$CONTRACT_ROOT" ] || rm -rf "$CONTRACT_ROOT"
+  [ -z "$OVERLAY_ROOT" ] || rm -rf "$OVERLAY_ROOT"
   [ -z "$tmp_dir" ] || rm -rf "$tmp_dir"
 }
 trap cleanup EXIT
@@ -17,9 +17,9 @@ elif [ "$ROOT_DIR" = "$SOURCE_ROOT" ] && [ ! -f "$ROOT_DIR/stack.config/componen
   ROOT_DIR="$SOURCE_ROOT/dist/build"
 fi
 if [ -d "$ROOT_DIR/stack.config/components.external" ] || [ -d "$ROOT_DIR/stack.config/service-contracts.external" ]; then
-  CONTRACT_ROOT="$(mktemp -d)"
-  cp -a "$ROOT_DIR/." "$CONTRACT_ROOT/"
-  ROOT_DIR="$CONTRACT_ROOT"
+  OVERLAY_ROOT="$(mktemp -d)"
+  cp -a "$ROOT_DIR/." "$OVERLAY_ROOT/"
+  ROOT_DIR="$OVERLAY_ROOT"
   # shellcheck source=scripts/lib/components.sh
   source "$SOURCE_ROOT/scripts/lib/components.sh"
   component_catalog_merge_external "$ROOT_DIR/stack.config/components.json"

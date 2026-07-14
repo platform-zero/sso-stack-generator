@@ -4,18 +4,18 @@ trap 'status=$?; printf "[component-selection-test] failed at line %s: %s (exit 
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
-CONTRACT_ROOT="${WEBSERVICES_CONTRACT_ROOT:-$ROOT_DIR}"
-if [ "$CONTRACT_ROOT" = "$ROOT_DIR" ] && [ ! -f "$CONTRACT_ROOT/stack.config/components.json" ] && [ -f "$ROOT_DIR/dist/build/build/stack.config/components.json" ]; then
-  CONTRACT_ROOT="$ROOT_DIR/dist/build/build"
-elif [ "$CONTRACT_ROOT" = "$ROOT_DIR" ] && [ ! -f "$CONTRACT_ROOT/stack.config/components.json" ] && [ -f "$ROOT_DIR/dist/build/stack.config/components.json" ]; then
-  CONTRACT_ROOT="$ROOT_DIR/dist/build"
+OVERLAY_ROOT="${WEBSERVICES_OVERLAY_ROOT:-$ROOT_DIR}"
+if [ "$OVERLAY_ROOT" = "$ROOT_DIR" ] && [ ! -f "$OVERLAY_ROOT/stack.config/components.json" ] && [ -f "$ROOT_DIR/dist/build/build/stack.config/components.json" ]; then
+  OVERLAY_ROOT="$ROOT_DIR/dist/build/build"
+elif [ "$OVERLAY_ROOT" = "$ROOT_DIR" ] && [ ! -f "$OVERLAY_ROOT/stack.config/components.json" ] && [ -f "$ROOT_DIR/dist/build/stack.config/components.json" ]; then
+  OVERLAY_ROOT="$ROOT_DIR/dist/build"
 fi
 # shellcheck source=scripts/lib/common.sh
 source "$ROOT_DIR/scripts/lib/common.sh"
 # shellcheck source=scripts/lib/components.sh
 source "$ROOT_DIR/scripts/lib/components.sh"
-# shellcheck source=scripts/lib/runtime-contract.sh
-source "$ROOT_DIR/scripts/lib/runtime-contract.sh"
+# shellcheck source=scripts/lib/runtime-model.sh
+source "$ROOT_DIR/scripts/lib/runtime-model.sh"
 
 assert_not_contains() {
   local file="$1"
@@ -155,14 +155,36 @@ cat "$last"
 EOF_SOPS
 chmod +x "$fake_bin/sops"
 
-copy_tree "$CONTRACT_ROOT/global.settings" "$bundle_root/global.settings"
-copy_tree "$CONTRACT_ROOT/runtime.contract" "$bundle_root/runtime.contract"
-copy_tree "$CONTRACT_ROOT/stack.config" "$bundle_root/stack.config"
-copy_tree "$CONTRACT_ROOT/stack.systemd" "$bundle_root/stack.systemd"
+copy_tree "$OVERLAY_ROOT/global.settings" "$bundle_root/global.settings"
+copy_tree "$OVERLAY_ROOT/runtime.overlays" "$bundle_root/runtime.overlays"
+copy_tree "$OVERLAY_ROOT/stack.config" "$bundle_root/stack.config"
+copy_tree "$OVERLAY_ROOT/stack.systemd" "$bundle_root/stack.systemd"
 copy_tree "$ROOT_DIR/scripts" "$bundle_root/scripts"
-mkdir -p "$bundle_root/runtime.contract"
+mkdir -p "$bundle_root/runtime.overlays"
+if [ -f "$bundle_root/stack.systemd/graph.json" ]; then
+  graph_temp="$(mktemp)"
+  jq '
+    .defaultTarget.wantsTargets = (
+      ((.defaultTarget.wantsTargets // []) + [
+        "webservices-core.target",
+        "webservices-apps.target",
+        "webservices-observability.target"
+      ]) | unique
+    )
+    | .auxiliaryTargets = (
+      (.auxiliaryTargets // [])
+      + [
+        {"name": "webservices-core.target", "description": "Web Services Core"},
+        {"name": "webservices-apps.target", "description": "Web Services Apps"},
+        {"name": "webservices-observability.target", "description": "Web Services Observability"}
+      ]
+      | unique_by(.name)
+    )
+  ' "$bundle_root/stack.systemd/graph.json" > "$graph_temp"
+  mv "$graph_temp" "$bundle_root/stack.systemd/graph.json"
+fi
 
-cat > "$bundle_root/runtime.contract/component-marker-test.yml" <<'EOF_COMPOSE_MARKER'
+cat > "$bundle_root/runtime.overlays/component-marker-test.yml" <<'EOF_COMPOSE_MARKER'
 volumes:
   component_marker_always:
   # webservices-component-start bookstack
@@ -170,7 +192,7 @@ volumes:
   # webservices-component-end bookstack
 EOF_COMPOSE_MARKER
 catalog_temp="$(mktemp)"
-jq '.components.core.composeFiles += ["component-marker-test.yml"]' \
+jq '.components.core.runtimeFiles += ["component-marker-test.yml"]' \
   "$bundle_root/stack.config/components.json" > "$catalog_temp"
 mv "$catalog_temp" "$bundle_root/stack.config/components.json"
 
@@ -218,9 +240,9 @@ component_selection_write_metadata \
   "$bundle_root/stack.config/components.json" \
   "$site_root/components.lock.json"
 
-build_runtime_contract "$bundle_root" "$bundle_root/runtime-contract.yml" "$site_root/manifest.json"
-assert_contains "$bundle_root/runtime-contract.yml" 'component_marker_always:' "always-on compose marker test volume"
-assert_not_contains "$bundle_root/runtime-contract.yml" 'component_marker_bookstack:' "disabled compose marker test volume"
+build_runtime_model "$bundle_root" "$bundle_root/runtime-model.yml" "$site_root/manifest.json"
+assert_contains "$bundle_root/runtime-model.yml" 'component_marker_always:' "always-on runtime marker test volume"
+assert_not_contains "$bundle_root/runtime-model.yml" 'component_marker_bookstack:' "disabled runtime marker test volume"
 
 PATH="$fake_bin:$PATH" "$ROOT_DIR/scripts/deploy/render-runtime.sh" \
   --bundle-root "$bundle_root" \
@@ -231,14 +253,14 @@ PATH="$fake_bin:$PATH" "$ROOT_DIR/scripts/deploy/render-runtime.sh" \
 
 caddy_file="$tmp_root/bundle/runtime/configs/caddy/Caddyfile"
 keycloak_configure="$tmp_root/bundle/runtime/configs/keycloak/configure-runtime.sh"
-runtime_contracts="$tmp_root/bundle/runtime/configs/service-contracts.json"
+runtime_models="$tmp_root/bundle/runtime/configs/service-contracts.json"
 
 assert_contains "$caddy_file" 'reverse_proxy keycloak:8080' "core Keycloak route"
 assert_contains "$caddy_file" 'reverse_proxy onboarding:8080' "core onboarding route"
 assert_contains "$caddy_file" 'webservices core stack' "core apex fallback"
-if [ -f "$runtime_contracts" ]; then
-  jq -e '.components.core and (.components | has("bookstack") | not)' "$runtime_contracts" >/dev/null
-  assert_not_private_mode "$runtime_contracts" "filtered runtime service contracts"
+if [ -f "$runtime_models" ]; then
+  jq -e '.components.core and (.components | has("bookstack") | not)' "$runtime_models" >/dev/null
+  assert_not_private_mode "$runtime_models" "filtered runtime service contracts"
 fi
 
 assert_not_contains "$caddy_file" 'reverse_proxy (vaultwarden|grafana|portal:8080|bookstack|matrix-authentication-service|mastodon|jupyterhub|homeassistant|search-service|kopia|progression)' "disabled app Caddy upstream"
@@ -259,9 +281,9 @@ component_selection_write_metadata \
   "$bundle_root/stack.config/components.json" \
   "$site_root/components.lock.json"
 
-build_runtime_contract "$bundle_root" "$bundle_root/runtime-contract.full.yml" "$site_root/manifest.json"
-assert_contains "$bundle_root/runtime-contract.full.yml" 'component_marker_bookstack:' "enabled runtime contract marker test volume"
-cp "$bundle_root/runtime-contract.full.yml" "$bundle_root/runtime-contract.yml"
+build_runtime_model "$bundle_root" "$bundle_root/runtime-model.full.yml" "$site_root/manifest.json"
+assert_contains "$bundle_root/runtime-model.full.yml" 'component_marker_bookstack:' "enabled runtime model marker test volume"
+cp "$bundle_root/runtime-model.full.yml" "$bundle_root/runtime-model.yml"
 
 if [ -f "$bundle_root/stack.systemd/graph.json" ]; then
   "$ROOT_DIR/scripts/deploy/render-systemd-user.sh" \
@@ -286,9 +308,9 @@ assert_contains "$caddy_file" 'reverse_proxy vaultwarden:80' "full Vaultwarden r
 assert_contains "$caddy_file" 'reverse_proxy portal:3000' "full Portal route"
 assert_contains "$caddy_file" 'redir https://portal' "full Homepage compatibility redirect"
 assert_contains "$keycloak_configure" 'ensure_confidential_client "vaultwarden"' "full Vaultwarden Keycloak client"
-if [ -f "$runtime_contracts" ]; then
-  jq -e '.components.vaultwarden and (.components | has("progression") | not) and (.components | has("huly") | not)' "$runtime_contracts" >/dev/null
-  assert_not_private_mode "$runtime_contracts" "filtered runtime service contracts"
+if [ -f "$runtime_models" ]; then
+  jq -e '.components.vaultwarden and (.components | has("progression") | not) and (.components | has("huly") | not)' "$runtime_models" >/dev/null
+  assert_not_private_mode "$runtime_models" "filtered runtime service contracts"
 fi
 assert_not_contains "$caddy_file" 'webservices-component-(start|end)' "component marker"
 validate_caddy_file "$caddy_file"

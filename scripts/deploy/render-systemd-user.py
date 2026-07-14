@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Render systemd user units and runtime-contract shards for a built webservices bundle.
+"""Render systemd user units and runtime-model shards for a built webservices bundle.
 
 Inputs:
-- a merged compatibility runtime contract config
+- a merged compatibility runtime model config
 - stack.systemd/graph.json
 - the local deploy root and bundle root paths selected by the build
 
 Outputs:
 - systemd user service/target units
-- per-lifecycle-domain runtime-contract JSON shards
+- per-lifecycle-domain runtime-model JSON shards
 - shared container network/volume metadata for deploy-time reconciliation
 
 The graph separates platform services into installable targets and lifecycle
@@ -20,7 +20,7 @@ Security model:
 - unit names, service names, target references, and generated file names are
   validated before use
 - generated files are written only under the selected output directories
-- build-only runtime contract fields are stripped from deploy-time shards
+- build-only runtime model fields are stripped from deploy-time shards
 """
 
 import argparse
@@ -643,10 +643,10 @@ def render_path_contract_condition(contract: PathContract, runtime_env_file: str
     return f"ExecCondition=/usr/bin/test {test_flag} {contract.path}"
 
 
-def render_preflight_lines(runtime_env_file: str, runtime_contract_file: str, project_directory: str, path_contracts: List[PathContract]) -> Tuple[List[str], List[str]]:
+def render_preflight_lines(runtime_env_file: str, runtime_model_file: str, project_directory: str, path_contracts: List[PathContract]) -> Tuple[List[str], List[str]]:
     unit_lines = [
         f"ConditionPathExists={runtime_env_file}",
-        f"ConditionPathExists={runtime_contract_file}",
+        f"ConditionPathExists={runtime_model_file}",
         f"ConditionPathExists={project_directory}",
         f"RequiresMountsFor={project_directory} {project_directory}/build {project_directory}/runtime",
     ]
@@ -740,13 +740,13 @@ def render_service_unit(description: str, exec_start: str, exec_stop: str, exec_
     return "\n".join(lines) + "\n"
 
 
-def render_healthy_unit(description: str, exec_start: str, primary_unit: str, runtime_env_file: str, runtime_contract_file: str, project_directory: str, service_preflight_lines: List[str], on_failure_unit: str) -> str:
+def render_healthy_unit(description: str, exec_start: str, primary_unit: str, runtime_env_file: str, runtime_model_file: str, project_directory: str, service_preflight_lines: List[str], on_failure_unit: str) -> str:
     lines = [
         "[Unit]",
         f"Description={description}",
         f"OnFailure={on_failure_unit}",
         f"ConditionPathExists={runtime_env_file}",
-        f"ConditionPathExists={runtime_contract_file}",
+        f"ConditionPathExists={runtime_model_file}",
         f"ConditionPathExists={project_directory}",
         f"RequiresMountsFor={project_directory} {project_directory}/build {project_directory}/runtime",
         f"Requires={primary_unit}",
@@ -1067,7 +1067,7 @@ def main() -> int:
         project = args.runtime_project_name
         diagnostics_on_failure = diagnostics_unit.replace("@.service", "@%n.service")
         common_args = [
-            "--runtime-contract-file",
+            "--runtime-model-file",
             runtime_shard_path,
             "--env-file",
             args.runtime_env_file_template,
@@ -1087,7 +1087,7 @@ def main() -> int:
                 shell_join([
                     args.runtime_helper,
                     "job-run",
-                    "--runtime-contract-file",
+                    "--runtime-model-file",
                     runtime_shard_path,
                     "--env-file",
                     args.runtime_env_file_template,

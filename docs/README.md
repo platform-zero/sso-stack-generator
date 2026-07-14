@@ -29,7 +29,7 @@ Site config owns:
 - selected components for a site
 - deployment target choices and site-specific operating notes
 
-## Build And Runtime Contract
+## Build And Runtime Model
 
 `./build.sh --manifest <manifest.json>` runs locally. It resolves the site's
 pinned module manifest, merges component catalogs, runs source checks, and
@@ -68,7 +68,7 @@ The generator resolves that manifest, checks each module's metadata against
 module component catalogs with the base catalog.
 
 Allowed module contribution paths are intentionally narrow: `global.settings/`,
-`runtime.contract/`, `stack.config/`, `stack.containers/`, `stack.kotlin/`,
+`runtime.overlays/`, `stack.config/`, `stack.containers/`, `stack.kotlin/`,
 `stack.js/`, `stack.systemd/`, `scripts/lib/`, `scripts/modules/`, and
 `docs/modules/`. A module that replaces a generator file must declare that file
 in its `overrides` list.

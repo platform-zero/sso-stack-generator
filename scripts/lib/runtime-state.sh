@@ -59,10 +59,10 @@ run_contract_from_bundle() {
   deploy_root="$(cd "$bundle_root/.." && pwd -P)"
   (
     cd "$deploy_root"
-    COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-webservices}" container_contract \
+    RUNTIME_PROJECT_NAME="${RUNTIME_PROJECT_NAME:-webservices}" container_contract \
       --project-directory "$deploy_root" \
       --env-file "$runtime_env_file" \
-      -f "$bundle_root/runtime-contract.yml" \
+      -f "$bundle_root/runtime-model.yml" \
       "$@"
   )
 }

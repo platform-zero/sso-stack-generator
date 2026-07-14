@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SOURCE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-ROOT_DIR="${WEBSERVICES_CONTRACT_ROOT:-$SOURCE_ROOT}"
+ROOT_DIR="${WEBSERVICES_OVERLAY_ROOT:-$SOURCE_ROOT}"
 if [ "$ROOT_DIR" = "$SOURCE_ROOT" ] && [ ! -f "$ROOT_DIR/systemd-user/webservices-host-autoheal.service" ] && [ -f "$SOURCE_ROOT/dist/build/systemd-user/webservices-host-autoheal.service" ]; then
   ROOT_DIR="$SOURCE_ROOT/dist/build"
 elif [ "$ROOT_DIR" = "$SOURCE_ROOT" ] && [ ! -d "$ROOT_DIR/quadlet" ] && [ -d "$SOURCE_ROOT/dist/build/quadlet" ]; then
@@ -12,7 +12,7 @@ fi
 assert_absent() {
   local label="$1"
   shift
-  if grep -RIn "$@" "$ROOT_DIR/runtime-contract.yml" "$ROOT_DIR/runtime.contract" "$ROOT_DIR/stack.config" "$ROOT_DIR/stack.systemd" "$ROOT_DIR/global.settings" "$ROOT_DIR/systemd-user" >/tmp/webservices-host-lifecycle-static.grep 2>/dev/null; then
+  if grep -RIn "$@" "$ROOT_DIR/runtime-model.yml" "$ROOT_DIR/runtime.overlays" "$ROOT_DIR/stack.config" "$ROOT_DIR/stack.systemd" "$ROOT_DIR/global.settings" "$ROOT_DIR/systemd-user" >/tmp/webservices-host-lifecycle-static.grep 2>/dev/null; then
     printf '[host-lifecycle-static-test] unexpected %s\n' "$label" >&2
     cat /tmp/webservices-host-lifecycle-static.grep >&2
     rm -f /tmp/webservices-host-lifecycle-static.grep

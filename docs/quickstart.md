@@ -21,7 +21,7 @@ Run a build with a site manifest:
 ```
 
 The generated bundle is written to `dist/`. Build reports, rendered systemd
-units, Quadlet output, compatibility runtime contracts, service contracts, and
+units, Quadlet output, compatibility runtime models, service contracts, and
 helper scripts are written under `dist/build/`.
 
 ## Deploy

@@ -6,7 +6,7 @@ BUNDLE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 DEPLOY_ROOT="$(cd "$BUNDLE_ROOT/.." && pwd -P)"
 # shellcheck source=scripts/lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
-RUNTIME_CONTRACT_FILE="$BUNDLE_ROOT/runtime-contract.yml"
+RUNTIME_MODEL_FILE="$BUNDLE_ROOT/runtime-model.yml"
 RUNTIME_CONFIG_JSON=""
 RUNTIME_ENV_FILE="$DEPLOY_ROOT/runtime/stack.env"
 OUTPUT_FILE=""
@@ -14,7 +14,7 @@ OUTPUT_FILE=""
 usage() {
   cat <<'EOF_USAGE'
 Usage:
-  ./scripts/mount-diagnostics.sh [--bundle-root <path>] [--runtime-contract-file <path>] [--runtime-config-json <path>] [--runtime-env-file <path>] [--output <path>]
+  ./scripts/mount-diagnostics.sh [--bundle-root <path>] [--runtime-model-file <path>] [--runtime-config-json <path>] [--runtime-env-file <path>] [--output <path>]
 
 Writes a JSON report describing container volume/bind mount sources, targets,
 realpaths, devices, duplicate targets, and overlapping source/target paths.
@@ -27,12 +27,12 @@ while [ "$#" -gt 0 ]; do
     --bundle-root)
       BUNDLE_ROOT="$2"
       DEPLOY_ROOT="$(cd "$BUNDLE_ROOT/.." && pwd -P)"
-      RUNTIME_CONTRACT_FILE="$BUNDLE_ROOT/runtime-contract.yml"
+      RUNTIME_MODEL_FILE="$BUNDLE_ROOT/runtime-model.yml"
       RUNTIME_ENV_FILE="$DEPLOY_ROOT/runtime/stack.env"
       shift
       ;;
-    --runtime-contract-file)
-      RUNTIME_CONTRACT_FILE="$2"
+    --runtime-model-file)
+      RUNTIME_MODEL_FILE="$2"
       shift
       ;;
     --runtime-config-json)
@@ -73,8 +73,8 @@ trap cleanup EXIT
 
 if [ -z "$RUNTIME_CONFIG_JSON" ]; then
   require_cmd jq
-  [ -f "$RUNTIME_CONTRACT_FILE" ] || {
-    printf '[mount-diagnostics] ERROR: missing runtime contract file: %s\n' "$RUNTIME_CONTRACT_FILE" >&2
+  [ -f "$RUNTIME_MODEL_FILE" ] || {
+    printf '[mount-diagnostics] ERROR: missing runtime model file: %s\n' "$RUNTIME_MODEL_FILE" >&2
     exit 1
   }
   temp_json="$(mktemp)"
@@ -82,12 +82,12 @@ if [ -z "$RUNTIME_CONFIG_JSON" ]; then
     container_contract \
       --project-directory "$DEPLOY_ROOT" \
       --env-file "$RUNTIME_ENV_FILE" \
-      -f "$RUNTIME_CONTRACT_FILE" \
+      -f "$RUNTIME_MODEL_FILE" \
       config --format json --no-interpolate > "$temp_json"
   else
     container_contract \
       --project-directory "$DEPLOY_ROOT" \
-      -f "$RUNTIME_CONTRACT_FILE" \
+      -f "$RUNTIME_MODEL_FILE" \
       config --format json --no-interpolate > "$temp_json"
   fi
   RUNTIME_CONFIG_JSON="$temp_json"

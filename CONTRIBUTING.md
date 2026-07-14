@@ -48,7 +48,7 @@ ssh "$TARGET_HOST" 'cd ~/webservices && ./verify.sh'
 
 Edit source:
 
-- `runtime.contract/`
+- `runtime.overlays/`
 - `stack.config/`
 - `stack.containers/`
 - `stack.systemd/`

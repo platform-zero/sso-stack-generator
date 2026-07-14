@@ -7,11 +7,11 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/common.sh"
 usage() {
   cat <<'EOF_USAGE'
 Usage:
-  systemd-runtime-unit.sh service-start --runtime-contract-file <path> --env-file <path> --project-directory <path> --project-name <name> --unit-name <name> [--notify-bin <path>]
-  systemd-runtime-unit.sh service-stop --runtime-contract-file <path> --env-file <path> --project-directory <path> --project-name <name> --unit-name <name>
-  systemd-runtime-unit.sh service-reload --runtime-contract-file <path> --env-file <path> --project-directory <path> --project-name <name> --unit-name <name>
-  systemd-runtime-unit.sh service-wait-healthy --runtime-contract-file <path> --env-file <path> --project-directory <path> --project-name <name> --unit-name <name>
-  systemd-runtime-unit.sh job-run --runtime-contract-file <path> --env-file <path> --project-directory <path> --service-name <name> --project-name <name>
+  systemd-runtime-unit.sh service-start --runtime-model-file <path> --env-file <path> --project-directory <path> --project-name <name> --unit-name <name> [--notify-bin <path>]
+  systemd-runtime-unit.sh service-stop --runtime-model-file <path> --env-file <path> --project-directory <path> --project-name <name> --unit-name <name>
+  systemd-runtime-unit.sh service-reload --runtime-model-file <path> --env-file <path> --project-directory <path> --project-name <name> --unit-name <name>
+  systemd-runtime-unit.sh service-wait-healthy --runtime-model-file <path> --env-file <path> --project-directory <path> --project-name <name> --unit-name <name>
+  systemd-runtime-unit.sh job-run --runtime-model-file <path> --env-file <path> --project-directory <path> --service-name <name> --project-name <name>
 EOF_USAGE
 }
 
@@ -19,7 +19,7 @@ EOF_USAGE
 command_name="$1"
 shift
 
-RUNTIME_CONTRACT_FILE=""
+RUNTIME_MODEL_FILE=""
 ENV_FILE=""
 PROJECT_DIRECTORY=""
 SERVICE_NAME=""
@@ -33,8 +33,8 @@ PREHEALTH_TRANSIENT_GRACE_SECONDS="${PREHEALTH_TRANSIENT_GRACE_SECONDS:-120}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --runtime-contract-file)
-      RUNTIME_CONTRACT_FILE="$2"
+    --runtime-model-file)
+      RUNTIME_MODEL_FILE="$2"
       shift
       ;;
     --env-file)
@@ -72,8 +72,8 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-[ -n "$RUNTIME_CONTRACT_FILE" ] || die "--runtime-contract-file is required"
-[ -f "$RUNTIME_CONTRACT_FILE" ] || die "missing runtime contract file: $RUNTIME_CONTRACT_FILE"
+[ -n "$RUNTIME_MODEL_FILE" ] || die "--runtime-model-file is required"
+[ -f "$RUNTIME_MODEL_FILE" ] || die "missing runtime model file: $RUNTIME_MODEL_FILE"
 [ -n "$ENV_FILE" ] || die "--env-file is required"
 [ -f "$ENV_FILE" ] || die "missing env file: $ENV_FILE"
 [ -n "$PROJECT_DIRECTORY" ] || die "--project-directory is required"
@@ -81,18 +81,18 @@ done
 [ -n "$PROJECT_NAME" ] || die "--project-name is required"
 require_cmd jq
 
-runtime_contract() {
+runtime_model() {
   COMPOSE_IGNORE_ORPHANS="${COMPOSE_IGNORE_ORPHANS:-true}" \
   container_contract \
     --project-name "$PROJECT_NAME" \
     --project-directory "$PROJECT_DIRECTORY" \
     --env-file "$ENV_FILE" \
-    -f "$RUNTIME_CONTRACT_FILE" \
+    -f "$RUNTIME_MODEL_FILE" \
     "$@"
 }
 
-runtime_contract_config_json() {
-  runtime_contract config --format json
+runtime_model_config_json() {
+  runtime_model config --format json
 }
 
 stop_container() {
@@ -179,11 +179,11 @@ log_container_failure_details() {
 }
 
 stop_marker_path() {
-  printf '%s.stopping\n' "$RUNTIME_CONTRACT_FILE"
+  printf '%s.stopping\n' "$RUNTIME_MODEL_FILE"
 }
 
 reload_marker_path() {
-  printf '%s.reloading\n' "$RUNTIME_CONTRACT_FILE"
+  printf '%s.reloading\n' "$RUNTIME_MODEL_FILE"
 }
 
 clear_markers() {
@@ -272,9 +272,9 @@ service_start() {
   reload_marker="$(reload_marker_path)"
   clear_markers
 
-  printf '[webservices-unit] runtime contract up/build domain %s via %s\n' "$UNIT_NAME" "$RUNTIME_CONTRACT_FILE" >&2
-  runtime_contract up -d --build --force-recreate
-  config_json="$(runtime_contract_config_json)"
+  printf '[webservices-unit] runtime model up/build domain %s via %s\n' "$UNIT_NAME" "$RUNTIME_MODEL_FILE" >&2
+  runtime_model up -d --build --force-recreate
+  config_json="$(runtime_model_config_json)"
   health_seen_healthy=0
   has_any_healthcheck="$(service_has_any_healthcheck "$config_json")"
   prehealthy_grace_seconds="$PREHEALTH_TRANSIENT_GRACE_SECONDS"
@@ -364,7 +364,7 @@ service_start() {
 service_wait_healthy() {
   local config_json start_time now elapsed
   [ -n "$UNIT_NAME" ] || die "--unit-name is required for service-wait-healthy"
-  config_json="$(runtime_contract_config_json)"
+  config_json="$(runtime_model_config_json)"
   if [ "$(service_has_any_healthcheck "$config_json")" != "true" ]; then
     printf '[webservices-unit] %s has no healthchecks; healthy gate passes immediately\n' "$UNIT_NAME" >&2
     exit 0
@@ -392,8 +392,8 @@ service_stop() {
   local stop_marker config_json service_name container_name
   stop_marker="$(stop_marker_path)"
   touch "$stop_marker"
-  printf '[webservices-unit] runtime contract stop domain %s via %s\n' "$UNIT_NAME" "$RUNTIME_CONTRACT_FILE" >&2
-  config_json="$(runtime_contract_config_json)"
+  printf '[webservices-unit] runtime model stop domain %s via %s\n' "$UNIT_NAME" "$RUNTIME_MODEL_FILE" >&2
+  config_json="$(runtime_model_config_json)"
   while IFS= read -r service_name; do
     [ -n "$service_name" ] || continue
     container_name="$(container_name_for_service "$config_json" "$service_name")"
@@ -414,9 +414,9 @@ service_reload() {
   reload_marker="$(reload_marker_path)"
   touch "$reload_marker"
   trap 'rm -f "$reload_marker"' EXIT
-  printf '[webservices-unit] runtime contract rebuild/recreate domain %s via %s\n' "$UNIT_NAME" "$RUNTIME_CONTRACT_FILE" >&2
-  runtime_contract up -d --build --force-recreate
-  config_json="$(runtime_contract_config_json)"
+  printf '[webservices-unit] runtime model rebuild/recreate domain %s via %s\n' "$UNIT_NAME" "$RUNTIME_MODEL_FILE" >&2
+  runtime_model up -d --build --force-recreate
+  config_json="$(runtime_model_config_json)"
   start_time="$(date +%s)"
   while true; do
     if wait_until_running "$config_json"; then
@@ -445,10 +445,10 @@ service_reload() {
 job_run() {
   local rc
   [ -n "$SERVICE_NAME" ] || die "--service-name is required for job-run"
-  printf '[webservices-unit] runtime contract build/run oneshot %s via %s\n' "$SERVICE_NAME" "$RUNTIME_CONTRACT_FILE" >&2
-  runtime_contract rm -f -s "$SERVICE_NAME" >/dev/null 2>&1 || true
+  printf '[webservices-unit] runtime model build/run oneshot %s via %s\n' "$SERVICE_NAME" "$RUNTIME_MODEL_FILE" >&2
+  runtime_model rm -f -s "$SERVICE_NAME" >/dev/null 2>&1 || true
   set +e
-  runtime_contract up --build --force-recreate --abort-on-container-exit --exit-code-from "$SERVICE_NAME" "$SERVICE_NAME"
+  runtime_model up --build --force-recreate --abort-on-container-exit --exit-code-from "$SERVICE_NAME" "$SERVICE_NAME"
   rc=$?
   set -e
   exit "$rc"

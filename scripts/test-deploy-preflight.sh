@@ -15,7 +15,7 @@ assert_contains() {
 
 assert_contains 'validate_deploy_root'
 assert_contains 'WEBSERVICES_ALLOW_NONSTANDARD_DEPLOY_ROOT'
-assert_contains 'COMPOSE_PARALLEL_LIMIT:=2'
+assert_contains 'RUNTIME_PARALLEL_LIMIT:=2'
 assert_contains 'check_gpu_preflight'
 assert_contains 'nvidia-container-toolkit'
 assert_contains 'DEPLOY_GPU_SMOKE_TEST'

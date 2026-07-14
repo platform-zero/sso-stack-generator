@@ -363,7 +363,7 @@ reload_runtime_config_units() {
   local runtime_config_json changed_path service_output
 
   runtime_config_json="$(mktemp "${TMPDIR:-/tmp}/webservices-runtime-config.XXXXXX.json")"
-  runtime_contract_config_snapshot "$runtime_config_json"
+  runtime_model_config_snapshot "$runtime_config_json"
 
   if [ "$RUNTIME_CONFIG_CHANGE_STATUS" = "known" ]; then
     if [ "${#RUNTIME_CONFIG_CHANGED_PATHS[@]}" -eq 0 ]; then

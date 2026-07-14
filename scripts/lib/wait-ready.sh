@@ -55,14 +55,14 @@ done
 
 [ -n "$BUNDLE_DIR" ] || die "--bundle-dir is required"
 [ -n "$RUNTIME_ENV_FILE" ] || die "--runtime-env-file is required"
-[ -f "$BUNDLE_DIR/runtime-contract.yml" ] || die "missing runtime contract in $BUNDLE_DIR"
+[ -f "$BUNDLE_DIR/runtime-model.yml" ] || die "missing runtime model in $BUNDLE_DIR"
 [ -f "$RUNTIME_ENV_FILE" ] || die "missing runtime env file: $RUNTIME_ENV_FILE"
 [ -f "$BUNDLE_DIR/stack.systemd/graph.json" ] || die "missing systemd graph in $BUNDLE_DIR/stack.systemd/graph.json"
 require_cmd jq
 require_cmd systemctl
 
-runtime_contract_config_json() {
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
+runtime_model_config_json() {
+  RUNTIME_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_DIR" \
     "$RUNTIME_ENV_FILE" \
     config --format json
@@ -370,7 +370,7 @@ created_service_blockers() {
 }
 
 start_time="$(date +%s)"
-runtime_config="$(runtime_contract_config_json)"
+runtime_config="$(runtime_model_config_json)"
 graph_json="$(cat "$BUNDLE_DIR/stack.systemd/graph.json")"
 while true; do
   mapfile -t services < <(printf '%s\n' "$runtime_config" | jq -r '.services | keys[]')

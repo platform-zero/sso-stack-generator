@@ -4,11 +4,11 @@ trap 'status=$?; printf "[jellyfin-ffmpeg-websafe-test] failed at line %s: %s (e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
-CONTRACT_ROOT="${WEBSERVICES_CONTRACT_ROOT:-$ROOT_DIR}"
-if [ "$CONTRACT_ROOT" = "$ROOT_DIR" ] && [ ! -f "$CONTRACT_ROOT/stack.config/jellyfin/ffmpeg-websafe.sh" ] && [ -f "$ROOT_DIR/dist/build/build/stack.config/jellyfin/ffmpeg-websafe.sh" ]; then
-  CONTRACT_ROOT="$ROOT_DIR/dist/build/build"
-elif [ "$CONTRACT_ROOT" = "$ROOT_DIR" ] && [ ! -f "$CONTRACT_ROOT/stack.config/jellyfin/ffmpeg-websafe.sh" ] && [ -f "$ROOT_DIR/dist/build/stack.config/jellyfin/ffmpeg-websafe.sh" ]; then
-  CONTRACT_ROOT="$ROOT_DIR/dist/build"
+OVERLAY_ROOT="${WEBSERVICES_OVERLAY_ROOT:-$ROOT_DIR}"
+if [ "$OVERLAY_ROOT" = "$ROOT_DIR" ] && [ ! -f "$OVERLAY_ROOT/stack.config/jellyfin/ffmpeg-websafe.sh" ] && [ -f "$ROOT_DIR/dist/build/build/stack.config/jellyfin/ffmpeg-websafe.sh" ]; then
+  OVERLAY_ROOT="$ROOT_DIR/dist/build/build"
+elif [ "$OVERLAY_ROOT" = "$ROOT_DIR" ] && [ ! -f "$OVERLAY_ROOT/stack.config/jellyfin/ffmpeg-websafe.sh" ] && [ -f "$ROOT_DIR/dist/build/stack.config/jellyfin/ffmpeg-websafe.sh" ]; then
+  OVERLAY_ROOT="$ROOT_DIR/dist/build"
 fi
 
 tmp_dir="$(mktemp -d)"
@@ -32,7 +32,7 @@ JELLYFIN_FORCE_BROWSER_SAFE_H264=true \
 JELLYFIN_HLS_TIME=6 \
 JELLYFIN_TRANSCODE_H264_PROFILE=baseline \
 JELLYFIN_TRANSCODE_H264_LEVEL=31 \
-"$CONTRACT_ROOT/stack.config/jellyfin/ffmpeg-websafe.sh" \
+"$OVERLAY_ROOT/stack.config/jellyfin/ffmpeg-websafe.sh" \
   -i input.mkv \
   -codec:v:0 h264_nvenc \
   -profile:v:0 high \

@@ -64,7 +64,7 @@ is_allowed() {
 
 service_roots=(
   global.settings
-  runtime.contract
+  runtime.overlays
   stack.config
   stack.containers
   stack.kotlin

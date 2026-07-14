@@ -15,7 +15,7 @@ mkdir -p \
   "$fake_bin" \
   "$bundle_root/site" \
   "$bundle_root/stack.config/caddy" \
-  "$bundle_root/runtime.contract" \
+  "$bundle_root/runtime.overlays" \
   "$bundle_root/stack.containers/test-runner/playwright-tests/node_modules/pkg" \
   "$bundle_root/stack.containers/test-runner/playwright-tests/test-results/run" \
   "$bundle_root/stack.containers/test-runner/playwright-tests/playwright-report" \
@@ -40,10 +40,10 @@ EOF_JSON
 cat > "$bundle_root/systemd-user/infra/volumes.json" <<'EOF_JSON'
 []
 EOF_JSON
-cat > "$bundle_root/runtime-contract.yml" <<'EOF_YAML'
+cat > "$bundle_root/runtime-model.yml" <<'EOF_YAML'
 services: {}
 EOF_YAML
-cat > "$bundle_root/runtime.contract/caddy.yml" <<'EOF_YAML'
+cat > "$bundle_root/runtime.overlays/caddy.yml" <<'EOF_YAML'
 services:
   caddy:
     image: caddy:latest
@@ -118,7 +118,7 @@ if [ "$(deploy_state_changed_file_paths "$bundle_root" "$deploy_root")" != "stac
   exit 1
 fi
 
-cat > "$bundle_root/runtime-contract.yml" <<'EOF_YAML'
+cat > "$bundle_root/runtime-model.yml" <<'EOF_YAML'
 services:
   caddy:
     image: caddy:latest
@@ -127,7 +127,7 @@ cat > "$bundle_root/site/components.lock.json" <<'EOF_JSON'
 {"generatedAt":"changed timestamp","components":["core"]}
 EOF_JSON
 
-expected_changed_paths=$'runtime-contract.yml\nsite/components.lock.json\nstack.config/caddy/Caddyfile'
+expected_changed_paths=$'runtime-model.yml\nsite/components.lock.json\nstack.config/caddy/Caddyfile'
 if [ "$(deploy_state_changed_file_paths "$bundle_root" "$deploy_root")" != "$expected_changed_paths" ]; then
   printf '[deploy-state-test] aggregate and owned-path changes were not reported together\n' >&2
   deploy_state_changed_file_paths "$bundle_root" "$deploy_root" >&2 || true

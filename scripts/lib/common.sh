@@ -54,6 +54,10 @@ container_runtime() {
 
 container_contract() {
   container_cli >/dev/null
+  if [ -n "${RUNTIME_PROJECT_NAME:-}" ] && [ -z "${COMPOSE_PROJECT_NAME:-}" ]; then
+    COMPOSE_PROJECT_NAME="$RUNTIME_PROJECT_NAME" podman compose "$@"
+    return 0
+  fi
   podman compose "$@"
 }
 

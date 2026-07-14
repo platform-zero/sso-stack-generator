@@ -10,7 +10,7 @@ from pathlib import Path
 
 ALLOWED_PREFIXES = (
     "global.settings/",
-    "runtime.contract/",
+    "runtime.overlays/",
     "stack.config/",
     "stack.containers/",
     "stack.kotlin/",

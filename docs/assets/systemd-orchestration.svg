@@ -12,7 +12,7 @@
     <rect x="530" y="390" width="180" height="75" rx="8"/>
   </g>
   <g fill="#263447" font-family="Arial, sans-serif" text-anchor="middle">
-    <text x="200" y="270" font-size="21">core compose</text>
+    <text x="200" y="270" font-size="21">core runtime overlay</text>
     <text x="200" y="298" font-size="16">network and identity</text>
     <text x="480" y="270" font-size="21">service shards</text>
     <text x="480" y="298" font-size="16">apps and workers</text>

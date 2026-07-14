@@ -70,9 +70,9 @@ def load_env_file(path: Path) -> Dict[str, str]:
     return values
 
 
-def runtime_contract_config(bundle_root: Path, env_file: Path, project_name: str) -> dict:
+def runtime_model_config(bundle_root: Path, env_file: Path, project_name: str) -> dict:
     env = os.environ.copy()
-    env["COMPOSE_PROJECT_NAME"] = project_name
+    env["RUNTIME_PROJECT_NAME"] = project_name
     output = subprocess.check_output(
         [
             "podman",
@@ -82,7 +82,7 @@ def runtime_contract_config(bundle_root: Path, env_file: Path, project_name: str
             "--env-file",
             str(env_file),
             "-f",
-            str(bundle_root / "runtime-contract.yml"),
+            str(bundle_root / "runtime-model.yml"),
             "config",
             "--format",
             "json",
@@ -150,7 +150,7 @@ def container_name_for(service: str, config: dict) -> str:
 
 
 def runtime_service_names(bundle_root: Path, env_file: Path, project_name: str) -> List[str]:
-    config = runtime_contract_config(bundle_root, env_file, project_name)
+    config = runtime_model_config(bundle_root, env_file, project_name)
     return sorted((config.get("services") or {}).keys())
 
 
@@ -243,7 +243,7 @@ def classify_bind(source: str, deploy_root: Path, env_values: Dict[str, str]) ->
 def storage_report(bundle_root: Path, env_file: Path, output: Path, project_name: str) -> int:
     env_values = load_env_file(env_file)
     deploy_root = bundle_root.parent.resolve()
-    config = runtime_contract_config(bundle_root, env_file, project_name)
+    config = runtime_model_config(bundle_root, env_file, project_name)
     volume_infra = load_json(bundle_root / "systemd-user" / "infra" / "volumes.json")
     binds = []
     findings = []
@@ -300,7 +300,7 @@ def storage_report(bundle_root: Path, env_file: Path, output: Path, project_name
 
 def module_report(bundle_root: Path, env_file: Path, output: Path, project_name: str, strict: bool) -> int:
     env_values = load_env_file(env_file)
-    config = runtime_contract_config(bundle_root, env_file, project_name)
+    config = runtime_model_config(bundle_root, env_file, project_name)
     graph = load_json(bundle_root / "stack.systemd" / "graph.json")
     excluded = set(graph.get("excludedServices") or [])
     on_demand = set(graph.get("onDemandServices") or [])
@@ -360,7 +360,7 @@ def cleanup_optional_orphans(bundle_root: Path, env_file: Path, project_name: st
     if optional_runtime_configured(env_values):
         print("[webservices-audit] optional runtime identity configured; no optional orphan cleanup needed", file=sys.stderr)
         return 0
-    config = runtime_contract_config(bundle_root, env_file, project_name)
+    config = runtime_model_config(bundle_root, env_file, project_name)
     removed = []
     for service in optional_services(bundle_root):
         container_name = container_name_for(service, config)

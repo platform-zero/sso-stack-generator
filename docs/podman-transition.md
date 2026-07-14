@@ -1,7 +1,7 @@
 # Podman transition
 
 The runtime source of truth is each selected module's `stack.runtime.yaml` plus
-the site's flat `manifest.json`. Runtime contract files remain import/reference inputs;
+the site's flat `manifest.json`. Runtime model files remain import/reference inputs;
 they are not the canonical runtime model.
 
 ## Integration ownership
@@ -29,7 +29,7 @@ bundles or socket/controller modules.
 ./scripts/test-runtime-generator.sh
 ```
 
-`import-compose --module DIR` converts the supported Compose subset into a
+`import-runtime-overlays --module DIR` converts the supported runtime overlay subset into a
 module runtime file. Unsupported behavior must be represented explicitly in the
 runtime model rather than hidden in a renderer. The active deployment path is
 `--backend podman`; compatibility bundles are transition-only and should

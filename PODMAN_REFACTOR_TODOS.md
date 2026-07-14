@@ -2,9 +2,9 @@
 
 ## Phase 0 — Split integration concerns (priority 1)
 - [x] Extract caddy ownership from `latium-integrations-stack-module`.
-  - Keep only Caddy compose + config in a dedicated caddy source (module or site-config artifact).
+  - Keep only Caddy runtime overlay + config in a dedicated caddy source (module or site-config artifact).
   - Remove caddy files from integration glue and update lock references accordingly.
-  - Acceptance: generated bundle still emits `runtime.contract/caddy.yml` and `stack.config/caddy/Caddyfile` with no functional change.
+  - Acceptance: generated bundle still emits `runtime.overlays/caddy.yml` and `stack.config/caddy/Caddyfile` with no functional change.
 
 - [x] Unbundle `latium-integrations-stack-module` responsibilities.
   - The committed Podman manifest excludes the integration repository and uses the standalone Caddy module.
@@ -20,7 +20,7 @@
 - [x] Remove nested component composition from component selection model.
   - Replace transitive dependency expansion (`components.*.dependencies`) with explicit resolved component sets per profile.
   - Keep `components` as a flat include list (or equivalent manifest) with no nested dependency chains for runtime selection.
-  - Acceptance: component selection output is deterministic and directly lists all included modules/runtime contract files without graph indirection.
+  - Acceptance: component selection output is deterministic and directly lists all included modules/runtime model files without graph indirection.
 
 ## Phase 1 — Runtime backend migration
 - [x] Add runtime abstraction in generator.
@@ -52,7 +52,7 @@
 
 ## Phase 3 — Migration and rollout
 - [x] Create dual-mode dry-run validation.
-  - Validate compose-mode output and podman-mode output from same model/commit.
+  - Validate runtime-model mode output and podman mode output from same model/commit.
   - Acceptance: parity checks on services, env keys, volume names, network names, and ingress routes.
 
 - [x] Repair rootful Podman state attachment before rootless split.

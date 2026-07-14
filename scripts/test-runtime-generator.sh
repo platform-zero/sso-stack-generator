@@ -42,9 +42,9 @@ if ! rg -Fq 'search.{$DOMAIN}' "$WORK_DIR/podman-a/runtime/configs/caddy/Caddyfi
 fi
 
 jq -r '.services | keys[]' "$WORK_DIR/podman-a/stack.ir.json" | sort > "$WORK_DIR/ir-services"
-container_contract -f "$WORK_DIR/podman-a/runtime-contract.yml" config --no-interpolate --services | sort > "$WORK_DIR/runtime-contract-services"
-cmp "$WORK_DIR/ir-services" "$WORK_DIR/runtime-contract-services"
-container_contract -f "$WORK_DIR/podman-a/runtime-contract.yml" config --no-interpolate --quiet
+container_contract -f "$WORK_DIR/podman-a/runtime-model.yml" config --no-interpolate --services | sort > "$WORK_DIR/runtime-model-services"
+cmp "$WORK_DIR/ir-services" "$WORK_DIR/runtime-model-services"
+container_contract -f "$WORK_DIR/podman-a/runtime-model.yml" config --no-interpolate --quiet
 
 if rg -n 'container-socket|container-controller|container-health-exporter|cadvisor|watchtower|autoheal|dozzle' \
   "$WORK_DIR/podman-a/quadlet/rootful" "$WORK_DIR/podman-a/quadlet/rootless"; then

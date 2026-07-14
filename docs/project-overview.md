@@ -3,7 +3,7 @@
 The SSO stack generator builds a reproducible self-hosted service bundle around
 a shared identity plane, reverse proxy, service modules, and deployment
 orchestration. The public generator owns generic stack assembly logic and
-runtime contracts. Site-specific values, encrypted secrets, and private module
+runtime models. Site-specific values, encrypted secrets, and private module
 choices belong outside this repository.
 
 ## Core Responsibilities
@@ -28,7 +28,7 @@ repository.
 
 ## Extension Model
 
-External modules can contribute Compose fragments, systemd units, stack config,
+External modules can contribute runtime overlays, systemd units, stack config,
 test-runner routes, seeded data, screenshots, and service contracts. The module
 lock records exact revisions so a generated site can be rebuilt and audited
 against the same source inputs.

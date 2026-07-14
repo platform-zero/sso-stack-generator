@@ -22,8 +22,8 @@ source "$SCRIPT_DIR/lib/systemd-user.sh"
 source "$SCRIPT_DIR/lib/components.sh"
 
 PROJECT_NAME="${PROJECT_NAME:-webservices}"
-: "${COMPOSE_PARALLEL_LIMIT:=2}"
-export COMPOSE_PARALLEL_LIMIT
+: "${RUNTIME_PARALLEL_LIMIT:=2}"
+export RUNTIME_PARALLEL_LIMIT
 EXPECTED_DEPLOY_ROOT="${WEBSERVICES_DEPLOY_ROOT:-$HOME/webservices}"
 ALLOW_NONSTANDARD_DEPLOY_ROOT="${WEBSERVICES_ALLOW_NONSTANDARD_DEPLOY_ROOT:-0}"
 PREFLIGHT_ONLY=0
@@ -59,7 +59,7 @@ selected lifecycle units and the dependency units required by systemd. Use them
 for small app/config updates where reconciling the whole webservices.target is
 unnecessary.
 
-Component scopes select only the component's own Runtime contract files by default. Add
+Component scopes select only the component's own Runtime model files by default. Add
 --include-component-dependencies when you intentionally want dependency
 components in the scoped action.
 
@@ -120,7 +120,7 @@ fi
 
 site_manifest_path="$BUNDLE_ROOT/site/manifest.json"
 [ -f "$site_manifest_path" ] || die "missing bundled site manifest: $site_manifest_path"
-[ -f "$BUNDLE_ROOT/runtime-contract.yml" ] || die "missing bundle runtime contract: $BUNDLE_ROOT/runtime-contract.yml"
+[ -f "$BUNDLE_ROOT/runtime-model.yml" ] || die "missing bundle runtime model: $BUNDLE_ROOT/runtime-model.yml"
 [ -d "$BUNDLE_ROOT/systemd-user" ] || die "missing pre-rendered systemd user units in $BUNDLE_ROOT/systemd-user (run build.sh first)"
 
 deploy_log() {
@@ -278,17 +278,17 @@ preflight() {
   require_cmd python3
   require_cmd sops
   require_cmd systemctl
-  container_contract version >/dev/null 2>&1 || die "runtime contract support is unavailable for $(container_cli)"
+  container_contract version >/dev/null 2>&1 || die "runtime model support is unavailable for $(container_cli)"
   validate_deploy_root
   resolve_site_manifest_file "$site_manifest_path" >/dev/null
   check_gpu_preflight
   ensure_runtime_links "$DEPLOY_ROOT" >/dev/null
   ensure_user_systemd_env
-  deploy_log "preflight ok (bundle=$BUNDLE_ROOT siteManifestPath=$site_manifest_path runtimeParallelLimit=$COMPOSE_PARALLEL_LIMIT)"
+  deploy_log "preflight ok (bundle=$BUNDLE_ROOT siteManifestPath=$site_manifest_path runtimeParallelLimit=$RUNTIME_PARALLEL_LIMIT)"
 }
 
 model_prep_services() {
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
+  RUNTIME_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
     "$DEPLOY_ROOT/runtime/stack.env" \
     config --format json | jq -r '
@@ -309,7 +309,7 @@ model_prep_services() {
 }
 
 built_image_services() {
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
+  RUNTIME_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
     "$DEPLOY_ROOT/runtime/stack.env" \
     config --format json | jq -r '
@@ -330,7 +330,7 @@ image_id_for_ref() {
 container_image_id_for_service() {
   local service_name="$1"
   local container_id
-  container_id="$(COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
+  container_id="$(RUNTIME_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
     "$DEPLOY_ROOT/runtime/stack.env" \
     ps -q "$service_name" 2>/dev/null | head -n 1)"
@@ -356,13 +356,13 @@ unit_for_runtime_service() {
 
 runtime_service_exists() {
   local service_name="$1"
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
+  RUNTIME_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
     "$DEPLOY_ROOT/runtime/stack.env" \
     config --format json | jq -e --arg service "$service_name" '.services[$service] != null' >/dev/null
 }
 
-component_runtime_contract_files() {
+component_runtime_model_files() {
   local component="$1"
   local catalog="$BUNDLE_ROOT/stack.config/components.json"
 
@@ -381,7 +381,7 @@ component_runtime_contract_files() {
       | $components
       | keys_unsorted[] as $component
       | select($selected | index($component) != null)
-      | $components[$component].composeFiles[]?
+      | $components[$component].runtimeFiles[]?
     ' "$catalog"
   else
     jq -r --arg requested "$component" '
@@ -389,18 +389,18 @@ component_runtime_contract_files() {
     | if $components[$requested] == null then
         error("unknown component: " + $requested)
       else
-        $components[$requested].composeFiles[]?
+        $components[$requested].runtimeFiles[]?
       end
     ' "$catalog"
   fi
 }
 
-services_from_runtime_contract_file() {
-  local contract_file="$1"
-  local contract_path="$BUNDLE_ROOT/runtime.contract/$contract_file"
+services_from_runtime_model_file() {
+  local overlay_file="$1"
+  local overlay_path="$BUNDLE_ROOT/runtime.overlays/$overlay_file"
 
-  [ -f "$contract_path" ] || die "component references missing runtime contract file: $contract_file"
-  container_contract -f "$contract_path" config --format json --no-interpolate | jq -r '.services | keys[]'
+  [ -f "$overlay_path" ] || die "component references missing runtime model file: $overlay_file"
+  container_contract -f "$overlay_path" config --format json --no-interpolate | jq -r '.services | keys[]'
 }
 
 append_unique() {
@@ -426,9 +426,9 @@ read_lines_into_array() {
   mapfile -t target_array <<< "$output"
 }
 
-runtime_contract_config_snapshot() {
+runtime_model_config_snapshot() {
   local output_file="$1"
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
+  RUNTIME_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
     "$DEPLOY_ROOT/runtime/stack.env" \
     config --format json > "$output_file"
@@ -449,7 +449,7 @@ path_is_deploy_state_only() {
   local path="$1"
 
   case "$path" in
-    runtime-contract.yml|site/components.lock.json|scripts/*|systemd-user/*.target|systemd-user/runtime-shards/*.stopping|runtime.contract/test-runners.yml|stack.config/test-runner/*|stack.containers/test-runner/*|stack.kotlin/test-runner/*)
+    runtime-model.yml|site/components.lock.json|scripts/*|systemd-user/*.target|systemd-user/runtime-shards/*.stopping|runtime.overlays/test-runners.yml|stack.config/test-runner/*|stack.containers/test-runner/*|stack.kotlin/test-runner/*)
       return 0
       ;;
   esac
@@ -505,13 +505,13 @@ services_for_runtime_config_path() {
 services_for_changed_bundle_path() {
   local path="$1"
   local runtime_config_json="$2"
-  local owner contract_file config_path output
+  local owner overlay_file config_path output
 
   case "$path" in
-    runtime.contract/*)
-      contract_file="${path#runtime.contract/}"
-      contract_file="${contract_file%%/*}"
-      services_from_runtime_contract_file "$contract_file"
+    runtime.overlays/*)
+      overlay_file="${path#runtime.overlays/}"
+      overlay_file="${overlay_file%%/*}"
+      services_from_runtime_model_file "$overlay_file"
       return 0
       ;;
     stack.containers/*|stack.kotlin/*|stack.js/*)
@@ -567,7 +567,7 @@ activate_auto_partial_deploy_if_safe() {
     fi
     if [ "$RUNTIME_CONFIG_CHANGE_STATUS" = "known" ] && [ "${#RUNTIME_CONFIG_CHANGED_PATHS[@]}" -gt 0 ]; then
       runtime_config_json="$(mktemp "${TMPDIR:-/tmp}/webservices-auto-scope-runtime.XXXXXX.json")"
-      runtime_contract_config_snapshot "$runtime_config_json"
+      runtime_model_config_snapshot "$runtime_config_json"
       for path in "${RUNTIME_CONFIG_CHANGED_PATHS[@]}"; do
         service_output="$(services_for_runtime_config_path "$path" "$runtime_config_json")"
         while IFS= read -r service_name; do
@@ -588,7 +588,7 @@ activate_auto_partial_deploy_if_safe() {
   fi
 
   runtime_config_json="$(mktemp "${TMPDIR:-/tmp}/webservices-auto-scope-runtime.XXXXXX.json")"
-  runtime_contract_config_snapshot "$runtime_config_json"
+  runtime_model_config_snapshot "$runtime_config_json"
 
   for path in "${changed_paths[@]}"; do
     [ -n "$path" ] || continue
@@ -662,8 +662,8 @@ activate_auto_partial_deploy_if_safe() {
 
 resolve_scoped_services() {
   local services=()
-  local component contract_file service_name contract_output service_output requested_unit unit_service_output
-  local contract_files=() runtime_services=()
+  local component overlay_file service_name contract_output service_output requested_unit unit_service_output
+  local overlay_files=() runtime_services=()
   local scoped_runtime_config_json="" unit_services=()
   local graph_file="$BUNDLE_ROOT/stack.systemd/graph.json"
   local unit_prefix
@@ -675,14 +675,14 @@ resolve_scoped_services() {
   done
 
   for component in "${SCOPED_COMPONENTS[@]}"; do
-    if ! contract_output="$(component_runtime_contract_files "$component")"; then
-      die "failed to resolve runtime contract files for selected component: $component"
+    if ! contract_output="$(component_runtime_model_files "$component")"; then
+      die "failed to resolve runtime model files for selected component: $component"
     fi
-    read_lines_into_array "$contract_output" contract_files
-    for contract_file in "${contract_files[@]}"; do
-      [ -n "$contract_file" ] || continue
-      if ! service_output="$(services_from_runtime_contract_file "$contract_file")"; then
-        die "failed to resolve services from component runtime contract file: $contract_file"
+    read_lines_into_array "$contract_output" overlay_files
+    for overlay_file in "${overlay_files[@]}"; do
+      [ -n "$overlay_file" ] || continue
+      if ! service_output="$(services_from_runtime_model_file "$overlay_file")"; then
+        die "failed to resolve services from component runtime model file: $overlay_file"
       fi
       read_lines_into_array "$service_output" runtime_services
       for service_name in "${runtime_services[@]}"; do
@@ -693,7 +693,7 @@ resolve_scoped_services() {
 
   if [ "${#SCOPED_UNITS[@]}" -gt 0 ]; then
     scoped_runtime_config_json="$(mktemp "${TMPDIR:-/tmp}/webservices-scoped-runtime.XXXXXX.json")"
-    COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
+    RUNTIME_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
       "$BUNDLE_ROOT" \
       "$DEPLOY_ROOT/runtime/stack.env" \
       config --format json > "$scoped_runtime_config_json"
@@ -767,7 +767,7 @@ build_scoped_service_images() {
   fi
 
   deploy_log "building selected runtime services: $(join_array_limited "$SYSTEMD_PROGRESS_MAX_ITEMS" "${services[@]}")"
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
+  RUNTIME_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
     "$DEPLOY_ROOT/runtime/stack.env" \
     build "${services[@]}"
@@ -909,7 +909,7 @@ run_model_prep_jobs() {
 
   for service in "${prep_services[@]}"; do
     deploy_log "preparing model assets with $service"
-    COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
+    RUNTIME_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
       "$BUNDLE_ROOT" \
       "$DEPLOY_ROOT/runtime/stack.env" \
       run --rm --build --no-deps "$service"
@@ -929,11 +929,11 @@ cleanup_excluded_service_containers() {
 
   for service in "${excluded[@]}"; do
     deploy_log "stopping excluded service container state for $service"
-    COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
+    RUNTIME_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
       "$BUNDLE_ROOT" \
       "$DEPLOY_ROOT/runtime/stack.env" \
       stop "$service" >/dev/null 2>&1 || true
-    COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
+    RUNTIME_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
       "$BUNDLE_ROOT" \
       "$DEPLOY_ROOT/runtime/stack.env" \
       rm -f -s "$service" >/dev/null 2>&1 || true
@@ -1003,11 +1003,11 @@ migrate_legacy_seafile_split_volume() {
 
   deploy_log "migrating legacy Seafile split volume $volume_name into $seafile_media_root"
   user_systemctl stop webservices-seafile.service >/dev/null 2>&1 || true
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
+  RUNTIME_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
     "$DEPLOY_ROOT/runtime/stack.env" \
     stop seafile >/dev/null 2>&1 || true
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
+  RUNTIME_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
     "$DEPLOY_ROOT/runtime/stack.env" \
     rm -f -s seafile >/dev/null 2>&1 || true
@@ -1114,7 +1114,7 @@ if [ "$PARTIAL_DEPLOY" = "1" ]; then
   build_scoped_service_images
 else
   deploy_log "building service images"
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
+  RUNTIME_PROJECT_NAME="$PROJECT_NAME" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
     "$DEPLOY_ROOT/runtime/stack.env" \
     build

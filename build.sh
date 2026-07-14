@@ -6,8 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$SCRIPT_DIR/scripts/lib/common.sh"
 # shellcheck source=scripts/lib/site-manifest.sh
 source "$SCRIPT_DIR/scripts/lib/site-manifest.sh"
-# shellcheck source=scripts/lib/runtime-contract.sh
-source "$SCRIPT_DIR/scripts/lib/runtime-contract.sh"
+# shellcheck source=scripts/lib/runtime-model.sh
+source "$SCRIPT_DIR/scripts/lib/runtime-model.sh"
 # shellcheck source=scripts/lib/components.sh
 source "$SCRIPT_DIR/scripts/lib/components.sh"
 # shellcheck source=scripts/lib/external-modules.sh
@@ -54,11 +54,11 @@ case "$BUILD_PROFILE" in
   *) die "unsupported build profile: $BUILD_PROFILE" ;;
 esac
 site_manifest_path="$(resolve_site_manifest_file "$SITE_MANIFEST_PATH")"
-if [ -z "${WEBSERVICES_CONTRACT_ROOT:-}" ] && [ ! -f "$SCRIPT_DIR/stack.config/components.json" ]; then
+if [ -z "${WEBSERVICES_OVERLAY_ROOT:-}" ] && [ ! -f "$SCRIPT_DIR/stack.config/components.json" ]; then
   manifest_bundle_root="$(cd "$(dirname "$site_manifest_path")/.." && pwd -P)"
   if [ -f "$manifest_bundle_root/stack.config/components.json" ]; then
-    export WEBSERVICES_CONTRACT_ROOT="$manifest_bundle_root"
-    log "using $WEBSERVICES_CONTRACT_ROOT for materialized contract checks"
+    export WEBSERVICES_OVERLAY_ROOT="$manifest_bundle_root"
+    log "using $WEBSERVICES_OVERLAY_ROOT for materialized contract checks"
   fi
 fi
 
@@ -75,23 +75,23 @@ mkdir -p "$DIST_DIR/build"
 tar -xf "$artifact_path" -C "$DIST_DIR/build"
 external_modules_overlay_into "$DIST_DIR/build"
 if [ -d "$DIST_DIR/build/stack.runtime.external" ]; then
-  runtime_contract_args=(
+  runtime_model_args=(
     --runtime-dir "$DIST_DIR/build/stack.runtime.external"
-    --output-dir "$DIST_DIR/build/runtime.contract"
+    --output-dir "$DIST_DIR/build/runtime.overlays"
   )
   if [ -f "$DIST_DIR/build/global.settings/volumes.yml" ]; then
-    runtime_contract_args+=(
+    runtime_model_args+=(
       --global-volumes "$DIST_DIR/build/global.settings/volumes.yml"
     )
   fi
-  "$SCRIPT_DIR/generate.sh" render-runtime-contract \
-    "${runtime_contract_args[@]}"
+  "$SCRIPT_DIR/generate.sh" render-runtime-model \
+    "${runtime_model_args[@]}"
 fi
-if [ ! -f "$DIST_DIR/build/global.settings/volumes.yml" ] && [ -f "$DIST_DIR/build/runtime.contract/stack-foundation.yml" ]; then
+if [ ! -f "$DIST_DIR/build/global.settings/volumes.yml" ] && [ -f "$DIST_DIR/build/runtime.overlays/stack-foundation.yml" ]; then
   mkdir -p "$DIST_DIR/build/global.settings"
   {
     printf 'volumes:\n'
-    extract_top_level_section "$DIST_DIR/build/runtime.contract/stack-foundation.yml" 'volumes:'
+    extract_top_level_section "$DIST_DIR/build/runtime.overlays/stack-foundation.yml" 'volumes:'
   } > "$DIST_DIR/build/global.settings/volumes.yml"
 fi
 cp "$OUT_DIR/latest-build.json" "$DIST_DIR/build/build-info.json"
@@ -120,11 +120,11 @@ component_selection_write_metadata "$site_manifest_path" "$component_catalog" "$
   --lock "$DIST_DIR/build/site/components.lock.json" \
   --output-dir "$DIST_DIR/build/reports"
 log "selected components: $(jq -r '.components | join(", ")' "$DIST_DIR/build/site/components.lock.json")"
-build_runtime_contract "$DIST_DIR/build" "$DIST_DIR/build/runtime-contract.yml" "$site_manifest_path"
-rewrite_runtime_contract_paths "$DIST_DIR/build/runtime-contract.yml"
-rewrite_runtime_contract_paths "$DIST_DIR/build/runtime.contract/test-runners.yml"
-log "validating generated runtime-contract.yml"
-validate_runtime_contract "$DIST_DIR/build" "$DIST_DIR/build/runtime-contract.yml"
+build_runtime_model "$DIST_DIR/build" "$DIST_DIR/build/runtime-model.yml" "$site_manifest_path"
+rewrite_runtime_model_paths "$DIST_DIR/build/runtime-model.yml"
+rewrite_runtime_model_paths "$DIST_DIR/build/runtime.overlays/test-runners.yml"
+log "validating generated runtime-model.yml"
+validate_runtime_model "$DIST_DIR/build" "$DIST_DIR/build/runtime-model.yml"
 if [ ! -f "$DIST_DIR/build/stack.systemd/graph.json" ]; then
   mkdir -p "$DIST_DIR/build/stack.systemd"
   cat > "$DIST_DIR/build/stack.systemd/graph.json" <<'EOF_SYSTEMD_GRAPH'
@@ -133,9 +133,27 @@ if [ ! -f "$DIST_DIR/build/stack.systemd/graph.json" ]; then
   "defaultTarget": {
     "name": "webservices.target",
     "description": "Web Services",
-    "includeUnitsFromNonOnDemandDomains": true
+    "includeUnitsFromNonOnDemandDomains": true,
+    "wantsTargets": [
+      "webservices-core.target",
+      "webservices-apps.target",
+      "webservices-observability.target"
+    ]
   },
-  "auxiliaryTargets": [],
+  "auxiliaryTargets": [
+    {
+      "name": "webservices-core.target",
+      "description": "Web Services Core"
+    },
+    {
+      "name": "webservices-apps.target",
+      "description": "Web Services Apps"
+    },
+    {
+      "name": "webservices-observability.target",
+      "description": "Web Services Observability"
+    }
+  ],
   "lifecycleDomains": [],
   "excludedServices": [],
   "onDemandServices": [],

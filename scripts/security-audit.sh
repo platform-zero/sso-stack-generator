@@ -51,7 +51,7 @@ fi
 section "Mutable image tags"
 if have rg; then
   image_roots=()
-  for root in runtime.contract global.settings stack.config; do
+  for root in runtime.overlays global.settings stack.config; do
     [ -e "$root" ] && image_roots+=( "$root" )
   done
   if [ "${#image_roots[@]}" -gt 0 ]; then
@@ -71,7 +71,7 @@ fi
 section "High-risk container options"
 if have rg; then
   option_roots=()
-  for root in runtime.contract global.settings; do
+  for root in runtime.overlays global.settings; do
     [ -e "$root" ] && option_roots+=( "$root" )
   done
   if [ "${#option_roots[@]}" -gt 0 ]; then
@@ -84,16 +84,16 @@ fi
 section "Compose syntax"
 if have podman && podman compose version >/dev/null 2>&1; then
   compose_args=()
-  if [ -d runtime.contract ]; then
+  if [ -d runtime.overlays ]; then
     while IFS= read -r compose_file; do
       compose_args+=("-f" "$compose_file")
-    done < <(find runtime.contract -maxdepth 1 -type f -name '*.yml' | sort)
+    done < <(find runtime.overlays -maxdepth 1 -type f -name '*.yml' | sort)
   fi
   if [ "${#compose_args[@]}" -gt 0 ]; then
     container_contract "${compose_args[@]}" config --no-interpolate >/dev/null
-    printf '[runtime-contract] ok\n'
+    printf '[runtime-model] ok\n'
   else
-    printf '[skip] no runtime.contract files in this checkout\n'
+    printf '[skip] no runtime.overlays files in this checkout\n'
   fi
 else
   printf '[skip] podman compose is not available\n'
