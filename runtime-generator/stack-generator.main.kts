@@ -671,6 +671,13 @@ fun composeService(service: ObjectNode): ObjectNode {
         "ulimits" to "ulimits", "shmSize" to "shm_size", "stopGracePeriod" to "stop_grace_period",
         "userns" to "userns_mode", "groupAdd" to "group_add"
     ).forEach { (from, to) -> copyField(service, output, from, to) }
+    (output.get("volumes") as? ArrayNode)?.let { volumes ->
+        volumes.forEachIndexed { index, mount ->
+            if (mount.isTextual && mount.asText().startsWith("%t/")) {
+                volumes.set(index, nodes.textNode("\${XDG_RUNTIME_DIR}" + mount.asText().removePrefix("%t")))
+            }
+        }
+    }
     service.get("build")?.let { raw ->
         val build = raw.deepCopy<ObjectNode>()
         build.remove("containerfile")?.let { build.set<JsonNode>("dockerfile", it) }
