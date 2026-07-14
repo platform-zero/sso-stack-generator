@@ -70,6 +70,18 @@ jobs:
       - name: Run documentation checks
         run: ./scripts/test-docs.sh
 
+      - name: Run deploy preflight checks
+        run: ./scripts/test-deploy-preflight.sh
+
+      - name: Run deploy scope checks
+        run: ./scripts/test-deploy-scope.sh
+
+      - name: Run install bundle checks
+        run: ./scripts/test-install-bundle.sh
+
+      - name: Run stackctl user checks
+        run: ./scripts/test-stackctl-users.sh
+
   generator-tests:
     name: Generator script tests
     runs-on: ubuntu-24.04
@@ -88,3 +100,6 @@ jobs:
 
       - name: Run mount diagnostic checks
         run: ./scripts/test-mount-diagnostics.sh
+
+      - name: Run runtime generator checks
+        run: ./scripts/test-runtime-generator.sh

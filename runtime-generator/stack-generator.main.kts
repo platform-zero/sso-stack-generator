@@ -714,6 +714,37 @@ fun renderDocker(ir: ObjectNode, output: Path) {
     writeYaml(output.resolve("docker-compose.yml"), compose)
 }
 
+fun renderRuntimeComposeShard(runtimePath: Path, outputDir: Path) {
+    val runtime = readTree(runtimePath)
+    if (runtime.path("schemaVersion").asInt() != 1) fail("invalid runtime schema: $runtimePath")
+    val moduleId = runtime.path("module").asText().ifBlank { fail("runtime lacks module id: $runtimePath") }
+    val compose = obj()
+    val services = obj()
+    runtime.path("services").fieldsMap().forEach { (name, service) ->
+        services.set<ObjectNode>(name, composeService(service as ObjectNode))
+    }
+    compose.set<ObjectNode>("services", services)
+    val volumes = obj()
+    runtime.path("volumes").fieldsMap().forEach { (name, value) ->
+        val volume = obj()
+        value.path("hostPath").textOrNull()?.let {
+            volume.put("driver", "local")
+            volume.set<ObjectNode>("driver_opts", obj().put("type", "none").put("o", "bind").put("device", it))
+        }
+        volumes.set<ObjectNode>(name, volume)
+    }
+    if (volumes.size() > 0) compose.set<ObjectNode>("volumes", volumes)
+    outputDir.createDirectories()
+    writeYaml(outputDir.resolve("$moduleId.yml"), compose)
+}
+
+fun commandRenderRuntimeCompose(options: Map<String, String>) {
+    val runtimeDir = Path(required(options, "runtime-dir")).toAbsolutePath().normalize()
+    val outputDir = Path(required(options, "output-dir")).toAbsolutePath().normalize()
+    if (!runtimeDir.isDirectory()) return
+    runtimeDir.listDirectoryEntries("*.yaml").sorted().forEach { renderRuntimeComposeShard(it, outputDir) }
+}
+
 fun systemdQuote(value: String): String = "\"" + value
     .replace("%", "%%")
     .replace("$", "\$\$")
@@ -1099,5 +1130,6 @@ when (command) {
     "generate" -> commandGenerate(options)
     "import-compose" -> commandImport(options)
     "import-workspace" -> commandImportWorkspace(options)
-    else -> fail("unknown command '$command' (expected generate, import-compose, or import-workspace)")
+    "render-runtime-compose" -> commandRenderRuntimeCompose(options)
+    else -> fail("unknown command '$command' (expected generate, import-compose, import-workspace, or render-runtime-compose)")
 }

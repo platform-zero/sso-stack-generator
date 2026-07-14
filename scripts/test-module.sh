@@ -152,7 +152,6 @@ else:
 
 allowed_prefixes = (
     "global.settings/",
-    "stack.compose/",
     "stack.config/",
     "stack.containers/",
     "stack.kotlin/",

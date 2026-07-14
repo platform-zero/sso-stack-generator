@@ -13,7 +13,7 @@ trap cleanup EXIT
 
 workspace="$tmp_root/workspace"
 module_dir="$workspace/demo-stack-module"
-mkdir -p "$module_dir/stack.compose" "$module_dir/tests"
+mkdir -p "$module_dir/tests"
 
 schema_file="$ROOT_DIR/modules/stack.module.schema.json"
 jq -e '
@@ -29,11 +29,22 @@ jq -e '
   and (.properties.testAssets.items["$ref"] == "#/$defs/safeOverlayPath")
 ' "$schema_file" >/dev/null
 
-cat > "$module_dir/stack.compose/demo.yml" <<'EOF_COMPOSE'
+cat > "$module_dir/stack.runtime.yaml" <<'EOF_RUNTIME'
+---
+schemaVersion: 1
+module: "demo"
+target: "apps"
 services:
   demo:
-    image: caddy:2.11.3
-EOF_COMPOSE
+    image: "caddy:2.11.3"
+    containerName: "demo"
+    lifecycle: "daemon"
+    updatePolicy: "registry"
+    placement: "rootful"
+    restart: "unless-stopped"
+networks: {}
+volumes: {}
+EOF_RUNTIME
 cat > "$module_dir/stack.module.json" <<'EOF_MODULE'
 {
   "schemaVersion": 1,
@@ -45,25 +56,25 @@ cat > "$module_dir/stack.module.json" <<'EOF_MODULE'
   "runtimeDependencies": [],
   "contracts": ["demo-contract"],
   "smoke": "required",
-  "overlays": ["stack.compose/demo.yml"]
+  "overlays": ["stack.runtime.yaml"]
 }
 EOF_MODULE
 cat > "$module_dir/tests/validate.sh" <<'EOF_VALIDATE'
 #!/usr/bin/env bash
 set -euo pipefail
-test -f stack.compose/demo.yml
+test -f stack.runtime.yaml
 EOF_VALIDATE
 chmod +x "$module_dir/tests/validate.sh"
 cat > "$module_dir/tests/contract.sh" <<'EOF_CONTRACT'
 #!/usr/bin/env bash
 set -euo pipefail
-grep -Fq 'caddy:2.11.3' stack.compose/demo.yml
+grep -Fq 'caddy:2.11.3' stack.runtime.yaml
 EOF_CONTRACT
 chmod +x "$module_dir/tests/contract.sh"
 cat > "$module_dir/tests/smoke.sh" <<'EOF_SMOKE'
 #!/usr/bin/env bash
 set -euo pipefail
-test -f stack.compose/demo.yml
+test -f stack.runtime.yaml
 EOF_SMOKE
 chmod +x "$module_dir/tests/smoke.sh"
 
@@ -71,8 +82,8 @@ chmod +x "$module_dir/tests/smoke.sh"
 "$ROOT_DIR/scripts/test-module-group.sh" --all "$workspace" >/dev/null
 
 external_dir="$workspace/external-stack-module"
-mkdir -p "$external_dir/stack.compose" "$external_dir/tests"
-cp "$module_dir/stack.compose/demo.yml" "$external_dir/stack.compose/external.yml"
+mkdir -p "$external_dir/tests"
+cp "$module_dir/stack.runtime.yaml" "$external_dir/stack.runtime.yaml"
 cat > "$external_dir/stack.module.json" <<'EOF_EXTERNAL_MODULE'
 {
   "schemaVersion": 1,
@@ -85,16 +96,14 @@ cat > "$external_dir/stack.module.json" <<'EOF_EXTERNAL_MODULE'
   "contracts": [],
   "smoke": "external-only",
   "smokeUnsupportedReason": "requires deployed DNS and generated secrets",
-  "overlays": ["stack.compose/external.yml"]
+  "overlays": ["stack.runtime.yaml"]
 }
 EOF_EXTERNAL_MODULE
 "$ROOT_DIR/scripts/test-module.sh" --smoke "$external_dir" >/dev/null
 
 bad_dir="$workspace/bad-stack-module"
-mkdir -p "$bad_dir/stack.compose"
-cat > "$bad_dir/stack.compose/bad.yml" <<'EOF_BAD_COMPOSE'
-services: {}
-EOF_BAD_COMPOSE
+mkdir -p "$bad_dir"
+cp "$module_dir/stack.runtime.yaml" "$bad_dir/stack.runtime.yaml"
 cat > "$bad_dir/stack.module.json" <<'EOF_BAD_MODULE'
 {
   "schemaVersion": 1,
@@ -106,7 +115,7 @@ cat > "$bad_dir/stack.module.json" <<'EOF_BAD_MODULE'
   "contracts": [],
   "smoke": "unsupported",
   "smokeUnsupportedReason": "invalid overlay fixture is expected to fail before smoke",
-  "overlays": ["../stack.compose/bad.yml"]
+  "overlays": ["../stack.runtime.yaml"]
 }
 EOF_BAD_MODULE
 
@@ -123,8 +132,8 @@ fi
 grep -Eq 'not safe|not an allowed overlay' "$tmp_root/bad.log"
 
 missing_smoke_dir="$workspace/missing-smoke-stack-module"
-mkdir -p "$missing_smoke_dir/stack.compose"
-cp "$module_dir/stack.compose/demo.yml" "$missing_smoke_dir/stack.compose/missing-smoke.yml"
+mkdir -p "$missing_smoke_dir"
+cp "$module_dir/stack.runtime.yaml" "$missing_smoke_dir/stack.runtime.yaml"
 cat > "$missing_smoke_dir/stack.module.json" <<'EOF_MISSING_SMOKE'
 {
   "schemaVersion": 1,
@@ -136,7 +145,7 @@ cat > "$missing_smoke_dir/stack.module.json" <<'EOF_MISSING_SMOKE'
   "runtimeDependencies": [],
   "contracts": [],
   "smoke": "required",
-  "overlays": ["stack.compose/missing-smoke.yml"]
+  "overlays": ["stack.runtime.yaml"]
 }
 EOF_MISSING_SMOKE
 
@@ -153,8 +162,8 @@ fi
 grep -Fq 'smoke is required but tests/smoke.sh is missing' "$tmp_root/missing-smoke.log"
 
 bad_dep_dir="$workspace/bad-dep-stack-module"
-mkdir -p "$bad_dep_dir/stack.compose"
-cp "$module_dir/stack.compose/demo.yml" "$bad_dep_dir/stack.compose/bad-dep.yml"
+mkdir -p "$bad_dep_dir"
+cp "$module_dir/stack.runtime.yaml" "$bad_dep_dir/stack.runtime.yaml"
 cat > "$bad_dep_dir/stack.module.json" <<'EOF_BAD_DEP'
 {
   "schemaVersion": 1,
@@ -167,7 +176,7 @@ cat > "$bad_dep_dir/stack.module.json" <<'EOF_BAD_DEP'
   "contracts": [],
   "smoke": "external-only",
   "smokeUnsupportedReason": "requires deployed DNS and generated secrets",
-  "overlays": ["stack.compose/bad-dep.yml"]
+  "overlays": ["stack.runtime.yaml"]
 }
 EOF_BAD_DEP
 
