@@ -3,7 +3,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 BUNDLE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
-DEPLOY_ROOT="$(cd "$BUNDLE_ROOT/.." && pwd -P)"
+default_deploy_root() {
+  if [ -f "$BUNDLE_ROOT/runtime/stack.env" ]; then
+    printf '%s\n' "$BUNDLE_ROOT"
+  else
+    cd "$BUNDLE_ROOT/.." && pwd -P
+  fi
+}
+DEPLOY_ROOT="${DEPLOY_ROOT:-$(default_deploy_root)}"
 # shellcheck source=scripts/lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 # shellcheck source=scripts/lib/systemd-user.sh
