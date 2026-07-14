@@ -163,6 +163,11 @@ apply_loopback_rewrites
 
 [ -d "$ENV_DIR" ] || { printf 'runtime environment directory not found: %s\n' "$ENV_DIR" >&2; exit 1; }
 
+if find "$BUNDLE/runtime/configs" -type f -name '*.template' -print -quit 2>/dev/null | grep -q .; then
+  printf 'bundle runtime configs still contain template files; render the bundle before activation\n' >&2
+  exit 1
+fi
+
 while IFS= read -r template; do
   service="${template##*/}"
   service="${service%.env.template}"
