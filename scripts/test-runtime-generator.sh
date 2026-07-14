@@ -9,7 +9,7 @@ SOURCE_SITE="${SITE_MANIFEST:-$ROOT_DIR/../site-config/sites/latium/manifest.jso
 SITE="$WORK_DIR/manifest.json"
 SOURCE_SITE_DIR="$(cd "$(dirname "$SOURCE_SITE")" && pwd -P)"
 cp -a "$SOURCE_SITE_DIR/global.settings" "$WORK_DIR/global.settings"
-jq '.modules |= map(select(. != "latium-integrations"))' "$SOURCE_SITE" > "$SITE"
+cp "$SOURCE_SITE" "$SITE"
 
 generate() {
   "$ROOT_DIR/generate.sh" \

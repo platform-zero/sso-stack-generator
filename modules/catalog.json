@@ -238,11 +238,8 @@
       "name": "docker-proxy-stack-module",
       "kind": "stack-module",
       "moduleId": "docker-proxy",
-      "groups": [
-        "platform",
-        "dev-all"
-      ],
-      "lifecycle": "active"
+      "groups": [],
+      "lifecycle": "retired"
     },
     {
       "name": "autoheal-stack-module",
@@ -806,11 +803,8 @@
       "name": "latium-integrations-stack-module",
       "kind": "stack-module",
       "moduleId": "latium-integrations",
-      "groups": [
-        "site-integrations",
-        "dev-all"
-      ],
-      "lifecycle": "active"
+      "groups": [],
+      "lifecycle": "retired"
     },
     {
       "name": "gpu-bootstrap-arbiter",

@@ -7,7 +7,7 @@
   - Acceptance: generated bundle still emits `stack.compose/caddy.yml` and `stack.config/caddy/Caddyfile` with no functional change.
 
 - [x] Unbundle `latium-integrations-stack-module` responsibilities.
-  - Current Podman manifest excludes the integration repository and uses the standalone Caddy module.
+  - The committed Podman manifest excludes the integration repository and uses the standalone Caddy module.
   - Retired repository audit: `components.json` was the old nested selection model; `stack.systemd/graph.json` was Docker-era compose/systemd wiring; `global.settings/volumes.yml` is superseded by module runtime volume declarations; `service-contracts.json` is now represented by selected module contract fragments where still needed.
   - Removed stale `latium-integrations` and Docker-only module entries from the site compatibility locks.
   - Acceptance: integrations module no longer couples unrelated cross-cutting behavior into caddy concerns.
@@ -36,9 +36,9 @@
   - Replace docker-socket-proxy/controller/lifecycle chain, watchtower/autoheal/docker-health-exporter/dozzle/cadvisor/crowdsec/docker-discovery dependencies with podman-native replacements.
   - Acceptance: each replacement has equivalent or documented-better behavior notes.
 
-- [ ] Convert deferred controller/services with direct Docker API assumptions.
-  - JupyterHub DockerSpawner and Forgejo runner remain deferred because their modules are not selected in the Podman manifest.
-  - Test-runner Kotlin container CLI helpers are runtime-aware for Podman; remaining shell wrapper commands are Docker Compose compatibility paths and testdev/recovery drill paths.
+- [x] Convert deferred controller/services with direct Docker API assumptions.
+  - JupyterHub and Forgejo runner use the rootless Podman socket in active runtime definitions.
+  - Test-runner Kotlin and shell helpers default to Podman; Docker remains only for explicitly named testdev/labware paths.
   - Acceptance: behavior parity where feasible; fallback strategy documented for any blockers.
 
 ## Phase 2 — Stack module cleanup
