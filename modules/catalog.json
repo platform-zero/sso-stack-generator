@@ -679,6 +679,16 @@
       "lifecycle": "active"
     },
     {
+      "name": "searxng-stack-module",
+      "kind": "stack-module",
+      "moduleId": "searxng",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
       "name": "seafile-stack-module",
       "kind": "stack-module",
       "moduleId": "seafile",
@@ -712,6 +722,16 @@
       "name": "vaultwarden-stack-module",
       "kind": "stack-module",
       "moduleId": "vaultwarden",
+      "groups": [
+        "wrapped",
+        "dev-all"
+      ],
+      "lifecycle": "active"
+    },
+    {
+      "name": "workload-spawner-stack-module",
+      "kind": "stack-module",
+      "moduleId": "workload-spawner",
       "groups": [
         "wrapped",
         "dev-all"

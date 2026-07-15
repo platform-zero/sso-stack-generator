@@ -333,14 +333,18 @@ val podmanRootfulServices = setOf(
 val podmanRootlessServiceDomains = mapOf(
     "test-runner-managed" to "test-runners",
     "forgejo-runner" to "forgejo-runner",
-    "jupyterhub" to "jupyterhub"
+    "jupyter-notebook-build" to "jupyterhub",
+    "jupyterhub" to "jupyterhub",
+    "workload-spawner-api" to "workload-spawner",
+    "workload-spawner-router" to "workload-spawner"
 )
 
 val podmanRootlessSocketUsers = mapOf(
     "webservices" to "webservices",
     "test-runners" to "webservices-test-runners",
     "forgejo-runner" to "webservices-forgejo-runner",
-    "jupyterhub" to "webservices-jupyterhub"
+    "jupyterhub" to "webservices-jupyterhub",
+    "workload-spawner" to "webservices-workload-spawner"
 )
 
 fun applyPodmanPlacementPolicy(ir: ObjectNode) {
@@ -857,6 +861,15 @@ val rootlessDomains = listOf(
         envFilePrefix = "%t/webservices",
         targetInstall = "default.target",
         releaseRoot = "/var/lib/webservices-rootless-jupyterhub/current"
+    ),
+    PodmanDomain(
+        name = "workload-spawner",
+        quadletDir = "quadlet/rootless-workload-spawner",
+        stateRoot = "/var/lib/webservices-rootless-workload-spawner",
+        rootlessUser = "webservices-workload-spawner",
+        envFilePrefix = "%t/webservices",
+        targetInstall = "default.target",
+        releaseRoot = "/var/lib/webservices-rootless-workload-spawner/current"
     )
 )
 

@@ -4,17 +4,19 @@ set -Eeuo pipefail
 BUNDLE=""
 ENV_DIR=""
 ACTIVATE=false
+ACTIVATION_ROLLBACK="${WEBSERVICES_ACTIVATION_ROLLBACK:-1}"
 STATE_ROOT="${WEBSERVICES_STATE_ROOT:-/var/lib/webservices}"
 ROOTLESS_STATE_ROOT="${WEBSERVICES_ROOTLESS_STATE_ROOT:-/var/lib/webservices-rootless}"
 ROOTLESS_USER="${WEBSERVICES_ROOTLESS_USER:-webservices}"
 QUADLET_DIR="${WEBSERVICES_QUADLET_DIR:-/etc/containers/systemd}"
-ROOTLESS_DOMAIN_NAMES=("webservices" "test-runners" "forgejo-runner" "jupyterhub")
-ROOTLESS_DOMAIN_USERS=("webservices" "webservices-test-runners" "webservices-forgejo-runner" "webservices-jupyterhub")
+ROOTLESS_DOMAIN_NAMES=("webservices" "test-runners" "forgejo-runner" "jupyterhub" "workload-spawner")
+ROOTLESS_DOMAIN_USERS=("webservices" "webservices-test-runners" "webservices-forgejo-runner" "webservices-jupyterhub" "webservices-workload-spawner")
 ROOTLESS_DOMAIN_STATE_ROOTS=(
   "${WEBSERVICES_ROOTLESS_STATE_ROOT:-/var/lib/webservices-rootless}"
   "${WEBSERVICES_TEST_RUNNERS_ROOTLESS_STATE_ROOT:-/var/lib/webservices-rootless-test-runners}"
   "${WEBSERVICES_FORGEJO_RUNNER_ROOTLESS_STATE_ROOT:-/var/lib/webservices-rootless-forgejo-runner}"
   "${WEBSERVICES_JUPYTERHUB_ROOTLESS_STATE_ROOT:-/var/lib/webservices-rootless-jupyterhub}"
+  "${WEBSERVICES_WORKLOAD_SPAWNER_ROOTLESS_STATE_ROOT:-/var/lib/webservices-rootless-workload-spawner}"
 )
 
 usage() {
@@ -256,9 +258,25 @@ ensure_rootless_domain() {
   chown -R "$user:$user" "$state_root" "$home/.config" "$runtime"
 }
 
+user_systemctl() {
+  local index="$1" user home uid
+  shift
+  user="${ROOTLESS_DOMAIN_USERS[$index]}"
+  home="${ROOTLESS_HOMES[$index]}"
+  uid="${ROOTLESS_UIDS[$index]}"
+  /usr/sbin/runuser -u "$user" -- env HOME="$home" XDG_RUNTIME_DIR="/run/user/${uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" systemctl --user "$@"
+}
+
 mkdir -p "$release" "$STATE_ROOT/releases" "$STATE_ROOT/test-results" "$QUADLET_DIR" /run/webservices /var/log/webservices/caddy
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   ensure_rootless_domain "$i"
+done
+
+# A service moved between rootless domains can otherwise keep its old host port
+# and volume mounts while the replacement domain starts.
+systemctl stop webservices.target || true
+for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+  user_systemctl "$i" stop webservices.target || true
 done
 cp -a "$BUNDLE/." "$release/"
 install -d -m 0755 "$release/repos"
@@ -285,6 +303,12 @@ for env_file in "$ENV_DIR"/*.env; do
     install -m 0600 -o "$user" -g "$user" "$env_file" "$rootless_destination"
   done
 done
+
+forgejo_runner_ssh_dir="$(sed -n 's/^FORGEJO_RUNNER_SSH_DIR=//p' "$ENV_DIR/forgejo-runner.env" 2>/dev/null | tail -n 1)"
+if [ -n "$forgejo_runner_ssh_dir" ]; then
+  install -d -m 0700 -o "${ROOTLESS_DOMAIN_USERS[2]}" -g "${ROOTLESS_DOMAIN_USERS[2]}" "$forgejo_runner_ssh_dir"
+  chown -R "${ROOTLESS_DOMAIN_USERS[2]}:${ROOTLESS_DOMAIN_USERS[2]}" "$forgejo_runner_ssh_dir"
+fi
 
 jq -r '.volumes | to_entries[] | [.key, (.value.hostPath // "")] | @tsv' "$BUNDLE/stack.ir.json" | while IFS="$(printf '\t')" read -r name path; do
   case "$path" in
@@ -322,15 +346,16 @@ copy_tree_once() {
 
 grant_shared_access() {
   local path="$1"
+  local user="$2"
   [ -n "$path" ] && [ -d "$path" ] || return 0
   if command -v setfacl >/dev/null 2>&1; then
-    setfacl -Rm "u:${ROOTLESS_USER}:rwX" "$path"
-    setfacl -Rdm "u:${ROOTLESS_USER}:rwX" "$path"
+    setfacl -Rm "u:${user}:rwX" "$path"
+    setfacl -Rdm "u:${user}:rwX" "$path"
   fi
 }
 
 command -v python3 >/dev/null
-python3 - "$BUNDLE/stack.ir.json" <<'PY' | while IFS="$(printf '\t')" read -r strategy source destination; do
+python3 - "$BUNDLE/stack.ir.json" <<'PY' | while IFS="$(printf '\t')" read -r domain strategy source destination; do
 import json
 import sys
 
@@ -354,6 +379,7 @@ def source_name(volume):
     return volume.get("source", "")
 
 for service in rootless_services:
+    domain = service.get("rootlessDomain", "webservices")
     for mount in service.get("volumes", []):
         name = source_name(mount)
         volume = volumes.get(name)
@@ -362,17 +388,29 @@ for service in rootless_services:
         host_path = volume["hostPath"]
         strategy = volume.get("rootlessStrategy", "copy")
         destination = host_path if strategy == "shared" else rootless_host_path(name, host_path)
-        row = (strategy, host_path, destination)
+        row = (domain, strategy, host_path, destination)
         if row not in seen:
             seen.add(row)
             print("\t".join(row))
 PY
+  domain_index=""
+  for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+    if [ "${ROOTLESS_DOMAIN_NAMES[$i]}" = "$domain" ]; then
+      domain_index="$i"
+      break
+    fi
+  done
+  [ -n "$domain_index" ] || { printf 'unknown rootless volume domain: %s\n' "$domain" >&2; exit 1; }
+  domain_user="${ROOTLESS_DOMAIN_USERS[$domain_index]}"
   case "$strategy" in
-    shared) grant_shared_access "$source" ;;
+    shared) grant_shared_access "$source" "$domain_user" ;;
     copy|"") copy_tree_once "$source" "$destination" ;;
     forbidden) printf 'rootless volume is forbidden: %s\n' "$source" >&2; exit 1 ;;
     *) printf 'unknown rootless volume strategy %s for %s\n' "$strategy" "$source" >&2; exit 1 ;;
   esac
+  if [ "$strategy" != "shared" ] && [ -d "$destination" ]; then
+    chown -R "$domain_user:$domain_user" "$destination"
+  fi
 done
 
 ln -sfn "$release" "$STATE_ROOT/.current-new"
@@ -429,15 +467,45 @@ rollback() {
   fi
   exit "$status"
 }
-trap rollback ERR
+if [ "$ACTIVATION_ROLLBACK" = "1" ]; then
+  trap rollback ERR
+else
+  trap - ERR
+  printf '[podman-install] automatic rollback disabled; activation failures will remain in place for fix-forward repair\n' >&2
+fi
 
-user_systemctl() {
-  local index="$1" user home uid
-  shift
-  user="${ROOTLESS_DOMAIN_USERS[$index]}"
-  home="${ROOTLESS_HOMES[$index]}"
-  uid="${ROOTLESS_UIDS[$index]}"
-  /usr/sbin/runuser -u "$user" -- env HOME="$home" XDG_RUNTIME_DIR="/run/user/${uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" systemctl --user "$@"
+wait_for_target_services() {
+  local mode="$1" index="$2" target_dir="$3" deadline unit state unit_type result
+  local -a units=()
+  while IFS= read -r unit; do
+    [ -n "$unit" ] && units+=("$unit")
+  done < <(awk '/^Wants=/ {sub(/^Wants=/, ""); for (i = 1; i <= NF; i++) print $i}' "$target_dir"/webservices-*.target 2>/dev/null | sort -u)
+  deadline=$((SECONDS + ${WEBSERVICES_ACTIVATION_TIMEOUT_SECONDS:-1800}))
+  for unit in "${units[@]}"; do
+    while true; do
+      if [ "$mode" = "rootless" ]; then
+        state="$(user_systemctl "$index" is-active "$unit" 2>/dev/null || true)"
+        unit_type="$(user_systemctl "$index" show -p Type --value "$unit" 2>/dev/null || true)"
+        result="$(user_systemctl "$index" show -p Result --value "$unit" 2>/dev/null || true)"
+      else
+        state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+        unit_type="$(systemctl show -p Type --value "$unit" 2>/dev/null || true)"
+        result="$(systemctl show -p Result --value "$unit" 2>/dev/null || true)"
+      fi
+      [ "$state" = "active" ] && break
+      [ "$unit_type" = "oneshot" ] && [ "$state" = "inactive" ] && [ "$result" = "success" ] && break
+      if [ "$state" = "failed" ] || [ "$result" = "exit-code" ] || [ "$SECONDS" -ge "$deadline" ]; then
+        printf '[podman-install] service readiness failed: unit=%s state=%s type=%s result=%s\n' "$unit" "$state" "$unit_type" "$result" >&2
+        if [ "$mode" = "rootless" ]; then
+          user_systemctl "$index" status "$unit" --no-pager -l >&2 || true
+        else
+          systemctl status "$unit" --no-pager -l >&2 || true
+        fi
+        return 1
+      fi
+      sleep 2
+    done
+  done
 }
 
 restart_rootful_network_units() {
@@ -474,7 +542,6 @@ grant_test_runner_managed_socket_access() {
   [ -S "$socket" ] && chgrp "$managed_user" "$socket" && chmod go+rw "$socket"
 }
 
-systemctl stop webservices.target || true
 systemctl daemon-reload
 restart_rootful_network_units
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
@@ -485,11 +552,13 @@ done
 grant_test_runner_managed_socket_access
 systemctl enable --now webservices-auto-update.timer
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
-  user_systemctl "$i" restart webservices.target
+  user_systemctl "$i" --wait restart webservices.target
   user_systemctl "$i" --quiet is-active webservices.target
+  wait_for_target_services rootless "$i" "${ROOTLESS_SYSTEMD_DIRS[$i]}"
 done
-systemctl restart webservices.target
+systemctl --wait restart webservices.target
 systemctl --quiet is-active webservices.target
+wait_for_target_services rootful 0 /etc/systemd/system
 trap - ERR
 printf '[podman-install] active rootful release: %s\n' "$release"
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do

@@ -12,6 +12,14 @@ SITE="$WORK_DIR/manifest.json"
 SOURCE_SITE_DIR="$(cd "$(dirname "$SOURCE_SITE")" && pwd -P)"
 cp -a "$SOURCE_SITE_DIR/global.settings" "$WORK_DIR/global.settings"
 cp "$SOURCE_SITE" "$SITE"
+if [ -d "$MODULES_DIR/workload-spawner" ]; then
+  site_with_workload_spawner="$(mktemp)"
+  jq '
+    .components = ((.components + ["workload-spawner"]) | unique)
+    | .modules = ((.modules + ["workload-spawner"]) | unique)
+  ' "$SITE" > "$site_with_workload_spawner"
+  mv "$site_with_workload_spawner" "$SITE"
+fi
 
 generate() {
   "$ROOT_DIR/generate.sh" \
@@ -29,7 +37,8 @@ diff -ru "$WORK_DIR/podman-a" "$WORK_DIR/podman-b"
 jq -e '
   (.schemaVersion == 2) and
   (.modules | type == "array" and length > 0) and
-  (.components == ["full"]) and
+  (.components | index("full")) and
+  ((.modules | index("workload-spawner") | not) or (.components | index("workload-spawner"))) and
   (all(.modules[]; type == "string" or (type == "object" and (.id | type == "string"))))
 ' "$SITE" >/dev/null
 
@@ -72,10 +81,13 @@ jq -e '
   ($services["test-runner-managed"].rootlessDomain == "test-runners") and
   (($services | has("forgejo-runner") | not) or $services["forgejo-runner"].rootlessDomain == "forgejo-runner") and
   ($services["jupyterhub"].rootlessDomain == "jupyterhub") and
+  ($services["jupyter-notebook-build"].rootlessDomain == "jupyterhub") and
+  (($services | has("workload-spawner-api") | not) or $services["workload-spawner-api"].rootlessDomain == "workload-spawner") and
+  (($services | has("workload-spawner-router") | not) or $services["workload-spawner-router"].rootlessDomain == "workload-spawner") and
   ($services["caddy"].networks | keys == ["caddy"])
 ' "$WORK_DIR/podman-a/stack.ir.json" >/dev/null
 
-for domain in webservices test-runners forgejo-runner jupyterhub; do
+for domain in webservices test-runners forgejo-runner jupyterhub workload-spawner; do
   test -d "$WORK_DIR/podman-a/quadlet/rootless-$domain"
 done
 
@@ -117,7 +129,7 @@ mkdir -p "$generated_units/rootful" "$generated_units/rootful-early" "$generated
 QUADLET_UNIT_DIRS="$WORK_DIR/podman-a/quadlet/rootful" /usr/libexec/podman/quadlet \
   "$generated_units/rootful" "$generated_units/rootful-early" "$generated_units/rootful-late"
 systemd-analyze verify "$generated_units/rootful"/*.service "$WORK_DIR/podman-a/quadlet/rootful"/*.target
-for domain in webservices test-runners forgejo-runner jupyterhub; do
+for domain in webservices test-runners forgejo-runner jupyterhub workload-spawner; do
   mkdir -p "$generated_units/rootless-$domain" "$generated_units/rootless-$domain-early" "$generated_units/rootless-$domain-late"
   QUADLET_UNIT_DIRS="$WORK_DIR/podman-a/quadlet/rootless-$domain" /usr/libexec/podman/quadlet \
     "$generated_units/rootless-$domain" "$generated_units/rootless-$domain-early" "$generated_units/rootless-$domain-late"
