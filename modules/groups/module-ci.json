@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "repositories": [
+    "test-runner",
+    "mastodon-rss-analysis-stack-module",
+    "mastodon-rss-aus-state-stack-module",
+    "mastodon-rss-us-state-stack-module"
+  ],
+  "includeCatalogGroups": ["dev-all"],
+  "repositoryKinds": ["stack-module"]
+}
