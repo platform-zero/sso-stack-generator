@@ -57,12 +57,12 @@ if have rg; then
   if [ "${#image_roots[@]}" -gt 0 ]; then
     rg -n '^\s*image:\s*\S+:latest(\s|$)' "${image_roots[@]}" 2>/dev/null || true
   fi
-  dockerfile_roots=()
+  containerfile_roots=()
   for root in stack.containers stack.config; do
-    [ -e "$root" ] && dockerfile_roots+=( "$root" )
+    [ -e "$root" ] && containerfile_roots+=( "$root" )
   done
-  if [ "${#dockerfile_roots[@]}" -gt 0 ]; then
-    rg -n '^FROM\s+\S+:latest(\s|$)' "${dockerfile_roots[@]}" 2>/dev/null || true
+  if [ "${#containerfile_roots[@]}" -gt 0 ]; then
+    rg -n '^FROM\s+\S+:latest(\s|$)' "${containerfile_roots[@]}" 2>/dev/null || true
   fi
 else
   printf '[skip] rg is not installed; image tag scan not run\n'
@@ -81,22 +81,30 @@ else
   printf '[skip] rg is not installed; container option scan not run\n'
 fi
 
-section "Compose syntax"
-if have podman && podman compose version >/dev/null 2>&1; then
-  compose_args=()
-  if [ -d runtime.overlays ]; then
-    while IFS= read -r compose_file; do
-      compose_args+=("-f" "$compose_file")
-    done < <(find runtime.overlays -maxdepth 1 -type f -name '*.yml' | sort)
-  fi
-  if [ "${#compose_args[@]}" -gt 0 ]; then
-    container_contract "${compose_args[@]}" config --no-interpolate >/dev/null
+section "Runtime model syntax"
+if [ -d runtime.overlays ]; then
+  runtime_model_files=()
+  while IFS= read -r runtime_model_file; do
+    runtime_model_files+=("$runtime_model_file")
+  done < <(find runtime.overlays -maxdepth 1 -type f -name '*.yml' | sort)
+  if [ "${#runtime_model_files[@]}" -gt 0 ]; then
+    for runtime_model_file in "${runtime_model_files[@]}"; do
+      awk '
+        /^services:[[:space:]]*$/ { in_services = 1; next }
+        in_services && /^[^[:space:]]/ { in_services = 0 }
+        in_services && /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ { count++ }
+        END { exit(count > 0 ? 0 : 1) }
+      ' "$runtime_model_file" || {
+        printf '[runtime-model] missing services section: %s\n' "$runtime_model_file" >&2
+        exit 1
+      }
+    done
     printf '[runtime-model] ok\n'
   else
     printf '[skip] no runtime.overlays files in this checkout\n'
   fi
 else
-  printf '[skip] podman compose is not available\n'
+  printf '[skip] no runtime.overlays directory in this checkout\n'
 fi
 
 section "Shell syntax"

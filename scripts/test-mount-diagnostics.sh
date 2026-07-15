@@ -8,7 +8,7 @@ trap 'rm -rf "$tmp_dir"' EXIT
 
 mkdir -p "$tmp_dir/deploy/build" "$tmp_dir/deploy/data/shared/subdir" "$tmp_dir/deploy/reports"
 
-runtime_config_json="$tmp_dir/compose.json"
+runtime_config_json="$tmp_dir/runtime-config.json"
 report_json="$tmp_dir/report.json"
 
 cat > "$runtime_config_json" <<EOF_JSON

@@ -42,17 +42,24 @@ if ! rg -Fq 'search.{$DOMAIN}' "$WORK_DIR/podman-a/runtime/configs/caddy/Caddyfi
 fi
 
 jq -r '.services | keys[]' "$WORK_DIR/podman-a/stack.ir.json" | sort > "$WORK_DIR/ir-services"
-container_contract -f "$WORK_DIR/podman-a/runtime-model.yml" config --no-interpolate --services | sort > "$WORK_DIR/runtime-model-services"
+awk '
+  /^services:[[:space:]]*$/ { in_services = 1; next }
+  in_services && /^[^[:space:]]/ { in_services = 0 }
+  in_services && /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ {
+    name = $1
+    sub(/:$/, "", name)
+    print name
+  }
+' "$WORK_DIR/podman-a/runtime-model.yml" | sort > "$WORK_DIR/runtime-model-services"
 cmp "$WORK_DIR/ir-services" "$WORK_DIR/runtime-model-services"
-container_contract -f "$WORK_DIR/podman-a/runtime-model.yml" config --no-interpolate --quiet
 
 if rg -n 'container-socket|container-controller|container-health-exporter|cadvisor|watchtower|autoheal|dozzle' \
-  "$WORK_DIR/podman-a/quadlet/rootful" "$WORK_DIR/podman-a/quadlet/rootless"; then
+  "$WORK_DIR/podman-a/quadlet/rootful" "$WORK_DIR"/podman-a/quadlet/rootless-*; then
   printf '[runtime-test] Podman bundle contains a retired control-plane reference\n' >&2
   exit 1
 fi
 
-if rg -n '^Volume=\$\{' "$WORK_DIR/podman-a/quadlet/rootful" "$WORK_DIR/podman-a/quadlet/rootless"; then
+if rg -n '^Volume=\$\{' "$WORK_DIR/podman-a/quadlet/rootful" "$WORK_DIR"/podman-a/quadlet/rootless-*; then
   printf '[runtime-test] Quadlet volume source contains an unresolved host expression\n' >&2
   exit 1
 fi
@@ -60,8 +67,35 @@ fi
 jq -e '
   .services as $services |
   all(["alloy", "caddy", "crowdsec", "kopia", "mailserver", "node-exporter", "volume-init"][]; $services[.].placement == "rootful") and
-  all($services | to_entries[]; . as $entry | if (["alloy", "caddy", "crowdsec", "kopia", "mailserver", "node-exporter", "volume-init"] | index($entry.key)) then true else $entry.value.placement == "rootless" end)
+  all($services | to_entries[]; . as $entry | if (["alloy", "caddy", "crowdsec", "kopia", "mailserver", "node-exporter", "volume-init"] | index($entry.key)) then true else $entry.value.placement == "rootless" end) and
+  ($services["test-runner"].rootlessDomain == "webservices") and
+  ($services["test-runner-managed"].rootlessDomain == "test-runners") and
+  (($services | has("forgejo-runner") | not) or $services["forgejo-runner"].rootlessDomain == "forgejo-runner") and
+  ($services["jupyterhub"].rootlessDomain == "jupyterhub") and
+  ($services["caddy"].networks | keys == ["caddy"])
 ' "$WORK_DIR/podman-a/stack.ir.json" >/dev/null
+
+for domain in webservices test-runners forgejo-runner jupyterhub; do
+  test -d "$WORK_DIR/podman-a/quadlet/rootless-$domain"
+done
+
+if rg -n '/run/user/999/podman/podman.sock' \
+  "$WORK_DIR/podman-a/stack.ir.json" \
+  "$WORK_DIR/podman-a/runtime-model.yml" \
+  "$WORK_DIR/podman-a/quadlet"; then
+  printf '[runtime-test] Podman bundle still references the old shared rootless socket\n' >&2
+  exit 1
+fi
+
+if rg -n 'remote_ip private_ranges' "$WORK_DIR/podman-a/runtime/configs/caddy/Caddyfile"; then
+  printf '[runtime-test] Caddy trusted-proxy matcher still trusts private_ranges\n' >&2
+  exit 1
+fi
+
+if [ "$(stat -c '%a' "$SOURCE_SITE_DIR/global.settings/webservices.sops.json")" != "600" ]; then
+  printf '[runtime-test] Latium SOPS secret file must be mode 0600\n' >&2
+  exit 1
+fi
 
 if jq -e '.services[] | select(.lifecycle != "daemon" and .updatePolicy == "registry")' \
   "$WORK_DIR/podman-a/stack.ir.json" >/dev/null; then
@@ -83,10 +117,16 @@ mkdir -p "$generated_units/rootful" "$generated_units/rootful-early" "$generated
 QUADLET_UNIT_DIRS="$WORK_DIR/podman-a/quadlet/rootful" /usr/libexec/podman/quadlet \
   "$generated_units/rootful" "$generated_units/rootful-early" "$generated_units/rootful-late"
 systemd-analyze verify "$generated_units/rootful"/*.service "$WORK_DIR/podman-a/quadlet/rootful"/*.target
-mkdir -p "$generated_units/rootless" "$generated_units/rootless-early" "$generated_units/rootless-late"
-QUADLET_UNIT_DIRS="$WORK_DIR/podman-a/quadlet/rootless" /usr/libexec/podman/quadlet \
-  "$generated_units/rootless" "$generated_units/rootless-early" "$generated_units/rootless-late"
-systemd-analyze verify "$generated_units/rootless"/*.service "$WORK_DIR/podman-a/quadlet/rootless"/*.target
+for domain in webservices test-runners forgejo-runner jupyterhub; do
+  mkdir -p "$generated_units/rootless-$domain" "$generated_units/rootless-$domain-early" "$generated_units/rootless-$domain-late"
+  QUADLET_UNIT_DIRS="$WORK_DIR/podman-a/quadlet/rootless-$domain" /usr/libexec/podman/quadlet \
+    "$generated_units/rootless-$domain" "$generated_units/rootless-$domain-early" "$generated_units/rootless-$domain-late"
+  units=("$WORK_DIR/podman-a/quadlet/rootless-$domain"/*.target)
+  if compgen -G "$generated_units/rootless-$domain/*.service" >/dev/null; then
+    units+=("$generated_units/rootless-$domain"/*.service)
+  fi
+  systemd-analyze verify "${units[@]}"
+done
 
 "$WORK_DIR/podman-a/ops/install-podman-bundle.sh" --bundle "$WORK_DIR/podman-a"
 

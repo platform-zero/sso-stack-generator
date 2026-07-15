@@ -184,13 +184,13 @@ if [ -f "$bundle_root/stack.systemd/graph.json" ]; then
   mv "$graph_temp" "$bundle_root/stack.systemd/graph.json"
 fi
 
-cat > "$bundle_root/runtime.overlays/component-marker-test.yml" <<'EOF_COMPOSE_MARKER'
+cat > "$bundle_root/runtime.overlays/component-marker-test.yml" <<'EOF_RUNTIME_MARKER'
 volumes:
   component_marker_always:
   # webservices-component-start bookstack
   component_marker_bookstack:
   # webservices-component-end bookstack
-EOF_COMPOSE_MARKER
+EOF_RUNTIME_MARKER
 catalog_temp="$(mktemp)"
 jq '.components.core.runtimeFiles += ["component-marker-test.yml"]' \
   "$bundle_root/stack.config/components.json" > "$catalog_temp"
@@ -249,7 +249,7 @@ PATH="$fake_bin:$PATH" "$ROOT_DIR/scripts/deploy/render-runtime.sh" \
   --deploy-root "$tmp_root/bundle" \
   --site-manifest "$site_root/manifest.json" \
   --runtime-root "$runtime_root" \
-  --skip-compose-validate
+  --skip-runtime-model-validate
 
 caddy_file="$tmp_root/bundle/runtime/configs/caddy/Caddyfile"
 keycloak_configure="$tmp_root/bundle/runtime/configs/keycloak/configure-runtime.sh"
@@ -302,7 +302,7 @@ PATH="$fake_bin:$PATH" "$ROOT_DIR/scripts/deploy/render-runtime.sh" \
   --deploy-root "$tmp_root/bundle" \
   --site-manifest "$site_root/manifest.json" \
   --runtime-root "$runtime_root" \
-  --skip-compose-validate
+  --skip-runtime-model-validate
 
 assert_contains "$caddy_file" 'reverse_proxy vaultwarden:80' "full Vaultwarden route"
 assert_contains "$caddy_file" 'reverse_proxy portal:3000' "full Portal route"

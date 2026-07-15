@@ -438,7 +438,7 @@ path_requires_full_deploy() {
   local path="$1"
 
   case "$path" in
-    .dockerignore|global.settings/*|site/manifest.json|stack.systemd/*|systemd-user/*.timer|systemd-user/infra/*)
+    .containerignore|global.settings/*|site/manifest.json|stack.systemd/*|systemd-user/*.timer|systemd-user/infra/*)
       return 0
       ;;
   esac

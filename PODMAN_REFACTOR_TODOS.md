@@ -24,7 +24,7 @@
 
 ## Phase 1 — Runtime backend migration
 - [x] Add runtime abstraction in generator.
-  - Stop `compose` as canonical model; move render logic behind a backend interface.
+  - Move render logic behind a backend interface.
   - Acceptance: same module input produces a Podman output bundle.
 
 - [x] Implement Podman backend renderer using Quadlet/systemd.

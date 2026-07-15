@@ -68,11 +68,11 @@ cat > "$module_repo/tests/validate.sh" <<'EOF_VALIDATE'
 #!/usr/bin/env bash
 true
 EOF_VALIDATE
-cat > "$module_repo/runtime.overlays/demo.yml" <<'EOF_COMPOSE'
+cat > "$module_repo/runtime.overlays/demo.yml" <<'EOF_RUNTIME'
 services:
   demo-module:
     image: caddy:2.11.3
-EOF_COMPOSE
+EOF_RUNTIME
 cat > "$module_repo/stack.config/components.json" <<'EOF_COMPONENTS'
 {
   "schemaVersion": 1,
@@ -199,11 +199,11 @@ cat > "$foundation_repo/stack.module.json" <<'EOF_V2_FOUNDATION'
   "overlays": ["stack.config/components.json"]
 }
 EOF_V2_FOUNDATION
-cat > "$app_repo/runtime.overlays/app-test.yml" <<'EOF_V2_APP_COMPOSE'
+cat > "$app_repo/runtime.overlays/app-test.yml" <<'EOF_V2_APP_RUNTIME'
 services:
   app-test:
     image: caddy:2.11.3
-EOF_V2_APP_COMPOSE
+EOF_V2_APP_RUNTIME
 mkdir -p "$app_repo/stack.config/app-test"
 cat > "$app_repo/stack.config/app-test/stale.yml" <<'EOF_V2_APP_STALE'
 stale: true
@@ -218,11 +218,11 @@ cat > "$app_repo/stack.module.json" <<'EOF_V2_APP'
   "overlays": ["runtime.overlays/app-test.yml"]
 }
 EOF_V2_APP
-cat > "$cycle_repo/runtime.overlays/cycle-test.yml" <<'EOF_V2_CYCLE_COMPOSE'
+cat > "$cycle_repo/runtime.overlays/cycle-test.yml" <<'EOF_V2_CYCLE_RUNTIME'
 services:
   cycle-test:
     image: caddy:2.11.3
-EOF_V2_CYCLE_COMPOSE
+EOF_V2_CYCLE_RUNTIME
 cat > "$cycle_repo/stack.module.json" <<'EOF_V2_CYCLE'
 {
   "schemaVersion": 1,

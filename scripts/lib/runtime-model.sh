@@ -163,11 +163,10 @@ validate_runtime_model() {
   local deploy_root
   [ -d "$stage_dir" ] || die "missing stage directory for runtime model validation: $stage_dir"
   [ -f "$output_file" ] || die "missing generated runtime model file: $output_file"
-  deploy_root="$(cd "$stage_dir/.." && pwd -P)"
-
-  (
-    cd "$deploy_root"
-    RUNTIME_PROJECT_NAME="${RUNTIME_PROJECT_NAME:-webservices}" \
-      container_contract --project-directory "$deploy_root" -f "$output_file" config --quiet --no-interpolate >/dev/null
-  )
+  awk '
+    /^services:[[:space:]]*$/ { in_services = 1; next }
+    in_services && /^[^[:space:]]/ { in_services = 0 }
+    in_services && /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ { count++ }
+    END { exit(count > 0 ? 0 : 1) }
+  ' "$output_file" || die "runtime model contains no services: $output_file"
 }

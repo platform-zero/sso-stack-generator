@@ -24,7 +24,7 @@ DEPLOY_ROOT="$(cd "$BUNDLE_ROOT/.." && pwd -P)"
 SITE_MANIFEST_PATH=""
 RUNTIME_ROOT="$DEPLOY_ROOT/runtime"
 RUNTIME_ROOT_EXPLICIT=0
-SKIP_COMPOSE_VALIDATE=0
+SKIP_RUNTIME_MODEL_VALIDATE=0
 
 prepare_host_runtime_dirs() {
   local forgejo_runner_ssh_dir
@@ -54,8 +54,8 @@ while [ "$#" -gt 0 ]; do
       RUNTIME_ROOT_EXPLICIT=1
       shift
       ;;
-    --skip-compose-validate)
-      SKIP_COMPOSE_VALIDATE=1
+    --skip-runtime-model-validate)
+      SKIP_RUNTIME_MODEL_VALIDATE=1
       ;;
     -h|--help)
       cat <<'EOF_USAGE'
@@ -131,7 +131,7 @@ else
 fi
 write_build_info "$BUNDLE_ROOT/build-info.json" "$runtime_root/build-info.json"
 
-if [ "$SKIP_COMPOSE_VALIDATE" = "0" ]; then
+if [ "$SKIP_RUNTIME_MODEL_VALIDATE" = "0" ]; then
   RUNTIME_PROJECT_NAME="${RUNTIME_PROJECT_NAME:-webservices}" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
     "$runtime_env_file" \

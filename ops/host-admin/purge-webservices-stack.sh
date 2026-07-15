@@ -32,8 +32,7 @@ usage() {
 Usage:
   EXPECTED_HOSTNAME=<host> ./ops/host-admin/purge-webservices-stack.sh [options] --yes-delete-webservices-stack
 
-Stops and removes the webservices stack regardless of whether it was started via the
-old Compose orchestration path or the new systemd --user path.
+Stops and removes the webservices stack from the systemd --user runtime path.
 
 Options:
   --print-only                  Print stack, container, labware, storage, and deploy targets without deleting.
@@ -147,7 +146,7 @@ print_container_targets() {
 
   if [ "$PURGE_LABWARE_RUNTIME" = "1" ]; then
     printf '\nLabware container resources:\n'
-    if docker_host_available "$LABWARE_CONTAINER_HOST"; then
+    if container_host_available "$LABWARE_CONTAINER_HOST"; then
       container_for_host "$LABWARE_CONTAINER_HOST" ps -a --filter "label=webservices.workspace.id" --format '  workspace container {{.Names}}'
       container_for_host "$LABWARE_CONTAINER_HOST" ps -a --filter "label=webservices.test.tenant.id" --format '  test container {{.Names}}'
       container_for_host "$LABWARE_CONTAINER_HOST" volume ls --filter "label=webservices.workspace.id" --format '  workspace volume {{.Name}}'
@@ -178,9 +177,9 @@ container_for_host() {
   fi
 }
 
-docker_host_available() {
-  local docker_host="$1"
-  container_for_host "$docker_host" info >/dev/null 2>&1
+container_host_available() {
+  local container_host="$1"
+  container_for_host "$container_host" info >/dev/null 2>&1
 }
 
 dedupe_lines() {
@@ -253,28 +252,28 @@ list_target_volume_names() {
 }
 
 remove_containers_by_filter() {
-  local docker_host="$1"
+  local container_host="$1"
   local description="$2"
   shift 2
   local containers=()
-  mapfile -t containers < <(container_for_host "$docker_host" ps -aq "$@")
+  mapfile -t containers < <(container_for_host "$container_host" ps -aq "$@")
   if [ "${#containers[@]}" -gt 0 ]; then
     log "removing $description containers: ${#containers[@]}"
-    container_for_host "$docker_host" rm -f "${containers[@]}" >/dev/null
+    container_for_host "$container_host" rm -f "${containers[@]}" >/dev/null
   else
     log "no $description containers found"
   fi
 }
 
 remove_volumes_by_filter() {
-  local docker_host="$1"
+  local container_host="$1"
   local description="$2"
   shift 2
   local volumes=()
-  mapfile -t volumes < <(container_for_host "$docker_host" volume ls -q "$@")
+  mapfile -t volumes < <(container_for_host "$container_host" volume ls -q "$@")
   if [ "${#volumes[@]}" -gt 0 ]; then
     log "removing $description volumes: ${#volumes[@]}"
-    container_for_host "$docker_host" volume rm "${volumes[@]}" >/dev/null
+    container_for_host "$container_host" volume rm "${volumes[@]}" >/dev/null
   else
     log "no $description volumes found"
   fi
@@ -286,7 +285,7 @@ purge_labware_runtime() {
     return 0
   fi
 
-  if ! docker_host_available "$LABWARE_CONTAINER_HOST"; then
+  if ! container_host_available "$LABWARE_CONTAINER_HOST"; then
     log "labware container host unavailable at $LABWARE_CONTAINER_HOST; skipping disposable workspace cleanup"
     return 0
   fi

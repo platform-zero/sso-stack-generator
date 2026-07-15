@@ -1,9 +1,5 @@
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 
-LEGACY_CONTAINER_BUILD_FILE = "Docker" + "file"
-LEGACY_HOMEPAGE_CONFIG = "dock" + "er.yaml"
-LEGACY_PRE_MODEL_FILE = "runtime-" + "contract.yml"
-
 filegroup(
     name = "release_static_files",
     srcs = glob(
@@ -27,10 +23,6 @@ filegroup(
         exclude = [
             "**/__pycache__/**",
             "**/*.pyc",
-            "**/" + LEGACY_CONTAINER_BUILD_FILE,
-            "**/" + LEGACY_CONTAINER_BUILD_FILE + ".*",
-            "**/" + LEGACY_HOMEPAGE_CONFIG,
-            "**/" + LEGACY_PRE_MODEL_FILE,
             "stack.containers/content-publisher/**",
             "stack.containers/embedding-worker/**",
             "stack.containers/knowledge-ingestion/**",

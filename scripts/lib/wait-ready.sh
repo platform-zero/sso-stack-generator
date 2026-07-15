@@ -129,7 +129,7 @@ optional_capability_services() {
   return 0
 }
 
-service_is_optional_without_isolated_docker_vm_identity() {
+service_is_optional_without_isolated_runtime_identity() {
   return 1
 }
 
@@ -152,7 +152,7 @@ service_state() {
   local runtime_config="$1"
   local service_name="$2"
   local container_name unit_name
-  if service_is_optional_without_isolated_docker_vm_identity "$service_name"; then
+  if service_is_optional_without_isolated_runtime_identity "$service_name"; then
     printf 'skipped\n'
     return 0
   fi
@@ -192,7 +192,7 @@ service_exit_code() {
   local runtime_config="$1"
   local service_name="$2"
   local container_name unit_name result
-  if service_is_optional_without_isolated_docker_vm_identity "$service_name"; then
+  if service_is_optional_without_isolated_runtime_identity "$service_name"; then
     printf '0\n'
     return 0
   fi

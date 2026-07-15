@@ -8,6 +8,14 @@ STATE_ROOT="${WEBSERVICES_STATE_ROOT:-/var/lib/webservices}"
 ROOTLESS_STATE_ROOT="${WEBSERVICES_ROOTLESS_STATE_ROOT:-/var/lib/webservices-rootless}"
 ROOTLESS_USER="${WEBSERVICES_ROOTLESS_USER:-webservices}"
 QUADLET_DIR="${WEBSERVICES_QUADLET_DIR:-/etc/containers/systemd}"
+ROOTLESS_DOMAIN_NAMES=("webservices" "test-runners" "forgejo-runner" "jupyterhub")
+ROOTLESS_DOMAIN_USERS=("webservices" "webservices-test-runners" "webservices-forgejo-runner" "webservices-jupyterhub")
+ROOTLESS_DOMAIN_STATE_ROOTS=(
+  "${WEBSERVICES_ROOTLESS_STATE_ROOT:-/var/lib/webservices-rootless}"
+  "${WEBSERVICES_TEST_RUNNERS_ROOTLESS_STATE_ROOT:-/var/lib/webservices-rootless-test-runners}"
+  "${WEBSERVICES_FORGEJO_RUNNER_ROOTLESS_STATE_ROOT:-/var/lib/webservices-rootless-forgejo-runner}"
+  "${WEBSERVICES_JUPYTERHUB_ROOTLESS_STATE_ROOT:-/var/lib/webservices-rootless-jupyterhub}"
+)
 
 usage() {
   printf 'Usage: %s --bundle DIR [--env-dir DIR] [--activate]\n' "${0##*/}" >&2
@@ -25,9 +33,7 @@ done
 
 [ -d "$BUNDLE/quadlet" ] || { printf 'invalid Podman bundle: %s\n' "$BUNDLE" >&2; exit 1; }
 ROOTFUL_QUADLET_SOURCE="$BUNDLE/quadlet/rootful"
-ROOTLESS_QUADLET_SOURCE="$BUNDLE/quadlet/rootless"
 [ -d "$ROOTFUL_QUADLET_SOURCE" ] || ROOTFUL_QUADLET_SOURCE="$BUNDLE/quadlet"
-[ -d "$ROOTLESS_QUADLET_SOURCE" ] || ROOTLESS_QUADLET_SOURCE=""
 jq -e '.backend == "podman"' "$BUNDLE/bundle.json" >/dev/null
 command -v podman >/dev/null
 command -v systemd-analyze >/dev/null
@@ -99,7 +105,7 @@ if [ -z "$ENV_DIR" ]; then
       --bundle-root "$BUNDLE" \
       --deploy-root "$BUNDLE" \
       --runtime-root "$BUNDLE/runtime" \
-      --skip-compose-validate >/dev/null
+      --skip-runtime-model-validate >/dev/null
   fi
   [ -f "$BUNDLE/runtime/stack.env" ] || {
     printf 'bundle runtime environment was not rendered: %s\n' "$BUNDLE/runtime/stack.env" >&2
@@ -198,7 +204,11 @@ verify_quadlet_dir() {
 }
 
 verify_quadlet_dir rootful "$ROOTFUL_QUADLET_SOURCE"
-verify_quadlet_dir rootless "$ROOTLESS_QUADLET_SOURCE"
+for domain in "${ROOTLESS_DOMAIN_NAMES[@]}"; do
+  source="$BUNDLE/quadlet/rootless-$domain"
+  [ -d "$source" ] || { printf 'missing rootless Quadlet domain: %s\n' "$source" >&2; exit 1; }
+  verify_quadlet_dir "rootless-$domain" "$source"
+done
 printf '[podman-install] preflight passed\n'
 
 [ "$ACTIVATE" = true ] || {
@@ -209,32 +219,58 @@ printf '[podman-install] preflight passed\n'
 
 release_id="$(date -u +%Y%m%dT%H%M%SZ)-$(jq -r '.irSha256[0:12]' "$BUNDLE/bundle.json")"
 release="$STATE_ROOT/releases/$release_id"
-rootless_release="$ROOTLESS_STATE_ROOT/releases/$release_id"
 previous="$(readlink -f "$STATE_ROOT/current" 2>/dev/null || true)"
-previous_rootless="$(readlink -f "$ROOTLESS_STATE_ROOT/current" 2>/dev/null || true)"
 
-if ! id "$ROOTLESS_USER" >/dev/null 2>&1; then
-  useradd --system --create-home --home-dir "/home/$ROOTLESS_USER" --shell /usr/sbin/nologin "$ROOTLESS_USER"
-fi
-rootless_uid="$(id -u "$ROOTLESS_USER")"
-rootless_gid="$(id -g "$ROOTLESS_USER")"
-rootless_home="$(getent passwd "$ROOTLESS_USER" | cut -d: -f6)"
-grep -q "^${ROOTLESS_USER}:" /etc/subuid || usermod --add-subuids 1000000-1065535 "$ROOTLESS_USER"
-grep -q "^${ROOTLESS_USER}:" /etc/subgid || usermod --add-subgids 1000000-1065535 "$ROOTLESS_USER"
-loginctl enable-linger "$ROOTLESS_USER"
-systemctl start "user@${rootless_uid}.service"
+declare -a ROOTLESS_RELEASES=()
+declare -a ROOTLESS_PREVIOUS=()
+declare -a ROOTLESS_UIDS=()
+declare -a ROOTLESS_HOMES=()
+declare -a ROOTLESS_RUNTIMES=()
+declare -a ROOTLESS_QUADLET_DIRS=()
+declare -a ROOTLESS_SYSTEMD_DIRS=()
 
-rootless_runtime="/run/user/${rootless_uid}/webservices"
-rootless_quadlet_dir="$rootless_home/.config/containers/systemd"
-rootless_systemd_dir="$rootless_home/.config/systemd/user"
-mkdir -p "$release" "$rootless_release" "$STATE_ROOT/releases" "$ROOTLESS_STATE_ROOT/releases" "$STATE_ROOT/test-results" "$QUADLET_DIR" /run/webservices "$rootless_runtime" "$rootless_quadlet_dir" "$rootless_systemd_dir" /var/log/webservices/caddy
+ensure_rootless_domain() {
+  local index="$1" user state_root uid home runtime quadlet_dir systemd_dir
+  user="${ROOTLESS_DOMAIN_USERS[$index]}"
+  state_root="${ROOTLESS_DOMAIN_STATE_ROOTS[$index]}"
+  if ! id "$user" >/dev/null 2>&1; then
+    useradd --system --create-home --home-dir "/home/$user" --shell /usr/sbin/nologin "$user"
+  fi
+  uid="$(id -u "$user")"
+  home="$(getent passwd "$user" | cut -d: -f6)"
+  grep -q "^${user}:" /etc/subuid || usermod --add-subuids "$((1000000 + index * 100000))-$((1065535 + index * 100000))" "$user"
+  grep -q "^${user}:" /etc/subgid || usermod --add-subgids "$((1000000 + index * 100000))-$((1065535 + index * 100000))" "$user"
+  loginctl enable-linger "$user"
+  systemctl start "user@${uid}.service"
+  runtime="/run/user/${uid}/webservices"
+  quadlet_dir="$home/.config/containers/systemd"
+  systemd_dir="$home/.config/systemd/user"
+  ROOTLESS_RELEASES[$index]="$state_root/releases/$release_id"
+  ROOTLESS_PREVIOUS[$index]="$(readlink -f "$state_root/current" 2>/dev/null || true)"
+  ROOTLESS_UIDS[$index]="$uid"
+  ROOTLESS_HOMES[$index]="$home"
+  ROOTLESS_RUNTIMES[$index]="$runtime"
+  ROOTLESS_QUADLET_DIRS[$index]="$quadlet_dir"
+  ROOTLESS_SYSTEMD_DIRS[$index]="$systemd_dir"
+  mkdir -p "${ROOTLESS_RELEASES[$index]}" "$state_root/releases" "$runtime" "$quadlet_dir" "$systemd_dir"
+  chown -R "$user:$user" "$state_root" "$home/.config" "$runtime"
+}
+
+mkdir -p "$release" "$STATE_ROOT/releases" "$STATE_ROOT/test-results" "$QUADLET_DIR" /run/webservices /var/log/webservices/caddy
+for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+  ensure_rootless_domain "$i"
+done
 cp -a "$BUNDLE/." "$release/"
-cp -a "$BUNDLE/." "$rootless_release/"
 install -d -m 0755 "$release/repos"
-install -d -m 0755 "$rootless_release/repos"
-chown -R "$ROOTLESS_USER:$ROOTLESS_USER" "$ROOTLESS_STATE_ROOT" "$rootless_home/.config" "$rootless_runtime"
-find "$rootless_release/runtime/configs" -type d -exec chmod 0755 {} + 2>/dev/null || true
-find "$rootless_release/runtime/configs" -type f -exec chmod a+r {} + 2>/dev/null || true
+for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+  user="${ROOTLESS_DOMAIN_USERS[$i]}"
+  rootless_release="${ROOTLESS_RELEASES[$i]}"
+  cp -a "$BUNDLE/." "$rootless_release/"
+  install -d -m 0755 "$rootless_release/repos"
+  chown -R "$user:$user" "$rootless_release"
+  find "$rootless_release/runtime/configs" -type d -exec chmod 0755 {} + 2>/dev/null || true
+  find "$rootless_release/runtime/configs" -type f -exec chmod a+r {} + 2>/dev/null || true
+done
 chmod 0700 /run/webservices
 for env_file in "$ENV_DIR"/*.env; do
   destination="/run/webservices/${env_file##*/}"
@@ -243,8 +279,11 @@ for env_file in "$ENV_DIR"/*.env; do
   else
     install -m 0600 "$env_file" "$destination"
   fi
-  rootless_destination="$rootless_runtime/${env_file##*/}"
-  install -m 0600 -o "$ROOTLESS_USER" -g "$ROOTLESS_USER" "$env_file" "$rootless_destination"
+  for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+    user="${ROOTLESS_DOMAIN_USERS[$i]}"
+    rootless_destination="${ROOTLESS_RUNTIMES[$i]}/${env_file##*/}"
+    install -m 0600 -o "$user" -g "$user" "$env_file" "$rootless_destination"
+  done
 done
 
 jq -r '.volumes | to_entries[] | [.key, (.value.hostPath // "")] | @tsv' "$BUNDLE/stack.ir.json" | while IFS="$(printf '\t')" read -r name path; do
@@ -338,28 +377,43 @@ done
 
 ln -sfn "$release" "$STATE_ROOT/.current-new"
 mv -Tf "$STATE_ROOT/.current-new" "$STATE_ROOT/current"
-ln -sfn "$rootless_release" "$ROOTLESS_STATE_ROOT/.current-new"
-mv -Tf "$ROOTLESS_STATE_ROOT/.current-new" "$ROOTLESS_STATE_ROOT/current"
+for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+  state_root="${ROOTLESS_DOMAIN_STATE_ROOTS[$i]}"
+  rootless_release="${ROOTLESS_RELEASES[$i]}"
+  ln -sfn "$rootless_release" "$state_root/.current-new"
+  mv -Tf "$state_root/.current-new" "$state_root/current"
+done
 find "$QUADLET_DIR" -maxdepth 1 -type f -name 'webservices-*' -delete
 find /etc/systemd/system -maxdepth 1 -type f -name 'webservices-*.target' -delete
 find /etc/systemd/system -maxdepth 1 -type f -name 'webservices.target' -delete
 find "$release/quadlet/rootful" -maxdepth 1 -type f ! -name '*.target' -exec install -m 0644 {} "$QUADLET_DIR/" \;
 install -m 0644 "$release/quadlet/rootful"/*.target /etc/systemd/system/
-find "$rootless_quadlet_dir" -maxdepth 1 -type f -name 'webservices-*' -delete
-find "$rootless_systemd_dir" -maxdepth 1 -type f -name 'webservices-*.target' -delete
-find "$rootless_systemd_dir" -maxdepth 1 -type f -name 'webservices.target' -delete
-find "$rootless_release/quadlet/rootless" -maxdepth 1 -type f ! -name '*.target' -exec install -m 0644 -o "$ROOTLESS_USER" -g "$ROOTLESS_USER" {} "$rootless_quadlet_dir/" \;
-install -m 0644 -o "$ROOTLESS_USER" -g "$ROOTLESS_USER" "$rootless_release/quadlet/rootless"/*.target "$rootless_systemd_dir/"
+for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+  domain="${ROOTLESS_DOMAIN_NAMES[$i]}"
+  user="${ROOTLESS_DOMAIN_USERS[$i]}"
+  rootless_release="${ROOTLESS_RELEASES[$i]}"
+  rootless_quadlet_dir="${ROOTLESS_QUADLET_DIRS[$i]}"
+  rootless_systemd_dir="${ROOTLESS_SYSTEMD_DIRS[$i]}"
+  find "$rootless_quadlet_dir" -maxdepth 1 -type f -name 'webservices-*' -delete
+  find "$rootless_systemd_dir" -maxdepth 1 -type f -name 'webservices-*.target' -delete
+  find "$rootless_systemd_dir" -maxdepth 1 -type f -name 'webservices.target' -delete
+  find "$rootless_release/quadlet/rootless-$domain" -maxdepth 1 -type f ! -name '*.target' -exec install -m 0644 -o "$user" -g "$user" {} "$rootless_quadlet_dir/" \;
+  install -m 0644 -o "$user" -g "$user" "$rootless_release/quadlet/rootless-$domain"/*.target "$rootless_systemd_dir/"
+done
 install -m 0755 "$release/ops/webservices-auto-update" /usr/local/sbin/webservices-auto-update
 install -m 0644 "$release/ops/webservices-auto-update.service" "$release/ops/webservices-auto-update.timer" /etc/systemd/system/
 
 rollback() {
   status=$?
   printf '[podman-install] activation failed; restoring previous release\n' >&2
-  if [ -n "$previous_rootless" ] && [ -d "$previous_rootless" ]; then
-    ln -sfn "$previous_rootless" "$ROOTLESS_STATE_ROOT/.current-old"
-    mv -Tf "$ROOTLESS_STATE_ROOT/.current-old" "$ROOTLESS_STATE_ROOT/current"
-  fi
+  for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+    previous_rootless="${ROOTLESS_PREVIOUS[$i]}"
+    state_root="${ROOTLESS_DOMAIN_STATE_ROOTS[$i]}"
+    if [ -n "$previous_rootless" ] && [ -d "$previous_rootless" ]; then
+      ln -sfn "$previous_rootless" "$state_root/.current-old"
+      mv -Tf "$state_root/.current-old" "$state_root/current"
+    fi
+  done
   if [ -n "$previous" ] && [ -d "$previous/quadlet" ]; then
     ln -sfn "$previous" "$STATE_ROOT/.current-old"
     mv -Tf "$STATE_ROOT/.current-old" "$STATE_ROOT/current"
@@ -378,18 +432,66 @@ rollback() {
 trap rollback ERR
 
 user_systemctl() {
-  /usr/sbin/runuser -u "$ROOTLESS_USER" -- env HOME="$rootless_home" XDG_RUNTIME_DIR="/run/user/${rootless_uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${rootless_uid}/bus" systemctl --user "$@"
+  local index="$1" user home uid
+  shift
+  user="${ROOTLESS_DOMAIN_USERS[$index]}"
+  home="${ROOTLESS_HOMES[$index]}"
+  uid="${ROOTLESS_UIDS[$index]}"
+  /usr/sbin/runuser -u "$user" -- env HOME="$home" XDG_RUNTIME_DIR="/run/user/${uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" systemctl --user "$@"
+}
+
+restart_rootful_network_units() {
+  local units=()
+  while IFS= read -r unit; do
+    [ -n "$unit" ] && units+=("$unit")
+  done < <(systemctl list-unit-files 'webservices-*-network.service' --no-legend --no-pager | awk '{print $1}')
+  [ "${#units[@]}" -eq 0 ] || systemctl restart "${units[@]}"
+}
+
+restart_rootless_network_units() {
+  local index="$1" units=()
+  while IFS= read -r unit; do
+    [ -n "$unit" ] && units+=("$unit")
+  done < <(user_systemctl "$index" list-unit-files 'webservices-*-network.service' --no-legend --no-pager | awk '{print $1}')
+  [ "${#units[@]}" -eq 0 ] || user_systemctl "$index" restart "${units[@]}"
+}
+
+grant_test_runner_managed_socket_access() {
+  local launch_user="${ROOTLESS_DOMAIN_USERS[0]}"
+  local managed_index=1
+  local managed_user="${ROOTLESS_DOMAIN_USERS[$managed_index]}"
+  local managed_uid="${ROOTLESS_UIDS[$managed_index]}"
+  local runtime_dir="/run/user/${managed_uid}"
+  local podman_dir="$runtime_dir/podman"
+  local socket="$podman_dir/podman.sock"
+
+  id -nG "$launch_user" | tr ' ' '\n' | grep -Fxq "$managed_user" || usermod --append --groups "$managed_user" "$launch_user"
+  [ -d "$runtime_dir" ] && chgrp "$managed_user" "$runtime_dir" && chmod g+x "$runtime_dir"
+  [ -d "$podman_dir" ] && chgrp "$managed_user" "$podman_dir" && chmod g+x "$podman_dir"
+  # The test-runner container sees this cross-user socket as nobody:nogroup
+  # under rootless user namespaces, so group mode is insufficient inside the
+  # container. This socket belongs to the isolated test-runners domain only.
+  [ -S "$socket" ] && chgrp "$managed_user" "$socket" && chmod go+rw "$socket"
 }
 
 systemctl stop webservices.target || true
 systemctl daemon-reload
-user_systemctl daemon-reload
-user_systemctl enable --now podman.socket
+restart_rootful_network_units
+for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+  user_systemctl "$i" daemon-reload
+  user_systemctl "$i" enable --now podman.socket
+  restart_rootless_network_units "$i"
+done
+grant_test_runner_managed_socket_access
 systemctl enable --now webservices-auto-update.timer
-user_systemctl restart webservices.target
-user_systemctl --quiet is-active webservices.target
+for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+  user_systemctl "$i" restart webservices.target
+  user_systemctl "$i" --quiet is-active webservices.target
+done
 systemctl restart webservices.target
 systemctl --quiet is-active webservices.target
 trap - ERR
 printf '[podman-install] active rootful release: %s\n' "$release"
-printf '[podman-install] active rootless release: %s\n' "$rootless_release"
+for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+  printf '[podman-install] active rootless %s release: %s\n' "${ROOTLESS_DOMAIN_NAMES[$i]}" "${ROOTLESS_RELEASES[$i]}"
+done

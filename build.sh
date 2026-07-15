@@ -166,13 +166,13 @@ log "rendering systemd user units"
   --bundle-root "$DIST_DIR/build" \
   --output-dir "$DIST_DIR/build/systemd-user"
 
-cat > "$DIST_DIR/build/.dockerignore" <<'EOF_DOCKERIGNORE'
+cat > "$DIST_DIR/build/.containerignore" <<'EOF_CONTAINERIGNORE'
 artifact.tar
 artifact.sha256
 build-info.json
 runtime
 systemd-user
-EOF_DOCKERIGNORE
+EOF_CONTAINERIGNORE
 
 cat > "$DIST_DIR/deploy.sh" <<'EOF_DEPLOY'
 #!/usr/bin/env bash

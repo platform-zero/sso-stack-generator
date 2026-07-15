@@ -154,6 +154,8 @@ load_site_values() {
   render_set CADDY_TLS_MODE "$(yaml_get_scalar "$site_config_file" 'runtime.caddy_tls_mode')"
   [ -n "$(render_get CADDY_TLS_MODE)" ] || render_set CADDY_TLS_MODE "local"
 
+  render_set TRUSTED_PROXY_SOURCE_RANGES "$(yaml_get_scalar "$site_config_file" 'runtime.trusted_proxy_source_ranges')"
+
   local matrix_authentication_service_active
   matrix_authentication_service_active="$(yaml_get_scalar "$site_config_file" 'matrix_authentication_service.active')"
   if [ -n "$matrix_authentication_service_active" ]; then

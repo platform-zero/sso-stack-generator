@@ -91,7 +91,7 @@ deploy_state_manifest_for_root() {
 deploy_state_file_manifest() {
   local bundle_root="$1"
   deploy_state_manifest_for_root "$bundle_root" \
-    .dockerignore \
+    .containerignore \
     runtime-model.yml \
     global.settings \
     scripts \

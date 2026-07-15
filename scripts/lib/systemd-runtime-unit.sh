@@ -82,7 +82,6 @@ done
 require_cmd jq
 
 runtime_model() {
-  COMPOSE_IGNORE_ORPHANS="${COMPOSE_IGNORE_ORPHANS:-true}" \
   container_contract \
     --project-name "$PROJECT_NAME" \
     --project-directory "$PROJECT_DIRECTORY" \

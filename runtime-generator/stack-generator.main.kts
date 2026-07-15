@@ -123,13 +123,13 @@ fun importService(name: String, source: ObjectNode): ObjectNode {
 }
 
 fun mergeRuntimeOverlayFile(runtime: ObjectNode, path: Path) {
-    val compose = readTree(path)
+    val runtimeOverlay = readTree(path)
     val anchors = Regex("(?m)^([A-Za-z0-9_.-]+):\\s*&([A-Za-z0-9_.-]+)\\s*$")
         .findAll(path.readText())
-        .mapNotNull { match -> compose.get(match.groupValues[1])?.let { match.groupValues[2] to it } }
+        .mapNotNull { match -> runtimeOverlay.get(match.groupValues[1])?.let { match.groupValues[2] to it } }
         .toMap()
     val services = runtime.with("services")
-    compose.path("services").fieldsMap().forEach { (name, value) ->
+    runtimeOverlay.path("services").fieldsMap().forEach { (name, value) ->
         if (services.has(name)) fail("duplicate service '$name' while importing $path")
         val raw = value as ObjectNode
         val resolved = obj()
@@ -145,7 +145,7 @@ fun mergeRuntimeOverlayFile(runtime: ObjectNode, path: Path) {
         services.set<ObjectNode>(name, importService(name, resolved))
     }
     val networks = runtime.with("networks")
-    compose.path("networks").fieldsMap().forEach { (name, value) ->
+    runtimeOverlay.path("networks").fieldsMap().forEach { (name, value) ->
         if (!networks.has(name)) {
             val network = obj()
             if (value.isObject) {
@@ -156,7 +156,7 @@ fun mergeRuntimeOverlayFile(runtime: ObjectNode, path: Path) {
         }
     }
     val volumes = runtime.with("volumes")
-    compose.path("volumes").fieldsMap().forEach { (name, value) ->
+    runtimeOverlay.path("volumes").fieldsMap().forEach { (name, value) ->
         if (!volumes.has(name)) {
             val volume = obj()
             val device = value.path("driver_opts").path("device").textOrNull()
@@ -180,8 +180,8 @@ fun commandImport(options: Map<String, String>) {
     runtime.set<ObjectNode>("volumes", obj())
 
     val runtimeFiles = mutableListOf<Path>()
-    val composeDir = moduleDir.resolve("runtime.overlays")
-    if (composeDir.isDirectory()) runtimeFiles += composeDir.listDirectoryEntries("*.yml").sorted()
+    val runtimeOverlayDir = moduleDir.resolve("runtime.overlays")
+    if (runtimeOverlayDir.isDirectory()) runtimeFiles += runtimeOverlayDir.listDirectoryEntries("*.yml").sorted()
     if (moduleId == "stack-foundation") {
         listOf("global.settings/networks.yml", "global.settings/volume-init.yml")
             .map(moduleDir::resolve).filter(Path::isRegularFile).forEach(runtimeFiles::add)
@@ -330,10 +330,39 @@ val podmanRootfulServices = setOf(
     "volume-init"
 )
 
+val podmanRootlessServiceDomains = mapOf(
+    "test-runner-managed" to "test-runners",
+    "forgejo-runner" to "forgejo-runner",
+    "jupyterhub" to "jupyterhub"
+)
+
+val podmanRootlessSocketUsers = mapOf(
+    "webservices" to "webservices",
+    "test-runners" to "webservices-test-runners",
+    "forgejo-runner" to "webservices-forgejo-runner",
+    "jupyterhub" to "webservices-jupyterhub"
+)
+
 fun applyPodmanPlacementPolicy(ir: ObjectNode) {
     ir.path("services").fieldsMap().forEach { (name, serviceNode) ->
         val service = serviceNode as ObjectNode
-        service.put("placement", if (name in podmanRootfulServices) "rootful" else "rootless")
+        if (name in podmanRootfulServices) {
+            service.put("placement", "rootful")
+        } else {
+            val domain = podmanRootlessServiceDomains[name] ?: "webservices"
+            service.put("placement", "rootless")
+            service.put("rootlessDomain", domain)
+            service.put("rootlessUser", podmanRootlessSocketUsers.getValue(domain))
+            service.put("rootlessStateRoot", if (domain == "webservices") "/var/lib/webservices-rootless" else "/var/lib/webservices-rootless-$domain")
+            service.put("rootlessRuntimeDir", "/run/user/\${${domain.uppercase().replace("-", "_")}_ROOTLESS_UID}/webservices")
+        }
+        if (name == "caddy") {
+            val networks = service.with("networks")
+            networks.removeAll()
+            networks.set<ObjectNode>("caddy", obj().also { caddyNetwork ->
+                caddyNetwork.set<ArrayNode>("aliases", arr().add("caddy"))
+            })
+        }
     }
 }
 
@@ -659,7 +688,7 @@ fun materializeSiteManifest(manifestPath: Path, output: Path) {
     }
 }
 
-fun composeService(service: ObjectNode): ObjectNode {
+fun runtimeModelService(service: ObjectNode): ObjectNode {
     val output = obj()
     listOf(
         "image" to "image", "containerName" to "container_name", "environment" to "environment",
@@ -698,10 +727,10 @@ fun composeService(service: ObjectNode): ObjectNode {
 }
 
 fun renderRuntimeModel(ir: ObjectNode, output: Path) {
-    val compose = obj().put("name", "webservices")
+    val runtimeModel = obj().put("name", "webservices")
     val services = obj()
-    ir.path("services").fieldsMap().forEach { (name, service) -> services.set<ObjectNode>(name, composeService(service as ObjectNode)) }
-    compose.set<ObjectNode>("services", services)
+    ir.path("services").fieldsMap().forEach { (name, service) -> services.set<ObjectNode>(name, runtimeModelService(service as ObjectNode)) }
+    runtimeModel.set<ObjectNode>("services", services)
     val networks = obj()
     ir.path("networks").fieldsMap().forEach { (name, value) ->
         val external = value.path("external").asBoolean(false)
@@ -713,7 +742,7 @@ fun renderRuntimeModel(ir: ObjectNode, output: Path) {
         }
         networks.set<ObjectNode>(name, network)
     }
-    compose.set<ObjectNode>("networks", networks)
+    runtimeModel.set<ObjectNode>("networks", networks)
     val volumes = obj()
     ir.path("volumes").fieldsMap().forEach { (name, value) ->
         val volume = obj().put("name", "webservices_$name")
@@ -723,20 +752,20 @@ fun renderRuntimeModel(ir: ObjectNode, output: Path) {
         }
         volumes.set<ObjectNode>(name, volume)
     }
-    compose.set<ObjectNode>("volumes", volumes)
-    writeYaml(output.resolve("runtime-model.yml"), compose)
+    runtimeModel.set<ObjectNode>("volumes", volumes)
+    writeYaml(output.resolve("runtime-model.yml"), runtimeModel)
 }
 
 fun renderRuntimeOverlayShard(runtimePath: Path, outputDir: Path, predeclaredVolumes: Set<String>) {
     val runtime = readTree(runtimePath)
     if (runtime.path("schemaVersion").asInt() != 1) fail("invalid runtime schema: $runtimePath")
     val moduleId = runtime.path("module").asText().ifBlank { fail("runtime lacks module id: $runtimePath") }
-    val compose = obj()
+    val runtimeModel = obj()
     val services = obj()
     runtime.path("services").fieldsMap().forEach { (name, service) ->
-        services.set<ObjectNode>(name, composeService(service as ObjectNode))
+        services.set<ObjectNode>(name, runtimeModelService(service as ObjectNode))
     }
-    compose.set<ObjectNode>("services", services)
+    runtimeModel.set<ObjectNode>("services", services)
     val volumes = obj()
     runtime.path("volumes").fieldsMap().forEach { (name, value) ->
         if (name in predeclaredVolumes) return@forEach
@@ -747,9 +776,9 @@ fun renderRuntimeOverlayShard(runtimePath: Path, outputDir: Path, predeclaredVol
         }
         volumes.set<ObjectNode>(name, volume)
     }
-    if (volumes.size() > 0) compose.set<ObjectNode>("volumes", volumes)
+    if (volumes.size() > 0) runtimeModel.set<ObjectNode>("volumes", volumes)
     outputDir.createDirectories()
-    writeYaml(outputDir.resolve("$moduleId.yml"), compose)
+    writeYaml(outputDir.resolve("$moduleId.yml"), runtimeModel)
 }
 
 fun commandRenderRuntimeOverlays(options: Map<String, String>) {
@@ -776,6 +805,7 @@ data class PodmanDomain(
     val name: String,
     val quadletDir: String,
     val stateRoot: String,
+    val rootlessUser: String?,
     val envFilePrefix: String,
     val targetInstall: String,
     val releaseRoot: String
@@ -785,19 +815,58 @@ val rootfulDomain = PodmanDomain(
     name = "rootful",
     quadletDir = "quadlet/rootful",
     stateRoot = "/var/lib/webservices",
+    rootlessUser = null,
     envFilePrefix = "/run/webservices",
     targetInstall = "multi-user.target",
     releaseRoot = "/var/lib/webservices/current"
 )
 
-val rootlessDomain = PodmanDomain(
-    name = "rootless",
-    quadletDir = "quadlet/rootless",
-    stateRoot = "/var/lib/webservices-rootless",
-    envFilePrefix = "%t/webservices",
-    targetInstall = "default.target",
-    releaseRoot = "/var/lib/webservices-rootless/current"
+val rootlessDomains = listOf(
+    PodmanDomain(
+        name = "webservices",
+        quadletDir = "quadlet/rootless-webservices",
+        stateRoot = "/var/lib/webservices-rootless",
+        rootlessUser = "webservices",
+        envFilePrefix = "%t/webservices",
+        targetInstall = "default.target",
+        releaseRoot = "/var/lib/webservices-rootless/current"
+    ),
+    PodmanDomain(
+        name = "test-runners",
+        quadletDir = "quadlet/rootless-test-runners",
+        stateRoot = "/var/lib/webservices-rootless-test-runners",
+        rootlessUser = "webservices-test-runners",
+        envFilePrefix = "%t/webservices",
+        targetInstall = "default.target",
+        releaseRoot = "/var/lib/webservices-rootless-test-runners/current"
+    ),
+    PodmanDomain(
+        name = "forgejo-runner",
+        quadletDir = "quadlet/rootless-forgejo-runner",
+        stateRoot = "/var/lib/webservices-rootless-forgejo-runner",
+        rootlessUser = "webservices-forgejo-runner",
+        envFilePrefix = "%t/webservices",
+        targetInstall = "default.target",
+        releaseRoot = "/var/lib/webservices-rootless-forgejo-runner/current"
+    ),
+    PodmanDomain(
+        name = "jupyterhub",
+        quadletDir = "quadlet/rootless-jupyterhub",
+        stateRoot = "/var/lib/webservices-rootless-jupyterhub",
+        rootlessUser = "webservices-jupyterhub",
+        envFilePrefix = "%t/webservices",
+        targetInstall = "default.target",
+        releaseRoot = "/var/lib/webservices-rootless-jupyterhub/current"
+    )
 )
+
+val rootlessDomainByName = rootlessDomains.associateBy { it.name }
+val defaultRootlessDomain = rootlessDomainByName.getValue("webservices")
+
+fun podmanDomainForService(service: JsonNode): PodmanDomain =
+    if (service.path("placement").asText("rootful") == "rootful") rootfulDomain
+    else rootlessDomainByName[service.path("rootlessDomain").asText("webservices")]
+        ?: fail("service has unknown rootless domain '${service.path("rootlessDomain").asText()}'")
 
 data class LoopbackEndpoint(val service: String, val containerPort: String, val hostPort: Int)
 fun podmanNetworkName(domain: PodmanDomain, name: String): String =
@@ -820,35 +889,35 @@ fun rootlessHostPath(name: String, hostPath: String): String {
     }
 }
 
-fun resolvedVolumeSource(source: String, allVolumes: JsonNode, placement: String): String {
+fun resolvedVolumeSource(source: String, allVolumes: JsonNode, domain: PodmanDomain): String {
     val volume = allVolumes.path(source)
-    val hostPath = volume.path("hostPath").textOrNull() ?: return runtimeBindPath(source, if (placement == "rootless") rootlessDomain else rootfulDomain)
-    if (placement != "rootless") return hostPath
+    val hostPath = volume.path("hostPath").textOrNull() ?: return runtimeBindPath(source, domain)
+    if (domain.name == "rootful") return hostPath
     return if (volume.path("rootlessStrategy").asText("copy") == "shared") hostPath else rootlessHostPath(source, hostPath)
 }
 
-fun rootlessCopyVolume(source: String, allVolumes: JsonNode, placement: String): Boolean {
-    if (placement != "rootless") return false
+fun rootlessCopyVolume(source: String, allVolumes: JsonNode, domain: PodmanDomain): Boolean {
+    if (domain.name == "rootful") return false
     val volume = allVolumes.path(source)
     return volume.has("hostPath") && volume.path("rootlessStrategy").asText("copy") != "shared"
 }
 
-fun volumeLine(volume: JsonNode, allVolumes: JsonNode, placement: String): String {
+fun volumeLine(volume: JsonNode, allVolumes: JsonNode, domain: PodmanDomain): String {
     if (volume.isTextual) {
         val raw = volume.asText()
         val parts = raw.split(':')
         val source = parts.first()
-        val resolved = resolvedVolumeSource(source, allVolumes, placement)
+        val resolved = resolvedVolumeSource(source, allVolumes, domain)
         val tailParts = parts.drop(1).toMutableList()
-        if (rootlessCopyVolume(source, allVolumes, placement) && "ro" !in tailParts && "U" !in tailParts) tailParts += "U"
+        if (rootlessCopyVolume(source, allVolumes, domain) && "ro" !in tailParts && "U" !in tailParts) tailParts += "U"
         val tail = tailParts.joinToString(":")
         return if (tail.isBlank()) resolved else "$resolved:$tail"
     }
     val source = volume.path("source").asText()
-    val resolved = resolvedVolumeSource(source, allVolumes, placement)
+    val resolved = resolvedVolumeSource(source, allVolumes, domain)
     val suffix = when {
         volume.path("read_only").asBoolean(false) -> ":ro"
-        rootlessCopyVolume(source, allVolumes, placement) -> ":U"
+        rootlessCopyVolume(source, allVolumes, domain) -> ":U"
         else -> ""
     }
     return "$resolved:${volume.path("target").asText()}$suffix"
@@ -961,7 +1030,7 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
     quadlet.parent.createDirectories()
     val dependencies = service.path("dependencies").fieldsMap()
         .filter { (dependency, _) ->
-            ir.path("services").path(dependency).path("placement").asText("rootful") == service.path("placement").asText("rootful")
+            podmanDomainForService(ir.path("services").path(dependency)).name == domain.name
         }
     val lines = mutableListOf<String>()
     lines += "[Unit]"
@@ -989,8 +1058,7 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
             }
         }
     }
-    val placement = service.path("placement").asText("rootful")
-    service.path("volumes").forEach { lines += "Volume=${quadletLiteral(volumeLine(it, ir.path("volumes"), placement))}" }
+    service.path("volumes").forEach { lines += "Volume=${quadletLiteral(volumeLine(it, ir.path("volumes"), domain))}" }
     lines += "PodmanArgs=--image-volume=ignore"
     service.path("ephemeralImageVolumes").forEach { lines += "Tmpfs=${it.asText()}" }
     service.path("userns").textOrNull()?.let { lines += "UserNS=$it" }
@@ -1030,7 +1098,7 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
         if (command.isArray) command.forEach { execParts += it.asText() } else execParts += shellWords(command.asText())
     }
     if (execParts.isNotEmpty()) lines += "Exec=${execParts.joinToString(" ") { systemdQuote(it) }}"
-    // Compose healthcheck shell fragments need a dedicated Podman translation pass.
+    // Shell healthcheck fragments need a dedicated Podman translation pass.
     // For the rootful cutover, systemd owns process liveness and does not gate startup on container health.
     lines += "LogDriver=journald"
     lines += ""
@@ -1066,7 +1134,7 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
 
 fun renderPodman(ir: ObjectNode, output: Path) {
     val loopbacks = loopbackEndpoints(ir, output)
-    listOf(rootfulDomain, rootlessDomain).forEach { domain ->
+    (listOf(rootfulDomain) + rootlessDomains).forEach { domain ->
         ir.path("networks").fieldsMap().forEach { (name, value) ->
             val lines = mutableListOf("[Network]", "NetworkName=${podmanNetworkName(domain, name)}", "Driver=${value.path("driver").asText("bridge")}")
             if (value.path("internal").asBoolean(false)) lines += "Internal=true"
@@ -1074,14 +1142,14 @@ fun renderPodman(ir: ObjectNode, output: Path) {
         }
         ir.path("services").fieldsMap()
             .filter { (_, service) ->
-                service.path("placement").asText("rootful") == domain.name &&
+                podmanDomainForService(service).name == domain.name &&
                     service.path("lifecycle").asText() != "on-demand"
             }
             .forEach { (name, service) -> renderQuadletService(name, service as ObjectNode, ir, output, domain, loopbacks) }
         listOf("core", "apps", "observability").forEach { target ->
             val targetServices = ir.path("services").fieldsMap()
                 .filter { (_, service) ->
-                    service.path("placement").asText("rootful") == domain.name &&
+                    podmanDomainForService(service).name == domain.name &&
                         service.path("target").asText("apps") == target &&
                         service.path("lifecycle").asText() != "on-demand"
                 }

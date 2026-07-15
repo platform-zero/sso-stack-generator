@@ -9,7 +9,7 @@ tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 graph_file="$tmp_dir/graph.json"
-runtime_config_json="$tmp_dir/compose.json"
+runtime_config_json="$tmp_dir/runtime-config.json"
 
 cat > "$graph_file" <<'EOF_JSON'
 {

@@ -215,20 +215,6 @@
       "lifecycle": "active"
     },
     {
-      "name": "autoheal-stack-module",
-      "kind": "stack-module",
-      "moduleId": "autoheal",
-      "groups": [],
-      "lifecycle": "retired"
-    },
-    {
-      "name": "watchtower-stack-module",
-      "kind": "stack-module",
-      "moduleId": "watchtower",
-      "groups": [],
-      "lifecycle": "retired"
-    },
-    {
       "name": "postgres-stack-module",
       "kind": "stack-module",
       "moduleId": "postgres",
@@ -368,13 +354,6 @@
       "lifecycle": "active"
     },
     {
-      "name": "cadvisor-stack-module",
-      "kind": "stack-module",
-      "moduleId": "cadvisor",
-      "groups": [],
-      "lifecycle": "retired"
-    },
-    {
       "name": "node-exporter-stack-module",
       "kind": "stack-module",
       "moduleId": "node-exporter",
@@ -413,13 +392,6 @@
         "dev-all"
       ],
       "lifecycle": "active"
-    },
-    {
-      "name": "dozzle-stack-module",
-      "kind": "stack-module",
-      "moduleId": "dozzle",
-      "groups": [],
-      "lifecycle": "retired"
     },
     {
       "name": "element-stack-module",

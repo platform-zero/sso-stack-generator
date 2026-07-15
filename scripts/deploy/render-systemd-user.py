@@ -102,7 +102,7 @@ def load_vm_identity_dependent_sets(local_bundle_root: Path) -> Tuple[Set[str], 
     if not metadata_path.exists():
         return set(VM_IDENTITY_DEPENDENT_DOMAINS), set(VM_IDENTITY_DEPENDENT_SERVICES)
     metadata = load_json(metadata_path)
-    capability = (metadata.get("capabilities") or {}).get("isolatedDockerVm") or {}
+    capability = (metadata.get("capabilities") or {}).get("isolatedRuntimeVm") or {}
     domains = set(capability.get("domains") or [])
     services = set(capability.get("services") or [])
     if not domains and not services:
