@@ -109,6 +109,7 @@ generate podman "$WORK_DIR/podman-a"
 generate podman "$WORK_DIR/podman-b"
 
 diff -ru "$WORK_DIR/podman-a" "$WORK_DIR/podman-b"
+WEBSERVICES_OVERLAY_ROOT="$WORK_DIR/podman-a" "$ROOT_DIR/scripts/test-host-lifecycle-static.sh"
 
 jq -e '
   (.schemaVersion == 2) and

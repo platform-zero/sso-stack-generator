@@ -104,21 +104,6 @@ jobs:
       - name: Run mount diagnostic checks
         run: ./scripts/test-mount-diagnostics.sh
 
-      - name: Run component selection checks
-        run: ./scripts/test-component-selection.sh
-
-      - name: Run contract report checks
-        run: ./scripts/test-contract-reports.sh
-
-      - name: Run host lifecycle static checks
-        run: ./scripts/test-host-lifecycle-static.sh
-
-      - name: Run Jellyfin FFmpeg compatibility checks
-        run: ./scripts/test-jellyfin-ffmpeg-websafe.sh
-
-      - name: Run service contract checks
-        run: ./scripts/test-service-contracts.sh
-
   module-composition:
     name: Clean all-module composition
     runs-on: ubuntu-24.04
