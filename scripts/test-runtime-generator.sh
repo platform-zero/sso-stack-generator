@@ -22,11 +22,14 @@ if [ -d "$MODULES_DIR/workload-spawner" ]; then
 fi
 
 generate() {
-  "$ROOT_DIR/generate.sh" \
-    --site "$SITE" \
-    --modules-dir "$MODULES_DIR" \
-    --backend "$1" \
-    --output "$2"
+  (
+    cd "$WORK_DIR"
+    "$ROOT_DIR/generate.sh" \
+      --site "$SITE" \
+      --modules-dir "$MODULES_DIR" \
+      --backend "$1" \
+      --output "$2"
+  )
 }
 
 generate podman "$WORK_DIR/podman-a"
@@ -92,6 +95,29 @@ for domain in webservices test-runners forgejo-runner jupyterhub workload-spawne
   test -d "$WORK_DIR/podman-a/quadlet/rootless-$domain"
 done
 
+if ! rg -Fxq 'StopTimeout=60' "$WORK_DIR/podman-a/quadlet/rootless-webservices/webservices-mariadb.container"; then
+  printf '[runtime-test] MariaDB Quadlet is missing its graceful container stop timeout\n' >&2
+  exit 1
+fi
+
+if ! rg -Fxq 'Network=host' "$WORK_DIR/podman-a/quadlet/rootful/webservices-alloy.container" ||
+   rg -q '^Network=webservices-' "$WORK_DIR/podman-a/quadlet/rootful/webservices-alloy.container"; then
+  printf '[runtime-test] Alloy must use the host network to reach the loopback-only rootless Loki bridge\n' >&2
+  exit 1
+fi
+
+if ! rg -Fxq 'PublishPort=127.0.0.1:13100:3100' "$WORK_DIR/podman-a/quadlet/rootless-webservices/webservices-loki.container" ||
+   ! rg -Fq 'url = "http://127.0.0.1:13100/loki/api/v1/push"' "$WORK_DIR/podman-a/runtime/configs/alloy/alloy.hcl"; then
+  printf '[runtime-test] Alloy/Loki cross-domain loopback bridge is incomplete\n' >&2
+  exit 1
+fi
+
+if ! jq -e '.panels[] | .targets[]? | select(.expr == "{source=\"journald\"}")' \
+  "$WORK_DIR/podman-a/runtime/configs/grafana/provisioning/dashboards/logs.json" >/dev/null; then
+  printf '[runtime-test] Grafana Logs dashboard does not query Alloy journal labels\n' >&2
+  exit 1
+fi
+
 if rg -n '/run/user/999/podman/podman.sock' \
   "$WORK_DIR/podman-a/stack.ir.json" \
   "$WORK_DIR/podman-a/runtime-model.yml" \
@@ -142,6 +168,11 @@ for domain in webservices test-runners forgejo-runner jupyterhub workload-spawne
 done
 
 "$WORK_DIR/podman-a/ops/install-podman-bundle.sh" --bundle "$WORK_DIR/podman-a"
+
+if rg -Fq 'chown -R "$domain_user:$domain_user" "$destination"' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-test] installer would overwrite persistent container-UID ownership on every deployment\n' >&2
+  exit 1
+fi
 
 test -f "$WORK_DIR/podman-a/runtime/configs/vaultwarden/index.html"
 test -f "$WORK_DIR/podman-a/runtime/configs/vaultwarden/seed.sh"

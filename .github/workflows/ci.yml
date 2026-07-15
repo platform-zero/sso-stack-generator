@@ -6,6 +6,9 @@ on:
     branches:
       - dev
       - stable
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -103,3 +106,50 @@ jobs:
 
       - name: Run runtime generator checks
         run: ./scripts/test-runtime-generator.sh
+
+      - name: Run component selection checks
+        run: ./scripts/test-component-selection.sh
+
+      - name: Run contract report checks
+        run: ./scripts/test-contract-reports.sh
+
+      - name: Run host lifecycle static checks
+        run: ./scripts/test-host-lifecycle-static.sh
+
+      - name: Run Jellyfin FFmpeg compatibility checks
+        run: ./scripts/test-jellyfin-ffmpeg-websafe.sh
+
+      - name: Run service contract checks
+        run: ./scripts/test-service-contracts.sh
+
+  module-composition:
+    name: Clean all-module composition
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out generator
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: dist/build/stack.containers/test-runner/playwright-tests/package-lock.json
+
+      - name: Install composition tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends jq rsync shellcheck
+
+      - name: Check out active module repositories
+        run: ./scripts/pull-modules.sh --workspace "$RUNNER_TEMP/module-workspace" dev-all
+
+      - name: Validate clean module composition
+        run: ./scripts/test-module-composition.sh "$RUNNER_TEMP/module-workspace"

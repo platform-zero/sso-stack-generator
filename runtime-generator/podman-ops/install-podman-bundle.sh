@@ -267,6 +267,22 @@ user_systemctl() {
   /usr/sbin/runuser -u "$user" -- env HOME="$home" XDG_RUNTIME_DIR="/run/user/${uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" systemctl --user "$@"
 }
 
+cancel_webservices_start_jobs() {
+  local mode="$1" index="$2" job unit type state
+  local -a jobs=()
+  if [ "$mode" = "rootless" ]; then
+    while read -r job unit type state; do
+      [[ "$unit" = webservices-* ]] && [ "$type" != "stop" ] && jobs+=("$job")
+    done < <(user_systemctl "$index" list-jobs --no-legend --no-pager 2>/dev/null || true)
+    [ "${#jobs[@]}" -eq 0 ] || user_systemctl "$index" cancel "${jobs[@]}" >/dev/null 2>&1 || true
+  else
+    while read -r job unit type state; do
+      [[ "$unit" = webservices-* ]] && [ "$type" != "stop" ] && jobs+=("$job")
+    done < <(systemctl list-jobs --no-legend --no-pager 2>/dev/null || true)
+    [ "${#jobs[@]}" -eq 0 ] || systemctl cancel "${jobs[@]}" >/dev/null 2>&1 || true
+  fi
+}
+
 mkdir -p "$release" "$STATE_ROOT/releases" "$STATE_ROOT/test-results" "$QUADLET_DIR" /run/webservices /var/log/webservices/caddy
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   ensure_rootless_domain "$i"
@@ -274,10 +290,16 @@ done
 
 # A service moved between rootless domains can otherwise keep its old host port
 # and volume mounts while the replacement domain starts.
+cancel_webservices_start_jobs rootful 0
+for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+  cancel_webservices_start_jobs rootless "$i"
+done
 systemctl stop webservices.target || true
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user_systemctl "$i" stop webservices.target || true
+  user_systemctl "$i" reset-failed 'webservices-*' || true
 done
+systemctl reset-failed 'webservices-*' || true
 cp -a "$BUNDLE/." "$release/"
 install -d -m 0755 "$release/repos"
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
@@ -344,6 +366,24 @@ copy_tree_once() {
   fi
 }
 
+ensure_rootless_volume_owner() {
+  local destination="$1" user="$2" current_uid desired_uid uid migratable=false
+  [ -d "$destination" ] || return 0
+  current_uid="$(stat -c '%u' "$destination")"
+  desired_uid="$(id -u "$user")"
+  [ "$current_uid" = "$desired_uid" ] && return 0
+  [ "$current_uid" = "0" ] && migratable=true
+  for uid in "${ROOTLESS_UIDS[@]}"; do
+    [ "$current_uid" = "$uid" ] && migratable=true
+  done
+  # A root-owned tree or one owned by another service domain needs a one-time
+  # migration. Subordinate UIDs belong to container users and must be retained.
+  if [ "$migratable" = true ]; then
+    chown -R "$user:$user" "$destination"
+  fi
+  return 0
+}
+
 grant_shared_access() {
   local path="$1"
   local user="$2"
@@ -408,8 +448,8 @@ PY
     forbidden) printf 'rootless volume is forbidden: %s\n' "$source" >&2; exit 1 ;;
     *) printf 'unknown rootless volume strategy %s for %s\n' "$strategy" "$source" >&2; exit 1 ;;
   esac
-  if [ "$strategy" != "shared" ] && [ -d "$destination" ]; then
-    chown -R "$domain_user:$domain_user" "$destination"
+  if [ "$strategy" != "shared" ]; then
+    ensure_rootless_volume_owner "$destination" "$domain_user"
   fi
 done
 
@@ -444,12 +484,31 @@ install -m 0644 "$release/ops/webservices-auto-update.service" "$release/ops/web
 rollback() {
   status=$?
   printf '[podman-install] activation failed; restoring previous release\n' >&2
+  cancel_webservices_start_jobs rootful 0
+  systemctl stop webservices.target || true
+  for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+    cancel_webservices_start_jobs rootless "$i"
+    user_systemctl "$i" stop webservices.target || true
+  done
   for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
     previous_rootless="${ROOTLESS_PREVIOUS[$i]}"
     state_root="${ROOTLESS_DOMAIN_STATE_ROOTS[$i]}"
     if [ -n "$previous_rootless" ] && [ -d "$previous_rootless" ]; then
+      domain="${ROOTLESS_DOMAIN_NAMES[$i]}"
+      user="${ROOTLESS_DOMAIN_USERS[$i]}"
+      rootless_quadlet_dir="${ROOTLESS_QUADLET_DIRS[$i]}"
+      rootless_systemd_dir="${ROOTLESS_SYSTEMD_DIRS[$i]}"
       ln -sfn "$previous_rootless" "$state_root/.current-old"
       mv -Tf "$state_root/.current-old" "$state_root/current"
+      find "$rootless_quadlet_dir" -maxdepth 1 -type f -name 'webservices-*' -delete
+      find "$rootless_systemd_dir" -maxdepth 1 -type f -name 'webservices-*.target' -delete
+      find "$rootless_systemd_dir" -maxdepth 1 -type f -name 'webservices.target' -delete
+      previous_rootless_quadlet="$previous_rootless/quadlet/rootless-$domain"
+      find "$previous_rootless_quadlet" -maxdepth 1 -type f ! -name '*.target' -exec install -m 0644 -o "$user" -g "$user" {} "$rootless_quadlet_dir/" \;
+      install -m 0644 -o "$user" -g "$user" "$previous_rootless_quadlet"/*.target "$rootless_systemd_dir/"
+      user_systemctl "$i" daemon-reload || true
+      user_systemctl "$i" reset-failed || true
+      user_systemctl "$i" restart webservices.target || true
     fi
   done
   if [ -n "$previous" ] && [ -d "$previous/quadlet" ]; then
@@ -475,26 +534,30 @@ else
 fi
 
 wait_for_target_services() {
-  local mode="$1" index="$2" target_dir="$3" deadline unit state unit_type result
+  local mode="$1" index="$2" target_dir="$3" deadline unit state unit_type result job pending pending_unit
   local -a units=()
   while IFS= read -r unit; do
     [ -n "$unit" ] && units+=("$unit")
   done < <(awk '/^Wants=/ {sub(/^Wants=/, ""); for (i = 1; i <= NF; i++) print $i}' "$target_dir"/webservices-*.target 2>/dev/null | sort -u)
   deadline=$((SECONDS + ${WEBSERVICES_ACTIVATION_TIMEOUT_SECONDS:-1800}))
-  for unit in "${units[@]}"; do
-    while true; do
+  while true; do
+    pending=0
+    pending_unit=""
+    for unit in "${units[@]}"; do
       if [ "$mode" = "rootless" ]; then
         state="$(user_systemctl "$index" is-active "$unit" 2>/dev/null || true)"
         unit_type="$(user_systemctl "$index" show -p Type --value "$unit" 2>/dev/null || true)"
         result="$(user_systemctl "$index" show -p Result --value "$unit" 2>/dev/null || true)"
+        job="$(user_systemctl "$index" show -p Job --value "$unit" 2>/dev/null || true)"
       else
         state="$(systemctl is-active "$unit" 2>/dev/null || true)"
         unit_type="$(systemctl show -p Type --value "$unit" 2>/dev/null || true)"
         result="$(systemctl show -p Result --value "$unit" 2>/dev/null || true)"
+        job="$(systemctl show -p Job --value "$unit" 2>/dev/null || true)"
       fi
-      [ "$state" = "active" ] && break
-      [ "$unit_type" = "oneshot" ] && [ "$state" = "inactive" ] && [ "$result" = "success" ] && break
-      if [ "$state" = "failed" ] || [ "$result" = "exit-code" ] || [ "$SECONDS" -ge "$deadline" ]; then
+      [ "$state" = "active" ] && continue
+      [ "$unit_type" = "oneshot" ] && [ "$state" = "inactive" ] && [ "$result" = "success" ] && continue
+      if [ "$state" = "failed" ] && [ -z "$job" ]; then
         printf '[podman-install] service readiness failed: unit=%s state=%s type=%s result=%s\n' "$unit" "$state" "$unit_type" "$result" >&2
         if [ "$mode" = "rootless" ]; then
           user_systemctl "$index" status "$unit" --no-pager -l >&2 || true
@@ -503,8 +566,20 @@ wait_for_target_services() {
         fi
         return 1
       fi
-      sleep 2
+      pending=$((pending + 1))
+      [ -n "$pending_unit" ] || pending_unit="$unit"
     done
+    [ "$pending" -eq 0 ] && return 0
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      printf '[podman-install] service readiness timed out: pending=%s first=%s\n' "$pending" "$pending_unit" >&2
+      if [ "$mode" = "rootless" ]; then
+        user_systemctl "$index" status "$pending_unit" --no-pager -l >&2 || true
+      else
+        systemctl status "$pending_unit" --no-pager -l >&2 || true
+      fi
+      return 1
+    fi
+    sleep 2
   done
 }
 
@@ -549,6 +624,7 @@ if systemctl list-unit-files webservices-caddy.service --no-legend --no-pager | 
 fi
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user_systemctl "$i" daemon-reload
+  user_systemctl "$i" reset-failed 'webservices-*' || true
   user_systemctl "$i" enable --now podman.socket
   restart_rootless_network_units "$i"
 done
@@ -559,6 +635,7 @@ for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user_systemctl "$i" --quiet is-active webservices.target
   wait_for_target_services rootless "$i" "${ROOTLESS_SYSTEMD_DIRS[$i]}"
 done
+systemctl reset-failed 'webservices-*' || true
 systemctl restart webservices.target
 systemctl --quiet is-active webservices.target
 wait_for_target_services rootful 0 /etc/systemd/system

@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 CLASSPATH_FILE="$ROOT/runtime-generator/build/generator-classpath.txt"
 
-"$ROOT/gradlew" -q :runtime-generator:prepareGenerator
+"$ROOT/gradlew" -p "$ROOT" -q :runtime-generator:prepareGenerator
 GENERATOR_CLASSPATH="$(<"$CLASSPATH_FILE")"
 export STACK_GENERATOR_ROOT="$ROOT"
 exec java -cp "$GENERATOR_CLASSPATH" \

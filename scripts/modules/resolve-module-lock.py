@@ -131,12 +131,15 @@ def validate_metadata(lock_entry: dict, metadata: dict, source_dir: Path) -> dic
 
     dependencies = lock_entry.get("dependencies", metadata.get("dependencies", []))
     overlays = metadata.get("overlays")
+    test_assets = metadata.get("testAssets", [])
     if not isinstance(dependencies, list) or not all(isinstance(dep, str) and dep for dep in dependencies):
         die(f"module '{module_id}' dependencies must be an array of strings")
     if module_id in dependencies:
         die(f"module '{module_id}' depends on itself")
     if not isinstance(overlays, list) or not overlays:
         die(f"module '{module_id}' overlays must be a non-empty array")
+    if not isinstance(test_assets, list):
+        die(f"module '{module_id}' testAssets must be an array")
 
     normalized_overlays = []
     for overlay in overlays:
@@ -147,11 +150,23 @@ def validate_metadata(lock_entry: dict, metadata: dict, source_dir: Path) -> dic
             die(f"module '{module_id}' overlay path does not exist: {overlay}")
         normalized_overlays.append(overlay)
 
+    normalized_test_assets = []
+    for asset in test_assets:
+        validate_rel_path(asset, f"module '{module_id}' test asset")
+        if asset != "tests/fixtures" and not asset.startswith("tests/fixtures/"):
+            die(f"module '{module_id}' test asset must be under tests/fixtures: {asset}")
+        if not (source_dir / asset).exists():
+            die(f"module '{module_id}' test asset path does not exist: {asset}")
+        if any(asset == overlay or asset.startswith(overlay.rstrip("/") + "/") for overlay in normalized_overlays):
+            die(f"module '{module_id}' test asset overlaps deployable overlay: {asset}")
+        normalized_test_assets.append(asset)
+
     return {
         "id": module_id,
         "repo": repo,
         "dependencies": dependencies,
         "overlays": normalized_overlays,
+        "testAssets": normalized_test_assets,
         "metadata": metadata,
     }
 
@@ -252,6 +267,7 @@ def materialize(
                 "path": lock_entry.get("path", "."),
                 "dependencies": module["dependencies"],
                 "overlays": module["overlays"],
+                "testAssets": module["testAssets"],
                 "lifecycle": module["metadata"].get("lifecycle"),
                 "sourceRepo": module["metadata"].get("sourceRepo"),
             }

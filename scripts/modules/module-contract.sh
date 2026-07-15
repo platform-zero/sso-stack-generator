@@ -45,12 +45,20 @@ if mode == "contract" and "module-contract" not in metadata.get("contracts", [])
     raise SystemExit("missing module-contract declaration")
 
 for key in ("overlays", "testAssets"):
-    for value in metadata.get(key, []):
+    values = metadata.get(key, [])
+    for value in values:
         path = pathlib.Path(value)
         if path.is_absolute() or "." in path.parts or ".." in path.parts:
             raise SystemExit(f"{key} path is unsafe: {value}")
         if not (repo_root / path).exists():
             raise SystemExit(f"missing {key} path: {value}")
+        if key == "testAssets" and not value.startswith("tests/fixtures/") and value != "tests/fixtures":
+            raise SystemExit(f"testAssets must be source-only paths under tests/fixtures: {value}")
+
+overlays = metadata.get("overlays", [])
+for asset in metadata.get("testAssets", []):
+    if any(asset == overlay or asset.startswith(overlay.rstrip("/") + "/") for overlay in overlays):
+        raise SystemExit(f"testAssets must not overlap deployable overlays: {asset}")
 
 if mode != "contract":
     raise SystemExit(0)
