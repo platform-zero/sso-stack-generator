@@ -4,6 +4,8 @@ trap 'status=$?; printf "[module-test] failed at line %s: %s (exit %s)\n" "$LINE
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+: "${WEBSERVICES_MODULE_CONTRACT_VALIDATOR:=$SCRIPT_DIR/modules/module-contract.sh}"
+export WEBSERVICES_MODULE_CONTRACT_VALIDATOR
 run_smoke=false
 run_contract=false
 module_dir=""
