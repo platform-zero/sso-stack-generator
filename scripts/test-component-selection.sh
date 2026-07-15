@@ -138,7 +138,6 @@ export POSTGRES_PIPELINE_USER=pipeline
 export POSTGRES_AIRFLOW_USER=airflow
 export SEAFILE_MEDIA_ROOT="$host_paths_dir/seafile"
 export SEAFILE_JWT_KEY=component-test-secret
-export SEARXNG_SECRET=component-test-secret
 export STACK_ADMIN_EMAIL=admin@example.test
 export VAULTWARDEN_ORG_ID=00000000-0000-0000-0000-000000000000
 export VAULTWARDEN_ORG_IDENTIFIER=component-test
@@ -219,7 +218,8 @@ EOF_CONFIG
 
 cat > "$site_root/webservices.sops.json" <<'EOF_SECRETS'
 {
-  "STACK_ADMIN_PASSWORD": "component-test-password"
+  "STACK_ADMIN_PASSWORD": "component-test-password",
+  "SEARXNG_SECRET": "component-test-secret"
 }
 EOF_SECRETS
 
