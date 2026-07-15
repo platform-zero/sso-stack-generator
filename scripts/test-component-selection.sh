@@ -138,6 +138,7 @@ export POSTGRES_PIPELINE_USER=pipeline
 export POSTGRES_AIRFLOW_USER=airflow
 export SEAFILE_MEDIA_ROOT="$host_paths_dir/seafile"
 export SEAFILE_JWT_KEY=component-test-secret
+export SEARXNG_SECRET=component-test-secret
 export STACK_ADMIN_EMAIL=admin@example.test
 export VAULTWARDEN_ORG_ID=00000000-0000-0000-0000-000000000000
 export VAULTWARDEN_ORG_IDENTIFIER=component-test
@@ -304,6 +305,9 @@ PATH="$fake_bin:$PATH" "$ROOT_DIR/scripts/deploy/render-runtime.sh" \
   --runtime-root "$runtime_root" \
   --skip-runtime-model-validate
 
+searxng_settings="$tmp_root/bundle/runtime/configs/searxng/settings.yml"
+assert_contains "$searxng_settings" 'secret_key:' "rendered SearXNG secret setting"
+assert_contains "$searxng_settings" '^[[:space:]]*- json$' "SearXNG JSON response format"
 assert_contains "$caddy_file" 'reverse_proxy vaultwarden:80' "full Vaultwarden route"
 assert_contains "$caddy_file" 'reverse_proxy portal:3000' "full Portal route"
 assert_contains "$caddy_file" 'redir https://portal' "full Homepage compatibility redirect"
