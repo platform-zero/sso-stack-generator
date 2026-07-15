@@ -104,9 +104,6 @@ jobs:
       - name: Run mount diagnostic checks
         run: ./scripts/test-mount-diagnostics.sh
 
-      - name: Run runtime generator checks
-        run: ./scripts/test-runtime-generator.sh
-
       - name: Run component selection checks
         run: ./scripts/test-component-selection.sh
 
@@ -136,13 +133,6 @@ jobs:
           java-version: '21'
           cache: gradle
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: npm
-          cache-dependency-path: dist/build/stack.containers/test-runner/playwright-tests/package-lock.json
-
       - name: Install composition tooling
         run: |
           sudo apt-get update
@@ -150,6 +140,13 @@ jobs:
 
       - name: Check out active module repositories
         run: ./scripts/pull-modules.sh --workspace "$RUNNER_TEMP/module-workspace" dev-all
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: ${{ runner.temp }}/module-workspace/test-runners-stack-module/stack.containers/test-runner/playwright-tests/package-lock.json
 
       - name: Validate clean module composition
         run: ./scripts/test-module-composition.sh "$RUNNER_TEMP/module-workspace"

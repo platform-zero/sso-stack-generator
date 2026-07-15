@@ -7,7 +7,80 @@ MODULES_DIR="${MODULES_DIR:-$ROOT_DIR/../modules}"
 source "$ROOT_DIR/scripts/lib/common.sh"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
-SOURCE_SITE="${SITE_MANIFEST:-$ROOT_DIR/../site-config/sites/latium/manifest.json}"
+[ -d "$MODULES_DIR" ] || {
+  printf '[runtime-test] module workspace not found: %s\n' "$MODULES_DIR" >&2
+  exit 1
+}
+
+default_site="$ROOT_DIR/../site-config/sites/latium/manifest.json"
+synthetic_site=false
+if [ -n "${SITE_MANIFEST:-}" ]; then
+  SOURCE_SITE="$SITE_MANIFEST"
+elif [ -f "$default_site" ]; then
+  SOURCE_SITE="$default_site"
+else
+  synthetic_site=true
+  fixture_site="$WORK_DIR/site-source"
+  mkdir -p "$fixture_site/global.settings"
+  mapfile -t fixture_modules < <(
+    find -L "$MODULES_DIR" -mindepth 2 -maxdepth 3 -name stack.module.json -type f -print \
+      | sort \
+      | xargs -r -n1 jq -r '.id'
+  )
+  [ "${#fixture_modules[@]}" -gt 0 ] || {
+    printf '[runtime-test] no module manifests found under %s\n' "$MODULES_DIR" >&2
+    exit 1
+  }
+  printf '%s\n' "${fixture_modules[@]}" \
+    | jq -R . \
+    | jq -s '{
+        schemaVersion: 2,
+        site: "ci-runtime",
+        stackConfig: "./global.settings/stack.config.yaml",
+        secretStore: "./global.settings/webservices.sops.json",
+        components: ["full", "searxng", "workload-spawner"],
+        modules: .
+      }' > "$fixture_site/manifest.json"
+  cat > "$fixture_site/global.settings/stack.config.yaml" <<'EOF_STACK_CONFIG'
+storage:
+  media_writer_uid: 1000
+  media_writer_gid: 1000
+  volume_root: "/mnt/stack/volumes"
+  vector_dbs: "/mnt/stack/vector-dbs"
+  pg_ssd_root: "/mnt/stack/pg-ssd"
+  custom:
+    qbittorrent_data: "/mnt/media/qbittorrent"
+    seafile_media: "/mnt/media/seafile-media"
+    jellyfin_media: "/mnt/media/jellyfin-media"
+runtime:
+  domain: "example.test"
+  admin_email: "admin@example.test"
+  admin_user: "admin"
+  trusted_proxy_source_ranges: "127.0.0.1/32 ::1/128"
+theme:
+  name: "ci"
+  brand_name: "ci"
+  mode: "dark"
+vaultwarden:
+  org_name: "ci"
+  org_identifier: "example.test"
+  org_id: "00000000-0000-0000-0000-000000000000"
+EOF_STACK_CONFIG
+  mapfile -t fixture_secret_keys < <(
+    {
+      rg --follow -o --no-filename '\{\{[A-Z_][A-Z0-9_]*\}\}' "$MODULES_DIR" \
+        | tr -d '{}'
+      rg --follow -o --no-filename '\$\{[A-Z_][A-Z0-9_]*[^}]*\}' "$MODULES_DIR" \
+        | sed -E 's/^\$\{([A-Z_][A-Z0-9_]*).*/\1/'
+    } | sort -u
+  )
+  printf '%s\n' "${fixture_secret_keys[@]}" \
+    | jq -Rn '[inputs | select(length > 0) | {key: ., value: "test"}] | from_entries' \
+      > "$fixture_site/global.settings/webservices.sops.json"
+  chmod 0600 "$fixture_site/global.settings/webservices.sops.json"
+  SOURCE_SITE="$fixture_site/manifest.json"
+fi
+
 SITE="$WORK_DIR/manifest.json"
 SOURCE_SITE_DIR="$(cd "$(dirname "$SOURCE_SITE")" && pwd -P)"
 cp -a "$SOURCE_SITE_DIR/global.settings" "$WORK_DIR/global.settings"
@@ -167,7 +240,20 @@ for domain in webservices test-runners forgejo-runner jupyterhub workload-spawne
   systemd-analyze verify "${units[@]}"
 done
 
-"$WORK_DIR/podman-a/ops/install-podman-bundle.sh" --bundle "$WORK_DIR/podman-a"
+if [ "$synthetic_site" = true ]; then
+  fake_bin="$WORK_DIR/fake-bin"
+  mkdir -p "$fake_bin"
+  cat > "$fake_bin/sops" <<'EOF_FAKE_SOPS'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$#" -eq 2 ] && [ "$1" = "--decrypt" ] && [ -f "$2" ]
+cat "$2"
+EOF_FAKE_SOPS
+  chmod +x "$fake_bin/sops"
+  PATH="$fake_bin:$PATH" "$WORK_DIR/podman-a/ops/install-podman-bundle.sh" --bundle "$WORK_DIR/podman-a"
+else
+  "$WORK_DIR/podman-a/ops/install-podman-bundle.sh" --bundle "$WORK_DIR/podman-a"
+fi
 
 if rg -Fq 'chown -R "$domain_user:$domain_user" "$destination"' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
   printf '[runtime-test] installer would overwrite persistent container-UID ownership on every deployment\n' >&2

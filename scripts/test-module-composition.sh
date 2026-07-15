@@ -11,10 +11,6 @@ MODULES_WORKSPACE="${1:-${WEBSERVICES_MODULES_WORKSPACE:-$ROOT_DIR/../modules}}"
   exit 1
 }
 MODULES_WORKSPACE="$(cd "$MODULES_WORKSPACE" && pwd -P)"
-[ -d "$ROOT_DIR/dist/build" ] || {
-  printf '[module-composition] generator base build not found: %s\n' "$ROOT_DIR/dist/build" >&2
-  exit 1
-}
 command -v jq >/dev/null
 command -v rsync >/dev/null
 command -v java >/dev/null
@@ -91,8 +87,15 @@ if duplicates:
     raise SystemExit(1)
 PY
 
-rsync -a --exclude '.git/' --exclude 'build/' --exclude 'node_modules/' "$ROOT_DIR/dist/build/" "$composition/"
-rsync -a --exclude '.git/' --exclude 'build/' "$ROOT_DIR/runtime-generator/" "$composition/runtime-generator/"
+rsync -a \
+  --exclude '.git/' \
+  --exclude '.gradle/' \
+  --exclude 'build/' \
+  --exclude 'dist/' \
+  --exclude 'modules-workspace/' \
+  --exclude 'node_modules/' \
+  --exclude 'out/' \
+  "$ROOT_DIR/" "$composition/"
 rm -rf \
   "$composition/stack.kotlin/test-runner" \
   "$composition/stack.containers/test-runner/playwright-tests"
@@ -138,5 +141,8 @@ npm --prefix "$playwright_dir" run test:unit -- --runInBand
   cd "$playwright_dir"
   PW_SKIP_GLOBAL_SETUP=1 npx playwright test --list
 )
+
+printf '[module-composition] validating generated runtime from the composed module set\n'
+MODULES_DIR="$normalized_modules" "$ROOT_DIR/scripts/test-runtime-generator.sh"
 
 printf '[module-composition] ok: %s independently validated modules\n' "${#module_roots[@]}"
