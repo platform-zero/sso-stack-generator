@@ -336,7 +336,8 @@ val podmanRootlessServiceDomains = mapOf(
     "jupyter-notebook-build" to "jupyterhub",
     "jupyterhub" to "jupyterhub",
     "workload-spawner-api" to "workload-spawner",
-    "workload-spawner-router" to "workload-spawner"
+    "workload-spawner-router" to "workload-spawner",
+    "workload-spawner-postgres" to "workload-spawner"
 )
 
 val podmanRootlessSocketUsers = mapOf(

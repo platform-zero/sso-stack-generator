@@ -82,6 +82,7 @@ jq -e '
   (($services | has("forgejo-runner") | not) or $services["forgejo-runner"].rootlessDomain == "forgejo-runner") and
   ($services["jupyterhub"].rootlessDomain == "jupyterhub") and
   ($services["jupyter-notebook-build"].rootlessDomain == "jupyterhub") and
+  (($services | has("workload-spawner-postgres") | not) or $services["workload-spawner-postgres"].rootlessDomain == "workload-spawner") and
   (($services | has("workload-spawner-api") | not) or $services["workload-spawner-api"].rootlessDomain == "workload-spawner") and
   (($services | has("workload-spawner-router") | not) or $services["workload-spawner-router"].rootlessDomain == "workload-spawner") and
   ($services["caddy"].networks | keys == ["caddy"])
