@@ -544,6 +544,9 @@ grant_test_runner_managed_socket_access() {
 
 systemctl daemon-reload
 restart_rootful_network_units
+if systemctl list-unit-files webservices-caddy.service --no-legend --no-pager | grep -q '^webservices-caddy\.service'; then
+  systemctl restart webservices-caddy.service || true
+fi
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user_systemctl "$i" daemon-reload
   user_systemctl "$i" enable --now podman.socket
@@ -552,11 +555,11 @@ done
 grant_test_runner_managed_socket_access
 systemctl enable --now webservices-auto-update.timer
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
-  user_systemctl "$i" --wait restart webservices.target
+  user_systemctl "$i" restart webservices.target
   user_systemctl "$i" --quiet is-active webservices.target
   wait_for_target_services rootless "$i" "${ROOTLESS_SYSTEMD_DIRS[$i]}"
 done
-systemctl --wait restart webservices.target
+systemctl restart webservices.target
 systemctl --quiet is-active webservices.target
 wait_for_target_services rootful 0 /etc/systemd/system
 trap - ERR
