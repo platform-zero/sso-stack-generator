@@ -1039,6 +1039,29 @@ fun loopbackEndpoints(ir: ObjectNode, output: Path): Map<String, List<LoopbackEn
     return endpoints.values.groupBy { it.service }
 }
 
+fun stopTimeoutSeconds(node: JsonNode): Long? {
+    if (node.isMissingNode || node.isNull) return null
+    if (node.isIntegralNumber) return node.asLong().coerceAtLeast(1)
+    val raw = node.asText().trim()
+    val part = Regex("(\\d+(?:\\.\\d+)?)(us|ms|s|m|h)")
+    val matches = part.findAll(raw).toList()
+    if (matches.isEmpty() || matches.joinToString("") { it.value } != raw) {
+        fail("invalid stopGracePeriod '$raw'; expected a Compose duration such as 30s or 1m30s")
+    }
+    val seconds = matches.sumOf { match ->
+        val value = match.groupValues[1].toDouble()
+        when (match.groupValues[2]) {
+            "us" -> value / 1_000_000.0
+            "ms" -> value / 1_000.0
+            "s" -> value
+            "m" -> value * 60.0
+            "h" -> value * 3_600.0
+            else -> fail("unsupported stopGracePeriod unit in '$raw'")
+        }
+    }
+    return kotlin.math.ceil(seconds).toLong().coerceAtLeast(1)
+}
+
 fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, output: Path, domain: PodmanDomain, loopbacks: Map<String, List<LoopbackEndpoint>>) {
     val quadlet = output.resolve("${domain.quadletDir}/webservices-$name.container")
     quadlet.parent.createDirectories()
@@ -1061,7 +1084,8 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
     lines += "ContainerName=$name"
     if (service.path("lifecycle").asText() == "daemon" && service.path("updatePolicy").asText() == "registry") lines += "AutoUpdate=registry"
     if (service.path("environment").isObject && !service.path("environment").isEmpty) lines += "EnvironmentFile=${domain.envFilePrefix}/$name.env"
-    if (name == "caddy") {
+    val hostNetwork = name == "caddy" || service.path("hostNetwork").asBoolean(false)
+    if (hostNetwork) {
         lines += "Network=host"
     } else {
         service.path("networks").let { networkNode ->
@@ -1077,7 +1101,7 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
     service.path("ephemeralImageVolumes").forEach { lines += "Tmpfs=${it.asText()}" }
     service.path("userns").textOrNull()?.let { lines += "UserNS=$it" }
     service.path("groupAdd").forEach { lines += "GroupAdd=${it.asText()}" }
-    if (name != "caddy") {
+    if (!hostNetwork) {
         service.path("ports").forEach { port ->
             val value = if (port.isTextual) port.asText() else {
                 val protocol = port.path("protocol").asText("tcp").let { if (it == "tcp") "" else "/$it" }
@@ -1112,6 +1136,7 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
         if (command.isArray) command.forEach { execParts += it.asText() } else execParts += shellWords(command.asText())
     }
     if (execParts.isNotEmpty()) lines += "Exec=${execParts.joinToString(" ") { systemdQuote(it) }}"
+    stopTimeoutSeconds(service.path("stopGracePeriod"))?.let { lines += "StopTimeout=$it" }
     // Shell healthcheck fragments need a dedicated Podman translation pass.
     // For the rootful cutover, systemd owns process liveness and does not gate startup on container health.
     lines += "LogDriver=journald"

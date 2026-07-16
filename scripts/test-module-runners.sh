@@ -13,7 +13,8 @@ trap cleanup EXIT
 
 workspace="$tmp_root/workspace"
 module_dir="$workspace/demo-stack-module"
-mkdir -p "$module_dir/tests"
+mkdir -p "$module_dir/tests/fixtures"
+printf 'fixture\n' > "$module_dir/tests/fixtures/example.txt"
 
 schema_file="$ROOT_DIR/modules/stack.module.schema.json"
 jq -e '
@@ -26,7 +27,7 @@ jq -e '
   and (.properties.smokeUnsupportedReason.minLength == 10)
   and (.properties.overlays.minItems == 1)
   and (.properties.overlays.items["$ref"] == "#/$defs/safeOverlayPath")
-  and (.properties.testAssets.items["$ref"] == "#/$defs/safeOverlayPath")
+  and (.properties.testAssets.items["$ref"] == "#/$defs/safeTestAssetPath")
 ' "$schema_file" >/dev/null
 
 cat > "$module_dir/stack.runtime.yaml" <<'EOF_RUNTIME'
@@ -56,7 +57,8 @@ cat > "$module_dir/stack.module.json" <<'EOF_MODULE'
   "runtimeDependencies": [],
   "contracts": ["demo-contract"],
   "smoke": "required",
-  "overlays": ["stack.runtime.yaml"]
+  "overlays": ["stack.runtime.yaml"],
+  "testAssets": ["tests/fixtures/example.txt"]
 }
 EOF_MODULE
 cat > "$module_dir/tests/validate.sh" <<'EOF_VALIDATE'
@@ -191,5 +193,36 @@ if [ "$bad_dep_status" -eq 0 ]; then
   exit 1
 fi
 grep -Fq 'invalid runtimeDependencies id' "$tmp_root/bad-dep.log"
+
+bad_asset_dir="$workspace/bad-asset-stack-module"
+mkdir -p "$bad_asset_dir/tests"
+cp "$module_dir/stack.runtime.yaml" "$bad_asset_dir/stack.runtime.yaml"
+cat > "$bad_asset_dir/stack.module.json" <<'EOF_BAD_ASSET'
+{
+  "schemaVersion": 1,
+  "id": "bad-asset",
+  "repo": "bad-asset-stack-module",
+  "lifecycle": "active",
+  "dependencies": [],
+  "runtimeDependencies": [],
+  "contracts": [],
+  "smoke": "external-only",
+  "smokeUnsupportedReason": "requires deployed DNS and generated secrets",
+  "overlays": ["stack.runtime.yaml"],
+  "testAssets": ["stack.runtime.yaml"]
+}
+EOF_BAD_ASSET
+
+trap - ERR
+set +e
+"$ROOT_DIR/scripts/test-module.sh" "$bad_asset_dir" >"$tmp_root/bad-asset.log" 2>&1
+bad_asset_status=$?
+set -e
+trap 'status=$?; printf "[module-runners-test] failed at line %s: %s (exit %s)\n" "$LINENO" "$BASH_COMMAND" "$status" >&2' ERR
+if [ "$bad_asset_status" -eq 0 ]; then
+  printf '[module-runners-test] deployable overlay was accepted as a test asset\n' >&2
+  exit 1
+fi
+grep -Fq 'testAssets must be source-only paths under tests/fixtures' "$tmp_root/bad-asset.log"
 
 printf '[module-runners-test] ok\n' >&2

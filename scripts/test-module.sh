@@ -4,6 +4,8 @@ trap 'status=$?; printf "[module-test] failed at line %s: %s (exit %s)\n" "$LINE
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+: "${WEBSERVICES_MODULE_CONTRACT_VALIDATOR:=$SCRIPT_DIR/modules/module-contract.sh}"
+export WEBSERVICES_MODULE_CONTRACT_VALIDATOR
 run_smoke=false
 run_contract=false
 module_dir=""
@@ -160,7 +162,6 @@ allowed_prefixes = (
     "scripts/lib/",
     "scripts/modules/",
     "docs/modules/",
-    "tests/fixtures/",
 )
 allowed_roots = {prefix.rstrip("/") for prefix in allowed_prefixes} | {"stack.runtime.yaml"}
 
@@ -181,7 +182,15 @@ if not overlays:
 for overlay in overlays:
     validate_relative_path(overlay, "overlays")
 for asset in metadata.get("testAssets", []):
-    validate_relative_path(asset, "testAssets")
+    if not isinstance(asset, str) or (asset != "tests/fixtures" and not asset.startswith("tests/fixtures/")):
+        raise SystemExit(f"testAssets must be source-only paths under tests/fixtures: {asset!r}")
+    asset_path = Path(asset)
+    if asset_path.is_absolute() or ".." in asset_path.parts or "." in asset_path.parts:
+        raise SystemExit(f"testAssets path is not safe: {asset}")
+    if not (module_dir / asset_path).exists():
+        raise SystemExit(f"testAssets path does not exist: {asset}")
+    if any(asset == overlay or asset.startswith(overlay.rstrip("/") + "/") for overlay in overlays):
+        raise SystemExit(f"testAssets must not overlap deployable overlays: {asset}")
 
 for script_name in ("validate.sh", "contract.sh", "smoke.sh"):
     script_path = module_dir / "tests" / script_name

@@ -17,7 +17,12 @@
     "safeOverlayPath": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^(?!(?:/|.*(?:^|/)\\.\\.(?:/|$)|.*(?:^|/)\\.(?:/|$)))(?:stack\\.runtime\\.yaml|(?:global\\.settings|stack\\.config|stack\\.containers|stack\\.kotlin|stack\\.js|stack\\.systemd|scripts/lib|scripts/modules|docs/modules|tests/fixtures)(?:/.*)?)$"
+      "pattern": "^(?!(?:/|.*(?:^|/)\\.\\.(?:/|$)|.*(?:^|/)\\.(?:/|$)))(?:stack\\.runtime\\.yaml|(?:global\\.settings|stack\\.config|stack\\.containers|stack\\.kotlin|stack\\.js|stack\\.systemd|scripts/lib|scripts/modules|docs/modules)(?:/.*)?)$"
+    },
+    "safeTestAssetPath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^tests/fixtures(?:/.*)?$"
     }
   },
   "properties": {
@@ -69,8 +74,9 @@
     },
     "sourceRepo": {"$ref": "#/$defs/repoName"},
     "testAssets": {
+      "description": "Source-only fixtures consumed by module validation or composed tests. Test assets are verified and recorded in resolution metadata, but are never copied into the deployable overlay.",
       "type": "array",
-      "items": {"$ref": "#/$defs/safeOverlayPath"},
+      "items": {"$ref": "#/$defs/safeTestAssetPath"},
       "uniqueItems": true,
       "default": []
     }

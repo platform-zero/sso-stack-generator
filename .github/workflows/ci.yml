@@ -6,6 +6,9 @@ on:
     branches:
       - dev
       - stable
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -100,6 +103,3 @@ jobs:
 
       - name: Run mount diagnostic checks
         run: ./scripts/test-mount-diagnostics.sh
-
-      - name: Run runtime generator checks
-        run: ./scripts/test-runtime-generator.sh

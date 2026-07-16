@@ -116,9 +116,17 @@ include_groups = group.get("includeCatalogGroups") or []
 if not isinstance(include_groups, list):
     raise SystemExit("includeCatalogGroups must be an array")
 include_groups = set(include_groups)
+repository_kinds = group.get("repositoryKinds") or []
+if not isinstance(repository_kinds, list) or any(not isinstance(kind, str) or not kind for kind in repository_kinds):
+    raise SystemExit("repositoryKinds must be an array of non-empty strings")
+repository_kinds = set(repository_kinds)
 for repo in ordered:
     repo_groups = repo.get("groups") or []
-    if repo.get("lifecycle") != "retired" and any(repo_group in include_groups for repo_group in repo_groups):
+    if (
+        repo.get("lifecycle") != "retired"
+        and any(repo_group in include_groups for repo_group in repo_groups)
+        and (not repository_kinds or repo.get("kind") in repository_kinds)
+    ):
         add_name(repo["name"])
 
 for name in selected_names:

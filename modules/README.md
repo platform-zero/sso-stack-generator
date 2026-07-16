@@ -18,6 +18,10 @@ pins belong in the site configuration repository.
 The `destruction` group is local-only inventory for retired extraction remnants.
 The pull helper reports those entries as skipped and does not clone them.
 
+The `module-ci` group selects active stack-module repositories plus the
+dual-purpose `test-runner` repository. It deliberately excludes unrelated source,
+site, and generator repositories from the cross-repository composition job.
+
 Module-specific service behavior belongs in the owning module repository under
 `tests/contract.sh` or `tests/smoke.sh`. Generator tests should cover generic
 schema, resolver, materialization, bundle, and deployed orchestration behavior.
