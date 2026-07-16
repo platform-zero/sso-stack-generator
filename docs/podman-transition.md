@@ -79,5 +79,8 @@ After the same-session cutover gate passes, the retired runtime is stopped and m
 Rollback is Podman release rollback through `/var/lib/webservices/releases` and
 `/var/lib/webservices-rootless/releases`; alternate runtimes are not fallback paths.
 JupyterHub uses the rootless Podman API socket through its compatible client
-path. Forgejo Runner and controller test suites remain deferred from the first
-Podman cutover.
+path. Forgejo Runner post-cutover validation and controller test-suite coverage
+are explicit post-refactor follow-up work tracked in
+[issue #4](https://github.com/platform-zero/sso-stack-generator/issues/4) and
+[issue #5](https://github.com/platform-zero/sso-stack-generator/issues/5). They
+do not block closure of the completed Podman runtime migration.
