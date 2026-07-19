@@ -325,6 +325,7 @@ val podmanRootfulServices = setOf(
     "caddy",
     "crowdsec",
     "kopia",
+    "kopia-snapshotter",
     "mailserver",
     "node-exporter",
     "volume-init"
