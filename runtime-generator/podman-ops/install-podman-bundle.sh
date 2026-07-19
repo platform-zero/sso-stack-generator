@@ -187,6 +187,13 @@ while IFS= read -r template; do
   fi
 done < <(find "$BUNDLE/runtime-env" -type f -name '*.env.template' -print 2>/dev/null | sort)
 
+if jq -e '.volumes | any(.rootlessStrategy? == "shared")' "$BUNDLE/stack.ir.json" >/dev/null; then
+  command -v setfacl >/dev/null || {
+    printf 'shared rootless volumes require the host ACL utility (setfacl)\n' >&2
+    exit 1
+  }
+fi
+
 verify_root="$(mktemp -d)"
 cleanup_paths+=("$verify_root")
 verify_quadlet_dir() {
@@ -388,10 +395,8 @@ grant_shared_access() {
   local path="$1"
   local user="$2"
   [ -n "$path" ] && [ -d "$path" ] || return 0
-  if command -v setfacl >/dev/null 2>&1; then
-    setfacl -Rm "u:${user}:rwX" "$path"
-    setfacl -Rdm "u:${user}:rwX" "$path"
-  fi
+  setfacl -Rm "u:${user}:rwX" "$path"
+  setfacl -Rdm "u:${user}:rwX" "$path"
 }
 
 command -v python3 >/dev/null
