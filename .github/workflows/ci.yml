@@ -82,6 +82,9 @@ jobs:
       - name: Run install bundle checks
         run: ./scripts/test-install-bundle.sh
 
+      - name: Run stable release gate checks
+        run: ./scripts/test-update-deploy-release-gate.sh
+
       - name: Run stackctl user checks
         run: ./scripts/test-stackctl-users.sh
 
@@ -94,6 +97,9 @@ jobs:
 
       - name: Run module runner checks
         run: ./scripts/test-module-runners.sh
+
+      - name: Run module security policy checks
+        run: ./scripts/test-security-policy.sh
 
       - name: Run external module checks
         run: ./scripts/test-external-modules.sh

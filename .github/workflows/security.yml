@@ -1,0 +1,22 @@
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches:
+      - dev
+      - stable
+  schedule:
+    - cron: '41 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security:
+    uses: platform-zero/.github/.github/workflows/security-ci.yml@d898da7e37622580447bd6a2a36abf6247cf9a8f

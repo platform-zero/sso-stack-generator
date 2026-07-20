@@ -12,6 +12,7 @@ BUILD_WORKSPACE="${WEBSERVICES_UPDATE_BUILD_WORKSPACE:-$HOME/webservices-builder
 LOG_DIR="$STATE_ROOT/logs"
 LOCK_FILE="$STATE_ROOT/update-deploy.lock"
 LAST_SUCCESS_FILE="$STATE_ROOT/last-success.json"
+LAST_FAILURE_FILE="$STATE_ROOT/last-failure.json"
 
 mkdir -p "$STATE_ROOT" "$LOG_DIR" "$BUILD_WORKSPACE"
 exec 9>"$LOCK_FILE"
@@ -119,16 +120,32 @@ last_deployed_key() {
 }
 
 record_success() {
-  local deploy_key="$1" generator_sha="$2" site_sha="$3" lock_hash="$4"
+  local deploy_key="$1" generator_sha="$2" site_sha="$3" lock_hash="$4" release_path="$5" previous_release="$6"
   jq -n \
     --arg deployKey "$deploy_key" \
     --arg generatorSha "$generator_sha" \
     --arg siteConfigSha "$site_sha" \
     --arg siteLockSha256 "$lock_hash" \
+    --arg releasePath "$release_path" \
+    --arg previousReleasePath "$previous_release" \
     --arg deployedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{deployKey:$deployKey,generatorSha:$generatorSha,siteConfigSha:$siteConfigSha,siteLockSha256:$siteLockSha256,deployedAt:$deployedAt}' \
+    --arg verifiedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{deployKey:$deployKey,generatorSha:$generatorSha,siteConfigSha:$siteConfigSha,siteLockSha256:$siteLockSha256,deployedAt:$deployedAt,releasePath:$releasePath,previousReleasePath:$previousReleasePath,verification:{command:"all",status:"passed",verifiedAt:$verifiedAt}}' \
     > "$LAST_SUCCESS_FILE.tmp"
   mv -f "$LAST_SUCCESS_FILE.tmp" "$LAST_SUCCESS_FILE"
+}
+
+record_failure() {
+  local exit_code="$1" release_path="$2" previous_release="$3" rollback_status="$4"
+  jq -n \
+    --argjson exitCode "$exit_code" \
+    --arg releasePath "$release_path" \
+    --arg previousReleasePath "$previous_release" \
+    --arg rollbackStatus "$rollback_status" \
+    --arg failedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{exitCode:$exitCode,releasePath:$releasePath,previousReleasePath:$previousReleasePath,rollbackStatus:$rollbackStatus,verification:{command:"all",status:"failed",failedAt:$failedAt}}' \
+    > "$LAST_FAILURE_FILE.tmp"
+  mv -f "$LAST_FAILURE_FILE.tmp" "$LAST_FAILURE_FILE"
 }
 
 install_current_release() {
@@ -143,9 +160,13 @@ install_current_release() {
 }
 
 deploy_installed_release() {
-  local deploy_root="$1"
+  local deploy_root="$1" verification_mode="${2:-full}"
   (cd "$deploy_root" && ./deploy.sh)
-  (cd "$deploy_root" && ./verify.sh --ready-only)
+  if [ "$verification_mode" = "full" ]; then
+    (cd "$deploy_root" && ./verify.sh --command all)
+  else
+    (cd "$deploy_root" && ./verify.sh --ready-only)
+  fi
 }
 
 rollback_release() {
@@ -154,7 +175,7 @@ rollback_release() {
   WEBSERVICES_RELEASE_ROOT="$release_root" "$ROOT/scripts/site/rollback-release.sh"
   [ -L "$release_root/current" ] || die_update "rollback did not restore current release"
   install_current_release "$(realpath "$release_root/current")" "$deploy_root"
-  deploy_installed_release "$deploy_root"
+  deploy_installed_release "$deploy_root" ready-only
 }
 
 safe_source_config
@@ -214,16 +235,26 @@ site_lock_hash="$(sha256sum "$site_lock" | awk '{print $1}')"
 
 activated=0
 rollback_needed=0
+active_release=""
+previous_release=""
 on_failure() {
   local exit_code=$?
+  local rollback_status="not-required"
   if [ "$rollback_needed" = "1" ]; then
-    rollback_release "$RELEASE_ROOT" "$DEPLOY_ROOT" || true
+    rollback_status="passed"
+    if ! rollback_release "$RELEASE_ROOT" "$DEPLOY_ROOT"; then
+      rollback_status="failed"
+    fi
   fi
+  record_failure "$exit_code" "$active_release" "$previous_release" "$rollback_status" || true
   exit "$exit_code"
 }
 trap on_failure ERR
 
 log_update "activating release"
+if [ -L "$RELEASE_ROOT/current" ]; then
+  previous_release="$(realpath "$RELEASE_ROOT/current")"
+fi
 WEBSERVICES_RELEASE_ROOT="$RELEASE_ROOT" \
   WEBSERVICES_READINESS_COMMAND='test -f resolved-modules.json' \
   "$generator_dir/scripts/site/activate-release.sh" \
@@ -238,9 +269,9 @@ log_update "installing activated release into $DEPLOY_ROOT"
 install_current_release "$active_release" "$DEPLOY_ROOT"
 
 log_update "deploying and verifying activated release"
-deploy_installed_release "$DEPLOY_ROOT"
+deploy_installed_release "$DEPLOY_ROOT" full
 rollback_needed=0
 trap - ERR
 
-record_success "$deploy_key" "$generator_sha" "$site_sha" "$site_lock_hash"
+record_success "$deploy_key" "$generator_sha" "$site_sha" "$site_lock_hash" "$active_release" "$previous_release"
 log_update "deploy complete"

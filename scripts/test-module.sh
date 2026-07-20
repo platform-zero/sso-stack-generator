@@ -217,6 +217,8 @@ if catalog_path.exists():
         raise SystemExit(f"catalog maps module {module_id} to {catalog_repo}, metadata says {repo}")
 PY
 
+python3 "$SCRIPT_DIR/modules/security-policy.py" "$module_dir"
+
 if [ -x "$module_dir/tests/validate.sh" ]; then
   printf '[module-test] running validate.sh: %s\n' "$module_dir"
   (cd "$module_dir" && tests/validate.sh)
