@@ -260,6 +260,10 @@ if rg -Fq 'chown -R "$domain_user:$domain_user" "$destination"' "$WORK_DIR/podma
   printf '[runtime-test] installer would overwrite persistent container-UID ownership on every deployment\n' >&2
   exit 1
 fi
+if ! rg -Fq 'cp -a "$ENV_DIR/." "$env_input_snapshot/"' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-test] installer does not protect an in-place persistent environment source\n' >&2
+  exit 1
+fi
 
 test -f "$WORK_DIR/podman-a/runtime/configs/vaultwarden/index.html"
 test -f "$WORK_DIR/podman-a/runtime/configs/vaultwarden/seed.sh"

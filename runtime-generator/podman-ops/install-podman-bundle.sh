@@ -300,6 +300,16 @@ for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   ensure_rootless_domain "$i"
 done
 
+# The persistent rootful store is also the natural input for an update. Snapshot
+# it before stale-file cleanup so an in-place update cannot erase its own source.
+if [ "$(readlink -f "$ENV_DIR")" = "$(readlink -f "$STATE_ROOT/runtime-env")" ]; then
+  env_input_snapshot="$(mktemp -d)"
+  cleanup_paths+=("$env_input_snapshot")
+  chmod 0700 "$env_input_snapshot"
+  cp -a "$ENV_DIR/." "$env_input_snapshot/"
+  ENV_DIR="$env_input_snapshot"
+fi
+
 # A service moved between rootless domains can otherwise keep its old host port
 # and volume mounts while the replacement domain starts.
 cancel_webservices_start_jobs rootful 0
