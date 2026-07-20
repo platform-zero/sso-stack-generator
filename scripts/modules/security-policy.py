@@ -51,6 +51,7 @@ def find_findings(root: Path) -> set[tuple[str, str]]:
             continue
         text = path.read_text(encoding="utf-8")
         checks = {
+            "container-root-default": r"(?m)^\s*user:\s*[\"']?(?:root|0)(?::(?:root|0))?[\"']?\s*(?:#.*)?$",
             "privileged-container": r"(?m)^\s*privileged:\s*true\s*(?:#.*)?$",
             "host-network": r"(?m)^\s*network_mode:\s*[\"']?host[\"']?\s*(?:#.*)?$",
             "added-capabilities": r"(?m)^\s*cap_add:\s*(?:#.*)?$",
