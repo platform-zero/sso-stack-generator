@@ -1,0 +1,10 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic API-like values used only by Kotlin token-handling tests"
+rules = ["generic-api-key"]
+paths = [
+  '''stack\.kotlin/test-runner/src/test/kotlin/org/webservices/testrunner/framework/TokenManagerTest\.kt''',
+  '''stack\.kotlin/workspace-provisioner/src/test/kotlin/org/webservices/workspaceprovisioner/MainTest\.kt'''
+]
