@@ -1,0 +1,1 @@
+# Compatibility marker for Bazel releases that still require a workspace file.
