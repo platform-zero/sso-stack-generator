@@ -235,11 +235,12 @@ declare -a ROOTLESS_PREVIOUS=()
 declare -a ROOTLESS_UIDS=()
 declare -a ROOTLESS_HOMES=()
 declare -a ROOTLESS_RUNTIMES=()
+declare -a ROOTLESS_ENV_STORES=()
 declare -a ROOTLESS_QUADLET_DIRS=()
 declare -a ROOTLESS_SYSTEMD_DIRS=()
 
 ensure_rootless_domain() {
-  local index="$1" user state_root uid home runtime quadlet_dir systemd_dir
+  local index="$1" user state_root uid home runtime env_store quadlet_dir systemd_dir
   user="${ROOTLESS_DOMAIN_USERS[$index]}"
   state_root="${ROOTLESS_DOMAIN_STATE_ROOTS[$index]}"
   if ! id "$user" >/dev/null 2>&1; then
@@ -252,6 +253,7 @@ ensure_rootless_domain() {
   loginctl enable-linger "$user"
   systemctl start "user@${uid}.service"
   runtime="/run/user/${uid}/webservices"
+  env_store="$state_root/runtime-env"
   quadlet_dir="$home/.config/containers/systemd"
   systemd_dir="$home/.config/systemd/user"
   ROOTLESS_RELEASES[$index]="$state_root/releases/$release_id"
@@ -259,10 +261,12 @@ ensure_rootless_domain() {
   ROOTLESS_UIDS[$index]="$uid"
   ROOTLESS_HOMES[$index]="$home"
   ROOTLESS_RUNTIMES[$index]="$runtime"
+  ROOTLESS_ENV_STORES[$index]="$env_store"
   ROOTLESS_QUADLET_DIRS[$index]="$quadlet_dir"
   ROOTLESS_SYSTEMD_DIRS[$index]="$systemd_dir"
-  mkdir -p "${ROOTLESS_RELEASES[$index]}" "$state_root/releases" "$runtime" "$quadlet_dir" "$systemd_dir"
+  mkdir -p "${ROOTLESS_RELEASES[$index]}" "$state_root/releases" "$runtime" "$env_store" "$quadlet_dir" "$systemd_dir"
   chown -R "$user:$user" "$state_root" "$home/.config" "$runtime"
+  chmod 0700 "$env_store"
 }
 
 user_systemctl() {
@@ -290,7 +294,8 @@ cancel_webservices_start_jobs() {
   fi
 }
 
-mkdir -p "$release" "$STATE_ROOT/releases" "$STATE_ROOT/test-results" "$QUADLET_DIR" /run/webservices /var/log/webservices/caddy
+mkdir -p "$release" "$STATE_ROOT/releases" "$STATE_ROOT/test-results" "$STATE_ROOT/runtime-env" "$QUADLET_DIR" /run/webservices /var/log/webservices/caddy
+chmod 0700 "$STATE_ROOT/runtime-env"
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   ensure_rootless_domain "$i"
 done
@@ -319,6 +324,10 @@ for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   find "$rootless_release/runtime/configs" -type f -exec chmod a+r {} + 2>/dev/null || true
 done
 chmod 0700 /run/webservices
+find "$STATE_ROOT/runtime-env" -maxdepth 1 -type f -name '*.env' -delete
+for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+  find "${ROOTLESS_ENV_STORES[$i]}" -maxdepth 1 -type f -name '*.env' -delete
+done
 for env_file in "$ENV_DIR"/*.env; do
   destination="/run/webservices/${env_file##*/}"
   if [ "$(readlink -f "$env_file")" = "$(readlink -f "$destination" 2>/dev/null || printf '%s' "$destination")" ]; then
@@ -326,10 +335,12 @@ for env_file in "$ENV_DIR"/*.env; do
   else
     install -m 0600 "$env_file" "$destination"
   fi
+  install -m 0600 "$env_file" "$STATE_ROOT/runtime-env/${env_file##*/}"
   for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
     user="${ROOTLESS_DOMAIN_USERS[$i]}"
     rootless_destination="${ROOTLESS_RUNTIMES[$i]}/${env_file##*/}"
     install -m 0600 -o "$user" -g "$user" "$env_file" "$rootless_destination"
+    install -m 0600 -o "$user" -g "$user" "$env_file" "${ROOTLESS_ENV_STORES[$i]}/${env_file##*/}"
   done
 done
 
@@ -458,6 +469,27 @@ PY
   fi
 done
 
+install_runtime_env_unit() {
+  local unit_file="$1" dropin_dir="$2" source_dir="$3" runtime_dir="$4" owner="${5:-root}" group="${6:-root}"
+  install -d -m 0755 -o "$owner" -g "$group" "${unit_file%/*}" "$dropin_dir"
+  printf '%s\n' \
+    '[Unit]' \
+    'Description=Restore rendered webservices environment files' \
+    '' \
+    '[Service]' \
+    'Type=oneshot' \
+    "ExecStart=/bin/sh -ec '/usr/bin/install -d -m 0700 $runtime_dir; /usr/bin/install -m 0600 $source_dir/*.env $runtime_dir/'" \
+    'RemainAfterExit=yes' \
+    >"$unit_file"
+  printf '%s\n' \
+    '[Unit]' \
+    'Requires=webservices-runtime-env.service' \
+    'After=webservices-runtime-env.service' \
+    >"$dropin_dir/10-runtime-env.conf"
+  chown "$owner:$group" "$unit_file" "$dropin_dir/10-runtime-env.conf"
+  chmod 0644 "$unit_file" "$dropin_dir/10-runtime-env.conf"
+}
+
 ln -sfn "$release" "$STATE_ROOT/.current-new"
 mv -Tf "$STATE_ROOT/.current-new" "$STATE_ROOT/current"
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
@@ -471,6 +503,11 @@ find /etc/systemd/system -maxdepth 1 -type f -name 'webservices-*.target' -delet
 find /etc/systemd/system -maxdepth 1 -type f -name 'webservices.target' -delete
 find "$release/quadlet/rootful" -maxdepth 1 -type f ! -name '*.target' -exec install -m 0644 {} "$QUADLET_DIR/" \;
 install -m 0644 "$release/quadlet/rootful"/*.target /etc/systemd/system/
+install_runtime_env_unit \
+  /etc/systemd/system/webservices-runtime-env.service \
+  /etc/systemd/system/webservices.target.d \
+  "$STATE_ROOT/runtime-env" \
+  /run/webservices
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   domain="${ROOTLESS_DOMAIN_NAMES[$i]}"
   user="${ROOTLESS_DOMAIN_USERS[$i]}"
@@ -482,6 +519,13 @@ for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   find "$rootless_systemd_dir" -maxdepth 1 -type f -name 'webservices.target' -delete
   find "$rootless_release/quadlet/rootless-$domain" -maxdepth 1 -type f ! -name '*.target' -exec install -m 0644 -o "$user" -g "$user" {} "$rootless_quadlet_dir/" \;
   install -m 0644 -o "$user" -g "$user" "$rootless_release/quadlet/rootless-$domain"/*.target "$rootless_systemd_dir/"
+  install_runtime_env_unit \
+    "$rootless_systemd_dir/webservices-runtime-env.service" \
+    "$rootless_systemd_dir/webservices.target.d" \
+    "${ROOTLESS_ENV_STORES[$i]}" \
+    "${ROOTLESS_RUNTIMES[$i]}" \
+    "$user" \
+    "$user"
 done
 install -m 0755 "$release/ops/webservices-auto-update" /usr/local/sbin/webservices-auto-update
 install -m 0644 "$release/ops/webservices-auto-update.service" "$release/ops/webservices-auto-update.timer" /etc/systemd/system/
@@ -631,6 +675,7 @@ for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user_systemctl "$i" daemon-reload
   user_systemctl "$i" reset-failed 'webservices-*' || true
   user_systemctl "$i" enable --now podman.socket
+  user_systemctl "$i" enable webservices.target
   restart_rootless_network_units "$i"
 done
 grant_test_runner_managed_socket_access
@@ -641,6 +686,7 @@ for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   wait_for_target_services rootless "$i" "${ROOTLESS_SYSTEMD_DIRS[$i]}"
 done
 systemctl reset-failed 'webservices-*' || true
+systemctl enable webservices.target
 systemctl restart webservices.target
 systemctl --quiet is-active webservices.target
 wait_for_target_services rootful 0 /etc/systemd/system
