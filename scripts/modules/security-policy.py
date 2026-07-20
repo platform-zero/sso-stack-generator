@@ -53,8 +53,8 @@ def find_findings(root: Path) -> set[tuple[str, str]]:
         checks = {
             "container-root-default": r"(?m)^\s*user:\s*[\"']?(?:root|0)(?::(?:root|0))?[\"']?\s*(?:#.*)?$",
             "privileged-container": r"(?m)^\s*privileged:\s*true\s*(?:#.*)?$",
-            "host-network": r"(?m)^\s*network_mode:\s*[\"']?host[\"']?\s*(?:#.*)?$",
-            "added-capabilities": r"(?m)^\s*cap_add:\s*(?:#.*)?$",
+            "host-network": r"(?m)^\s*(?:network_mode|networkMode):\s*[\"']?host[\"']?\s*(?:#.*)?$",
+            "added-capabilities": r"(?m)^\s*(?:cap_add|capAdd):\s*(?:#.*)?$",
             "container-socket-mount": r"/(?:run/podman/podman|var/run/docker)\.sock",
         }
         for rule, pattern in checks.items():

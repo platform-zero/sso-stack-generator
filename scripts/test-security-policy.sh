@@ -22,9 +22,11 @@ services:
   example:
     image: example.invalid/service:immutable
     user: "0:0"
+    capAdd:
+      - CHOWN
 EOF
 if python3 "$SCRIPT_DIR/modules/security-policy.py" "$tmp_dir/clean" >/dev/null 2>&1; then
-  printf '[security-policy-test] explicit root runtime user unexpectedly passed\n' >&2
+  printf '[security-policy-test] sensitive runtime configuration unexpectedly passed\n' >&2
   exit 1
 fi
 cat > "$tmp_dir/clean/security-exceptions.json" <<'EOF'
@@ -36,6 +38,12 @@ cat > "$tmp_dir/clean/security-exceptions.json" <<'EOF'
       "path": "stack.runtime.yaml",
       "reason": "The runtime must perform a privileged bootstrap operation.",
       "mitigations": ["The service is isolated to a dedicated runtime account."]
+    },
+    {
+      "rule": "added-capabilities",
+      "path": "stack.runtime.yaml",
+      "reason": "The bootstrap requires one narrowly scoped Linux capability.",
+      "mitigations": ["Only the required capability is added to the one-shot job."]
     }
   ]
 }
