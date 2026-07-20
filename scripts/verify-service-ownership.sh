@@ -88,7 +88,7 @@ for root in "${service_roots[@]}"; do
       continue
     fi
     violations+=("$rel_path")
-  done < <(rg --files "$SOURCE_ROOT/$root" | sed "s#^$SOURCE_ROOT/##")
+  done < <(find "$SOURCE_ROOT/$root" -type f -print | sed "s#^$SOURCE_ROOT/##" | sort)
 done
 
 if [ "${#violations[@]}" -gt 0 ]; then
