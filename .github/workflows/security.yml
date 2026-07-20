@@ -19,4 +19,4 @@ concurrency:
 
 jobs:
   security:
-    uses: platform-zero/.github/.github/workflows/security-ci.yml@d898da7e37622580447bd6a2a36abf6247cf9a8f
+    uses: platform-zero/.github/.github/workflows/security-ci.yml@d898da7eeb43e98fad8bb4ef70a4ef27238313e9
