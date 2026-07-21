@@ -294,7 +294,7 @@ fun substitute(value: String, variables: Map<String, String>): String {
                 .replace(Regex("\\$\\{$key(?::[-?][^}]*)?}"), replacement)
         }
     }
-    return result.replace("\$\$", "\$")
+    return result
 }
 
 fun substituteTree(value: JsonNode, variables: Map<String, String>): JsonNode = when {
@@ -799,6 +799,7 @@ fun commandRenderRuntimeOverlays(options: Map<String, String>) {
 }
 
 fun systemdQuote(value: String): String = "\"" + value
+    .replace("\$\$", "\$")
     .replace("%", "%%")
     .replace("$", "\$\$")
     .replace("\\", "\\\\")
