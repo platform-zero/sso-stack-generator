@@ -319,6 +319,10 @@ if ! rg -Fq 'cp -a "$ENV_DIR/." "$env_input_snapshot/"' "$WORK_DIR/podman-a/ops/
   printf '[runtime-test] installer does not protect an in-place persistent environment source\n' >&2
   exit 1
 fi
+if ! rg -Fq 'cp -a "$generated_configs/." "$BUNDLE/runtime/configs/"' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-test] installer does not preserve generated cross-domain config rewrites during environment rendering\n' >&2
+  exit 1
+fi
 if ! rg -Fq 'pasta_options = ["--map-host-loopback", "169.254.1.2"]' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
   printf '[runtime-test] installer does not enable UID-filterable host-loopback mapping for rootless networks\n' >&2
   exit 1

@@ -141,6 +141,9 @@ if [ -z "$ENV_DIR" ]; then
   rendered_env_dir="$(mktemp -d)"
   cleanup_paths+=("$rendered_env_dir")
   if [ ! -f "$BUNDLE/runtime/stack.env" ]; then
+    generated_configs="$(mktemp -d)"
+    cleanup_paths+=("$generated_configs")
+    cp -a "$BUNDLE/runtime/configs/." "$generated_configs/"
     [ -x "$BUNDLE/scripts/deploy/render-runtime.sh" ] || {
       printf 'bundle cannot render runtime environment: missing scripts/deploy/render-runtime.sh\n' >&2
       exit 1
@@ -150,6 +153,9 @@ if [ -z "$ENV_DIR" ]; then
       --deploy-root "$BUNDLE" \
       --runtime-root "$BUNDLE/runtime" \
       --skip-runtime-model-validate >/dev/null
+    rm -rf "$BUNDLE/runtime/configs"
+    mkdir -p "$BUNDLE/runtime/configs"
+    cp -a "$generated_configs/." "$BUNDLE/runtime/configs/"
   fi
   [ -f "$BUNDLE/runtime/stack.env" ] || {
     printf 'bundle runtime environment was not rendered: %s\n' "$BUNDLE/runtime/stack.env" >&2
