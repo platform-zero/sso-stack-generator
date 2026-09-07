@@ -131,7 +131,10 @@ def user_systemctl(user: str, *args: str, check: bool = True) -> subprocess.Comp
 def preflight(request: dict[str, object]) -> dict[str, object]:
     path = release_path(request)
     run("nft", "-c", "-f", str(path / "ops/platform-zero.nft"))
-    result = run(str(path / "ops/install-podman-bundle.sh"), "--bundle", str(path))
+    with tempfile.TemporaryDirectory(prefix="p0-preflight-") as temporary:
+        working = Path(temporary) / "bundle"
+        shutil.copytree(path, working)
+        result = run(str(working / "ops/install-podman-bundle.sh"), "--bundle", str(working))
     return {"release": path.name, "output": result.stdout[-8000:]}
 
 
@@ -235,10 +238,13 @@ def activate(request: dict[str, object]) -> dict[str, object]:
     run("nft", "-f", str(path / "ops/platform-zero.nft"))
     env = os.environ.copy()
     env["WEBSERVICES_ACTIVATION_ROLLBACK"] = "0"
-    result = subprocess.run(
-        [str(path / "ops/install-podman-bundle.sh"), "--bundle", str(path), "--activate"],
-        text=True, capture_output=True, check=False, env=env,
-    )
+    with tempfile.TemporaryDirectory(prefix="p0-activate-") as temporary:
+        working = Path(temporary) / "bundle"
+        shutil.copytree(path, working)
+        result = subprocess.run(
+            [str(working / "ops/install-podman-bundle.sh"), "--bundle", str(working), "--activate"],
+            text=True, capture_output=True, check=False, env=env,
+        )
     if result.returncode:
         raise RequestError(f"activation failed ({result.returncode}); fix-forward required\n{result.stderr[-8000:]}")
     return {"release": path.name, "output": result.stdout[-8000:]}
