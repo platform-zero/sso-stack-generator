@@ -162,7 +162,12 @@ for path in config_root.rglob("*"):
         )
         content = re.sub(rf"(?<![A-Za-z0-9_-]){service}:{container_port}(?![0-9])", f"{replacement_host}:{host_port}", content)
         if replacement_host != "127.0.0.1":
-            content = re.sub(rf"(?<![A-Za-z0-9_-]){service}(?![A-Za-z0-9_-])", replacement_host, content)
+            content = re.sub(
+                rf"((?:host|hostname|db_host|postgres_host)\s*[:=]\s*[\"']?){service}(?![A-Za-z0-9_-])",
+                rf"\g<1>{replacement_host}",
+                content,
+                flags=re.IGNORECASE,
+            )
     if content != original:
         path.write_text(content)
 PY
