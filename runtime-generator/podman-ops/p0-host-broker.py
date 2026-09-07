@@ -140,6 +140,22 @@ def preflight(request: dict[str, object]) -> dict[str, object]:
     return {"release": path.name, "output": result.stdout[-8000:]}
 
 
+def apply_platform_zero_nftables(rules: Path) -> None:
+    """Atomically replace the managed table instead of appending to it."""
+    existing = run("nft", "list", "table", "inet", "platform_zero", check=False)
+    if existing.returncode:
+        run("nft", "-f", str(rules))
+        return
+    with tempfile.NamedTemporaryFile("w", prefix="p0-nft-", suffix=".nft", delete=False) as stream:
+        stream.write("delete table inet platform_zero\n")
+        stream.write(rules.read_text())
+        candidate = Path(stream.name)
+    try:
+        run("nft", "-f", str(candidate))
+    finally:
+        candidate.unlink(missing_ok=True)
+
+
 def snapshot(_: dict[str, object]) -> dict[str, object]:
     snapshot_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     destination = SNAPSHOTS / snapshot_id
@@ -237,7 +253,7 @@ def activate(request: dict[str, object]) -> dict[str, object]:
     path = release_path(request)
     preflight(request)
     user_systemctl(LEGACY_USER, "stop", "webservices.target", check=False)
-    run("nft", "-f", str(path / "ops/platform-zero.nft"))
+    apply_platform_zero_nftables(path / "ops/platform-zero.nft")
     env = os.environ.copy()
     env["WEBSERVICES_ACTIVATION_ROLLBACK"] = "0"
     with tempfile.TemporaryDirectory(prefix="p0-activate-") as temporary:
