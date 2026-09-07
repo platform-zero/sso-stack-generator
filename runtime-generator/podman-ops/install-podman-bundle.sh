@@ -844,6 +844,8 @@ grant_test_runner_managed_socket_access
 systemctl enable --now webservices-auto-update.timer
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user_systemctl "$i" restart webservices.target
+done
+for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user_systemctl "$i" --quiet is-active webservices.target
   wait_for_target_services rootless "$i" "${ROOTLESS_SYSTEMD_DIRS[$i]}"
 done
