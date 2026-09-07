@@ -934,7 +934,8 @@ fi
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user_systemctl "$i" daemon-reload
   user_systemctl "$i" reset-failed 'webservices-*' || true
-  user_systemctl "$i" enable --now podman.socket
+  user_systemctl "$i" enable podman.socket
+  user_systemctl "$i" restart podman.socket
   user_systemctl "$i" enable webservices.target
   restart_rootless_network_units "$i"
 done
