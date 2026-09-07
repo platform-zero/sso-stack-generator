@@ -229,6 +229,8 @@ if yq -e '.podman.cross_domain_endpoints | length > 0' "$SOURCE_SITE_DIR/global.
   rg -Fxq 'KC_DB=postgres' "$WORK_DIR/podman-a/runtime-env/keycloak.env.template"
   rg -Fq 'jdbc:postgresql://host.containers.internal:5432/keycloak' "$WORK_DIR/podman-a/runtime-env/keycloak.env.template"
   rg -Fxq 'POSTGRES_PORT=25432' "$WORK_DIR/podman-a/runtime-env/jupyterhub.env.template"
+  test -f "$WORK_DIR/podman-a/quadlet/rootless-identity/webservices-p0-egress.network"
+  rg -Fq 'Network=webservices-p0-egress.network' "$WORK_DIR/podman-a/quadlet/rootless-identity/webservices-keycloak-bootstrap.container"
   rg -Fq 'http://host.containers.internal:8080' "$WORK_DIR/podman-a/runtime/configs/matrix-authentication-service/config.yaml"
   rg -Fq 'host.containers.internal:25432' "$WORK_DIR/podman-a/runtime/configs/grafana/provisioning/datasources/timescaledb.yml"
   test -s "$WORK_DIR/podman-a/ops/platform-zero.nft"

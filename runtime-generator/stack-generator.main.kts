@@ -1308,6 +1308,9 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
                 config.path("aliases").forEach { lines += "NetworkAlias=${it.asText()}" }
             }
         }
+        if (activePodmanPolicy.crossDomainEndpoints.any { domain.name in it.consumers }) {
+            lines += "Network=webservices-p0-egress.network"
+        }
     }
     service.path("volumes").forEach { lines += "Volume=${quadletLiteral(volumeLine(it, ir.path("volumes"), domain))}" }
     lines += "PodmanArgs=--image-volume=ignore"
@@ -1401,6 +1404,12 @@ fun renderPodman(ir: ObjectNode, output: Path) {
             val lines = mutableListOf("[Network]", "NetworkName=${podmanNetworkName(domain, name)}", "Driver=${value.path("driver").asText("bridge")}")
             if (value.path("internal").asBoolean(false)) lines += "Internal=true"
             output.resolve("${domain.quadletDir}/webservices-$name.network").apply { parent.createDirectories(); writeText(lines.joinToString("\n", postfix = "\n")) }
+        }
+        if (domain.name != "rootful" && activePodmanPolicy.crossDomainEndpoints.any { domain.name in it.consumers }) {
+            output.resolve("${domain.quadletDir}/webservices-p0-egress.network").apply {
+                parent.createDirectories()
+                writeText("[Network]\nNetworkName=${podmanNetworkName(domain, "p0-egress")}\nDriver=bridge\n")
+            }
         }
         ir.path("services").fieldsMap()
             .filter { (_, service) ->
