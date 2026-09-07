@@ -154,6 +154,12 @@ for path in config_root.rglob("*"):
         container_port = re.escape(str(endpoint["containerPort"]))
         host_port = str(endpoint["hostPort"])
         replacement_host = "127.0.0.1" if domains == {"rootful"} else "host.containers.internal"
+        content = re.sub(
+            rf"((?:host|hostname|db_host|postgres_host)\s*[:=]\s*[\"']?{service}[\"']?.{{0,160}}?(?:port|db_port|postgres_port)\s*[:=]\s*[\"']?){container_port}(?![0-9])",
+            rf"\g<1>{host_port}",
+            content,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
         content = re.sub(rf"(?<![A-Za-z0-9_-]){service}:{container_port}(?![0-9])", f"{replacement_host}:{host_port}", content)
         if replacement_host != "127.0.0.1":
             content = re.sub(rf"(?<![A-Za-z0-9_-]){service}(?![A-Za-z0-9_-])", replacement_host, content)
