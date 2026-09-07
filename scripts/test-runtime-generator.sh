@@ -233,6 +233,7 @@ if yq -e '.podman.cross_domain_endpoints | length > 0' "$SOURCE_SITE_DIR/global.
   rg -Fq 'Network=webservices-p0-egress.network' "$WORK_DIR/podman-a/quadlet/rootless-identity/webservices-keycloak-bootstrap.container"
   rg -Fq 'http://host.containers.internal:8080' "$WORK_DIR/podman-a/runtime/configs/matrix-authentication-service/config.yaml"
   rg -Fq 'host.containers.internal:25432' "$WORK_DIR/podman-a/runtime/configs/grafana/provisioning/datasources/timescaledb.yml"
+  rg -Fq 'psql -h host.containers.internal' "$WORK_DIR/podman-a/stack.ir.json"
   test -s "$WORK_DIR/podman-a/ops/platform-zero.nft"
   rg -Fq 'meta skuid 993 tcp dport' "$WORK_DIR/podman-a/ops/platform-zero.nft"
   rg -Fq 'ip daddr 127.0.0.0/8 tcp dport' "$WORK_DIR/podman-a/ops/platform-zero.nft"

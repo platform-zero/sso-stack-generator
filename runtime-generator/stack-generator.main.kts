@@ -456,6 +456,21 @@ fun rewriteEndpointText(value: String, provider: String, containerPort: Int, hos
     )
 }
 
+fun rewriteEndpointCommand(value: JsonNode, provider: String, containerPort: Int, hostPort: Int): JsonNode {
+    val rewritten = rewriteEndpointTree(value, provider, containerPort, hostPort)
+    fun replaceBare(text: String): String = text.replace(
+        Regex("(?<![a-zA-Z0-9_-])${Regex.escape(provider)}(?![a-zA-Z0-9_-])"),
+        "host.containers.internal"
+    )
+    return when {
+        rewritten.isTextual -> nodes.textNode(replaceBare(rewritten.asText()))
+        rewritten.isArray -> arr().also { output -> rewritten.forEach { child ->
+            output.add(if (child.isTextual) nodes.textNode(replaceBare(child.asText())) else child)
+        } }
+        else -> rewritten
+    }
+}
+
 fun rewriteEndpointTree(value: JsonNode, provider: String, containerPort: Int, hostPort: Int): JsonNode = when {
     value.isTextual -> nodes.textNode(rewriteEndpointText(value.asText(), provider, containerPort, hostPort))
     value.isArray -> arr().also { output -> value.forEach { output.add(rewriteEndpointTree(it, provider, containerPort, hostPort)) } }
@@ -482,9 +497,12 @@ fun applyCrossDomainEndpointPolicy(ir: ObjectNode, policy: PodmanPolicy) {
             val consumers = services.fieldsMap().filter { (_, service) -> podmanDomainForService(service).name == consumerDomain }
             consumers.forEach consumerService@{ (_, rawService) ->
                 val service = rawService as ObjectNode
-                listOf("environment", "command", "entrypoint", "health").forEach { field ->
+                service.get("environment")?.let { current ->
+                    service.set<JsonNode>("environment", rewriteEndpointTree(current, endpoint.service, endpoint.containerPort, endpoint.hostPort))
+                }
+                listOf("command", "entrypoint", "health").forEach { field ->
                     val current = service.get(field) ?: return@forEach
-                    service.set<JsonNode>(field, rewriteEndpointTree(current, endpoint.service, endpoint.containerPort, endpoint.hostPort))
+                    service.set<JsonNode>(field, rewriteEndpointCommand(current, endpoint.service, endpoint.containerPort, endpoint.hostPort))
                 }
                 val environment = service.path("environment") as? ObjectNode ?: return@consumerService
                 environment.fieldsMap()

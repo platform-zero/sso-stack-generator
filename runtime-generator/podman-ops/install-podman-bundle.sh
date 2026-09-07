@@ -460,8 +460,13 @@ ir["networks"] = {
 ir_path.write_text(json.dumps(ir, indent=2) + "\n")
 PY
   chown -R "$user:$user" "$rootless_release"
-  find "$rootless_release/runtime/configs" -type d -exec chmod 0700 {} + 2>/dev/null || true
-  find "$rootless_release/runtime/configs" -type f -exec chmod 0600 {} + 2>/dev/null || true
+  # The release parent is account-private; mounted configs must remain readable
+  # (and scripts executable) by non-root users inside the rootless namespace.
+  find "$rootless_release/runtime/configs" -type d -exec chmod 0755 {} + 2>/dev/null || true
+  find "$rootless_release/runtime/configs" -type f -exec chmod 0644 {} + 2>/dev/null || true
+  while IFS= read -r config_script; do
+    [ "$(head -c 2 "$config_script")" != '#!' ] || chmod 0755 "$config_script"
+  done < <(find "$rootless_release/runtime/configs" -type f 2>/dev/null)
 done
 chmod 0700 /run/webservices
 find "$STATE_ROOT/runtime-env" -maxdepth 1 -type f -name '*.env' -delete
