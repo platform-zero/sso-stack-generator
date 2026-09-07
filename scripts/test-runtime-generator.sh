@@ -221,20 +221,20 @@ fi
 
 if yq -e '.podman.cross_domain_endpoints | length > 0' "$SOURCE_SITE_DIR/global.settings/stack.config.yaml" >/dev/null 2>&1; then
   jq -e '
-    any(.endpoints[]; .service == "postgres" and .containerPort == "5432" and .hostPort == 5432 and (.consumers | index("identity"))) and
-    any(.endpoints[]; .service == "postgres-ssd" and .hostPort == 25432 and (.consumers | index("observability")))
+    any(.endpoints[]; .service == "postgres" and .containerPort == "5432" and .hostPort == 25001 and (.consumers | index("identity"))) and
+    any(.endpoints[]; .service == "postgres-ssd" and .hostPort == 25002 and (.consumers | index("observability")))
   ' "$WORK_DIR/podman-a/podman-loopback-endpoints.json" >/dev/null
-  rg -Fxq 'PublishPort=127.0.0.1:5432:5432' "$WORK_DIR/podman-a/quadlet/rootless-data/webservices-postgres.container"
-  rg -Fxq 'PublishPort=127.0.0.1:25432:5432' "$WORK_DIR/podman-a/quadlet/rootless-data/webservices-postgres-ssd.container"
+  rg -Fxq 'PublishPort=127.0.0.1:25001:5432' "$WORK_DIR/podman-a/quadlet/rootless-data/webservices-postgres.container"
+  rg -Fxq 'PublishPort=127.0.0.1:25002:5432' "$WORK_DIR/podman-a/quadlet/rootless-data/webservices-postgres-ssd.container"
   rg -Fxq 'KC_DB=postgres' "$WORK_DIR/podman-a/runtime-env/keycloak.env.template"
-  rg -Fq 'jdbc:postgresql://host.containers.internal:5432/keycloak' "$WORK_DIR/podman-a/runtime-env/keycloak.env.template"
-  rg -Fxq 'POSTGRES_PORT=25432' "$WORK_DIR/podman-a/runtime-env/jupyterhub.env.template"
+  rg -Fq 'jdbc:postgresql://host.containers.internal:25001/keycloak' "$WORK_DIR/podman-a/runtime-env/keycloak.env.template"
+  rg -Fxq 'POSTGRES_PORT=25002' "$WORK_DIR/podman-a/runtime-env/jupyterhub.env.template"
   test -f "$WORK_DIR/podman-a/quadlet/rootless-identity/webservices-p0-egress.network"
   rg -Fq 'Network=webservices-p0-egress.network' "$WORK_DIR/podman-a/quadlet/rootless-identity/webservices-keycloak-bootstrap.container"
-  rg -Fq 'http://host.containers.internal:8080' "$WORK_DIR/podman-a/runtime/configs/matrix-authentication-service/config.yaml"
+  rg -Fq 'http://host.containers.internal:25007' "$WORK_DIR/podman-a/runtime/configs/matrix-authentication-service/config.yaml"
   rg -Eq 'host:[[:space:]]+host\.containers\.internal' "$WORK_DIR/podman-a/runtime/configs/synapse/homeserver.yaml"
   rg -Fxq 'DB_HOST=host.containers.internal' "$WORK_DIR/podman-a/runtime/configs/mastodon/mastodon.env"
-  rg -Fq 'host.containers.internal:25432' "$WORK_DIR/podman-a/runtime/configs/grafana/provisioning/datasources/timescaledb.yml"
+  rg -Fq 'host.containers.internal:25002' "$WORK_DIR/podman-a/runtime/configs/grafana/provisioning/datasources/timescaledb.yml"
   rg -Fq 'psql -h host.containers.internal' "$WORK_DIR/podman-a/stack.ir.json"
   test -s "$WORK_DIR/podman-a/ops/platform-zero.nft"
   rg -Fq 'meta skuid 993 tcp dport' "$WORK_DIR/podman-a/ops/platform-zero.nft"
