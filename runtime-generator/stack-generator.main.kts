@@ -1239,6 +1239,15 @@ fun loopbackEndpoints(ir: ObjectNode, output: Path): Map<String, List<LoopbackEn
         }
         caddyFile.writeText(rewritten)
     }
+    val testDomain = activePodmanPolicy.domains.firstOrNull { it.name == "test-runners" }
+    if (testDomain != null) {
+        endpoints.entries.toList().forEach { (key, endpoint) ->
+            val providerDomain = podmanDomainForService(ir.path("services").path(endpoint.service)).name
+            if (providerDomain == "rootful" || providerDomain in testDomain.allowDependencies) {
+                endpoints[key] = endpoint.copy(consumers = endpoint.consumers + testDomain.name)
+            }
+        }
+    }
     if (endpoints.isEmpty()) return emptyMap()
     val rows = arr()
     endpoints.values.sortedWith(compareBy({ it.service }, { it.containerPort }, { it.protocol })).forEach { endpoint ->

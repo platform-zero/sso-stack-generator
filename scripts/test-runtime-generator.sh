@@ -119,6 +119,9 @@ jq -e '
   all(.domains[]; (.stateRoot | startswith("/mnt/stack/")) and (.graphRoot | startswith("/mnt/stack/")) and (.volumeRoot | startswith("/mnt/stack/")))
 ' "$WORK_DIR/podman-a/podman-domains.json" >/dev/null
 
+jq -e 'all(.endpoints[]; .consumers | index("test-runners"))' \
+  "$WORK_DIR/podman-a/podman-loopback-endpoints.json" >/dev/null
+
 jq -e --slurpfile domains "$WORK_DIR/podman-a/podman-domains.json" '
   .services as $services |
   all($services | to_entries[] | select(.value.placement == "rootless");
