@@ -885,7 +885,7 @@ wait_for_cross_domain_producers() {
 }
 
 retry_failed_rootless_services() {
-  local attempt i unit retried
+  local attempt i unit retried quiet_passes=0
   for attempt in $(seq 1 12); do
     retried=0
     for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
@@ -897,7 +897,16 @@ retry_failed_rootless_services() {
         retried=1
       done < <(user_systemctl "$i" --failed --no-legend --plain 'webservices-*' 2>/dev/null | awk '{print $1}')
     done
-    [ "$retried" -eq 1 ] || return 0
+    if [ "$retried" -eq 1 ]; then
+      quiet_passes=0
+    else
+      quiet_passes=$((quiet_passes + 1))
+      # A target can become active before its long-running bootstrap reaches a
+      # cross-domain database or cache.  Require a quiet window so failures
+      # that surface shortly after producer activation are retried here rather
+      # than escaping into the final readiness check.
+      [ "$quiet_passes" -lt 6 ] || return 0
+    fi
     sleep 5
   done
 }

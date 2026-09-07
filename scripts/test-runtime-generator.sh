@@ -365,6 +365,10 @@ if ! rg -Fq 'wait_for_cross_domain_producers' "$WORK_DIR/podman-a/ops/install-po
   printf '[runtime-test] installer does not sequence cross-domain producers before retrying consumers\n' >&2
   exit 1
 fi
+if ! rg -Fq 'quiet_passes=$((quiet_passes + 1))' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-test] installer does not observe a post-producer quiet window for late consumer failures\n' >&2
+  exit 1
+fi
 
 test -f "$WORK_DIR/podman-a/runtime/configs/vaultwarden/index.html"
 test -f "$WORK_DIR/podman-a/runtime/configs/vaultwarden/seed.sh"
