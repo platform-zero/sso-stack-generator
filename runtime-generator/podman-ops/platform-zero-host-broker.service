@@ -11,7 +11,7 @@ Group=root
 PrivateTmp=true
 ProtectHome=false
 ProtectSystem=strict
-ReadWritePaths=/var/lib/platform-zero /var/lib/webservices /var/lib/containers /var/log/webservices /mnt/stack /run /run/user /etc/containers /etc/systemd /usr/local /home
+ReadWritePaths=/var/lib/platform-zero /var/lib/webservices /var/lib/containers /var/log/webservices /mnt/stack /mnt/media /run /run/user /etc/containers /etc/systemd /usr/local /home
 
 [Install]
 WantedBy=multi-user.target
