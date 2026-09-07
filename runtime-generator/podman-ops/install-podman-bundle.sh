@@ -846,14 +846,14 @@ for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user_systemctl "$i" --no-block restart webservices.target
 done
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
-  user_systemctl "$i" --quiet is-active webservices.target
   wait_for_target_services rootless "$i" "${ROOTLESS_SYSTEMD_DIRS[$i]}"
+  user_systemctl "$i" --quiet is-active webservices.target
 done
 systemctl reset-failed 'webservices-*' || true
 systemctl enable webservices.target
 systemctl restart webservices.target
-systemctl --quiet is-active webservices.target
 wait_for_target_services rootful 0 /etc/systemd/system
+systemctl --quiet is-active webservices.target
 trap - ERR
 printf '[podman-install] active rootful release: %s\n' "$release"
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
