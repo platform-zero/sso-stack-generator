@@ -3,11 +3,15 @@ set -Eeuo pipefail
 
 BUNDLE=""
 STACK_LAB_ROOT="${P0_STACK_LAB_ROOT:-/mnt/lab_debian/stack_lab}"
+SOPS_AGE_KEY_FILE=""
+SOPS_BINARY=""
 
-usage() { printf 'Usage: %s --bundle DIR\n' "${0##*/}" >&2; }
+usage() { printf 'Usage: %s --bundle DIR [--sops-age-key-file FILE] [--sops-binary FILE]\n' "${0##*/}" >&2; }
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --bundle) BUNDLE="$2"; shift 2 ;;
+    --sops-age-key-file) SOPS_AGE_KEY_FILE="$2"; shift 2 ;;
+    --sops-binary) SOPS_BINARY="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) usage; exit 2 ;;
   esac
@@ -17,6 +21,8 @@ done
 [ -f "$BUNDLE/podman-domains.json" ] || { printf 'missing podman-domains.json\n' >&2; exit 1; }
 for command in install jq ssh-keygen systemctl; do command -v "$command" >/dev/null; done
 id stack_lab >/dev/null 2>&1 || { printf 'stack_lab account does not exist\n' >&2; exit 1; }
+[ -z "$SOPS_AGE_KEY_FILE" ] || [ -f "$SOPS_AGE_KEY_FILE" ] || { printf 'SOPS age key file does not exist\n' >&2; exit 1; }
+[ -z "$SOPS_BINARY" ] || [ -x "$SOPS_BINARY" ] || { printf 'SOPS binary is not executable\n' >&2; exit 1; }
 
 install -d -m 0755 /usr/local/libexec /etc/platform-zero
 install -d -m 0750 -o root -g stack_lab /run/platform-zero
@@ -26,6 +32,14 @@ install -m 0755 "$BUNDLE/ops/p0-domain-dispatch" /usr/local/libexec/p0-domain-di
 install -m 0644 "$BUNDLE/ops/platform-zero-host-broker.service" /etc/systemd/system/
 install -m 0644 "$BUNDLE/ops/platform-zero-host-broker.socket" /etc/systemd/system/
 install -m 0644 "$BUNDLE/podman-domains.json" /etc/platform-zero/podman-domains.json
+if [ -n "$SOPS_AGE_KEY_FILE" ]; then
+  install -d -m 0700 /root/.config/sops/age
+  install -m 0600 "$SOPS_AGE_KEY_FILE" /root/.config/sops/age/keys.txt
+fi
+if [ -n "$SOPS_BINARY" ]; then
+  install -m 0755 "$SOPS_BINARY" /usr/local/bin/sops
+fi
+command -v sops >/dev/null || { printf 'sops must be installed in the root service PATH\n' >&2; exit 1; }
 
 while IFS="$(printf '\t')" read -r domain user; do
   id "$user" >/dev/null 2>&1 || { printf 'missing domain account: %s\n' "$user" >&2; exit 1; }
