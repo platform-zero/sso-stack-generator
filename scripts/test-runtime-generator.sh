@@ -219,6 +219,23 @@ if ! rg -Fxq 'PublishPort=127.0.0.1:13100:3100' "$WORK_DIR/podman-a/quadlet/root
   exit 1
 fi
 
+if yq -e '.podman.cross_domain_endpoints | length > 0' "$SOURCE_SITE_DIR/global.settings/stack.config.yaml" >/dev/null 2>&1; then
+  jq -e '
+    any(.endpoints[]; .service == "postgres" and .containerPort == "5432" and .hostPort == 5432 and (.consumers | index("identity"))) and
+    any(.endpoints[]; .service == "postgres-ssd" and .hostPort == 25432 and (.consumers | index("observability")))
+  ' "$WORK_DIR/podman-a/podman-loopback-endpoints.json" >/dev/null
+  rg -Fxq 'PublishPort=127.0.0.1:5432:5432' "$WORK_DIR/podman-a/quadlet/rootless-data/webservices-postgres.container"
+  rg -Fxq 'PublishPort=127.0.0.1:25432:5432' "$WORK_DIR/podman-a/quadlet/rootless-data/webservices-postgres-ssd.container"
+  rg -Fxq 'KC_DB=postgres' "$WORK_DIR/podman-a/runtime-env/keycloak.env.template"
+  rg -Fq 'jdbc:postgresql://host.containers.internal:5432/keycloak' "$WORK_DIR/podman-a/runtime-env/keycloak.env.template"
+  rg -Fxq 'POSTGRES_PORT=25432' "$WORK_DIR/podman-a/runtime-env/jupyterhub.env.template"
+  rg -Fq 'http://host.containers.internal:8080' "$WORK_DIR/podman-a/runtime/configs/matrix-authentication-service/config.yaml"
+  rg -Fq 'host.containers.internal:25432' "$WORK_DIR/podman-a/runtime/configs/grafana/provisioning/datasources/timescaledb.yml"
+  test -s "$WORK_DIR/podman-a/ops/platform-zero.nft"
+  rg -Fq 'meta skuid 993 tcp dport' "$WORK_DIR/podman-a/ops/platform-zero.nft"
+  rg -Fq 'ip daddr 127.0.0.0/8 tcp dport' "$WORK_DIR/podman-a/ops/platform-zero.nft"
+fi
+
 if ! jq -e '.panels[] | .targets[]? | select(.expr == "{source=\"journald\"}")' \
   "$WORK_DIR/podman-a/runtime/configs/grafana/provisioning/dashboards/logs.json" >/dev/null; then
   printf '[runtime-test] Grafana Logs dashboard does not query Alloy journal labels\n' >&2
@@ -295,6 +312,10 @@ if rg -Fq 'chown -R "$domain_user:$domain_user" "$destination"' "$WORK_DIR/podma
 fi
 if ! rg -Fq 'cp -a "$ENV_DIR/." "$env_input_snapshot/"' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
   printf '[runtime-test] installer does not protect an in-place persistent environment source\n' >&2
+  exit 1
+fi
+if ! rg -Fq 'pasta_options = ["--map-host-loopback", "169.254.1.2"]' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-test] installer does not enable UID-filterable host-loopback mapping for rootless networks\n' >&2
   exit 1
 fi
 

@@ -1,0 +1,17 @@
+[Unit]
+Description=Platform Zero restricted host broker
+Requires=platform-zero-host-broker.socket
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/libexec/p0-host-broker
+User=root
+Group=root
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/var/lib/platform-zero /mnt/stack /run /etc/containers /etc/systemd /home
+
+[Install]
+WantedBy=multi-user.target

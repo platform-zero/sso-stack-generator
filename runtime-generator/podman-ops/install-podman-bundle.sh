@@ -323,12 +323,19 @@ ensure_rootless_domain() {
   ROOTLESS_ENV_STORES[$index]="$env_store"
   ROOTLESS_QUADLET_DIRS[$index]="$quadlet_dir"
   ROOTLESS_SYSTEMD_DIRS[$index]="$systemd_dir"
+  install -d -m 0711 -o root -g root /mnt/stack/podman
+  case "$(dirname "$graph_root")" in
+    /mnt/stack/podman/*) install -d -m 0710 -o root -g "$user" "$(dirname "$graph_root")" ;;
+  esac
   mkdir -p "${ROOTLESS_RELEASES[$index]}" "$state_root/releases" "$graph_root" "$volume_root" "$runtime" "$env_store" "$quadlet_dir" "$systemd_dir" "$home/.config/containers"
-  chown -R "$user:$user" "$state_root" "$graph_root" "$volume_root" "$home/.config" "$runtime"
+  chown "$user:$user" "$state_root" "$state_root/releases" "${ROOTLESS_RELEASES[$index]}" "$graph_root" "$volume_root" "$runtime" "$env_store"
+  chown -R "$user:$user" "$home/.config"
   chmod 0700 "$env_store"
   printf '[storage]\ndriver = "overlay"\ngraphroot = "%s"\n' "$graph_root" > "$home/.config/containers/storage.conf"
+  printf '[network]\ndefault_rootless_network_cmd = "pasta"\npasta_options = ["--map-host-loopback", "169.254.1.2"]\n' > "$home/.config/containers/containers.conf"
   chown "$user:$user" "$home/.config/containers/storage.conf"
-  chmod 0600 "$home/.config/containers/storage.conf"
+  chown "$user:$user" "$home/.config/containers/containers.conf"
+  chmod 0600 "$home/.config/containers/storage.conf" "$home/.config/containers/containers.conf"
 }
 
 user_systemctl() {
@@ -515,27 +522,45 @@ copy_tree_once() {
     fi
     copied=true
   fi
-  if [ "$copied" = true ]; then
-    chown -R "$destination_user:$destination_user" "$destination"
-  fi
+  [ "$copied" = false ] || chown "$destination_user:$destination_user" "$destination"
 }
 
-ensure_rootless_volume_owner() {
-  local destination="$1" user="$2" current_uid desired_uid uid migratable=false
+translate_rootless_volume_owner() {
+  local destination="$1" user="$2" subid_start="$3" desired_uid
   [ -d "$destination" ] || return 0
-  current_uid="$(stat -c '%u' "$destination")"
   desired_uid="$(id -u "$user")"
-  [ "$current_uid" = "$desired_uid" ] && return 0
-  [ "$current_uid" = "0" ] && migratable=true
-  for uid in "${ROOTLESS_UIDS[@]}"; do
-    [ "$current_uid" = "$uid" ] && migratable=true
-  done
-  # A root-owned tree or one owned by another service domain needs a one-time
-  # migration. Subordinate UIDs belong to container users and must be retained.
-  if [ "$migratable" = true ]; then
-    chown -R "$user:$user" "$destination"
-  fi
-  return 0
+  [ -n "$subid_start" ] || { printf 'missing subordinate-id range for %s\n' "$user" >&2; return 1; }
+  python3 - "$destination" "$desired_uid" "$(id -g "$user")" "$subid_start" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+target_uid, target_gid, target_subid = map(int, sys.argv[2:])
+legacy_uid = 999
+legacy_gid = 999
+legacy_subid = 1_000_000
+subid_size = 65_536
+
+def translated(value, legacy_root, target_root):
+    if value in (0, legacy_root):
+        return target_root
+    if legacy_subid <= value < legacy_subid + subid_size:
+        return target_subid + value - legacy_subid
+    return value
+
+paths = [root]
+for directory, names, files in os.walk(root):
+    base = Path(directory)
+    paths.extend(base / name for name in names)
+    paths.extend(base / name for name in files)
+for path in paths:
+    stat = path.lstat()
+    uid = translated(stat.st_uid, legacy_uid, target_uid)
+    gid = translated(stat.st_gid, legacy_gid, target_gid)
+    if (uid, gid) != (stat.st_uid, stat.st_gid):
+        os.lchown(path, uid, gid)
+PY
 }
 
 grant_shared_access() {
@@ -596,7 +621,7 @@ PY
     *) printf 'unknown rootless volume strategy %s for %s\n' "$strategy" "$source" >&2; exit 1 ;;
   esac
   if [ "$strategy" != "shared" ]; then
-    ensure_rootless_volume_owner "$destination" "$domain_user"
+    translate_rootless_volume_owner "$destination" "$domain_user" "${ROOTLESS_DOMAIN_SUBUID_STARTS[$domain_index]}"
   fi
 done
 

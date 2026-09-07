@@ -1,0 +1,13 @@
+[Unit]
+Description=Platform Zero restricted host broker socket
+
+[Socket]
+ListenStream=/run/platform-zero/host-broker.sock
+DirectoryMode=0750
+SocketUser=root
+SocketGroup=stack_lab
+SocketMode=0660
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

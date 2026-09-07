@@ -131,6 +131,16 @@ jq -r '.domains[] | [.name,.user,.stateRoot,.graphRoot,.volumeRoot,(.uid // ""),
     passwd -l "$user" >/dev/null
     ensure_subids "$user" "$expected_subuid"
     [ ! -d "/home/$user/.config" ] || chown "$user:$user" "/home/$user/.config"
+    # Shared storage parents are traversal-only; each domain directory is
+    # readable/traversable solely by its owning service account.
+    install -d -m 0711 -o root -g root /mnt/stack/podman
+    for domain_parent in "$(dirname "$graph_root")" "$(dirname "$state_root")"; do
+      case "$domain_parent" in
+        /mnt/stack/podman/*)
+          install -d -m 0710 -o root -g "$user" "$domain_parent"
+          ;;
+      esac
+    done
     if [ "$existed" = true ] && [ "$MIGRATE_EXISTING" != true ]; then
       printf '[domain-accounts] preserving existing Podman storage for %s; use --migrate-existing during its data cutover\n' "$user"
       loginctl enable-linger "$user"
@@ -139,8 +149,10 @@ jq -r '.domains[] | [.name,.user,.stateRoot,.graphRoot,.volumeRoot,(.uid // ""),
     install -d -m 0700 -o "$user" -g "$user" "$state_root" "$graph_root" "$volume_root" "/home/$user/.config/containers"
     chown "$user:$user" "/home/$user/.config"
     printf '[storage]\ndriver = "overlay"\ngraphroot = "%s"\n' "$graph_root" > "/home/$user/.config/containers/storage.conf"
+    printf '[network]\ndefault_rootless_network_cmd = "pasta"\npasta_options = ["--map-host-loopback", "169.254.1.2"]\n' > "/home/$user/.config/containers/containers.conf"
     chown "$user:$user" "/home/$user/.config/containers/storage.conf"
-    chmod 0600 "/home/$user/.config/containers/storage.conf"
+    chown "$user:$user" "/home/$user/.config/containers/containers.conf"
+    chmod 0600 "/home/$user/.config/containers/storage.conf" "/home/$user/.config/containers/containers.conf"
     loginctl enable-linger "$user"
   done
 
