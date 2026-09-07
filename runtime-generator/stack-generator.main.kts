@@ -1308,7 +1308,7 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
                 config.path("aliases").forEach { lines += "NetworkAlias=${it.asText()}" }
             }
         }
-        if (activePodmanPolicy.crossDomainEndpoints.any { domain.name in it.consumers }) {
+        if (domain.name != "rootful" && activePodmanPolicy.crossDomainEndpoints.any { domain.name in it.consumers }) {
             lines += "Network=webservices-p0-egress.network"
         }
     }
