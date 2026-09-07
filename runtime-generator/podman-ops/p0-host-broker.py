@@ -248,7 +248,8 @@ def activate(request: dict[str, object]) -> dict[str, object]:
             text=True, capture_output=True, check=False, env=env,
         )
     if result.returncode:
-        raise RequestError(f"activation failed ({result.returncode}); fix-forward required\n{result.stderr[-8000:]}")
+        details = (result.stdout + "\n" + result.stderr)[-16000:]
+        raise RequestError(f"activation failed ({result.returncode}); fix-forward required\n{details}")
     return {"release": path.name, "output": result.stdout[-8000:]}
 
 
