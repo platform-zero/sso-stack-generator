@@ -111,24 +111,49 @@ root_has_sops_key_material() {
 }
 
 apply_loopback_rewrites() {
-  local caddy_file="$BUNDLE/runtime/configs/caddy/Caddyfile"
+  local config_root="$BUNDLE/runtime/configs"
   local endpoints_file="$BUNDLE/podman-loopback-endpoints.json"
-  [ -f "$caddy_file" ] && [ -f "$endpoints_file" ] || return 0
-  python3 - "$caddy_file" "$endpoints_file" <<'PY'
+  [ -d "$config_root" ] && [ -f "$endpoints_file" ] || return 0
+  python3 - "$config_root" "$endpoints_file" "$BUNDLE/stack.ir.json" <<'PY'
 import json
 import re
 import sys
 from pathlib import Path
 
-caddy_file = Path(sys.argv[1])
+config_root = Path(sys.argv[1])
 endpoints = json.load(open(sys.argv[2])).get("endpoints", [])
-content = caddy_file.read_text()
-for endpoint in endpoints:
-    service = re.escape(endpoint["service"])
-    container_port = re.escape(str(endpoint["containerPort"]))
-    host_port = str(endpoint["hostPort"])
-    content = re.sub(rf"\b{service}:{container_port}\b", f"127.0.0.1:{host_port}", content)
-caddy_file.write_text(content)
+ir = json.load(open(sys.argv[3]))
+owners = {}
+for service in ir.get("services", {}).values():
+    domain = service.get("rootlessDomain", "rootful") if service.get("placement") == "rootless" else "rootful"
+    for mount in service.get("volumes", []):
+        source = mount.split(":", 1)[0] if isinstance(mount, str) else mount.get("source", "")
+        if source.startswith("./configs/"):
+            top = source.removeprefix("./configs/").split("/", 1)[0]
+            owners.setdefault(top, set()).add(domain)
+
+for path in config_root.rglob("*"):
+    if not path.is_file() or path.suffix == ".template":
+        continue
+    try:
+        content = path.read_text()
+    except (UnicodeDecodeError, OSError):
+        continue
+    original = content
+    domains = owners.get(path.relative_to(config_root).parts[0], set())
+    for endpoint in endpoints:
+        consumers = set(endpoint.get("consumers", []))
+        if not domains.intersection(consumers):
+            continue
+        service = re.escape(endpoint["service"])
+        container_port = re.escape(str(endpoint["containerPort"]))
+        host_port = str(endpoint["hostPort"])
+        replacement_host = "127.0.0.1" if domains == {"rootful"} else "host.containers.internal"
+        content = re.sub(rf"(?<![A-Za-z0-9_-]){service}:{container_port}(?![0-9])", f"{replacement_host}:{host_port}", content)
+        if replacement_host != "127.0.0.1":
+            content = re.sub(rf"(?<![A-Za-z0-9_-]){service}(?![A-Za-z0-9_-])", replacement_host, content)
+    if content != original:
+        path.write_text(content)
 PY
 }
 
@@ -141,9 +166,6 @@ if [ -z "$ENV_DIR" ]; then
   rendered_env_dir="$(mktemp -d)"
   cleanup_paths+=("$rendered_env_dir")
   if [ ! -f "$BUNDLE/runtime/stack.env" ]; then
-    generated_configs="$(mktemp -d)"
-    cleanup_paths+=("$generated_configs")
-    cp -a "$BUNDLE/runtime/configs/." "$generated_configs/"
     [ -x "$BUNDLE/scripts/deploy/render-runtime.sh" ] || {
       printf 'bundle cannot render runtime environment: missing scripts/deploy/render-runtime.sh\n' >&2
       exit 1
@@ -153,9 +175,6 @@ if [ -z "$ENV_DIR" ]; then
       --deploy-root "$BUNDLE" \
       --runtime-root "$BUNDLE/runtime" \
       --skip-runtime-model-validate >/dev/null
-    rm -rf "$BUNDLE/runtime/configs"
-    mkdir -p "$BUNDLE/runtime/configs"
-    cp -a "$generated_configs/." "$BUNDLE/runtime/configs/"
   fi
   [ -f "$BUNDLE/runtime/stack.env" ] || {
     printf 'bundle runtime environment was not rendered: %s\n' "$BUNDLE/runtime/stack.env" >&2
