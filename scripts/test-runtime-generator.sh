@@ -321,6 +321,11 @@ if ! rg -Fq 'pasta_options = ["--map-host-loopback", "169.254.1.2"]' "$WORK_DIR/
   printf '[runtime-test] installer does not enable UID-filterable host-loopback mapping for rootless networks\n' >&2
   exit 1
 fi
+if ! rg -Fq 'wait_for_cross_domain_producers' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh" ||
+   ! rg -Fq 'retry_failed_rootless_services' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-test] installer does not sequence cross-domain producers before retrying consumers\n' >&2
+  exit 1
+fi
 
 test -f "$WORK_DIR/podman-a/runtime/configs/vaultwarden/index.html"
 test -f "$WORK_DIR/podman-a/runtime/configs/vaultwarden/seed.sh"

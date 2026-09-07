@@ -814,6 +814,49 @@ restart_rootless_network_units() {
   [ "${#units[@]}" -eq 0 ] || user_systemctl "$index" restart "${units[@]}"
 }
 
+wait_for_cross_domain_producers() {
+  local endpoints="$BUNDLE/podman-loopback-endpoints.json"
+  local service domain index unit state deadline
+  [ -f "$endpoints" ] || return 0
+  while IFS=$'\t' read -r service domain; do
+    [ -n "$service" ] && [ -n "$domain" ] || continue
+    unit="webservices-${service}.service"
+    index="$(domain_index_by_name "$domain")"
+    deadline=$((SECONDS + ${WEBSERVICES_ACTIVATION_TIMEOUT_SECONDS:-1800}))
+    while true; do
+      state="$(user_systemctl "$index" is-active "$unit" 2>/dev/null || true)"
+      [ "$state" = "active" ] && break
+      if [ "$state" = "failed" ]; then
+        printf '[podman-install] cross-domain producer failed: domain=%s unit=%s\n' "$domain" "$unit" >&2
+        user_systemctl "$index" status "$unit" --no-pager -l >&2 || true
+        return 1
+      fi
+      if [ "$SECONDS" -ge "$deadline" ]; then
+        printf '[podman-install] cross-domain producer timed out: domain=%s unit=%s state=%s\n' "$domain" "$unit" "$state" >&2
+        return 1
+      fi
+      sleep 2
+    done
+  done < <(jq -r --slurpfile ir "$BUNDLE/stack.ir.json" '
+    .endpoints[]
+    | select(any(.consumers[]; . != "rootful"))
+    | [.service, ($ir[0].services[.service].rootlessDomain // "")]
+    | @tsv
+  ' "$endpoints" | sort -u)
+}
+
+retry_failed_rootless_services() {
+  local i unit
+  for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+    while IFS= read -r unit; do
+      [ -n "$unit" ] || continue
+      printf '[podman-install] retrying service after cross-domain producers became ready: domain=%s unit=%s\n' "${ROOTLESS_DOMAIN_NAMES[$i]}" "$unit" >&2
+      user_systemctl "$i" reset-failed "$unit"
+      user_systemctl "$i" --no-block restart "$unit"
+    done < <(user_systemctl "$i" --failed --no-legend --plain 'webservices-*' 2>/dev/null | awk '{print $1}')
+  done
+}
+
 grant_test_runner_managed_socket_access() {
   local launch_domain managed_domain launch_index managed_index launch_user
   launch_domain="$(jq -r '.services["test-runner"].rootlessDomain // empty' "$BUNDLE/stack.ir.json")"
@@ -855,6 +898,8 @@ systemctl enable --now webservices-auto-update.timer
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user_systemctl "$i" --no-block restart webservices.target
 done
+wait_for_cross_domain_producers
+retry_failed_rootless_services
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   wait_for_target_services rootless "$i" "${ROOTLESS_SYSTEMD_DIRS[$i]}"
   user_systemctl "$i" --quiet is-active webservices.target

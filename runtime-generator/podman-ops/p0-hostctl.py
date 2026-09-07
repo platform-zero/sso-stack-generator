@@ -30,7 +30,14 @@ def main() -> int:
             if not chunk:
                 break
             response += chunk
-    decoded = json.loads(response)
+    if not response:
+        print("p0-hostctl: host broker closed the connection without a response", file=sys.stderr)
+        return 1
+    try:
+        decoded = json.loads(response)
+    except json.JSONDecodeError as error:
+        print(f"p0-hostctl: invalid host broker response: {error}", file=sys.stderr)
+        return 1
     print(json.dumps(decoded, indent=2, sort_keys=True))
     return 0 if decoded.get("ok") else 1
 
