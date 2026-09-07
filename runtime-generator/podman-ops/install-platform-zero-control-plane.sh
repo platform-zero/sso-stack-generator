@@ -26,6 +26,7 @@ id stack_lab >/dev/null 2>&1 || { printf 'stack_lab account does not exist\n' >&
 
 install -d -m 0755 /usr/local/libexec /etc/platform-zero
 install -d -m 0750 -o root -g stack_lab /run/platform-zero
+install -d -m 0700 -o root -g root /var/lib/platform-zero/incoming /mnt/stack/platform-zero-snapshots
 install -m 0755 "$BUNDLE/ops/p0-host-broker.py" /usr/local/libexec/p0-host-broker
 install -m 0755 "$BUNDLE/ops/p0-hostctl.py" /usr/local/bin/p0-hostctl
 install -m 0755 "$BUNDLE/ops/p0-domain-dispatch" /usr/local/libexec/p0-domain-dispatch

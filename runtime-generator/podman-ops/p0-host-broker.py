@@ -141,11 +141,23 @@ def snapshot(_: dict[str, object]) -> dict[str, object]:
     if destination.exists():
         raise RequestError("snapshot identifier collision")
     destination.mkdir(mode=0o700, parents=True)
-    for source in (Path("/mnt/stack/rootless"), Path("/var/lib/webservices"), Path("/etc/containers/systemd")):
+    previous = next((path for path in sorted(SNAPSHOTS.iterdir(), reverse=True) if path.is_dir() and path != destination), None)
+    sources = (
+        Path("/mnt/stack/rootless"),
+        Path("/mnt/stack/volumes"),
+        Path("/mnt/stack/vector-dbs"),
+        Path("/mnt/stack/pg-ssd"),
+        Path("/var/lib/webservices"),
+        Path("/etc/containers/systemd"),
+    )
+    for source in sources:
         if source.exists():
             target = destination / source.relative_to("/")
             target.parent.mkdir(parents=True, exist_ok=True)
-            run("rsync", "-aHAX", "--numeric-ids", f"{source}/", f"{target}/")
+            args = ["rsync", "-aHAX", "--numeric-ids"]
+            if previous is not None and (previous / source.relative_to("/")).is_dir():
+                args.append(f"--link-dest={previous / source.relative_to('/')}" )
+            run(*args, f"{source}/", f"{target}/")
     ruleset = run("nft", "list", "ruleset", check=False)
     if ruleset.returncode == 0 and ruleset.stdout:
         (destination / "nftables.conf").write_text(ruleset.stdout)
@@ -170,7 +182,14 @@ def restore(request: dict[str, object]) -> dict[str, object]:
     if DOMAINS_MANIFEST.is_file():
         for item in json.loads(DOMAINS_MANIFEST.read_text()).get("domains", []):
             user_systemctl(item["user"], "stop", "webservices.target", check=False)
-    for destination in (Path("/mnt/stack/rootless"), Path("/var/lib/webservices"), Path("/etc/containers/systemd")):
+    for destination in (
+        Path("/mnt/stack/rootless"),
+        Path("/mnt/stack/volumes"),
+        Path("/mnt/stack/vector-dbs"),
+        Path("/mnt/stack/pg-ssd"),
+        Path("/var/lib/webservices"),
+        Path("/etc/containers/systemd"),
+    ):
         saved = source / destination.relative_to("/")
         if saved.is_dir():
             destination.mkdir(parents=True, exist_ok=True)
