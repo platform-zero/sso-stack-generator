@@ -226,7 +226,7 @@ def render(value: str, source: Path) -> str:
     current = value
     for _ in range(8):
         if current == previous:
-            return current
+            return current.replace("$$", "$")
         previous = current
         current = pattern.sub(replace, current)
     return current
