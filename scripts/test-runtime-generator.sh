@@ -129,10 +129,28 @@ jq -e --slurpfile domains "$WORK_DIR/podman-a/podman-domains.json" '
 jq -e '(.schemaVersion == 1) and (.workspaces | length == 16) and ([.workspaces[].name] | unique | length == 16)' \
   "$WORK_DIR/podman-a/maintenance-workspaces.json" >/dev/null
 
+jq -e '
+  (.schemaVersion == 1) and (.owner == "software_lab") and
+  (.root == "/mnt/lab_debian/software_lab") and
+  (.workspaces | length == 9) and
+  ([.workspaces[].name] | sort == ["auto_scad", "backup", "chatex", "crypto_trading", "hitl", "my_brand", "obelisks", "poe_intelligence", "worklane"]) and
+  all(.workspaces[];
+    .role == "software" and .profile == "software-gpu" and .startAtBoot == true and
+    .devices == ["nvidia.com/gpu=all"] and (.projectPath | startswith("/mnt/lab_debian/software_lab/")))
+' "$WORK_DIR/podman-a/software-workspaces.json" >/dev/null
+
+test -x "$WORK_DIR/podman-a/ops/start-worklane-containers.py"
+test -f "$WORK_DIR/podman-a/ops/platform-zero-worklanes.service"
+
 python3 "$WORK_DIR/podman-a/ops/materialize-workspaces.py" \
   --manifest "$WORK_DIR/podman-a/maintenance-workspaces.json" \
   --root "$WORK_DIR/workspace-plan" > "$WORK_DIR/workspace-plan.json"
 jq -e '(.apply == false) and (.blockers == []) and (.actions | length > 0)' "$WORK_DIR/workspace-plan.json" >/dev/null
+
+python3 "$WORK_DIR/podman-a/ops/materialize-workspaces.py" \
+  --manifest "$WORK_DIR/podman-a/software-workspaces.json" \
+  --root "$WORK_DIR/software-workspace-plan" > "$WORK_DIR/software-workspace-plan.json"
+jq -e '(.apply == false) and (.blockers == []) and (.actions == [])' "$WORK_DIR/software-workspace-plan.json" >/dev/null
 
 jq -e '
   (.schemaVersion == 2) and
@@ -232,8 +250,8 @@ if yq -e '.podman.cross_domain_endpoints | length > 0' "$SOURCE_SITE_DIR/global.
   test -f "$WORK_DIR/podman-a/quadlet/rootless-identity/webservices-p0-egress.network"
   rg -Fq 'Network=webservices-p0-egress.network' "$WORK_DIR/podman-a/quadlet/rootless-identity/webservices-keycloak-bootstrap.container"
   rg -Fq 'http://host.containers.internal:25007' "$WORK_DIR/podman-a/runtime/configs/matrix-authentication-service/config.yaml"
-  rg -Eq 'host:[[:space:]]+host\.containers\.internal' "$WORK_DIR/podman-a/runtime/configs/synapse/homeserver.yaml"
-  rg -Eq 'port:[[:space:]]+25001' "$WORK_DIR/podman-a/runtime/configs/synapse/homeserver.yaml"
+  rg -q -e 'host:[[:space:]]+host\.containers\.internal' "$WORK_DIR/podman-a/runtime/configs/synapse/homeserver.yaml"
+  rg -q -e 'port:[[:space:]]+25001' "$WORK_DIR/podman-a/runtime/configs/synapse/homeserver.yaml"
   rg -Fxq 'DB_HOST=host.containers.internal' "$WORK_DIR/podman-a/runtime/configs/mastodon/mastodon.env"
   rg -Fq 'host.containers.internal:25002' "$WORK_DIR/podman-a/runtime/configs/grafana/provisioning/datasources/timescaledb.yml"
   rg -Fq 'psql -h host.containers.internal' "$WORK_DIR/podman-a/stack.ir.json"

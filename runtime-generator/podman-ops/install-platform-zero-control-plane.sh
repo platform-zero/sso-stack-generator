@@ -24,12 +24,14 @@ id stack_lab >/dev/null 2>&1 || { printf 'stack_lab account does not exist\n' >&
 [ -z "$SOPS_AGE_KEY_FILE" ] || [ -f "$SOPS_AGE_KEY_FILE" ] || { printf 'SOPS age key file does not exist\n' >&2; exit 1; }
 [ -z "$SOPS_BINARY" ] || [ -x "$SOPS_BINARY" ] || { printf 'SOPS binary is not executable\n' >&2; exit 1; }
 
-install -d -m 0755 /usr/local/libexec /etc/platform-zero
+install -d -m 0755 /usr/local/libexec /etc/platform-zero /etc/systemd/user
 install -d -m 0750 -o root -g stack_lab /run/platform-zero
 install -d -m 0700 -o root -g root /var/lib/platform-zero/incoming /mnt/stack/platform-zero-snapshots
 install -m 0755 "$BUNDLE/ops/p0-host-broker.py" /usr/local/libexec/p0-host-broker
 install -m 0755 "$BUNDLE/ops/p0-hostctl.py" /usr/local/bin/p0-hostctl
 install -m 0755 "$BUNDLE/ops/p0-domain-dispatch" /usr/local/libexec/p0-domain-dispatch
+install -m 0755 "$BUNDLE/ops/start-worklane-containers.py" /usr/local/libexec/p0-start-worklanes
+install -m 0644 "$BUNDLE/ops/platform-zero-worklanes.service" /etc/systemd/user/platform-zero-worklanes.service
 install -m 0644 "$BUNDLE/ops/platform-zero-host-broker.service" /etc/systemd/system/
 install -m 0644 "$BUNDLE/ops/platform-zero-host-broker.socket" /etc/systemd/system/
 install -m 0644 "$BUNDLE/podman-domains.json" /etc/platform-zero/podman-domains.json
@@ -62,6 +64,36 @@ while IFS="$(printf '\t')" read -r domain user; do
   chown "$user:$user" "$authorized"
   chmod 0600 "$authorized"
 done < <(jq -r '.domains[] | [.name, .user] | @tsv' "$BUNDLE/podman-domains.json")
+
+install_workspace_autostart() {
+  local manifest="$1" owner home config wants
+  [ -f "$manifest" ] || return 0
+  owner="$(jq -r '.owner' "$manifest")"
+  id "$owner" >/dev/null 2>&1 || { printf 'missing workspace owner account: %s\n' "$owner" >&2; exit 1; }
+  home="$(getent passwd "$owner" | cut -d: -f6)"
+  config="$home/.config/platform-zero"
+  install -d -m 0700 -o "$owner" -g "$owner" "$home/.config" "$config"
+  if [ -f "$config/workspaces.json" ] && ! cmp -s "$manifest" "$config/workspaces.json"; then
+    printf 'refusing to replace locally changed %s\n' "$config/workspaces.json" >&2
+    exit 1
+  fi
+  install -m 0600 -o "$owner" -g "$owner" "$manifest" "$config/workspaces.json"
+  wants="$home/.config/systemd/user/default.target.wants"
+  install -d -m 0700 -o "$owner" -g "$owner" "$home/.config/systemd" "$home/.config/systemd/user" "$wants"
+  if [ -e "$wants/platform-zero-worklanes.service" ] || [ -L "$wants/platform-zero-worklanes.service" ]; then
+    [ "$(readlink "$wants/platform-zero-worklanes.service")" = /etc/systemd/user/platform-zero-worklanes.service ] || {
+      printf 'refusing to replace locally changed %s\n' "$wants/platform-zero-worklanes.service" >&2
+      exit 1
+    }
+  else
+    ln -s /etc/systemd/user/platform-zero-worklanes.service "$wants/platform-zero-worklanes.service"
+    chown -h "$owner:$owner" "$wants/platform-zero-worklanes.service"
+  fi
+  loginctl enable-linger "$owner"
+}
+
+install_workspace_autostart "$BUNDLE/maintenance-workspaces.json"
+install_workspace_autostart "$BUNDLE/software-workspaces.json"
 
 systemctl daemon-reload
 systemctl enable --now platform-zero-host-broker.socket

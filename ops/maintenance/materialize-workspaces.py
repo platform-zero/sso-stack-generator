@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan or materialize Platform Zero's stack_lab Worklane workspaces."""
+"""Plan or safely materialize Platform Zero Worklane workspaces."""
 
 from __future__ import annotations
 
@@ -29,7 +29,15 @@ image = "worklane:latest"
 network = "outbound"
 mount_codex_credentials = true
 mount_gh_credentials = false
+
+[profiles.software-gpu]
+image = "worklane:latest"
+network = "outbound"
+mount_codex_credentials = true
+mount_gh_credentials = true
+devices = ["nvidia.com/gpu=all"]
 """
+LEGACY_PROFILES = PROFILES.split("\n[profiles.software-gpu]", 1)[0] + "\n"
 
 
 def fail(message: str) -> "NoReturn":
@@ -54,6 +62,21 @@ def repo_path(workspace: Path, repo: dict[str, object]) -> Path:
     if not name or "/" in name or name in {".", ".."}:
         fail(f"unsafe repository name: {name!r}")
     return workspace / name
+
+
+def safe_destination(root: Path, declared_root: Path, workspace: dict[str, object]) -> Path:
+    raw = workspace.get("projectPath")
+    if raw:
+        declared_destination = Path(str(raw)).resolve()
+        if declared_destination != declared_root and declared_root not in declared_destination.parents:
+            fail(f"workspace path escapes declared root: {declared_destination}")
+        destination = root / declared_destination.relative_to(declared_root)
+    else:
+        destination = root / str(workspace["name"])
+    destination = destination.resolve()
+    if destination != root and root not in destination.parents:
+        fail(f"workspace path escapes declared root: {destination}")
+    return destination
 
 
 def inspect_repo(path: Path, repo: dict[str, object]) -> dict[str, object]:
@@ -85,8 +108,9 @@ def agents_text(workspace: dict[str, object]) -> str:
         if repo.get("writable", False)
     ]
     services = [str(service) for service in workspace.get("services", [])]
+    heading = "software lane" if role == "software" else "maintenance lane"
     lines = [
-        f"# Platform Zero maintenance lane: {name}",
+        f"# Platform Zero {heading}: {name}",
         "",
         f"Role: `{role}`.",
     ]
@@ -101,7 +125,6 @@ def agents_text(workspace: dict[str, object]) -> str:
         "- This lane has no sudo and must not make host-level changes.",
         "- Do not read, change, deploy, restart, or inspect sibling domains.",
         "- Keep secrets encrypted; never commit private keys or rendered environment files.",
-        "- Use the domain dispatcher for remote status, logs, verification, restart, and deployment.",
         "- Coordinate repository edits through the Worklane agent claim directory.",
     ]
     if role == "control":
@@ -112,10 +135,18 @@ def agents_text(workspace: dict[str, object]) -> str:
     elif role == "host":
         lines += [
             "- This is the only lane permitted to prepare rootful and host-policy changes.",
-            "- Gerald sudo remains temporary; use only the documented hash-gated host plan.",
+            "- Gerald passwordless sudo is intentionally retained; use only the documented hash-gated host plan.",
+        ]
+    elif role == "software":
+        lines += [
+            "- This lane is owned by `software_lab`; do not inspect Platform Zero service-domain state.",
+            "- The RTX 3060 is exposed through CDI as `nvidia.com/gpu=all`.",
+            "- Account-level Codex, GitHub, and SSH credentials are mounted; never copy them into the project.",
+            "- Recreate dependencies from project lockfiles and the commands declared in `software-workspaces.json`.",
         ]
     else:
         lines += [
+            "- Use the domain dispatcher for remote status, logs, verification, restart, and deployment.",
             "- Build and deploy only this lane's named domain.",
             "- Global site-config changes flow through the control lane.",
         ]
@@ -130,6 +161,20 @@ def agents_text(workspace: dict[str, object]) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+def legacy_agents_text(workspace: dict[str, object]) -> str:
+    current = agents_text(workspace)
+    if workspace.get("role") == "software":
+        return current
+    legacy = current.replace(
+        "- Gerald passwordless sudo is intentionally retained; use only the documented hash-gated host plan.",
+        "- Gerald sudo remains temporary; use only the documented hash-gated host plan.",
+    )
+    if workspace.get("role") == "domain":
+        legacy = legacy.replace("- Use the domain dispatcher for remote status, logs, verification, restart, and deployment.\n", "")
+    marker = "- Keep secrets encrypted; never commit private keys or rendered environment files.\n"
+    return legacy.replace(marker, marker + "- Use the domain dispatcher for remote status, logs, verification, restart, and deployment.\n")
 
 
 def main() -> int:
@@ -154,9 +199,16 @@ def main() -> int:
 
     actions: list[dict[str, object]] = []
     blockers: list[dict[str, object]] = []
+    owner = str(manifest.get("owner", "stack_lab"))
+    if not owner or "/" in owner:
+        fail(f"unsafe workspace owner: {owner!r}")
+    names: set[str] = set()
     for workspace in manifest["workspaces"]:
         name = str(workspace["name"])
-        destination = root / name
+        if not name or "/" in name or name in {".", ".."} or name in names:
+            fail(f"unsafe or duplicate workspace name: {name!r}")
+        names.add(name)
+        destination = safe_destination(root, declared_root.resolve(), workspace)
         for repo in workspace.get("repositories", []):
             path = repo_path(destination, repo)
             state = inspect_repo(path, repo)
@@ -179,18 +231,23 @@ def main() -> int:
         fail("workspace drift must be resolved before materialization")
     if not args.apply:
         return 0
+    import pwd
+    if pwd.getpwuid(os.getuid()).pw_name != owner:
+        fail(f"--apply must run as declared owner {owner}")
     if shutil.which("git") is None or shutil.which("worklane") is None:
         fail("git and worklane are required for --apply")
 
     root.mkdir(parents=True, exist_ok=True)
     profiles = Path.home() / ".config" / "worklane" / "profiles.toml"
     profiles.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if profiles.exists() and profiles.read_text() != PROFILES:
+    if profiles.exists() and profiles.read_text() not in {PROFILES, LEGACY_PROFILES}:
         fail(f"refusing to replace locally changed {profiles}")
     profiles.write_text(PROFILES)
     os.chmod(profiles, 0o600)
     for workspace in manifest["workspaces"]:
-        destination = root / str(workspace["name"])
+        destination = safe_destination(root, declared_root.resolve(), workspace)
+        if destination.exists() and destination.stat().st_uid != os.getuid():
+            fail(f"workspace is not owned by {owner}: {destination}")
         destination.mkdir(mode=0o700, parents=True, exist_ok=True)
         for repo in workspace.get("repositories", []):
             path = repo_path(destination, repo)
@@ -202,9 +259,10 @@ def main() -> int:
                 continue
             run("git", "clone", "--no-checkout", str(repo["remote"]), str(path))
             run("git", "checkout", "--detach", str(repo["commit"]), cwd=path)
-        agents = destination / "AGENTS.md"
+        agents = destination / (".platform-zero/AGENTS.md" if workspace.get("role") == "software" else "AGENTS.md")
+        agents.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         expected = agents_text(workspace)
-        if agents.exists() and agents.read_text() != expected:
+        if agents.exists() and agents.read_text() not in {expected, legacy_agents_text(workspace)}:
             fail(f"refusing to replace locally changed {agents}")
         agents.write_text(expected)
         os.chmod(agents, 0o600)
@@ -213,10 +271,24 @@ def main() -> int:
                 "control": "p0-control",
                 "host": "p0-host",
                 "domain": "p0-domain",
+                "software": str(workspace.get("profile", "software-gpu")),
             }.get(str(workspace["role"]))
             if profile is None:
                 fail(f"unknown workspace role: {workspace['role']}")
             run("worklane", "lane", "create", str(workspace["name"]), "--project", str(destination), "--profile", profile)
+    platform_config = Path.home() / ".config" / "platform-zero"
+    platform_config.mkdir(mode=0o700, parents=True, exist_ok=True)
+    installed_manifest = platform_config / "workspaces.json"
+    rendered_manifest = json.dumps(manifest, indent=2) + "\n"
+    if installed_manifest.exists():
+        try:
+            installed = json.loads(installed_manifest.read_text())
+        except json.JSONDecodeError:
+            fail(f"refusing to replace invalid {installed_manifest}")
+        if installed != manifest:
+            fail(f"refusing to replace locally changed {installed_manifest}")
+    installed_manifest.write_text(rendered_manifest)
+    os.chmod(installed_manifest, 0o600)
     return 0
 
 

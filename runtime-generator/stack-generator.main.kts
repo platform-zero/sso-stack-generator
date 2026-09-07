@@ -1473,6 +1473,10 @@ fun renderPodman(ir: ObjectNode, output: Path) {
         .copyTo(output.resolve("ops/provision-domain-accounts.sh"), overwrite = true)
     generatorRoot.resolve("ops/maintenance/materialize-workspaces.py")
         .copyTo(output.resolve("ops/materialize-workspaces.py"), overwrite = true)
+    generatorRoot.resolve("ops/maintenance/start-worklane-containers.py")
+        .copyTo(output.resolve("ops/start-worklane-containers.py"), overwrite = true)
+    generatorRoot.resolve("ops/maintenance/platform-zero-worklanes.service")
+        .copyTo(output.resolve("ops/platform-zero-worklanes.service"), overwrite = true)
 }
 
 fun repositoryRow(name: String, remote: String, commit: String, writable: Boolean): ObjectNode =
@@ -1598,8 +1602,55 @@ fun writeDomainMetadata(ir: ObjectNode, modules: List<ModuleCheckout>, manifestP
     }
     writeJson(output.resolve("maintenance-workspaces.json"), obj()
         .put("schemaVersion", 1)
+        .put("owner", "stack_lab")
         .put("root", activePodmanPolicy.maintenanceRoot)
         .set<ArrayNode>("workspaces", workspaces))
+
+    val stackConfig = readTree(manifestPath).path("stackConfig").asText()
+    val software = readTree(manifestPath.parent.resolve(stackConfig).normalize()).path("podman").path("software_workspaces")
+    if (software.isMissingNode) return
+    if (!software.isObject) fail("podman.software_workspaces must be an object")
+    val softwareOwner = software.path("owner").asText().ifBlank { fail("podman.software_workspaces.owner is required") }
+    if (!softwareOwner.matches(Regex("[a-z_][a-z0-9_-]*"))) fail("invalid software workspace owner '$softwareOwner'")
+    val softwareRoot = Path(software.path("root").asText().ifBlank { fail("podman.software_workspaces.root is required") }).normalize()
+    if (!softwareRoot.isAbsolute || softwareRoot == Path("/")) fail("software workspace root must be an absolute non-root path")
+    val defaultProfile = software.path("profile").asText("software-gpu")
+    val devices = software.path("devices")
+    if (!devices.isArray || devices.isEmpty || devices.any { !it.isTextual || it.asText().isBlank() }) {
+        fail("podman.software_workspaces.devices must be a non-empty string array")
+    }
+    val lanes = software.path("lanes")
+    if (!lanes.isArray || lanes.isEmpty) fail("podman.software_workspaces.lanes must be a non-empty array")
+    val laneNames = mutableSetOf<String>()
+    val softwareRows = arr()
+    lanes.forEachIndexed { index, lane ->
+        val label = "podman.software_workspaces.lanes[$index]"
+        val name = lane.path("name").asText()
+        if (!name.matches(Regex("[a-z0-9][a-z0-9_-]*")) || !laneNames.add(name)) fail("$label has an invalid or duplicate name")
+        val projectPath = Path(lane.path("project_path").asText(softwareRoot.resolve(name).toString())).normalize()
+        if (!projectPath.isAbsolute || (projectPath != softwareRoot && !projectPath.startsWith(softwareRoot))) fail("$label project_path escapes the software root")
+        fun commandList(field: String): ArrayNode {
+            val value = lane.path(field)
+            if (value.isMissingNode) return arr()
+            if (!value.isArray || value.any { !it.isTextual || it.asText().isBlank() }) fail("$label.$field must be a string array")
+            return value.deepCopy<ArrayNode>()
+        }
+        val softwareRow = obj()
+            .put("name", name)
+            .put("role", "software")
+            .put("projectPath", projectPath.toString())
+            .put("profile", lane.path("profile").asText(defaultProfile))
+            .put("startAtBoot", lane.path("start_at_boot").asBoolean(true))
+        softwareRow.set<ArrayNode>("devices", devices.deepCopy<ArrayNode>())
+        softwareRow.set<ArrayNode>("bootstrap", commandList("bootstrap"))
+        softwareRow.set<ArrayNode>("smokeTest", commandList("smoke_test"))
+        softwareRows.add(softwareRow)
+    }
+    writeJson(output.resolve("software-workspaces.json"), obj()
+        .put("schemaVersion", 1)
+        .put("owner", softwareOwner)
+        .put("root", softwareRoot.toString())
+        .set<ArrayNode>("workspaces", softwareRows))
 }
 
 fun replaceDirectory(staging: Path, output: Path) {

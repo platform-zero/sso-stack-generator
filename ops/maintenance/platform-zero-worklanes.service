@@ -1,0 +1,12 @@
+[Unit]
+Description=Start Platform Zero managed Worklane containers
+After=podman.socket
+Wants=podman.socket
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/p0-start-worklanes
+RemainAfterExit=yes
+
+[Install]
+WantedBy=default.target

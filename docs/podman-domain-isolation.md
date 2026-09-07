@@ -32,6 +32,25 @@ After reviewing the JSON plan, run it as `stack_lab` with `--apply`. Existing
 dirty, remote-drifted, or commit-drifted repositories stop the operation rather
 than being reset.
 
+`software-workspaces.json` is the parallel `software_lab` contract. Its nine
+project paths, Worklane profile, CDI devices, boot policy, and reproducibility
+commands are derived from site configuration. Plan and apply it with the same
+materializer, running `--apply` as its declared owner. Paths outside the
+declared root, unexpected ownership, changed profiles, changed instructions,
+and repository drift fail closed.
+Software-lane maintenance guidance is written below `.platform-zero/` so an
+existing project-level `AGENTS.md` is never replaced.
+
+The control-plane installer installs `platform-zero-worklanes.service` for each
+declared owner. At login-manager startup it reads the owner's installed
+manifest and starts only explicitly opted-in containers whose immutable
+`io.worklane.id` and `io.worklane.name` labels match their lane manifest.
+Linger is enabled so recovery does not require an interactive login.
+
+Gerald's passwordless sudo is intentionally retained. The guarded
+`finalize-access` broker action is not part of workspace installation or normal
+activation.
+
 ## Host accounts
 
 Account provisioning is root-owned and storage-gated:
