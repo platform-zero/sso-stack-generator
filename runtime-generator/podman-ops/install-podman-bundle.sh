@@ -668,6 +668,9 @@ PY
   esac
   if [ "$strategy" != "shared" ]; then
     translate_rootless_volume_owner "$destination" "$domain_user" "${ROOTLESS_DOMAIN_SUBUID_STARTS[$domain_index]}"
+    # The domain parent remains 0700.  Allow mapped container users to traverse
+    # each individual volume root without exposing it to sibling domains.
+    chmod u+rwx,go+x "$destination"
   fi
 done
 
