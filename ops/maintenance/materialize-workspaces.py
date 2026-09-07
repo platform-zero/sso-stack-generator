@@ -12,6 +12,26 @@ import subprocess
 import sys
 
 
+PROFILES = """[profiles.p0-control]
+image = "worklane:latest"
+network = "outbound"
+mount_codex_credentials = true
+mount_gh_credentials = true
+
+[profiles.p0-host]
+image = "worklane:latest"
+network = "outbound"
+mount_codex_credentials = true
+mount_gh_credentials = true
+
+[profiles.p0-domain]
+image = "worklane:latest"
+network = "outbound"
+mount_codex_credentials = true
+mount_gh_credentials = false
+"""
+
+
 def fail(message: str) -> "NoReturn":
     raise SystemExit(f"workspace materializer: {message}")
 
@@ -117,6 +137,11 @@ def main() -> int:
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--root", type=Path)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--update",
+        action="store_true",
+        help="update clean, correctly configured checkouts to their manifest commit",
+    )
     args = parser.parse_args()
 
     manifest = json.loads(args.manifest.read_text())
@@ -137,10 +162,18 @@ def main() -> int:
             state = inspect_repo(path, repo)
             row = {"workspace": name, "repository": repo["name"], "path": str(path), **state}
             actions.append(row)
-            if state["state"] not in {"missing", "current"}:
+            if state["state"] not in {"missing", "current"} and not (
+                args.update and state["state"] == "commit-drift"
+            ):
                 blockers.append(row)
 
-    result = {"root": str(root), "apply": args.apply, "actions": actions, "blockers": blockers}
+    result = {
+        "root": str(root),
+        "apply": args.apply,
+        "update": args.update,
+        "actions": actions,
+        "blockers": blockers,
+    }
     print(json.dumps(result, indent=2))
     if blockers:
         fail("workspace drift must be resolved before materialization")
@@ -150,12 +183,22 @@ def main() -> int:
         fail("git and worklane are required for --apply")
 
     root.mkdir(parents=True, exist_ok=True)
+    profiles = Path.home() / ".config" / "worklane" / "profiles.toml"
+    profiles.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if profiles.exists() and profiles.read_text() != PROFILES:
+        fail(f"refusing to replace locally changed {profiles}")
+    profiles.write_text(PROFILES)
+    os.chmod(profiles, 0o600)
     for workspace in manifest["workspaces"]:
         destination = root / str(workspace["name"])
         destination.mkdir(mode=0o700, parents=True, exist_ok=True)
         for repo in workspace.get("repositories", []):
             path = repo_path(destination, repo)
             if path.exists():
+                state = inspect_repo(path, repo)
+                if args.update and state["state"] == "commit-drift":
+                    run("git", "fetch", "--no-tags", "origin", str(repo["commit"]), cwd=path)
+                    run("git", "checkout", "--detach", str(repo["commit"]), cwd=path)
                 continue
             run("git", "clone", "--no-checkout", str(repo["remote"]), str(path))
             run("git", "checkout", "--detach", str(repo["commit"]), cwd=path)
@@ -166,7 +209,14 @@ def main() -> int:
         agents.write_text(expected)
         os.chmod(agents, 0o600)
         if not (destination / ".worklane" / "lane.toml").exists():
-            run("worklane", "lane", "create", str(workspace["name"]), "--project", str(destination), "--profile", "default")
+            profile = {
+                "control": "p0-control",
+                "host": "p0-host",
+                "domain": "p0-domain",
+            }.get(str(workspace["role"]))
+            if profile is None:
+                fail(f"unknown workspace role: {workspace['role']}")
+            run("worklane", "lane", "create", str(workspace["name"]), "--project", str(destination), "--profile", profile)
     return 0
 
 
