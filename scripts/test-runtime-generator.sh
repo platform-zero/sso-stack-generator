@@ -236,6 +236,7 @@ if yq -e '.podman.cross_domain_endpoints | length > 0' "$SOURCE_SITE_DIR/global.
   rg -Fxq 'DB_HOST=host.containers.internal' "$WORK_DIR/podman-a/runtime/configs/mastodon/mastodon.env"
   rg -Fq 'host.containers.internal:25002' "$WORK_DIR/podman-a/runtime/configs/grafana/provisioning/datasources/timescaledb.yml"
   rg -Fq 'psql -h host.containers.internal' "$WORK_DIR/podman-a/stack.ir.json"
+  rg -Fq 'chown postgres:postgres' "$WORK_DIR/podman-a/runtime/configs/postgres/ssd-entrypoint.sh"
   test -s "$WORK_DIR/podman-a/ops/platform-zero.nft"
   rg -Fq 'meta skuid 993 tcp dport' "$WORK_DIR/podman-a/ops/platform-zero.nft"
   rg -Fq 'ip daddr 127.0.0.0/8 tcp dport' "$WORK_DIR/podman-a/ops/platform-zero.nft"
@@ -319,7 +320,7 @@ if ! rg -Fq 'cp -a "$ENV_DIR/." "$env_input_snapshot/"' "$WORK_DIR/podman-a/ops/
   printf '[runtime-test] installer does not protect an in-place persistent environment source\n' >&2
   exit 1
 fi
-if ! rg -Fq 'owners.setdefault(top, set()).add(domain)' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+if ! rg -Fq 'owners.setdefault(relative, set()).add(domain)' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
   printf '[runtime-test] installer does not reapply generated cross-domain config rewrites after environment rendering\n' >&2
   exit 1
 fi

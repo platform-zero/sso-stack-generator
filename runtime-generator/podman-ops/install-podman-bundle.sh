@@ -129,8 +129,8 @@ for service in ir.get("services", {}).values():
     for mount in service.get("volumes", []):
         source = mount.split(":", 1)[0] if isinstance(mount, str) else mount.get("source", "")
         if source.startswith("./configs/"):
-            top = source.removeprefix("./configs/").split("/", 1)[0]
-            owners.setdefault(top, set()).add(domain)
+            relative = source.removeprefix("./configs/")
+            owners.setdefault(relative, set()).add(domain)
 
 for path in config_root.rglob("*"):
     if not path.is_file() or path.suffix == ".template":
@@ -140,7 +140,12 @@ for path in config_root.rglob("*"):
     except (UnicodeDecodeError, OSError):
         continue
     original = content
-    domains = owners.get(path.relative_to(config_root).parts[0], set())
+    relative = path.relative_to(config_root)
+    domains = set()
+    for mount, mount_domains in owners.items():
+        mounted_path = config_root / mount
+        if relative.as_posix() == mount or (mounted_path.is_dir() and mounted_path in path.parents):
+            domains.update(mount_domains)
     for endpoint in endpoints:
         consumers = set(endpoint.get("consumers", []))
         if not domains.intersection(consumers):

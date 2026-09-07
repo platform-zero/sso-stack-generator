@@ -1173,14 +1173,17 @@ fun rewriteCrossDomainConfigs(ir: ObjectNode, output: Path) {
         service.path("volumes").forEach { mount ->
             val source = if (mount.isTextual) mount.asText().substringBefore(':') else mount.path("source").asText()
             if (source.startsWith("./configs/")) {
-                val top = source.removePrefix("./configs/").substringBefore('/')
-                if (top.isNotBlank()) owners.getOrPut(top) { linkedSetOf() }.add(domain)
+                val relative = source.removePrefix("./configs/")
+                if (relative.isNotBlank()) owners.getOrPut(relative) { linkedSetOf() }.add(domain)
             }
         }
     }
     configRoot.toFile().walkTopDown().filter(File::isFile).forEach { file ->
         val relative = configRoot.relativize(file.toPath())
-        val domains = owners[relative.firstOrNull()?.toString()] ?: return@forEach
+        val domains = owners.entries
+            .filter { (mount, _) -> relative.toString() == mount || (configRoot.resolve(mount).isDirectory() && relative.startsWith(mount)) }
+            .flatMapTo(linkedSetOf()) { it.value }
+        if (domains.isEmpty()) return@forEach
         val original = runCatching { file.readText() }.getOrNull() ?: return@forEach
         if ('\u0000' in original) return@forEach
         var content = original
