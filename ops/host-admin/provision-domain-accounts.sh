@@ -147,6 +147,9 @@ jq -r '.domains[] | [.name,.user,.stateRoot,.graphRoot,.volumeRoot,(.uid // ""),
       continue
     fi
     install -d -m 0700 -o "$user" -g "$user" "$state_root" "$graph_root" "$volume_root" "/home/$user/.config/containers"
+    if command -v setfacl >/dev/null 2>&1; then
+      setfacl -b -k "$graph_root" "$volume_root"
+    fi
     chown "$user:$user" "/home/$user/.config"
     printf '[storage]\ndriver = "overlay"\ngraphroot = "%s"\n' "$graph_root" > "/home/$user/.config/containers/storage.conf"
     printf '[network]\ndefault_rootless_network_cmd = "pasta"\npasta_options = ["--map-host-loopback", "169.254.1.2"]\n' > "/home/$user/.config/containers/containers.conf"
