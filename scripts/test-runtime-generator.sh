@@ -112,6 +112,29 @@ diff -ru "$WORK_DIR/podman-a" "$WORK_DIR/podman-b"
 WEBSERVICES_OVERLAY_ROOT="$WORK_DIR/podman-a" "$ROOT_DIR/scripts/test-host-lifecycle-static.sh"
 
 jq -e '
+  (.schemaVersion == 1) and
+  (.domains | length == 14) and
+  (([.domains[].name] | unique | length) == 14) and
+  (([.domains[].user] | unique | length) == 14) and
+  all(.domains[]; (.stateRoot | startswith("/mnt/stack/")) and (.graphRoot | startswith("/mnt/stack/")) and (.volumeRoot | startswith("/mnt/stack/")))
+' "$WORK_DIR/podman-a/podman-domains.json" >/dev/null
+
+jq -e --slurpfile domains "$WORK_DIR/podman-a/podman-domains.json" '
+  .services as $services |
+  all($services | to_entries[] | select(.value.placement == "rootless");
+    . as $entry |
+    ($domains[0].domains[] | select(.name == $entry.value.rootlessDomain) | .user) == $entry.value.rootlessUser)
+' "$WORK_DIR/podman-a/stack.ir.json" >/dev/null
+
+jq -e '(.schemaVersion == 1) and (.workspaces | length == 16) and ([.workspaces[].name] | unique | length == 16)' \
+  "$WORK_DIR/podman-a/maintenance-workspaces.json" >/dev/null
+
+python3 "$WORK_DIR/podman-a/ops/materialize-workspaces.py" \
+  --manifest "$WORK_DIR/podman-a/maintenance-workspaces.json" \
+  --root "$WORK_DIR/workspace-plan" > "$WORK_DIR/workspace-plan.json"
+jq -e '(.apply == false) and (.blockers == []) and (.actions | length > 0)' "$WORK_DIR/workspace-plan.json" >/dev/null
+
+jq -e '
   (.schemaVersion == 2) and
   (.modules | type == "array" and length > 0) and
   (.components | index("full")) and
@@ -144,7 +167,7 @@ if jq -e '.services | has("valkey")' "$WORK_DIR/podman-a/stack.ir.json" >/dev/nu
     printf '[runtime-test] Compose output lost the escaped container-side Valkey variable\n' >&2
     exit 1
   fi
-  if ! rg -Fq '$$VALKEY_PASSWORD' "$WORK_DIR/podman-a/quadlet/rootless-webservices/webservices-valkey.container"; then
+  if ! rg -Fq '$$VALKEY_PASSWORD' "$WORK_DIR/podman-a/quadlet/rootless-data/webservices-valkey.container"; then
     printf '[runtime-test] Quadlet output does not preserve the container-side Valkey variable\n' >&2
     exit 1
   fi
@@ -164,8 +187,7 @@ fi
 jq -e '
   .services as $services |
   all(["alloy", "caddy", "crowdsec", "kopia", "mailserver", "node-exporter", "volume-init"][]; $services[.].placement == "rootful") and
-  all($services | to_entries[]; . as $entry | if (["alloy", "caddy", "crowdsec", "kopia", "mailserver", "node-exporter", "volume-init"] | index($entry.key)) then true else $entry.value.placement == "rootless" end) and
-  ($services["test-runner"].rootlessDomain == "webservices") and
+  ($services["test-runner"].rootlessDomain == "test-runners") and
   ($services["test-runner-managed"].rootlessDomain == "test-runners") and
   (($services | has("forgejo-runner") | not) or $services["forgejo-runner"].rootlessDomain == "forgejo-runner") and
   ($services["jupyterhub"].rootlessDomain == "jupyterhub") and
@@ -176,11 +198,11 @@ jq -e '
   ($services["caddy"].networks | keys == ["caddy"])
 ' "$WORK_DIR/podman-a/stack.ir.json" >/dev/null
 
-for domain in webservices test-runners forgejo-runner jupyterhub workload-spawner; do
+while IFS= read -r domain; do
   test -d "$WORK_DIR/podman-a/quadlet/rootless-$domain"
-done
+done < <(jq -r '.domains[].name' "$WORK_DIR/podman-a/podman-domains.json")
 
-if ! rg -Fxq 'StopTimeout=60' "$WORK_DIR/podman-a/quadlet/rootless-webservices/webservices-mariadb.container"; then
+if ! rg -Fxq 'StopTimeout=60' "$WORK_DIR/podman-a/quadlet/rootless-data/webservices-mariadb.container"; then
   printf '[runtime-test] MariaDB Quadlet is missing its graceful container stop timeout\n' >&2
   exit 1
 fi
@@ -191,7 +213,7 @@ if ! rg -Fxq 'Network=host' "$WORK_DIR/podman-a/quadlet/rootful/webservices-allo
   exit 1
 fi
 
-if ! rg -Fxq 'PublishPort=127.0.0.1:13100:3100' "$WORK_DIR/podman-a/quadlet/rootless-webservices/webservices-loki.container" ||
+if ! rg -Fxq 'PublishPort=127.0.0.1:13100:3100' "$WORK_DIR/podman-a/quadlet/rootless-observability/webservices-loki.container" ||
    ! rg -Fq 'url = "http://127.0.0.1:13100/loki/api/v1/push"' "$WORK_DIR/podman-a/runtime/configs/alloy/alloy.hcl"; then
   printf '[runtime-test] Alloy/Loki cross-domain loopback bridge is incomplete\n' >&2
   exit 1
@@ -241,7 +263,7 @@ mkdir -p "$generated_units/rootful" "$generated_units/rootful-early" "$generated
 QUADLET_UNIT_DIRS="$WORK_DIR/podman-a/quadlet/rootful" /usr/libexec/podman/quadlet \
   "$generated_units/rootful" "$generated_units/rootful-early" "$generated_units/rootful-late"
 systemd-analyze verify "$generated_units/rootful"/*.service "$WORK_DIR/podman-a/quadlet/rootful"/*.target
-for domain in webservices test-runners forgejo-runner jupyterhub workload-spawner; do
+while IFS= read -r domain; do
   mkdir -p "$generated_units/rootless-$domain" "$generated_units/rootless-$domain-early" "$generated_units/rootless-$domain-late"
   QUADLET_UNIT_DIRS="$WORK_DIR/podman-a/quadlet/rootless-$domain" /usr/libexec/podman/quadlet \
     "$generated_units/rootless-$domain" "$generated_units/rootless-$domain-early" "$generated_units/rootless-$domain-late"
@@ -250,7 +272,7 @@ for domain in webservices test-runners forgejo-runner jupyterhub workload-spawne
     units+=("$generated_units/rootless-$domain"/*.service)
   fi
   systemd-analyze verify "${units[@]}"
-done
+done < <(jq -r '.domains[].name' "$WORK_DIR/podman-a/podman-domains.json")
 
 if [ "$synthetic_site" = true ]; then
   fake_bin="$WORK_DIR/fake-bin"

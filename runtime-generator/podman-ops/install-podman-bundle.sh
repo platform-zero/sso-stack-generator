@@ -9,15 +9,13 @@ STATE_ROOT="${WEBSERVICES_STATE_ROOT:-/var/lib/webservices}"
 ROOTLESS_STATE_ROOT="${WEBSERVICES_ROOTLESS_STATE_ROOT:-/var/lib/webservices-rootless}"
 ROOTLESS_USER="${WEBSERVICES_ROOTLESS_USER:-webservices}"
 QUADLET_DIR="${WEBSERVICES_QUADLET_DIR:-/etc/containers/systemd}"
-ROOTLESS_DOMAIN_NAMES=("webservices" "test-runners" "forgejo-runner" "jupyterhub" "workload-spawner")
-ROOTLESS_DOMAIN_USERS=("webservices" "webservices-test-runners" "webservices-forgejo-runner" "webservices-jupyterhub" "webservices-workload-spawner")
-ROOTLESS_DOMAIN_STATE_ROOTS=(
-  "${WEBSERVICES_ROOTLESS_STATE_ROOT:-/var/lib/webservices-rootless}"
-  "${WEBSERVICES_TEST_RUNNERS_ROOTLESS_STATE_ROOT:-/var/lib/webservices-rootless-test-runners}"
-  "${WEBSERVICES_FORGEJO_RUNNER_ROOTLESS_STATE_ROOT:-/var/lib/webservices-rootless-forgejo-runner}"
-  "${WEBSERVICES_JUPYTERHUB_ROOTLESS_STATE_ROOT:-/var/lib/webservices-rootless-jupyterhub}"
-  "${WEBSERVICES_WORKLOAD_SPAWNER_ROOTLESS_STATE_ROOT:-/var/lib/webservices-rootless-workload-spawner}"
-)
+declare -a ROOTLESS_DOMAIN_NAMES=()
+declare -a ROOTLESS_DOMAIN_USERS=()
+declare -a ROOTLESS_DOMAIN_STATE_ROOTS=()
+declare -a ROOTLESS_DOMAIN_GRAPH_ROOTS=()
+declare -a ROOTLESS_DOMAIN_VOLUME_ROOTS=()
+declare -a ROOTLESS_DOMAIN_UIDS=()
+declare -a ROOTLESS_DOMAIN_SUBUID_STARTS=()
 
 usage() {
   printf 'Usage: %s --bundle DIR [--env-dir DIR] [--activate]\n' "${0##*/}" >&2
@@ -37,8 +35,52 @@ done
 ROOTFUL_QUADLET_SOURCE="$BUNDLE/quadlet/rootful"
 [ -d "$ROOTFUL_QUADLET_SOURCE" ] || ROOTFUL_QUADLET_SOURCE="$BUNDLE/quadlet"
 jq -e '.backend == "podman"' "$BUNDLE/bundle.json" >/dev/null
+DOMAINS_FILE="$BUNDLE/podman-domains.json"
+[ -f "$DOMAINS_FILE" ] || { printf 'Podman bundle is missing podman-domains.json\n' >&2; exit 1; }
+jq -e '.schemaVersion == 1 and (.domains | type == "array" and length > 0)' "$DOMAINS_FILE" >/dev/null
+mapfile -t ROOTLESS_DOMAIN_NAMES < <(jq -r '.domains[].name' "$DOMAINS_FILE")
+mapfile -t ROOTLESS_DOMAIN_USERS < <(jq -r '.domains[].user' "$DOMAINS_FILE")
+mapfile -t ROOTLESS_DOMAIN_STATE_ROOTS < <(jq -r '.domains[].stateRoot' "$DOMAINS_FILE")
+mapfile -t ROOTLESS_DOMAIN_GRAPH_ROOTS < <(jq -r '.domains[].graphRoot' "$DOMAINS_FILE")
+mapfile -t ROOTLESS_DOMAIN_VOLUME_ROOTS < <(jq -r '.domains[].volumeRoot' "$DOMAINS_FILE")
+mapfile -t ROOTLESS_DOMAIN_UIDS < <(jq -r '.domains[] | .uid // ""' "$DOMAINS_FILE")
+mapfile -t ROOTLESS_DOMAIN_SUBUID_STARTS < <(jq -r '.domains[] | .subuidStart // ""' "$DOMAINS_FILE")
 command -v podman >/dev/null
 command -v systemd-analyze >/dev/null
+
+domain_index_by_name() {
+  local wanted="$1" i
+  for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+    if [ "${ROOTLESS_DOMAIN_NAMES[$i]}" = "$wanted" ]; then
+      printf '%s\n' "$i"
+      return 0
+    fi
+  done
+  return 1
+}
+
+next_subid_start() {
+  python3 - /etc/subuid /etc/subgid <<'PY'
+import pathlib
+import sys
+
+highest = 1_999_999
+for name in sys.argv[1:]:
+    path = pathlib.Path(name)
+    if not path.exists():
+        continue
+    for raw in path.read_text().splitlines():
+        parts = raw.split(":")
+        if len(parts) != 3:
+            continue
+        try:
+            highest = max(highest, int(parts[1]) + int(parts[2]) - 1)
+        except ValueError:
+            pass
+block = 65_536
+print(((highest + block) // block) * block)
+PY
+}
 
 cleanup_paths=()
 cleanup() {
@@ -240,16 +282,33 @@ declare -a ROOTLESS_QUADLET_DIRS=()
 declare -a ROOTLESS_SYSTEMD_DIRS=()
 
 ensure_rootless_domain() {
-  local index="$1" user state_root uid home runtime env_store quadlet_dir systemd_dir
+  local index="$1" user state_root graph_root volume_root expected_uid expected_subuid uid home runtime env_store quadlet_dir systemd_dir subid_start current_subuid current_subgid
   user="${ROOTLESS_DOMAIN_USERS[$index]}"
   state_root="${ROOTLESS_DOMAIN_STATE_ROOTS[$index]}"
+  graph_root="${ROOTLESS_DOMAIN_GRAPH_ROOTS[$index]}"
+  volume_root="${ROOTLESS_DOMAIN_VOLUME_ROOTS[$index]}"
+  expected_uid="${ROOTLESS_DOMAIN_UIDS[$index]}"
+  expected_subuid="${ROOTLESS_DOMAIN_SUBUID_STARTS[$index]}"
   if ! id "$user" >/dev/null 2>&1; then
-    useradd --system --create-home --home-dir "/home/$user" --shell /usr/sbin/nologin "$user"
+    if [ -n "$expected_uid" ]; then
+      useradd --system --uid "$expected_uid" --create-home --home-dir "/home/$user" --shell /usr/sbin/nologin "$user"
+    else
+      useradd --system --create-home --home-dir "/home/$user" --shell /usr/sbin/nologin "$user"
+    fi
   fi
   uid="$(id -u "$user")"
+  [ -z "$expected_uid" ] || [ "$uid" = "$expected_uid" ] || { printf 'uid drift for %s: expected %s, found %s\n' "$user" "$expected_uid" "$uid" >&2; exit 1; }
   home="$(getent passwd "$user" | cut -d: -f6)"
-  grep -q "^${user}:" /etc/subuid || usermod --add-subuids "$((1000000 + index * 100000))-$((1065535 + index * 100000))" "$user"
-  grep -q "^${user}:" /etc/subgid || usermod --add-subgids "$((1000000 + index * 100000))-$((1065535 + index * 100000))" "$user"
+  if ! grep -q "^${user}:" /etc/subuid || ! grep -q "^${user}:" /etc/subgid; then
+    subid_start="${expected_subuid:-$(next_subid_start)}"
+    grep -q "^${user}:" /etc/subuid || usermod --add-subuids "${subid_start}-$((subid_start + 65535))" "$user"
+    grep -q "^${user}:" /etc/subgid || usermod --add-subgids "${subid_start}-$((subid_start + 65535))" "$user"
+  fi
+  if [ -n "$expected_subuid" ]; then
+    current_subuid="$(awk -F: -v user="$user" '$1 == user { print $2; exit }' /etc/subuid)"
+    current_subgid="$(awk -F: -v user="$user" '$1 == user { print $2; exit }' /etc/subgid)"
+    [ "$current_subuid" = "$expected_subuid" ] && [ "$current_subgid" = "$expected_subuid" ] || { printf 'subordinate-id drift for %s\n' "$user" >&2; exit 1; }
+  fi
   loginctl enable-linger "$user"
   systemctl start "user@${uid}.service"
   runtime="/run/user/${uid}/webservices"
@@ -264,9 +323,12 @@ ensure_rootless_domain() {
   ROOTLESS_ENV_STORES[$index]="$env_store"
   ROOTLESS_QUADLET_DIRS[$index]="$quadlet_dir"
   ROOTLESS_SYSTEMD_DIRS[$index]="$systemd_dir"
-  mkdir -p "${ROOTLESS_RELEASES[$index]}" "$state_root/releases" "$runtime" "$env_store" "$quadlet_dir" "$systemd_dir"
-  chown -R "$user:$user" "$state_root" "$home/.config" "$runtime"
+  mkdir -p "${ROOTLESS_RELEASES[$index]}" "$state_root/releases" "$graph_root" "$volume_root" "$runtime" "$env_store" "$quadlet_dir" "$systemd_dir" "$home/.config/containers"
+  chown -R "$user:$user" "$state_root" "$graph_root" "$volume_root" "$home/.config" "$runtime"
   chmod 0700 "$env_store"
+  printf '[storage]\ndriver = "overlay"\ngraphroot = "%s"\n' "$graph_root" > "$home/.config/containers/storage.conf"
+  chown "$user:$user" "$home/.config/containers/storage.conf"
+  chmod 0600 "$home/.config/containers/storage.conf"
 }
 
 user_systemctl() {
@@ -326,12 +388,70 @@ cp -a "$BUNDLE/." "$release/"
 install -d -m 0755 "$release/repos"
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user="${ROOTLESS_DOMAIN_USERS[$i]}"
+  domain="${ROOTLESS_DOMAIN_NAMES[$i]}"
   rootless_release="${ROOTLESS_RELEASES[$i]}"
   cp -a "$BUNDLE/." "$rootless_release/"
   install -d -m 0755 "$rootless_release/repos"
+  python3 - "$rootless_release" "$domain" <<'PY'
+import json
+import shutil
+import sys
+from pathlib import Path
+
+release = Path(sys.argv[1])
+domain = sys.argv[2]
+ir_path = release / "stack.ir.json"
+ir = json.loads(ir_path.read_text())
+owned = {
+    name: service
+    for name, service in ir.get("services", {}).items()
+    if service.get("placement") == "rootless" and service.get("rootlessDomain") == domain
+}
+
+allowed_config_roots = set()
+for service in owned.values():
+    for mount in service.get("volumes", []):
+        source = mount.split(":", 1)[0] if isinstance(mount, str) else mount.get("source", "")
+        if source.startswith("./configs/"):
+            relative = source.removeprefix("./configs/")
+            if relative:
+                allowed_config_roots.add(relative.split("/", 1)[0])
+
+config_root = release / "runtime" / "configs"
+if config_root.is_dir():
+    for child in config_root.iterdir():
+        if child.name not in allowed_config_roots:
+            shutil.rmtree(child) if child.is_dir() else child.unlink()
+
+env_templates = release / "runtime-env"
+if env_templates.is_dir():
+    for template in env_templates.glob("*.env.template"):
+        if template.name.removesuffix(".env.template") not in owned:
+            template.unlink()
+
+quadlet_root = release / "quadlet"
+if quadlet_root.is_dir():
+    for child in quadlet_root.iterdir():
+        if child.name != f"rootless-{domain}":
+            shutil.rmtree(child) if child.is_dir() else child.unlink()
+
+runtime_env = release / "runtime" / "stack.env"
+if runtime_env.exists():
+    runtime_env.unlink()
+for candidate in release.glob("site/**/*sops*"):
+    if candidate.is_file():
+        candidate.unlink()
+
+ir["services"] = owned
+ir["networks"] = {
+    name: value for name, value in ir.get("networks", {}).items()
+    if any(name in service.get("networks", {}) for service in owned.values())
+}
+ir_path.write_text(json.dumps(ir, indent=2) + "\n")
+PY
   chown -R "$user:$user" "$rootless_release"
-  find "$rootless_release/runtime/configs" -type d -exec chmod 0755 {} + 2>/dev/null || true
-  find "$rootless_release/runtime/configs" -type f -exec chmod a+r {} + 2>/dev/null || true
+  find "$rootless_release/runtime/configs" -type d -exec chmod 0700 {} + 2>/dev/null || true
+  find "$rootless_release/runtime/configs" -type f -exec chmod 0600 {} + 2>/dev/null || true
 done
 chmod 0700 /run/webservices
 find "$STATE_ROOT/runtime-env" -maxdepth 1 -type f -name '*.env' -delete
@@ -339,6 +459,7 @@ for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   find "${ROOTLESS_ENV_STORES[$i]}" -maxdepth 1 -type f -name '*.env' -delete
 done
 for env_file in "$ENV_DIR"/*.env; do
+  [ -e "$env_file" ] || continue
   destination="/run/webservices/${env_file##*/}"
   if [ "$(readlink -f "$env_file")" = "$(readlink -f "$destination" 2>/dev/null || printf '%s' "$destination")" ]; then
     chmod 0600 "$destination"
@@ -346,18 +467,24 @@ for env_file in "$ENV_DIR"/*.env; do
     install -m 0600 "$env_file" "$destination"
   fi
   install -m 0600 "$env_file" "$STATE_ROOT/runtime-env/${env_file##*/}"
-  for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+  service="${env_file##*/}"
+  service="${service%.env}"
+  domain="$(jq -r --arg service "$service" '.services[$service] | select(.placement == "rootless") | .rootlessDomain // empty' "$BUNDLE/stack.ir.json")"
+  if [ -n "$domain" ]; then
+    i="$(domain_index_by_name "$domain")" || { printf 'environment names unknown domain: %s\n' "$domain" >&2; exit 1; }
     user="${ROOTLESS_DOMAIN_USERS[$i]}"
     rootless_destination="${ROOTLESS_RUNTIMES[$i]}/${env_file##*/}"
     install -m 0600 -o "$user" -g "$user" "$env_file" "$rootless_destination"
     install -m 0600 -o "$user" -g "$user" "$env_file" "${ROOTLESS_ENV_STORES[$i]}/${env_file##*/}"
-  done
+  fi
 done
 
 forgejo_runner_ssh_dir="$(sed -n 's/^FORGEJO_RUNNER_SSH_DIR=//p' "$ENV_DIR/forgejo-runner.env" 2>/dev/null | tail -n 1)"
 if [ -n "$forgejo_runner_ssh_dir" ]; then
-  install -d -m 0700 -o "${ROOTLESS_DOMAIN_USERS[2]}" -g "${ROOTLESS_DOMAIN_USERS[2]}" "$forgejo_runner_ssh_dir"
-  chown -R "${ROOTLESS_DOMAIN_USERS[2]}:${ROOTLESS_DOMAIN_USERS[2]}" "$forgejo_runner_ssh_dir"
+  forgejo_index="$(domain_index_by_name forgejo-runner)"
+  forgejo_user="${ROOTLESS_DOMAIN_USERS[$forgejo_index]}"
+  install -d -m 0700 -o "$forgejo_user" -g "$forgejo_user" "$forgejo_runner_ssh_dir"
+  chown -R "$forgejo_user:$forgejo_user" "$forgejo_runner_ssh_dir"
 fi
 
 jq -r '.volumes | to_entries[] | [.key, (.value.hostPath // "")] | @tsv' "$BUNDLE/stack.ir.json" | while IFS="$(printf '\t')" read -r name path; do
@@ -375,12 +502,11 @@ done
 copy_tree_once() {
   local source="$1"
   local destination="$2"
+  local destination_user="$3"
   local copied=false
   [ -n "$source" ] && [ -n "$destination" ] || return 0
   [ "$source" != "$destination" ] || return 0
   install -d -m 0750 "$destination"
-  chown "$ROOTLESS_USER:$ROOTLESS_USER" /mnt/stack/rootless /mnt/stack/rootless/volumes /mnt/stack/rootless/pg-ssd /mnt/stack/rootless/vector-dbs 2>/dev/null || true
-  find /mnt/stack/rootless -maxdepth 2 -type d -exec chmod o+rx {} + 2>/dev/null || true
   if [ -d "$source" ] && ! find "$destination" -mindepth 1 -print -quit | grep -q .; then
     if command -v rsync >/dev/null 2>&1; then
       rsync -aHAX --numeric-ids "$source"/ "$destination"/
@@ -390,7 +516,7 @@ copy_tree_once() {
     copied=true
   fi
   if [ "$copied" = true ]; then
-    chown -R "$ROOTLESS_USER:$ROOTLESS_USER" "$destination"
+    chown -R "$destination_user:$destination_user" "$destination"
   fi
 }
 
@@ -421,23 +547,18 @@ grant_shared_access() {
 }
 
 command -v python3 >/dev/null
-python3 - "$BUNDLE/stack.ir.json" <<'PY' | while IFS="$(printf '\t')" read -r domain strategy source destination; do
+python3 - "$BUNDLE/stack.ir.json" "$DOMAINS_FILE" <<'PY' | while IFS="$(printf '\t')" read -r domain strategy source destination; do
 import json
 import sys
 
 ir = json.load(open(sys.argv[1]))
+domain_config = {item["name"]: item for item in json.load(open(sys.argv[2]))["domains"]}
 volumes = ir.get("volumes", {})
 rootless_services = [svc for svc in ir.get("services", {}).values() if svc.get("placement", "rootful") == "rootless"]
 seen = set()
 
-def rootless_host_path(name, host_path):
-    if host_path.startswith("/mnt/stack/volumes/"):
-        return "/mnt/stack/rootless/volumes/" + host_path.removeprefix("/mnt/stack/volumes/")
-    if host_path.startswith("/mnt/stack/pg-ssd/"):
-        return "/mnt/stack/rootless/pg-ssd/" + host_path.removeprefix("/mnt/stack/pg-ssd/")
-    if host_path.startswith("/mnt/stack/vector-dbs/"):
-        return "/mnt/stack/rootless/vector-dbs/" + host_path.removeprefix("/mnt/stack/vector-dbs/")
-    return "/mnt/stack/rootless/volumes/" + name
+def rootless_host_path(domain, name):
+    return domain_config[domain]["volumeRoot"].rstrip("/") + "/" + name
 
 def source_name(volume):
     if isinstance(volume, str):
@@ -453,7 +574,7 @@ for service in rootless_services:
             continue
         host_path = volume["hostPath"]
         strategy = volume.get("rootlessStrategy", "copy")
-        destination = host_path if strategy == "shared" else rootless_host_path(name, host_path)
+        destination = host_path if strategy == "shared" else rootless_host_path(domain, name)
         row = (domain, strategy, host_path, destination)
         if row not in seen:
             seen.add(row)
@@ -470,7 +591,7 @@ PY
   domain_user="${ROOTLESS_DOMAIN_USERS[$domain_index]}"
   case "$strategy" in
     shared) grant_shared_access "$source" "$domain_user" ;;
-    copy|"") copy_tree_once "$source" "$destination" ;;
+    copy|"") copy_tree_once "$source" "$destination" "$domain_user" ;;
     forbidden) printf 'rootless volume is forbidden: %s\n' "$source" >&2; exit 1 ;;
     *) printf 'unknown rootless volume strategy %s for %s\n' "$strategy" "$source" >&2; exit 1 ;;
   esac
@@ -659,8 +780,14 @@ restart_rootless_network_units() {
 }
 
 grant_test_runner_managed_socket_access() {
-  local launch_user="${ROOTLESS_DOMAIN_USERS[0]}"
-  local managed_index=1
+  local launch_domain managed_domain launch_index managed_index launch_user
+  launch_domain="$(jq -r '.services["test-runner"].rootlessDomain // empty' "$BUNDLE/stack.ir.json")"
+  managed_domain="$(jq -r '.services["test-runner-managed"].rootlessDomain // empty' "$BUNDLE/stack.ir.json")"
+  [ -n "$launch_domain" ] && [ -n "$managed_domain" ] || return 0
+  launch_index="$(domain_index_by_name "$launch_domain")"
+  managed_index="$(domain_index_by_name "$managed_domain")"
+  [ "$launch_index" != "$managed_index" ] || return 0
+  launch_user="${ROOTLESS_DOMAIN_USERS[$launch_index]}"
   local managed_user="${ROOTLESS_DOMAIN_USERS[$managed_index]}"
   local managed_uid="${ROOTLESS_UIDS[$managed_index]}"
   local runtime_dir="/run/user/${managed_uid}"

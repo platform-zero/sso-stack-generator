@@ -4,6 +4,9 @@ This directory intentionally contains one concise public reference. Detailed
 service runbooks, site procedures, and deployable service docs belong in module
 or site-config repositories.
 
+The Linux-user Podman boundary and generated maintenance interface are described
+in [Podman Linux-user domains](podman-domain-isolation.md).
+
 ## Ownership Boundaries
 
 The generator owns:
