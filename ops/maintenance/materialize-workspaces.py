@@ -37,7 +37,7 @@ mount_codex_credentials = true
 mount_gh_credentials = true
 devices = ["nvidia.com/gpu=all"]
 """
-LEGACY_PROFILES = PROFILES.split("\n[profiles.software-gpu]", 1)[0] + "\n"
+LEGACY_PROFILES = PROFILES.split("\n[profiles.software-gpu]", 1)[0].rstrip() + "\n"
 
 
 def fail(message: str) -> "NoReturn":

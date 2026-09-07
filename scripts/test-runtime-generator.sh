@@ -142,6 +142,19 @@ jq -e '
 test -x "$WORK_DIR/podman-a/ops/start-worklane-containers.py"
 test -f "$WORK_DIR/podman-a/ops/platform-zero-worklanes.service"
 
+python3 - "$WORK_DIR/podman-a/ops/materialize-workspaces.py" <<'PY'
+import importlib.util
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("materialize_workspaces", path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+assert module.LEGACY_PROFILES.endswith("\n")
+assert not module.LEGACY_PROFILES.endswith("\n\n")
+PY
+
 python3 "$WORK_DIR/podman-a/ops/materialize-workspaces.py" \
   --manifest "$WORK_DIR/podman-a/maintenance-workspaces.json" \
   --root "$WORK_DIR/workspace-plan" > "$WORK_DIR/workspace-plan.json"
