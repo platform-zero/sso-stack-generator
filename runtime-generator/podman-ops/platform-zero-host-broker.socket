@@ -3,7 +3,9 @@ Description=Platform Zero restricted host broker socket
 
 [Socket]
 ListenStream=/run/platform-zero/host-broker.sock
-DirectoryMode=0750
+# The socket remains group-restricted; the parent must be searchable so
+# stack_lab can reach it after systemd recreates /run on every boot.
+DirectoryMode=0755
 SocketUser=root
 SocketGroup=stack_lab
 SocketMode=0660
