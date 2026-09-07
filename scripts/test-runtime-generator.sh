@@ -369,6 +369,10 @@ if ! rg -Fq 'quiet_passes=$((quiet_passes + 1))' "$WORK_DIR/podman-a/ops/install
   printf '[runtime-test] installer does not observe a post-producer quiet window for late consumer failures\n' >&2
   exit 1
 fi
+if ! rg -Fq '"${ROOTLESS_RELEASES[$i]}/runtime/stack.env"' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-test] installer does not provide the isolated test-runner authority with its cross-stack test environment\n' >&2
+  exit 1
+fi
 
 test -f "$WORK_DIR/podman-a/runtime/configs/vaultwarden/index.html"
 test -f "$WORK_DIR/podman-a/runtime/configs/vaultwarden/seed.sh"

@@ -504,6 +504,17 @@ PY
     [ "$(head -c 2 "$config_script")" != '#!' ] || chmod 0755 "$config_script"
   done < <(find "$rootless_release/runtime/configs" -type f 2>/dev/null)
 done
+
+# The integration-test authority is intentionally the only rootless domain
+# that receives the aggregate rendered environment.  Its runner exercises
+# authenticated flows across every declared dependency, while ordinary
+# service domains continue to receive only their own per-service env files.
+test_runner_domain="$(jq -r '.services["test-runner"].rootlessDomain // empty' "$BUNDLE/stack.ir.json")"
+if [ -n "$test_runner_domain" ]; then
+  i="$(domain_index_by_name "$test_runner_domain")" || { printf 'test-runner names unknown domain: %s\n' "$test_runner_domain" >&2; exit 1; }
+  user="${ROOTLESS_DOMAIN_USERS[$i]}"
+  install -m 0600 -o "$user" -g "$user" "$BUNDLE/runtime/stack.env" "${ROOTLESS_RELEASES[$i]}/runtime/stack.env"
+fi
 chmod 0700 /run/webservices
 find "$STATE_ROOT/runtime-env" -maxdepth 1 -type f -name '*.env' -delete
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
