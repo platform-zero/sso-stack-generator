@@ -456,6 +456,13 @@ fun rewriteEndpointText(value: String, provider: String, containerPort: Int, hos
     )
 }
 
+fun rewriteEndpointConfigText(value: String, provider: String, containerPort: Int, hostPort: Int): String {
+    return rewriteEndpointText(value, provider, containerPort, hostPort).replace(
+        Regex("(?<![a-zA-Z0-9_-])${Regex.escape(provider)}(?![a-zA-Z0-9_-])"),
+        "host.containers.internal"
+    )
+}
+
 fun rewriteEndpointCommand(value: JsonNode, provider: String, containerPort: Int, hostPort: Int): JsonNode {
     val rewritten = rewriteEndpointTree(value, provider, containerPort, hostPort)
     fun replaceBare(text: String): String = text.replace(
@@ -1180,7 +1187,7 @@ fun rewriteCrossDomainConfigs(ir: ObjectNode, output: Path) {
         activePodmanPolicy.crossDomainEndpoints
             .filter { endpoint -> domains.any { it in endpoint.consumers } }
             .forEach { endpoint ->
-                content = rewriteEndpointText(content, endpoint.service, endpoint.containerPort, endpoint.hostPort)
+                content = rewriteEndpointConfigText(content, endpoint.service, endpoint.containerPort, endpoint.hostPort)
             }
         if (content != original) file.writeText(content)
     }
