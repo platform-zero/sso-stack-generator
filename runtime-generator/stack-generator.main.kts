@@ -461,9 +461,8 @@ fun rewriteEndpointConfigText(value: String, provider: String, containerPort: In
         "(?is)((?:host|hostname|db_host|postgres_host)\\s*[:=]\\s*[\\\"']?${Regex.escape(provider)}[\\\"']?.{0,160}?(?:port|db_port|postgres_port)\\s*[:=]\\s*[\\\"']?)${containerPort}(?![0-9])"
     ).replace(value) { match -> "${match.groupValues[1]}$hostPort" }
     return rewriteEndpointText(pairedPort, provider, containerPort, hostPort).replace(
-        Regex("(?<![a-zA-Z0-9_-])${Regex.escape(provider)}(?![a-zA-Z0-9_-])"),
-        "host.containers.internal"
-    )
+        Regex("(?i)((?:host|hostname|db_host|postgres_host)\\s*[:=]\\s*[\\\"']?)${Regex.escape(provider)}(?![a-zA-Z0-9_-])")
+    ) { match -> "${match.groupValues[1]}host.containers.internal" }
 }
 
 fun rewriteEndpointCommand(value: JsonNode, provider: String, containerPort: Int, hostPort: Int): JsonNode {
