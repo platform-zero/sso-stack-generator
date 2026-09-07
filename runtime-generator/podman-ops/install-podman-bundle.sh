@@ -843,7 +843,7 @@ done
 grant_test_runner_managed_socket_access
 systemctl enable --now webservices-auto-update.timer
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
-  user_systemctl "$i" restart webservices.target
+  user_systemctl "$i" --no-block restart webservices.target
 done
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user_systemctl "$i" --quiet is-active webservices.target
