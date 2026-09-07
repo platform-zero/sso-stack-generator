@@ -97,10 +97,12 @@ def stage(request: dict[str, object]) -> dict[str, object]:
             raise RequestError(f"bundle digest mismatch: expected {expected}, got {digest}")
         destination = INCOMING / digest
         if destination.exists():
-            shutil.rmtree(temporary)
-        else:
-            os.replace(copied, destination)
-            temporary.rmdir()
+            if tree_sha256(destination) == digest:
+                shutil.rmtree(temporary)
+                return {"release": digest, "path": str(destination)}
+            shutil.rmtree(destination)
+        os.replace(copied, destination)
+        temporary.rmdir()
         return {"release": digest, "path": str(destination)}
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
