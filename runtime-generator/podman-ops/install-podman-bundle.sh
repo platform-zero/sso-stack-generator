@@ -882,14 +882,20 @@ wait_for_cross_domain_producers() {
 }
 
 retry_failed_rootless_services() {
-  local i unit
-  for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
-    while IFS= read -r unit; do
-      [ -n "$unit" ] || continue
-      printf '[podman-install] retrying service after cross-domain producers became ready: domain=%s unit=%s\n' "${ROOTLESS_DOMAIN_NAMES[$i]}" "$unit" >&2
-      user_systemctl "$i" reset-failed "$unit"
-      user_systemctl "$i" --no-block restart "$unit"
-    done < <(user_systemctl "$i" --failed --no-legend --plain 'webservices-*' 2>/dev/null | awk '{print $1}')
+  local attempt i unit retried
+  for attempt in $(seq 1 12); do
+    retried=0
+    for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+      while IFS= read -r unit; do
+        [ -n "$unit" ] || continue
+        printf '[podman-install] retrying service after cross-domain producers became ready: attempt=%s domain=%s unit=%s\n' "$attempt" "${ROOTLESS_DOMAIN_NAMES[$i]}" "$unit" >&2
+        user_systemctl "$i" reset-failed "$unit"
+        user_systemctl "$i" --no-block restart "$unit"
+        retried=1
+      done < <(user_systemctl "$i" --failed --no-legend --plain 'webservices-*' 2>/dev/null | awk '{print $1}')
+    done
+    [ "$retried" -eq 1 ] || return 0
+    sleep 5
   done
 }
 
