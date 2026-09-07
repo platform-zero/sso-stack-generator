@@ -1587,14 +1587,15 @@ fun writeDomainMetadata(ir: ObjectNode, modules: List<ModuleCheckout>, manifestP
         }
     }
     val workspaces = arr()
-    workspaces.add(obj().put("name", "control").put("role", "control").set<ArrayNode>("repositories", arr().also { rows ->
+    workspaces.add(obj().put("name", "control").put("role", "control").put("startAtBoot", true).set<ArrayNode>("repositories", arr().also { rows ->
         baseline.forEach { rows.add(it.deepCopy().also { row -> row.put("writable", true) }) }
     }))
-    workspaces.add(obj().put("name", "host").put("role", "host").set<ArrayNode>("repositories", reposFor(activePodmanPolicy.rootfulModules)))
+    workspaces.add(obj().put("name", "host").put("role", "host").put("startAtBoot", true).set<ArrayNode>("repositories", reposFor(activePodmanPolicy.rootfulModules)))
     activePodmanPolicy.domains.forEach { domain ->
         workspaces.add(obj().also { row ->
             row.put("name", domain.name)
             row.put("role", "domain")
+            row.put("startAtBoot", true)
             row.put("serviceAccount", domain.user)
             row.set<ArrayNode>("services", domainRows.first { it.path("name").asText() == domain.name }.path("services").deepCopy())
             row.set<ArrayNode>("repositories", reposFor(domain.modules))

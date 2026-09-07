@@ -126,7 +126,7 @@ jq -e --slurpfile domains "$WORK_DIR/podman-a/podman-domains.json" '
     ($domains[0].domains[] | select(.name == $entry.value.rootlessDomain) | .user) == $entry.value.rootlessUser)
 ' "$WORK_DIR/podman-a/stack.ir.json" >/dev/null
 
-jq -e '(.schemaVersion == 1) and (.workspaces | length == 16) and ([.workspaces[].name] | unique | length == 16)' \
+jq -e '(.schemaVersion == 1) and (.workspaces | length == 16) and ([.workspaces[].name] | unique | length == 16) and all(.workspaces[]; .startAtBoot == true)' \
   "$WORK_DIR/podman-a/maintenance-workspaces.json" >/dev/null
 
 jq -e '
