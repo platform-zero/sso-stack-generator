@@ -25,6 +25,12 @@ LEGACY_USER = os.environ.get("P0_LEGACY_USER", "webservices")
 DOMAINS_MANIFEST = Path(os.environ.get("P0_DOMAINS_MANIFEST", "/etc/platform-zero/podman-domains.json"))
 SUDOERS = Path(os.environ.get("P0_SUDOERS", "/etc/sudoers"))
 GERALD_DROPIN = Path(os.environ.get("P0_GERALD_DROPIN", "/etc/sudoers.d/gerald-webservices"))
+ROOTLESS_HOST_NETWORK_ALLOWLIST = {
+    "quadlet/rootless-communications/webservices-livekit.container": (
+        "communications",
+        "webservices-communications",
+    ),
+}
 
 
 class RequestError(Exception):
@@ -71,10 +77,16 @@ def validate_bundle(bundle: Path) -> None:
     domains = json.loads((bundle / "podman-domains.json").read_text()).get("domains", [])
     if not domains or len({item["user"] for item in domains}) != len(domains):
         raise RequestError("invalid or duplicate Podman domains")
+    domain_users = {item["name"]: item["user"] for item in domains}
     for path in (bundle / "quadlet").glob("rootless-*/*.container"):
         text = path.read_text()
-        if "Network=host" in text or "Privileged=true" in text:
+        relative = path.relative_to(bundle).as_posix()
+        if "Privileged=true" in text:
             raise RequestError(f"unsafe rootless Quadlet: {path.relative_to(bundle)}")
+        if "Network=host" in text:
+            expected_owner = ROOTLESS_HOST_NETWORK_ALLOWLIST.get(relative)
+            if expected_owner is None or domain_users.get(expected_owner[0]) != expected_owner[1]:
+                raise RequestError(f"unsafe rootless Quadlet: {path.relative_to(bundle)}")
     nft = (bundle / "ops/platform-zero.nft").read_text()
     if not nft.startswith("table inet platform_zero {") or "policy accept" not in nft:
         raise RequestError("unexpected nftables policy")
