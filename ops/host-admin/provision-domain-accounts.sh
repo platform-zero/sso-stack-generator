@@ -92,6 +92,22 @@ PY
   grep -q "^${user}:" /etc/subgid || usermod --add-subgids "${start}-$((start + 65535))" "$user"
 }
 
+install_authorized_keys() {
+  local user="$1" home group authorized key
+  [ -n "$AUTHORIZED_KEYS" ] || return 0
+  home="$(getent passwd "$user" | cut -d: -f6)"
+  group="$(id -gn "$user")"
+  install -d -m 0700 -o "$user" -g "$group" "$home/.ssh"
+  authorized="$home/.ssh/authorized_keys"
+  touch "$authorized"
+  while IFS= read -r key || [ -n "$key" ]; do
+    [ -z "$key" ] && continue
+    grep -Fxq "$key" "$authorized" || printf '%s\n' "$key" >>"$authorized"
+  done <"$AUTHORIZED_KEYS"
+  chown "$user:$group" "$authorized"
+  chmod 0600 "$authorized"
+}
+
 install_maintenance_user() {
   local user="$1" data_root="/mnt/lab_debian/$1" podman_root="/mnt/lab_debian/.podman/$1"
   id "$user" >/dev/null 2>&1 || useradd --create-home --home-dir "/home/$user" --shell /bin/bash "$user"
@@ -99,9 +115,7 @@ install_maintenance_user() {
   ensure_subids "$user"
   install -d -m 0700 -o "$user" -g "$user" "$data_root" "$podman_root" "/home/$user/.ssh" "/home/$user/.config/containers"
   chown "$user:$user" "/home/$user/.config"
-  if [ -n "$AUTHORIZED_KEYS" ]; then
-    install -m 0600 -o "$user" -g "$user" "$AUTHORIZED_KEYS" "/home/$user/.ssh/authorized_keys"
-  fi
+  install_authorized_keys "$user"
   if [ "$user" = software_lab ]; then
     [ -e "/home/$user/workspaces" ] || ln -s "$data_root" "/home/$user/workspaces"
   else
@@ -130,6 +144,7 @@ jq -r '.domains[] | [.name,.user,.stateRoot,.graphRoot,.volumeRoot,(.uid // ""),
     fi
     passwd -l "$user" >/dev/null
     ensure_subids "$user" "$expected_subuid"
+    install_authorized_keys "$user"
     [ ! -d "/home/$user/.config" ] || chown "$user:$user" "/home/$user/.config"
     # Shared storage parents are traversal-only; each domain directory is
     # readable/traversable solely by its owning service account.
