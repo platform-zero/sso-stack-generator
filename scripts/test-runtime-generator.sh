@@ -156,6 +156,25 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 assert module.LEGACY_PROFILES.endswith("\n")
 assert not module.LEGACY_PROFILES.endswith("\n\n")
+control = {
+    "name": "control",
+    "role": "control",
+    "repositories": [],
+}
+guidance = module.agents_text(control)
+assert "stack_lab@192.168.0.11" in guidance
+assert "14 rootless `webservices-*` Linux-user authorities" in guidance
+assert "p0-hostctl status" in guidance
+assert "stage, preflight, snapshot, activate, then verify" in guidance
+assert "RTX 3060" in guidance
+assert "Gerald passwordless sudo is intentionally retained" in guidance
+previous = next(text for text in module.legacy_agents_texts(control) if "## Maintenance workflow" not in text)
+assert previous != guidance
+assert "stack_lab@192.168.0.11" not in previous
+assert guidance in module.managed_agents_texts(control)
+assert previous in module.managed_agents_texts(control)
+assert guidance + "user edit\n" not in module.managed_agents_texts(control)
+assert guidance not in module.legacy_agents_texts({"name": "host", "role": "host", "repositories": []})
 PY
 
 python3 "$WORK_DIR/podman-a/ops/materialize-workspaces.py" \

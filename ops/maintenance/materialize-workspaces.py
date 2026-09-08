@@ -131,6 +131,16 @@ def agents_text(workspace: dict[str, object]) -> str:
         lines += [
             "- This lane owns global domain configuration and repository pins.",
             "- It validates the full composition but intentionally has no domain deployment keys.",
+            "- Enter this maintenance environment as `stack_lab@192.168.0.11`; its workspace root is",
+            "  `/mnt/lab_debian/stack_lab/stack_work`.",
+            "- The service stack is split across 14 rootless `webservices-*` Linux-user authorities",
+            "  plus a separate rootful host authority. Use each domain lane for domain-owned changes.",
+            "- Treat `software_lab` and `/mnt/lab_debian/software_lab` as a separate authority. Never",
+            "  restart, replace, or inspect its active Worklanes during stack maintenance.",
+            "- Software Worklanes require the RTX 3060 through CDI as `nvidia.com/gpu=all`; preserve",
+            "  that contract in generated profiles and host configuration.",
+            "- Gerald passwordless sudo is intentionally retained, but routine deployments must use",
+            "  the checksum-gated Platform Zero broker rather than an unrestricted sudo shell.",
         ]
     elif role == "host":
         lines += [
@@ -150,6 +160,21 @@ def agents_text(workspace: dict[str, object]) -> str:
             "- Build and deploy only this lane's named domain.",
             "- Global site-config changes flow through the control lane.",
         ]
+    if role == "control":
+        lines += [
+            "",
+            "## Maintenance workflow",
+            "",
+            "- Read `~/.config/platform-zero/workspaces.json` for current repository pins and domains.",
+            "- Query live state with `p0-hostctl status`; do not copy a release ID from this document.",
+            "- Build and validate the complete composition before requesting any host-side change.",
+            "- Deploy only a reviewed immutable bundle through `p0-hostctl` using its full SHA-256:",
+            "  stage, preflight, snapshot, activate, then verify with that same digest.",
+            "- Review `/mnt/stack/podman/test-runners/state/test-runner/results/all-summary.txt` after",
+            "  the mandatory Kotlin, TypeScript, isolated end-to-end, and MatrixRTC/LiveKit gates.",
+            "- Stop on dirty repositories, manifest drift, a failed authority, or a changed software",
+            "  Worklane container ID. Do not reset or overwrite user-owned changes.",
+        ]
     lines += [
         "",
         "## Writable repositories",
@@ -163,18 +188,51 @@ def agents_text(workspace: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
-def legacy_agents_text(workspace: dict[str, object]) -> str:
+def legacy_agents_texts(workspace: dict[str, object]) -> set[str]:
     current = agents_text(workspace)
     if workspace.get("role") == "software":
-        return current
-    legacy = current.replace(
+        return {current}
+    previous = current
+    if workspace.get("role") == "control":
+        previous = previous.replace(
+            "- Enter this maintenance environment as `stack_lab@192.168.0.11`; its workspace root is\n"
+            "  `/mnt/lab_debian/stack_lab/stack_work`.\n"
+            "- The service stack is split across 14 rootless `webservices-*` Linux-user authorities\n"
+            "  plus a separate rootful host authority. Use each domain lane for domain-owned changes.\n"
+            "- Treat `software_lab` and `/mnt/lab_debian/software_lab` as a separate authority. Never\n"
+            "  restart, replace, or inspect its active Worklanes during stack maintenance.\n"
+            "- Software Worklanes require the RTX 3060 through CDI as `nvidia.com/gpu=all`; preserve\n"
+            "  that contract in generated profiles and host configuration.\n"
+            "- Gerald passwordless sudo is intentionally retained, but routine deployments must use\n"
+            "  the checksum-gated Platform Zero broker rather than an unrestricted sudo shell.\n",
+            "",
+        )
+        previous = previous.replace(
+            "\n## Maintenance workflow\n\n"
+            "- Read `~/.config/platform-zero/workspaces.json` for current repository pins and domains.\n"
+            "- Query live state with `p0-hostctl status`; do not copy a release ID from this document.\n"
+            "- Build and validate the complete composition before requesting any host-side change.\n"
+            "- Deploy only a reviewed immutable bundle through `p0-hostctl` using its full SHA-256:\n"
+            "  stage, preflight, snapshot, activate, then verify with that same digest.\n"
+            "- Review `/mnt/stack/podman/test-runners/state/test-runner/results/all-summary.txt` after\n"
+            "  the mandatory Kotlin, TypeScript, isolated end-to-end, and MatrixRTC/LiveKit gates.\n"
+            "- Stop on dirty repositories, manifest drift, a failed authority, or a changed software\n"
+            "  Worklane container ID. Do not reset or overwrite user-owned changes.\n",
+            "",
+        )
+    legacy = previous.replace(
         "- Gerald passwordless sudo is intentionally retained; use only the documented hash-gated host plan.",
         "- Gerald sudo remains temporary; use only the documented hash-gated host plan.",
     )
     if workspace.get("role") == "domain":
         legacy = legacy.replace("- Use the domain dispatcher for remote status, logs, verification, restart, and deployment.\n", "")
     marker = "- Keep secrets encrypted; never commit private keys or rendered environment files.\n"
-    return legacy.replace(marker, marker + "- Use the domain dispatcher for remote status, logs, verification, restart, and deployment.\n")
+    legacy = legacy.replace(marker, marker + "- Use the domain dispatcher for remote status, logs, verification, restart, and deployment.\n")
+    return {previous, legacy}
+
+
+def managed_agents_texts(workspace: dict[str, object]) -> set[str]:
+    return {agents_text(workspace), *legacy_agents_texts(workspace)}
 
 
 def main() -> int:
@@ -262,7 +320,7 @@ def main() -> int:
         agents = destination / (".platform-zero/AGENTS.md" if workspace.get("role") == "software" else "AGENTS.md")
         agents.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         expected = agents_text(workspace)
-        if agents.exists() and agents.read_text() not in {expected, legacy_agents_text(workspace)}:
+        if agents.exists() and agents.read_text() not in managed_agents_texts(workspace):
             fail(f"refusing to replace locally changed {agents}")
         agents.write_text(expected)
         os.chmod(agents, 0o600)
