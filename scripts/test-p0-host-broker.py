@@ -98,7 +98,7 @@ try:
             return Result("active\n")
         if args[1] == "list-dependencies":
             return Result("webservices.target\nwebservices-caddy.service\n")
-        return Result("ActiveState=active\nSubState=running\nResult=success\nJob=\n")
+        return Result("ActiveState=active\nSubState=running\nType=notify\nResult=success\nJob=\n")
 
     BROKER.run = fake_run
     health = BROKER.scope_health(None)
@@ -108,3 +108,21 @@ finally:
     BROKER.run = original_run
 
 print("[test-p0-host-broker-status] ok")
+
+calls = []
+try:
+    def fake_oneshot(*args: str, check: bool = True) -> Result:
+        calls.append(args)
+        if args[1] == "is-active":
+            return Result("active\n")
+        if args[1] == "list-dependencies":
+            return Result("webservices.target\nwebservices-bootstrap.service\n")
+        return Result("ActiveState=inactive\nSubState=dead\nType=oneshot\nResult=success\nJob=\n")
+
+    BROKER.run = fake_oneshot
+    health = BROKER.scope_health(None)
+    assert health["state"] == "active" and not health["offenders"]
+finally:
+    BROKER.run = original_run
+
+print("[test-p0-host-broker-oneshot] ok")

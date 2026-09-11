@@ -291,9 +291,11 @@ def scope_health(user: str | None) -> dict[str, object]:
                     and line.strip().lstrip("●○ ").endswith(".service")})
     offenders = []
     for unit in units:
-        details = ctl("show", unit, "-p", "ActiveState", "-p", "SubState", "-p", "Result", "-p", "Job", check=False)
+        details = ctl("show", unit, "-p", "ActiveState", "-p", "SubState", "-p", "Type", "-p", "Result", "-p", "Job", check=False)
         values = dict(line.split("=", 1) for line in details.stdout.splitlines() if "=" in line)
-        if values.get("ActiveState") != "active" or values.get("Result") not in {"", "success"} or values.get("Job"):
+        completed_oneshot = (values.get("Type") == "oneshot" and values.get("ActiveState") == "inactive"
+                             and values.get("Result") == "success" and not values.get("Job"))
+        if not completed_oneshot and (values.get("ActiveState") != "active" or values.get("Result") not in {"", "success"} or values.get("Job")):
             offenders.append({"unit": unit, **values})
     state = target_state if target_state != "active" or not offenders else "degraded"
     return {"state": state, "targetState": target_state, "offenders": offenders}
