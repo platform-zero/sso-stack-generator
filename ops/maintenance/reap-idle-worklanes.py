@@ -35,7 +35,7 @@ def attached(container: str) -> bool:
 
 
 def agent_signature(container: str, session: str) -> tuple[bool, str] | None:
-    result = command("podman", "exec", container, "herdr", "--session", session, "agent", "list")
+    result = command("podman", "exec", "--user", "dev", container, "herdr", "--session", session, "agent", "list")
     if result.returncode:
         return None
     try:
