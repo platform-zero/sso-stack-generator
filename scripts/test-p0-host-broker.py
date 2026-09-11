@@ -126,3 +126,15 @@ finally:
     BROKER.run = original_run
 
 print("[test-p0-host-broker-oneshot] ok")
+
+original_user_systemctl = BROKER.user_systemctl
+try:
+    def missing_legacy_user(*args: str, **kwargs: object) -> Result:
+        raise KeyError("legacy account absent")
+
+    BROKER.user_systemctl = missing_legacy_user
+    BROKER.stop_legacy_runtime()
+finally:
+    BROKER.user_systemctl = original_user_systemctl
+
+print("[test-p0-host-broker-retired-legacy] ok")

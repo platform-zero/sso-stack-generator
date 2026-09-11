@@ -142,6 +142,14 @@ def user_systemctl(user: str, *args: str, check: bool = True) -> subprocess.Comp
     )
 
 
+def stop_legacy_runtime() -> None:
+    try:
+        user_systemctl(LEGACY_USER, "stop", "webservices.target", check=False)
+    except KeyError:
+        # The legacy account is intentionally absent after modular cutover.
+        return
+
+
 def preflight(request: dict[str, object]) -> dict[str, object]:
     path = release_path(request)
     run("nft", "-c", "-f", str(path / "ops/platform-zero.nft"))
@@ -264,7 +272,7 @@ def finalize_access(request: dict[str, object]) -> dict[str, object]:
 def activate(request: dict[str, object]) -> dict[str, object]:
     path = release_path(request)
     preflight(request)
-    user_systemctl(LEGACY_USER, "stop", "webservices.target", check=False)
+    stop_legacy_runtime()
     apply_platform_zero_nftables(path / "ops/platform-zero.nft")
     env = os.environ.copy()
     env["WEBSERVICES_ACTIVATION_ROLLBACK"] = "0"
