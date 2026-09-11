@@ -406,6 +406,15 @@ if ! rg -Fq '"${ROOTLESS_RELEASES[$i]}/runtime/stack.env"' "$WORK_DIR/podman-a/o
   exit 1
 fi
 
+if ! rg -Fq -- '-exec /usr/bin/install -m 0600 {} $runtime_dir/ +' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-generator-test] runtime environment restore must use a systemd-safe find batch terminator\n' >&2
+  exit 1
+fi
+if rg -Fq -- '$runtime_dir/ \\;' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-generator-test] runtime environment restore contains an invalid systemd escape\n' >&2
+  exit 1
+fi
+
 test -f "$WORK_DIR/podman-a/runtime/configs/vaultwarden/index.html"
 test -f "$WORK_DIR/podman-a/runtime/configs/vaultwarden/seed.sh"
 if find "$WORK_DIR/podman-a/runtime/configs" -type f -name '*.template' -print -quit | grep -q .; then

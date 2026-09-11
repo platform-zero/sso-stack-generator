@@ -699,7 +699,7 @@ install_runtime_env_unit() {
     '' \
     '[Service]' \
     'Type=oneshot' \
-    "ExecStart=/bin/sh -ec '/usr/bin/install -d -m 0700 $runtime_dir; /usr/bin/find $source_dir -maxdepth 1 -type f -name \"*.env\" -exec /usr/bin/install -m 0600 {} $runtime_dir/ \\;'" \
+    "ExecStart=/bin/sh -ec '/usr/bin/install -d -m 0700 $runtime_dir; /usr/bin/find $source_dir -maxdepth 1 -type f -name \"*.env\" -exec /usr/bin/install -m 0600 {} $runtime_dir/ +'" \
     'RemainAfterExit=yes' \
     >"$unit_file"
   printf '%s\n' \
