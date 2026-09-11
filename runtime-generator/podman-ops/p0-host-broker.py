@@ -282,7 +282,8 @@ def activate(request: dict[str, object]) -> dict[str, object]:
 
 
 def scope_health(user: str | None) -> dict[str, object]:
-    ctl = (lambda *args, check=True: user_systemctl(user, *args, check=check)) if user else run
+    ctl = ((lambda *args, check=True: user_systemctl(user, *args, check=check)) if user else
+           (lambda *args, check=True: run("systemctl", *args, check=check)))
     target_state = ctl("is-active", "webservices.target", check=False).stdout.strip()
     dependencies = ctl("list-dependencies", "--plain", "--all", "webservices.target", check=False)
     units = sorted({line.strip().lstrip("●○ ") for line in dependencies.stdout.splitlines()

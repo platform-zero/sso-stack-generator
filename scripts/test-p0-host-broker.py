@@ -80,3 +80,31 @@ with tempfile.TemporaryDirectory() as temporary:
     )
 
 print("[test-p0-host-broker] ok")
+
+
+class Result:
+    def __init__(self, stdout: str):
+        self.stdout = stdout
+        self.stderr = ""
+        self.returncode = 0
+
+
+calls = []
+original_run = BROKER.run
+try:
+    def fake_run(*args: str, check: bool = True) -> Result:
+        calls.append(args)
+        if args[1] == "is-active":
+            return Result("active\n")
+        if args[1] == "list-dependencies":
+            return Result("webservices.target\nwebservices-caddy.service\n")
+        return Result("ActiveState=active\nSubState=running\nResult=success\nJob=\n")
+
+    BROKER.run = fake_run
+    health = BROKER.scope_health(None)
+    assert health["state"] == "active" and not health["offenders"]
+    assert all(call[0] == "systemctl" for call in calls)
+finally:
+    BROKER.run = original_run
+
+print("[test-p0-host-broker-status] ok")
