@@ -45,7 +45,7 @@ cat >"$WORK_DIR/bin/podman" <<'EOF'
 printf '%s\n' "$*" >>"$P0_TEST_LOG"
 case "$*" in
   'inspect --format {{.State.Status}} worklane-alpha-lane-id') printf '%s\n' running ;;
-  'exec --user dev worklane-alpha-lane-id herdr --session alpha agent list')
+  'exec worklane-alpha-lane-id runuser -u dev -- herdr --session alpha agent list')
     printf '%s\n' '{"result":{"agents":[{"agent":"codex","agent_status":"idle","state_change_seq":7}]}}' ;;
   'stop --time 30 worklane-alpha-lane-id') printf '%s\n' worklane-alpha-lane-id ;;
   *) exit 1 ;;
