@@ -66,3 +66,8 @@ sudo ops/provision-domain-accounts.sh \
 their current Podman graphroot unless `--migrate-existing` is supplied during a
 planned data cutover. This prevents account preparation from silently hiding a
 live rootless image store.
+
+The same apply step installs `/etc/sysctl.d/90-platform-zero-worklanes.conf`
+with `fs.inotify.max_user_instances = 1024`. Systemd-based maintenance lanes
+consume multiple inotify instances each; Debian's default of 128 prevents the
+full 16-lane `stack_lab` set from running concurrently.

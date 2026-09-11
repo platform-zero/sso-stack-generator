@@ -1314,6 +1314,24 @@ fun stopTimeoutSeconds(node: JsonNode): Long? {
     return kotlin.math.ceil(seconds).toLong().coerceAtLeast(1)
 }
 
+fun resourceLimit(node: JsonNode, kind: String): String? {
+    if (node.isMissingNode || node.isNull) return null
+    val raw = node.asText().trim()
+    if (raw.isEmpty()) return null
+    val defaultExpression = Regex("^\\$\\{[A-Z_][A-Z0-9_]*:-([^}]+)}$")
+    val resolved = defaultExpression.matchEntire(raw)?.groupValues?.get(1)?.trim() ?: raw
+    when (kind) {
+        "memory" -> if (!resolved.matches(Regex("^[1-9][0-9]*(?:\\.[0-9]+)?[KMGTPE]?[iI]?[bB]?$"))) {
+            fail("invalid resources.limits.memory '$raw'; use a concrete Podman size or ${'$'}{VAR:-default}")
+        }
+        "cpus" -> if (!resolved.matches(Regex("^(?:[1-9][0-9]*|0\\.[0-9]+|[1-9][0-9]*\\.[0-9]+)$")) || resolved.toDouble() <= 0.0) {
+            fail("invalid resources.limits.cpus '$raw'; use a positive number or ${'$'}{VAR:-default}")
+        }
+        else -> fail("unsupported resource limit '$kind'")
+    }
+    return resolved
+}
+
 fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, output: Path, domain: PodmanDomain, loopbacks: Map<String, List<LoopbackEndpoint>>) {
     val quadlet = output.resolve("${domain.quadletDir}/webservices-$name.container")
     quadlet.parent.createDirectories()
@@ -1352,7 +1370,11 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
         }
     }
     service.path("volumes").forEach { lines += "Volume=${quadletLiteral(volumeLine(it, ir.path("volumes"), domain))}" }
-    lines += "PodmanArgs=--image-volume=ignore"
+    val limits = service.path("resources").path("limits")
+    val podmanArgs = mutableListOf("--image-volume=ignore")
+    resourceLimit(limits.path("memory"), "memory")?.let { podmanArgs += "--memory=$it" }
+    resourceLimit(limits.path("cpus"), "cpus")?.let { podmanArgs += "--cpus=$it" }
+    lines += "PodmanArgs=${podmanArgs.joinToString(" ")}"
     service.path("ephemeralImageVolumes").forEach { lines += "Tmpfs=${it.asText()}" }
     service.path("userns").textOrNull()?.let { lines += "UserNS=$it" }
     service.path("groupAdd").forEach { lines += "GroupAdd=${it.asText()}" }
@@ -1479,12 +1501,20 @@ fun renderPodman(ir: ObjectNode, output: Path) {
     )
     generatorRoot.resolve("ops/host-admin/provision-domain-accounts.sh")
         .copyTo(output.resolve("ops/provision-domain-accounts.sh"), overwrite = true)
+    generatorRoot.resolve("ops/host-admin/retire-legacy-webservices-account.sh")
+        .copyTo(output.resolve("ops/retire-legacy-webservices-account.sh"), overwrite = true)
     generatorRoot.resolve("ops/maintenance/materialize-workspaces.py")
         .copyTo(output.resolve("ops/materialize-workspaces.py"), overwrite = true)
     generatorRoot.resolve("ops/maintenance/start-worklane-containers.py")
         .copyTo(output.resolve("ops/start-worklane-containers.py"), overwrite = true)
     generatorRoot.resolve("ops/maintenance/platform-zero-worklanes.service")
         .copyTo(output.resolve("ops/platform-zero-worklanes.service"), overwrite = true)
+    generatorRoot.resolve("ops/maintenance/reap-idle-worklanes.py")
+        .copyTo(output.resolve("ops/reap-idle-worklanes.py"), overwrite = true)
+    generatorRoot.resolve("ops/maintenance/platform-zero-worklane-idle-reaper.service")
+        .copyTo(output.resolve("ops/platform-zero-worklane-idle-reaper.service"), overwrite = true)
+    generatorRoot.resolve("ops/maintenance/platform-zero-worklane-idle-reaper.timer")
+        .copyTo(output.resolve("ops/platform-zero-worklane-idle-reaper.timer"), overwrite = true)
 }
 
 fun repositoryRow(name: String, remote: String, commit: String, writable: Boolean): ObjectNode =
@@ -1595,15 +1625,15 @@ fun writeDomainMetadata(ir: ObjectNode, modules: List<ModuleCheckout>, manifestP
         }
     }
     val workspaces = arr()
-    workspaces.add(obj().put("name", "control").put("role", "control").put("startAtBoot", true).set<ArrayNode>("repositories", arr().also { rows ->
+    workspaces.add(obj().put("name", "control").put("role", "control").put("startAtBoot", false).set<ArrayNode>("repositories", arr().also { rows ->
         baseline.forEach { rows.add(it.deepCopy().also { row -> row.put("writable", true) }) }
     }))
-    workspaces.add(obj().put("name", "host").put("role", "host").put("startAtBoot", true).set<ArrayNode>("repositories", reposFor(activePodmanPolicy.rootfulModules)))
+    workspaces.add(obj().put("name", "host").put("role", "host").put("startAtBoot", false).set<ArrayNode>("repositories", reposFor(activePodmanPolicy.rootfulModules)))
     activePodmanPolicy.domains.forEach { domain ->
         workspaces.add(obj().also { row ->
             row.put("name", domain.name)
             row.put("role", "domain")
-            row.put("startAtBoot", true)
+            row.put("startAtBoot", false)
             row.put("serviceAccount", domain.user)
             row.set<ArrayNode>("services", domainRows.first { it.path("name").asText() == domain.name }.path("services").deepCopy())
             row.set<ArrayNode>("repositories", reposFor(domain.modules))
@@ -1649,7 +1679,7 @@ fun writeDomainMetadata(ir: ObjectNode, modules: List<ModuleCheckout>, manifestP
             .put("role", "software")
             .put("projectPath", projectPath.toString())
             .put("profile", lane.path("profile").asText(defaultProfile))
-            .put("startAtBoot", lane.path("start_at_boot").asBoolean(true))
+            .put("startAtBoot", false)
         softwareRow.set<ArrayNode>("devices", devices.deepCopy<ArrayNode>())
         softwareRow.set<ArrayNode>("bootstrap", commandList("bootstrap"))
         softwareRow.set<ArrayNode>("smokeTest", commandList("smoke_test"))

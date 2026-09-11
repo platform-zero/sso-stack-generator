@@ -281,16 +281,34 @@ def activate(request: dict[str, object]) -> dict[str, object]:
     return {"release": path.name, "output": result.stdout[-8000:]}
 
 
+def scope_health(user: str | None) -> dict[str, object]:
+    ctl = (lambda *args, check=True: user_systemctl(user, *args, check=check)) if user else run
+    target_state = ctl("is-active", "webservices.target", check=False).stdout.strip()
+    dependencies = ctl("list-dependencies", "--plain", "--all", "webservices.target", check=False)
+    units = sorted({line.strip().lstrip("●○ ") for line in dependencies.stdout.splitlines()
+                    if line.strip().lstrip("●○ ").startswith("webservices-")
+                    and line.strip().lstrip("●○ ").endswith(".service")})
+    offenders = []
+    for unit in units:
+        details = ctl("show", unit, "-p", "ActiveState", "-p", "SubState", "-p", "Result", "-p", "Job", check=False)
+        values = dict(line.split("=", 1) for line in details.stdout.splitlines() if "=" in line)
+        if values.get("ActiveState") != "active" or values.get("Result") not in {"", "success"} or values.get("Job"):
+            offenders.append({"unit": unit, **values})
+    state = target_state if target_state != "active" or not offenders else "degraded"
+    return {"state": state, "targetState": target_state, "offenders": offenders}
+
+
 def status(_: dict[str, object]) -> dict[str, object]:
-    result: dict[str, object] = {"rootful": run("systemctl", "is-active", "webservices.target", check=False).stdout.strip()}
+    rootful = scope_health(None)
+    result: dict[str, object] = {"rootful": rootful["state"], "rootfulHealth": rootful}
     domains_file = DOMAINS_MANIFEST if DOMAINS_MANIFEST.is_file() else None
     if domains_file is None and INCOMING.exists():
         domains_file = next((path / "podman-domains.json" for path in sorted(INCOMING.iterdir(), reverse=True) if len(path.name) == 64 and path.is_dir()), None)
     domains = []
     if domains_file and domains_file.is_file():
         for item in json.loads(domains_file.read_text()).get("domains", []):
-            state = user_systemctl(item["user"], "is-active", "webservices.target", check=False).stdout.strip()
-            domains.append({"name": item["name"], "user": item["user"], "state": state})
+            health = scope_health(item["user"])
+            domains.append({"name": item["name"], "user": item["user"], **health})
     result["domains"] = domains
     return result
 

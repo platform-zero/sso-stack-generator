@@ -1,0 +1,6 @@
+[Unit]
+Description=Stop safely idle Platform Zero Worklanes
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/p0-reap-idle-worklanes

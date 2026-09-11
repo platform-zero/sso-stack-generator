@@ -129,7 +129,7 @@ jq -e --slurpfile domains "$WORK_DIR/podman-a/podman-domains.json" '
     ($domains[0].domains[] | select(.name == $entry.value.rootlessDomain) | .user) == $entry.value.rootlessUser)
 ' "$WORK_DIR/podman-a/stack.ir.json" >/dev/null
 
-jq -e '(.schemaVersion == 1) and (.workspaces | length == 16) and ([.workspaces[].name] | unique | length == 16) and all(.workspaces[]; .startAtBoot == true)' \
+jq -e '(.schemaVersion == 1) and (.workspaces | length == 16) and ([.workspaces[].name] | unique | length == 16) and all(.workspaces[]; .startAtBoot == false)' \
   "$WORK_DIR/podman-a/maintenance-workspaces.json" >/dev/null
 
 jq -e '
@@ -138,12 +138,22 @@ jq -e '
   (.workspaces | length == 9) and
   ([.workspaces[].name] | sort == ["auto_scad", "backup", "chatex", "crypto_trading", "hitl", "my_brand", "obelisks", "poe_intelligence", "worklane"]) and
   all(.workspaces[];
-    .role == "software" and .profile == "software-gpu" and .startAtBoot == true and
+    .role == "software" and .profile == "software-gpu" and .startAtBoot == false and
     .devices == ["nvidia.com/gpu=all"] and (.projectPath | startswith("/mnt/lab_debian/software_lab/")))
 ' "$WORK_DIR/podman-a/software-workspaces.json" >/dev/null
 
 test -x "$WORK_DIR/podman-a/ops/start-worklane-containers.py"
 test -f "$WORK_DIR/podman-a/ops/platform-zero-worklanes.service"
+test -x "$WORK_DIR/podman-a/ops/reap-idle-worklanes.py"
+test -f "$WORK_DIR/podman-a/ops/platform-zero-worklane-idle-reaper.service"
+test -f "$WORK_DIR/podman-a/ops/platform-zero-worklane-idle-reaper.timer"
+grep -Fq "fs.inotify.max_user_instances = 1024" "$WORK_DIR/podman-a/ops/provision-domain-accounts.sh"
+grep -Fq "/etc/sysctl.d/90-platform-zero-worklanes.conf" "$WORK_DIR/podman-a/ops/provision-domain-accounts.sh"
+
+grep -Eq '^PodmanArgs=.*--memory=2G.*--cpus=2\.0' "$WORK_DIR/podman-a/quadlet/rootless-identity/webservices-keycloak.container"
+grep -Eq '^PodmanArgs=.*--memory=3G.*--cpus=2\.0' "$WORK_DIR/podman-a/quadlet/rootless-data/webservices-opensearch.container"
+grep -Eq '^PodmanArgs=.*--memory=2G.*--cpus=1\.0' "$WORK_DIR/podman-a/quadlet/rootless-collaboration/webservices-huly-redpanda.container"
+grep -Eq '^PodmanArgs=.*--memory=2G.*--cpus=1\.5' "$WORK_DIR/podman-a/quadlet/rootless-collaboration/webservices-huly-elastic.container"
 
 python3 - "$WORK_DIR/podman-a/ops/materialize-workspaces.py" <<'PY'
 import importlib.util

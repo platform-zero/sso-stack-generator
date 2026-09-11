@@ -34,6 +34,7 @@ if [ "$mount_target" != "/mnt/lab_debian" ] || [ -z "$mount_source" ] || [ "$mou
 fi
 
 printf '[domain-accounts] mode=%s lab_source=%s\n' "$MODE" "$mount_source"
+printf '[domain-accounts] kernel fs.inotify.max_user_instances=1024\n'
 for maintenance_user in software_lab stack_lab; do
   if id "$maintenance_user" >/dev/null 2>&1; then
     printf '[domain-accounts] current user=%s uid=%s\n' "$maintenance_user" "$(id -u "$maintenance_user")"
@@ -54,6 +55,15 @@ jq -r '.domains[] | [.name,.user,.stateRoot,.graphRoot,.volumeRoot,(.uid // ""),
 
 [ "$MODE" = apply ] || exit 0
 [ "$(id -u)" -eq 0 ] || { printf '%s\n' '--apply requires root' >&2; exit 1; }
+
+# Each systemd-based Worklane consumes several inotify instances. Debian's
+# default of 128 is exhausted before all maintenance lanes can run together.
+inotify_conf=/etc/sysctl.d/90-platform-zero-worklanes.conf
+inotify_tmp="$(mktemp)"
+trap 'rm -f "$inotify_tmp"' EXIT
+printf '%s\n' 'fs.inotify.max_user_instances = 1024' >"$inotify_tmp"
+install -o root -g root -m 0644 "$inotify_tmp" "$inotify_conf"
+/usr/sbin/sysctl --load "$inotify_conf" >/dev/null
 
 ensure_subids() {
   local user="$1" expected_start="${2:-}" start current_subuid current_subgid

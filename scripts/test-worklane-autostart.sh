@@ -38,4 +38,38 @@ if P0_TEST_LOG="$WORK_DIR/podman.log" PATH="$WORK_DIR/bin:$PATH" \
   exit 1
 fi
 
+mkdir -p "$WORK_DIR/home" "$WORK_DIR/root/alpha/.local/share/worklane/agent-work"
+sed -i "s/\"owner\":\"test\"/\"owner\":\"$(id -un)\"/" "$WORK_DIR/manifest.json"
+cat >"$WORK_DIR/bin/podman" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"$P0_TEST_LOG"
+case "$*" in
+  'inspect --format {{.State.Status}} worklane-alpha-lane-id') printf '%s\n' running ;;
+  'exec worklane-alpha-lane-id herdr --session alpha agent list')
+    printf '%s\n' '{"result":{"agents":[{"agent":"codex","agent_status":"idle","state_change_seq":7}]}}' ;;
+  'stop --time 30 worklane-alpha-lane-id') printf '%s\n' worklane-alpha-lane-id ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$WORK_DIR/bin/podman"
+: >"$WORK_DIR/podman.log"
+HOME="$WORK_DIR/home" P0_TEST_LOG="$WORK_DIR/podman.log" PATH="$WORK_DIR/bin:$PATH" \
+  python3 "$ROOT_DIR/ops/maintenance/reap-idle-worklanes.py" --manifest "$WORK_DIR/manifest.json" --now 100
+if grep -q '^stop ' "$WORK_DIR/podman.log"; then
+  printf 'idle reaper stopped a lane before its threshold\n' >&2
+  exit 1
+fi
+HOME="$WORK_DIR/home" P0_TEST_LOG="$WORK_DIR/podman.log" PATH="$WORK_DIR/bin:$PATH" \
+  python3 "$ROOT_DIR/ops/maintenance/reap-idle-worklanes.py" --manifest "$WORK_DIR/manifest.json" --now 14501
+grep -Fx 'stop --time 30 worklane-alpha-lane-id' "$WORK_DIR/podman.log" >/dev/null
+
+touch "$WORK_DIR/root/alpha/.local/share/worklane/agent-work/agent--test.md"
+: >"$WORK_DIR/podman.log"
+HOME="$WORK_DIR/home" P0_TEST_LOG="$WORK_DIR/podman.log" PATH="$WORK_DIR/bin:$PATH" \
+  python3 "$ROOT_DIR/ops/maintenance/reap-idle-worklanes.py" --manifest "$WORK_DIR/manifest.json" --idle-seconds 0 --now 20000
+if grep -q '^stop ' "$WORK_DIR/podman.log"; then
+  printf 'idle reaper stopped a claimed lane\n' >&2
+  exit 1
+fi
+
 printf '[worklane-autostart-test] ok\n'
