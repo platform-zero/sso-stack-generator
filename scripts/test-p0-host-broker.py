@@ -149,3 +149,43 @@ finally:
     BROKER.user_systemctl = original_user_systemctl
 
 print("[test-p0-host-broker-retired-legacy] ok")
+
+with tempfile.TemporaryDirectory() as temporary:
+    root = Path(temporary)
+    incoming = root / "incoming"
+    snapshots = root / "snapshots"
+    releases = root / "releases"
+    domains = root / "podman-domains.json"
+    active = root / "active.json"
+    for parent, count in ((snapshots, 7), (releases, 5)):
+        parent.mkdir()
+        for index in range(count):
+            path = parent / f"release-{index}"
+            path.mkdir()
+            path.touch()
+            BROKER.os.utime(path, (index + 1, index + 1))
+    incoming.mkdir()
+    old = incoming / ("a" * 64)
+    current = incoming / ("b" * 64)
+    old.mkdir()
+    current.mkdir()
+    BROKER.os.utime(old, (1, 1))
+    BROKER.os.utime(current, (1, 1))
+    active.write_text(json.dumps({"release": current.name}))
+    domains.write_text(json.dumps({"domains": []}))
+    with patch.multiple(
+        BROKER,
+        INCOMING=incoming,
+        SNAPSHOTS=snapshots,
+        DOMAINS_MANIFEST=domains,
+        ACTIVE_RELEASE=active,
+        ROOTFUL_RELEASES=releases,
+    ):
+        preview = BROKER.garbage_collect({"dry_run": True})
+        assert preview["dryRun"] and str(old) in preview["removed"]
+        assert old.exists() and len(list(snapshots.iterdir())) == 7
+        result = BROKER.garbage_collect({})
+        assert not result["dryRun"] and not old.exists() and current.exists()
+        assert len(list(snapshots.iterdir())) == BROKER.SNAPSHOT_RETENTION
+
+print("[test-p0-host-broker-gc] ok")

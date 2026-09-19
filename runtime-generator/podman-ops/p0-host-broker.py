@@ -25,6 +25,11 @@ LEGACY_USER = os.environ.get("P0_LEGACY_USER", "webservices")
 DOMAINS_MANIFEST = Path(os.environ.get("P0_DOMAINS_MANIFEST", "/etc/platform-zero/podman-domains.json"))
 SUDOERS = Path(os.environ.get("P0_SUDOERS", "/etc/sudoers"))
 GERALD_DROPIN = Path(os.environ.get("P0_GERALD_DROPIN", "/etc/sudoers.d/gerald-webservices"))
+ACTIVE_RELEASE = Path(os.environ.get("P0_ACTIVE_RELEASE", "/var/lib/platform-zero/active.json"))
+ROOTFUL_RELEASES = Path(os.environ.get("P0_ROOTFUL_RELEASES", "/var/lib/webservices/releases"))
+SNAPSHOT_RETENTION = 5
+RELEASE_RETENTION = 3
+INCOMING_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 ROOTLESS_HOST_NETWORK_ALLOWLIST = {
     "quadlet/rootless-communications/webservices-livekit.container": (
         "communications",
@@ -286,10 +291,15 @@ def activate(request: dict[str, object]) -> dict[str, object]:
     if result.returncode:
         details = (result.stdout + "\n" + result.stderr)[-16000:]
         raise RequestError(f"activation failed ({result.returncode}); fix-forward required\n{details}")
+    ACTIVE_RELEASE.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = ACTIVE_RELEASE.with_suffix(".tmp")
+    temporary.write_text(json.dumps({"release": path.name, "activatedAt": int(time.time())}) + "\n")
+    temporary.chmod(0o600)
+    os.replace(temporary, ACTIVE_RELEASE)
     return {"release": path.name, "output": result.stdout[-8000:]}
 
 
-def scope_health(user: str | None) -> dict[str, object]:
+def scope_health(user: str | None, expected: list[str] | None = None) -> dict[str, object]:
     ctl = ((lambda *args, check=True: user_systemctl(user, *args, check=check)) if user else
            (lambda *args, check=True: run("systemctl", *args, check=check)))
     target_state = ctl("is-active", "webservices.target", check=False).stdout.strip()
@@ -298,15 +308,22 @@ def scope_health(user: str | None) -> dict[str, object]:
                     if line.strip().lstrip("●○ ").startswith("webservices-")
                     and line.strip().lstrip("●○ ").endswith(".service")})
     offenders = []
+    restart_counts = {}
     for unit in units:
-        details = ctl("show", unit, "-p", "ActiveState", "-p", "SubState", "-p", "Type", "-p", "Result", "-p", "Job", check=False)
+        details = ctl("show", unit, "-p", "ActiveState", "-p", "SubState", "-p", "Type", "-p", "Result", "-p", "Job", "-p", "NRestarts", check=False)
         values = dict(line.split("=", 1) for line in details.stdout.splitlines() if "=" in line)
         completed_oneshot = (values.get("Type") == "oneshot" and values.get("ActiveState") == "inactive"
                              and values.get("Result") == "success" and not values.get("Job"))
         if not completed_oneshot and (values.get("ActiveState") != "active" or values.get("Result") not in {"", "success"} or values.get("Job")):
             offenders.append({"unit": unit, **values})
+        if int(values.get("NRestarts", "0") or "0"):
+            restart_counts[unit] = int(values["NRestarts"])
+    for service in expected or []:
+        unit = f"webservices-{service}.service"
+        if unit not in units:
+            offenders.append({"unit": unit, "reason": "missing-persistent-unit"})
     state = target_state if target_state != "active" or not offenders else "degraded"
-    return {"state": state, "targetState": target_state, "offenders": offenders}
+    return {"state": state, "targetState": target_state, "offenders": offenders, "restartCounts": restart_counts}
 
 
 def status(_: dict[str, object]) -> dict[str, object]:
@@ -318,7 +335,7 @@ def status(_: dict[str, object]) -> dict[str, object]:
     domains = []
     if domains_file and domains_file.is_file():
         for item in json.loads(domains_file.read_text()).get("domains", []):
-            health = scope_health(item["user"])
+            health = scope_health(item["user"], item.get("persistentServices", []))
             domains.append({"name": item["name"], "user": item["user"], **health})
     result["domains"] = domains
     return result
@@ -332,6 +349,46 @@ def verify(request: dict[str, object]) -> dict[str, object]:
     if current["rootful"] != "active" or inactive:
         raise RequestError(f"inactive Platform Zero targets: rootful={current['rootful']} domains={inactive}")
     return current
+
+
+def garbage_collect(request: dict[str, object]) -> dict[str, object]:
+    dry_run = bool(request.get("dry_run", False))
+    active = None
+    if ACTIVE_RELEASE.is_file():
+        active = json.loads(ACTIVE_RELEASE.read_text()).get("release")
+    removals: list[str] = []
+
+    def prune_directories(root: Path, keep: int, protected: set[Path] | None = None) -> None:
+        protected = protected or set()
+        if not root.is_dir():
+            return
+        directories = sorted((path for path in root.iterdir() if path.is_dir()), key=lambda path: path.stat().st_mtime, reverse=True)
+        retained = set(directories[:keep]) | protected
+        for path in directories:
+            if path not in retained:
+                removals.append(str(path))
+                if not dry_run:
+                    shutil.rmtree(path)
+
+    prune_directories(SNAPSHOTS, SNAPSHOT_RETENTION)
+    release_roots = [ROOTFUL_RELEASES]
+    if DOMAINS_MANIFEST.is_file():
+        for item in json.loads(DOMAINS_MANIFEST.read_text()).get("domains", []):
+            release_roots.append(Path(item["stateRoot"]) / "releases")
+    for root in release_roots:
+        protected = set()
+        current = root.parent / "current"
+        if current.is_symlink():
+            protected.add(current.resolve())
+        prune_directories(root, RELEASE_RETENTION, protected)
+    if INCOMING.is_dir():
+        now = time.time()
+        for path in INCOMING.iterdir():
+            if path.is_dir() and path.name != active and not path.name.startswith(".stage-") and now - path.stat().st_mtime > INCOMING_MAX_AGE_SECONDS:
+                removals.append(str(path))
+                if not dry_run:
+                    shutil.rmtree(path)
+    return {"dryRun": dry_run, "removed": removals, "activeRelease": active}
 
 
 def logs(request: dict[str, object]) -> dict[str, object]:
@@ -351,7 +408,7 @@ def logs(request: dict[str, object]) -> dict[str, object]:
     return {"output": (result.stdout + result.stderr)[-16000:]}
 
 
-ACTIONS = {"stage": stage, "preflight": preflight, "snapshot": snapshot, "activate": activate, "status": status, "verify": verify, "logs": logs, "restore": restore, "finalize-access": finalize_access}
+ACTIONS = {"stage": stage, "preflight": preflight, "snapshot": snapshot, "activate": activate, "status": status, "verify": verify, "logs": logs, "restore": restore, "gc": garbage_collect, "finalize-access": finalize_access}
 
 
 def authorized_uid_ranges(user: str, subuid_file: Path = Path("/etc/subuid")) -> tuple[int, list[tuple[int, int]]]:

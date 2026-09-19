@@ -347,7 +347,9 @@ data class PodmanPolicy(
     val domains: List<RootlessDomainPolicy>,
     val serviceDomains: Map<String, String>,
     val crossDomainEndpoints: List<CrossDomainEndpointPolicy>,
-    val maintenanceRoot: String
+    val maintenanceRoot: String,
+    val defaultMemory: String?,
+    val defaultCpus: String?
 )
 
 lateinit var activePodmanPolicy: PodmanPolicy
@@ -445,8 +447,20 @@ fun readPodmanPolicy(manifestPath: Path): PodmanPolicy {
         domains,
         serviceDomains,
         crossDomainEndpoints,
-        podman.path("maintenance_root").asText("/mnt/lab_debian/stack_lab/stack_work")
+        podman.path("maintenance_root").asText("/mnt/lab_debian/stack_lab/stack_work"),
+        resourceLimit(podman.path("resource_defaults").path("memory"), "memory"),
+        resourceLimit(podman.path("resource_defaults").path("cpus"), "cpus")
     )
+}
+
+fun applyResourceDefaults(ir: ObjectNode, policy: PodmanPolicy) {
+    ir.path("services").fieldsMap().forEach { (_, raw) ->
+        val service = raw as ObjectNode
+        val resources = service.withObject("resources")
+        val limits = resources.withObject("limits")
+        if (!limits.has("memory")) policy.defaultMemory?.let { limits.put("memory", it) }
+        if (!limits.has("cpus")) policy.defaultCpus?.let { limits.put("cpus", it) }
+    }
 }
 
 fun rewriteEndpointText(value: String, provider: String, containerPort: Int, hostPort: Int): String {
@@ -1547,6 +1561,13 @@ fun writeDomainMetadata(ir: ObjectNode, modules: List<ModuleCheckout>, manifestP
             .filter { (_, service) -> service.path("rootlessDomain").asText() == policy.name }
             .map { it.first }
             .sorted()
+        val persistentServices = ir.path("services").fieldsMap()
+            .filter { (_, service) ->
+                service.path("rootlessDomain").asText() == policy.name &&
+                    service.path("lifecycle").asText("daemon") == "daemon"
+            }
+            .map { it.first }
+            .sorted()
         domainRows.add(obj().also { row ->
             row.put("name", policy.name)
             row.put("user", policy.user)
@@ -1557,6 +1578,7 @@ fun writeDomainMetadata(ir: ObjectNode, modules: List<ModuleCheckout>, manifestP
             policy.subuidStart?.let { row.put("subuidStart", it) }
             row.set<ArrayNode>("modules", arr().addAll(policy.modules.sorted().map(nodes::textNode)))
             row.set<ArrayNode>("services", arr().addAll(services.map(nodes::textNode)))
+            row.set<ArrayNode>("persistentServices", arr().addAll(persistentServices.map(nodes::textNode)))
             row.set<ArrayNode>("allowDependencies", arr().addAll(policy.allowDependencies.sorted().map(nodes::textNode)))
         })
     }
@@ -1714,6 +1736,7 @@ fun commandGenerate(options: Map<String, String>) {
         activePodmanPolicy = readPodmanPolicy(manifest)
         val (ir, modules) = buildIr(manifest, modulesDir)
         applyPodmanPlacementPolicy(ir, activePodmanPolicy)
+        applyResourceDefaults(ir, activePodmanPolicy)
         applyCrossDomainEndpointPolicy(ir, activePodmanPolicy)
         writeJson(staging.resolve("stack.ir.json"), ir)
         materializeSiteManifest(manifest, staging)
