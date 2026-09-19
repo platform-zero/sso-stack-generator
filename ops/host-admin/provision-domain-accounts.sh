@@ -153,6 +153,10 @@ jq -r '.domains[] | [.name,.user,.stateRoot,.graphRoot,.volumeRoot,(.uid // ""),
       useradd --system --create-home --home-dir "/home/$user" --shell /bin/bash "$user"
     fi
     passwd -l "$user" >/dev/null
+    # Restricted SSH dispatcher keys still execute through the account shell.
+    # Reconcile service accounts created by older installers with nologin;
+    # otherwise sshd authenticates the key but cannot run its forced command.
+    [ "$(getent passwd "$user" | cut -d: -f7)" = /bin/bash ] || usermod --shell /bin/bash "$user"
     ensure_subids "$user" "$expected_subuid"
     install_authorized_keys "$user"
     [ ! -d "/home/$user/.config" ] || chown "$user:$user" "/home/$user/.config"

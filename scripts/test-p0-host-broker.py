@@ -7,6 +7,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +16,16 @@ SPEC = importlib.util.spec_from_file_location("p0_host_broker", BROKER_PATH)
 assert SPEC and SPEC.loader
 BROKER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BROKER)
+
+
+with tempfile.TemporaryDirectory() as temporary:
+    subuids = Path(temporary) / "subuid"
+    subuids.write_text("stack_lab:2000000:65536\nother:3000000:65536\n")
+    with patch.object(BROKER.pwd, "getpwnam", return_value=type("Record", (), {"pw_uid": 1002})()):
+        direct, subordinate = BROKER.authorized_uid_ranges("stack_lab", subuids)
+    assert BROKER.authorized_peer(1002, direct, subordinate)
+    assert BROKER.authorized_peer(2000999, direct, subordinate)
+    assert not BROKER.authorized_peer(3000999, direct, subordinate)
 
 
 def fixture(root: Path, relative: str, quadlet: str, owner: str = "webservices-communications") -> Path:

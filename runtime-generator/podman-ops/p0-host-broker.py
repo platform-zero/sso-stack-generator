@@ -354,6 +354,22 @@ def logs(request: dict[str, object]) -> dict[str, object]:
 ACTIONS = {"stage": stage, "preflight": preflight, "snapshot": snapshot, "activate": activate, "status": status, "verify": verify, "logs": logs, "restore": restore, "finalize-access": finalize_access}
 
 
+def authorized_uid_ranges(user: str, subuid_file: Path = Path("/etc/subuid")) -> tuple[int, list[tuple[int, int]]]:
+    direct = pwd.getpwnam(user).pw_uid
+    ranges: list[tuple[int, int]] = []
+    if subuid_file.exists():
+        for raw in subuid_file.read_text().splitlines():
+            fields = raw.split(":")
+            if len(fields) == 3 and fields[0] == user:
+                start, count = int(fields[1]), int(fields[2])
+                ranges.append((start, start + count))
+    return direct, ranges
+
+
+def authorized_peer(uid: int, direct: int, subordinate: list[tuple[int, int]]) -> bool:
+    return uid == direct or any(start <= uid < end for start, end in subordinate)
+
+
 def handle(raw: bytes) -> dict[str, object]:
     try:
         request = json.loads(raw)
@@ -368,13 +384,13 @@ def handle(raw: bytes) -> dict[str, object]:
 
 
 def main() -> None:
-    expected_uid = pwd.getpwnam("stack_lab").pw_uid
+    expected_uid, subordinate_uids = authorized_uid_ranges("stack_lab")
     listener = socket.socket(fileno=SOCKET_FD)
     while True:
         connection, _ = listener.accept()
         with connection:
             _, uid, _ = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-            if uid != expected_uid:
+            if not authorized_peer(uid, expected_uid, subordinate_uids):
                 connection.sendall(json.dumps({"ok": False, "error": "unauthorized peer"}).encode() + b"\n")
                 continue
             raw = b""

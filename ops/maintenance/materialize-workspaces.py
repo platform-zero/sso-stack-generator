@@ -10,9 +10,65 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tomllib
 
 
 PROFILES = """[profiles.p0-control]
+image = "worklane:latest"
+network = "outbound"
+mount_codex_credentials = true
+mount_gh_credentials = true
+
+[[profiles.p0-control.mounts]]
+source = "/usr/local/bin/p0-hostctl"
+target = "/home/dev/.local/bin/p0-hostctl"
+read_only = true
+
+[[profiles.p0-control.mounts]]
+source = "/run/platform-zero"
+target = "/run/platform-zero"
+read_only = true
+
+[[profiles.p0-control.mounts]]
+source = "/home/stack_lab/.config/platform-zero"
+target = "/home/dev/.config/platform-zero"
+read_only = true
+
+[profiles.p0-host]
+image = "worklane:latest"
+network = "outbound"
+mount_codex_credentials = true
+mount_gh_credentials = true
+
+[[profiles.p0-host.mounts]]
+source = "/usr/local/bin/p0-hostctl"
+target = "/home/dev/.local/bin/p0-hostctl"
+read_only = true
+
+[[profiles.p0-host.mounts]]
+source = "/run/platform-zero"
+target = "/run/platform-zero"
+read_only = true
+
+[[profiles.p0-host.mounts]]
+source = "/home/stack_lab/.config/platform-zero"
+target = "/home/dev/.config/platform-zero"
+read_only = true
+
+[profiles.p0-domain]
+image = "worklane:latest"
+network = "outbound"
+mount_codex_credentials = true
+mount_gh_credentials = false
+
+[profiles.software-gpu]
+image = "worklane:latest"
+network = "outbound"
+mount_codex_credentials = true
+mount_gh_credentials = true
+devices = ["nvidia.com/gpu=all"]
+"""
+PREVIOUS_PROFILES = """[profiles.p0-control]
 image = "worklane:latest"
 network = "outbound"
 mount_codex_credentials = true
@@ -37,7 +93,35 @@ mount_codex_credentials = true
 mount_gh_credentials = true
 devices = ["nvidia.com/gpu=all"]
 """
-LEGACY_PROFILES = PROFILES.split("\n[profiles.software-gpu]", 1)[0].rstrip() + "\n"
+INTERMEDIATE_PROFILES = PROFILES.replace(
+    'target = "/home/dev/.local/bin/p0-hostctl"',
+    'target = "/usr/local/bin/p0-hostctl"',
+)
+LEGACY_PROFILES = PREVIOUS_PROFILES.split("\n[profiles.software-gpu]", 1)[0].rstrip() + "\n"
+
+HOST_ACCESS_MOUNTS = [
+    {
+        "source": "/usr/local/bin/p0-hostctl",
+        "target": "/home/dev/.local/bin/p0-hostctl",
+        "read_only": True,
+    },
+    {
+        "source": "/run/platform-zero",
+        "target": "/run/platform-zero",
+        "read_only": True,
+    },
+    {
+        "source": "/home/stack_lab/.config/platform-zero",
+        "target": "/home/dev/.config/platform-zero",
+        "read_only": True,
+    },
+]
+PREVIOUS_HOST_ACCESS_MOUNTS = [
+    {**mount, "target": "/usr/local/bin/p0-hostctl"}
+    if mount["source"] == "/usr/local/bin/p0-hostctl"
+    else mount
+    for mount in HOST_ACCESS_MOUNTS
+]
 
 
 def fail(message: str) -> "NoReturn":
@@ -112,6 +196,7 @@ def agents_text(workspace: dict[str, object]) -> str:
     lines = [
         f"# Platform Zero {heading}: {name}",
         "",
+        f"You are operating inside the `{name}` Worklane. This is the `{role}` workspace.",
         f"Role: `{role}`.",
     ]
     if service_account:
@@ -131,8 +216,8 @@ def agents_text(workspace: dict[str, object]) -> str:
         lines += [
             "- This lane owns global domain configuration and repository pins.",
             "- It validates the full composition but intentionally has no domain deployment keys.",
-            "- Enter this maintenance environment as `stack_lab@192.168.0.11`; its workspace root is",
-            "  `/mnt/lab_debian/stack_lab/stack_work`.",
+            "- A human enters this environment as `stack_lab@192.168.0.11`; you are already inside",
+            "  its `control` Worklane at `/mnt/lab_debian/stack_lab/stack_work/control`.",
             "- The service stack is split across 14 rootless `webservices-*` Linux-user authorities",
             "  plus a separate rootful host authority. Use each domain lane for domain-owned changes.",
             "- Treat `software_lab` and `/mnt/lab_debian/software_lab` as a separate authority. Never",
@@ -156,7 +241,8 @@ def agents_text(workspace: dict[str, object]) -> str:
         ]
     else:
         lines += [
-            "- Use the domain dispatcher for remote status, logs, verification, restart, and deployment.",
+            "- Use `./.p0/domainctl` for remote status, logs, verification, and restart operations.",
+            "  It uses this lane's restricted dispatcher key; ordinary SSH credentials are unrelated.",
             "- Build and deploy only this lane's named domain.",
             "- Global site-config changes flow through the control lane.",
         ]
@@ -188,11 +274,70 @@ def agents_text(workspace: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
+def domainctl_text(workspace: dict[str, object]) -> str:
+    account = str(workspace["serviceAccount"])
+    return f"""#!/usr/bin/env bash
+set -euo pipefail
+here="$(cd -- "$(dirname -- "$0")" && pwd)"
+exec ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \\
+  -i "$here/dispatcher_ed25519" "{account}@${{P0_HOST:-192.168.0.11}}" "$@"
+"""
+
+
+def reconcile_host_access_profile(destination: Path, workspace: dict[str, object]) -> bool:
+    if workspace.get("role") not in {"control", "host"}:
+        return False
+    manifest = destination / ".worklane/lane.toml"
+    if not manifest.exists():
+        return False
+    text = manifest.read_text()
+    current = tomllib.loads(text).get("profile", {}).get("mounts", [])
+    if current == HOST_ACCESS_MOUNTS:
+        return False
+    if current and current != PREVIOUS_HOST_ACCESS_MOUNTS:
+        fail(f"refusing to replace locally changed profile mounts in {manifest}")
+    def render(mounts: list[dict[str, object]]) -> str:
+        return "mounts = [\n" + "".join(
+            f'  {{ source = "{mount["source"]}", target = "{mount["target"]}", read_only = true }},\n'
+            for mount in mounts
+        ) + "]"
+    rendered = render(HOST_ACCESS_MOUNTS)
+    needle = render(PREVIOUS_HOST_ACCESS_MOUNTS) if current else "mounts = []"
+    if current == PREVIOUS_HOST_ACCESS_MOUNTS and needle not in text:
+        old_target = 'target = "/usr/local/bin/p0-hostctl"'
+        if text.count(old_target) != 1:
+            fail(f"cannot safely update managed profile mounts in {manifest}")
+        manifest.write_text(text.replace(old_target, 'target = "/home/dev/.local/bin/p0-hostctl"', 1))
+        return True
+    updated, count = text.replace(needle, rendered, 1), text.count(needle)
+    if count != 1:
+        fail(f"cannot safely update managed profile mounts in {manifest}")
+    manifest.write_text(updated)
+    return True
+
+
 def legacy_agents_texts(workspace: dict[str, object]) -> set[str]:
     current = agents_text(workspace)
-    if workspace.get("role") == "software":
-        return {current}
-    previous = current
+    name = str(workspace["name"])
+    role = str(workspace["role"])
+    prior = current.replace(
+        f"You are operating inside the `{name}` Worklane. This is the `{role}` workspace.\n",
+        "",
+    )
+    prior = prior.replace(
+        "- A human enters this environment as `stack_lab@192.168.0.11`; you are already inside\n"
+        "  its `control` Worklane at `/mnt/lab_debian/stack_lab/stack_work/control`.\n",
+        "- Enter this maintenance environment as `stack_lab@192.168.0.11`; its workspace root is\n"
+        "  `/mnt/lab_debian/stack_lab/stack_work`.\n",
+    )
+    prior = prior.replace(
+        "- Use `./.p0/domainctl` for remote status, logs, verification, and restart operations.\n"
+        "  It uses this lane's restricted dispatcher key; ordinary SSH credentials are unrelated.\n",
+        "- Use the domain dispatcher for remote status, logs, verification, restart, and deployment.\n",
+    )
+    if role == "software":
+        return {prior}
+    previous = prior
     if workspace.get("role") == "control":
         previous = previous.replace(
             "- Enter this maintenance environment as `stack_lab@192.168.0.11`; its workspace root is\n"
@@ -228,7 +373,7 @@ def legacy_agents_texts(workspace: dict[str, object]) -> set[str]:
         legacy = legacy.replace("- Use the domain dispatcher for remote status, logs, verification, restart, and deployment.\n", "")
     marker = "- Keep secrets encrypted; never commit private keys or rendered environment files.\n"
     legacy = legacy.replace(marker, marker + "- Use the domain dispatcher for remote status, logs, verification, restart, and deployment.\n")
-    return {previous, legacy}
+    return {prior, previous, legacy}
 
 
 def managed_agents_texts(workspace: dict[str, object]) -> set[str]:
@@ -298,7 +443,7 @@ def main() -> int:
     root.mkdir(parents=True, exist_ok=True)
     profiles = Path.home() / ".config" / "worklane" / "profiles.toml"
     profiles.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if profiles.exists() and profiles.read_text() not in {PROFILES, LEGACY_PROFILES}:
+    if profiles.exists() and profiles.read_text() not in {PROFILES, INTERMEDIATE_PROFILES, PREVIOUS_PROFILES, LEGACY_PROFILES}:
         fail(f"refusing to replace locally changed {profiles}")
     profiles.write_text(PROFILES)
     os.chmod(profiles, 0o600)
@@ -324,6 +469,14 @@ def main() -> int:
             fail(f"refusing to replace locally changed {agents}")
         agents.write_text(expected)
         os.chmod(agents, 0o600)
+        if workspace.get("role") == "domain":
+            dispatcher = destination / ".p0/domainctl"
+            dispatcher.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            expected_dispatcher = domainctl_text(workspace)
+            if dispatcher.exists() and dispatcher.read_text() != expected_dispatcher:
+                fail(f"refusing to replace locally changed {dispatcher}")
+            dispatcher.write_text(expected_dispatcher)
+            os.chmod(dispatcher, 0o700)
         if not (destination / ".worklane" / "lane.toml").exists():
             profile = {
                 "control": "p0-control",
@@ -334,6 +487,8 @@ def main() -> int:
             if profile is None:
                 fail(f"unknown workspace role: {workspace['role']}")
             run("worklane", "lane", "create", str(workspace["name"]), "--project", str(destination), "--profile", profile)
+        elif reconcile_host_access_profile(destination, workspace):
+            run("worklane", "lane", "reconcile", str(workspace["name"]), "--apply")
     platform_config = Path.home() / ".config" / "platform-zero"
     platform_config.mkdir(mode=0o700, parents=True, exist_ok=True)
     installed_manifest = platform_config / "workspaces.json"

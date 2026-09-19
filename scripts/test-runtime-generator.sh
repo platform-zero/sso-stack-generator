@@ -147,8 +147,10 @@ test -f "$WORK_DIR/podman-a/ops/platform-zero-worklanes.service"
 test -x "$WORK_DIR/podman-a/ops/reap-idle-worklanes.py"
 test -f "$WORK_DIR/podman-a/ops/platform-zero-worklane-idle-reaper.service"
 test -f "$WORK_DIR/podman-a/ops/platform-zero-worklane-idle-reaper.timer"
+grep -Fq 'SocketMode=0666' "$WORK_DIR/podman-a/ops/platform-zero-host-broker.socket"
 grep -Fq "fs.inotify.max_user_instances = 1024" "$WORK_DIR/podman-a/ops/provision-domain-accounts.sh"
 grep -Fq "/etc/sysctl.d/90-platform-zero-worklanes.conf" "$WORK_DIR/podman-a/ops/provision-domain-accounts.sh"
+grep -Fq 'usermod --shell /bin/bash "$user"' "$WORK_DIR/podman-a/ops/provision-domain-accounts.sh"
 
 grep -Eq '^PodmanArgs=.*--memory=2G.*--cpus=2\.0' "$WORK_DIR/podman-a/quadlet/rootless-identity/webservices-keycloak.container"
 grep -Eq '^PodmanArgs=.*--memory=3G.*--cpus=2\.0' "$WORK_DIR/podman-a/quadlet/rootless-data/webservices-opensearch.container"
@@ -172,6 +174,7 @@ control = {
     "repositories": [],
 }
 guidance = module.agents_text(control)
+assert "You are operating inside the `control` Worklane" in guidance
 assert "stack_lab@192.168.0.11" in guidance
 assert "14 rootless `webservices-*` Linux-user authorities" in guidance
 assert "p0-hostctl status" in guidance
@@ -185,6 +188,19 @@ assert guidance in module.managed_agents_texts(control)
 assert previous in module.managed_agents_texts(control)
 assert guidance + "user edit\n" not in module.managed_agents_texts(control)
 assert guidance not in module.legacy_agents_texts({"name": "host", "role": "host", "repositories": []})
+domain = {
+    "name": "identity",
+    "role": "domain",
+    "serviceAccount": "webservices-identity",
+    "repositories": [],
+}
+assert "./.p0/domainctl" in module.agents_text(domain)
+dispatcher = module.domainctl_text(domain)
+assert "BatchMode=yes" in dispatcher
+assert "dispatcher_ed25519" in dispatcher
+assert "webservices-identity@${P0_HOST:-192.168.0.11}" in dispatcher
+assert len(module.HOST_ACCESS_MOUNTS) == 3
+assert "/run/platform-zero" in module.PROFILES
 PY
 
 python3 "$WORK_DIR/podman-a/ops/materialize-workspaces.py" \
