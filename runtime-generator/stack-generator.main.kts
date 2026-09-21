@@ -491,7 +491,7 @@ fun rewriteEndpointConfigText(value: String, provider: String, containerPort: In
 fun rewriteEndpointCommand(value: JsonNode, provider: String, containerPort: Int, hostPort: Int): JsonNode {
     val rewritten = rewriteEndpointTree(value, provider, containerPort, hostPort)
     fun replaceBare(text: String): String = text.replace(
-        Regex("(?<![a-zA-Z0-9_-])${Regex.escape(provider)}(?![a-zA-Z0-9_-])"),
+        Regex("(?<![a-zA-Z0-9_.-])${Regex.escape(provider)}(?![a-zA-Z0-9_.-])"),
         "host.containers.internal"
     )
     return when {

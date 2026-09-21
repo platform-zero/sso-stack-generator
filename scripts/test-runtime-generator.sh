@@ -316,6 +316,7 @@ if yq -e '.podman.cross_domain_endpoints | length > 0' "$SOURCE_SITE_DIR/global.
   rg -q -e 'host:[[:space:]]+host\.containers\.internal' "$WORK_DIR/podman-a/runtime/configs/synapse/homeserver.yaml"
   rg -q -e 'port:[[:space:]]+25001' "$WORK_DIR/podman-a/runtime/configs/synapse/homeserver.yaml"
   jq -e '.services["mastodon-web"].environment.DB_HOST == "host.containers.internal"' "$WORK_DIR/podman-a/stack.ir.json" >/dev/null
+  jq -e '.services["mastodon-web"].command | tostring | contains("host.containers.internal.") | not' "$WORK_DIR/podman-a/stack.ir.json" >/dev/null
   rg -Fq 'postgres-ssd:5432' "$WORK_DIR/podman-a/runtime/configs/grafana/provisioning/datasources/timescaledb.yml"
   rg -Fq 'chown postgres:postgres' "$WORK_DIR/podman-a/runtime/configs/postgres/ssd-entrypoint.sh"
   test -s "$WORK_DIR/podman-a/ops/platform-zero.nft"
