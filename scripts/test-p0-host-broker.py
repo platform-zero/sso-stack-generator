@@ -28,11 +28,11 @@ with tempfile.TemporaryDirectory() as temporary:
     assert not BROKER.authorized_peer(3000999, direct, subordinate)
 
 
-def fixture(root: Path, relative: str, quadlet: str, owner: str = "webservices-communications") -> Path:
+def fixture(root: Path, relative: str, quadlet: str, owner: str = "webservices-apps", capabilities=None) -> Path:
     files = {
         "bundle.json": {"backend": "podman"},
         "stack.ir.json": {},
-        "podman-domains.json": {"domains": [{"name": "communications", "user": owner}]},
+        "podman-domains.json": {"domains": [{"name": "apps", "user": owner, "hostCapabilities": capabilities or []}]},
         "podman-loopback-endpoints.json": {},
     }
     for name, value in files.items():
@@ -63,30 +63,45 @@ with tempfile.TemporaryDirectory() as temporary:
     BROKER.validate_bundle(
         fixture(
             allowed,
-            "quadlet/rootless-communications/webservices-livekit.container",
+            "quadlet/rootless-apps/webservices-livekit.container",
             "[Container]\nNetwork=host\n",
         )
     )
     rejected(
         fixture(
             base / "wrong-service",
-            "quadlet/rootless-communications/webservices-element.container",
+            "quadlet/rootless-apps/webservices-element.container",
             "[Container]\nNetwork=host\n",
         )
     )
     rejected(
         fixture(
             base / "wrong-owner",
-            "quadlet/rootless-communications/webservices-livekit.container",
+            "quadlet/rootless-apps/webservices-livekit.container",
             "[Container]\nNetwork=host\n",
-            owner="webservices-media",
+            owner="webservices-platform",
         )
     )
     rejected(
         fixture(
             base / "privileged",
-            "quadlet/rootless-communications/webservices-livekit.container",
+            "quadlet/rootless-apps/webservices-livekit.container",
             "[Container]\nNetwork=host\nPrivileged=true\n",
+        )
+    )
+    BROKER.validate_bundle(
+        fixture(
+            base / "kvm",
+            "quadlet/rootless-apps/webservices-android.container",
+            "[Container]\nAddDevice=/dev/kvm:/dev/kvm\nGroupAdd=keep-groups\n",
+            capabilities=["kvm"],
+        )
+    )
+    rejected(
+        fixture(
+            base / "kvm-without-capability",
+            "quadlet/rootless-apps/webservices-android.container",
+            "[Container]\nAddDevice=/dev/kvm:/dev/kvm\nGroupAdd=keep-groups\n",
         )
     )
 

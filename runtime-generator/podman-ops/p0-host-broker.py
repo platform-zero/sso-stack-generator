@@ -31,9 +31,9 @@ SNAPSHOT_RETENTION = 5
 RELEASE_RETENTION = 3
 INCOMING_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 ROOTLESS_HOST_NETWORK_ALLOWLIST = {
-    "quadlet/rootless-communications/webservices-livekit.container": (
-        "communications",
-        "webservices-communications",
+    "quadlet/rootless-apps/webservices-livekit.container": (
+        "apps",
+        "webservices-apps",
     ),
 }
 
@@ -83,15 +83,23 @@ def validate_bundle(bundle: Path) -> None:
     if not domains or len({item["user"] for item in domains}) != len(domains):
         raise RequestError("invalid or duplicate Podman domains")
     domain_users = {item["name"]: item["user"] for item in domains}
+    domain_capabilities = {item["name"]: set(item.get("hostCapabilities", [])) for item in domains}
     for path in (bundle / "quadlet").glob("rootless-*/*.container"):
         text = path.read_text()
         relative = path.relative_to(bundle).as_posix()
+        domain = path.parent.name.removeprefix("rootless-")
         if "Privileged=true" in text:
             raise RequestError(f"unsafe rootless Quadlet: {path.relative_to(bundle)}")
         if "Network=host" in text:
             expected_owner = ROOTLESS_HOST_NETWORK_ALLOWLIST.get(relative)
             if expected_owner is None or domain_users.get(expected_owner[0]) != expected_owner[1]:
                 raise RequestError(f"unsafe rootless Quadlet: {path.relative_to(bundle)}")
+        device_lines = [line for line in text.splitlines() if line.startswith("AddDevice=")]
+        if device_lines:
+            if device_lines != ["AddDevice=/dev/kvm:/dev/kvm"] or "kvm" not in domain_capabilities.get(domain, set()):
+                raise RequestError(f"unauthorized rootless device: {path.relative_to(bundle)}")
+            if "GroupAdd=keep-groups" not in text:
+                raise RequestError(f"rootless KVM Quadlet lacks keep-groups: {path.relative_to(bundle)}")
     nft = (bundle / "ops/platform-zero.nft").read_text()
     if not nft.startswith("table inet platform_zero {") or "policy accept" not in nft:
         raise RequestError("unexpected nftables policy")
