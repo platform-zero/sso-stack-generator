@@ -38,7 +38,7 @@ install -m 0644 "$BUNDLE/ops/platform-zero-worklane-idle-reaper.timer" /etc/syst
 install -m 0644 "$BUNDLE/ops/platform-zero-host-broker.service" /etc/systemd/system/
 install -m 0644 "$BUNDLE/ops/platform-zero-host-broker.socket" /etc/systemd/system/
 install -m 0644 "$BUNDLE/podman-domains.json" /etc/platform-zero/podman-domains.json
-kvm_user="$(jq -r '.domains[] | select(any(.devices[]?; startswith("/dev/kvm"))) | .user' "$BUNDLE/podman-domains.json" | head -n 1)"
+kvm_user="$(jq -r '.domains[] | select(any(.hostCapabilities[]?; . == "kvm")) | .user' "$BUNDLE/podman-domains.json" | head -n 1)"
 if [ -n "$kvm_user" ]; then
   id "$kvm_user" >/dev/null 2>&1 || { printf 'missing KVM domain account: %s\n' "$kvm_user" >&2; exit 1; }
   printf 'KERNEL=="kvm", OWNER="%s", GROUP="kvm", MODE="0660"\n' "$kvm_user" \
