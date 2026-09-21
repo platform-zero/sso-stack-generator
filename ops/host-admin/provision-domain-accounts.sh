@@ -42,8 +42,8 @@ for maintenance_user in software_lab stack_lab; do
     printf '[domain-accounts] create user=%s home=/home/%s\n' "$maintenance_user" "$maintenance_user"
   fi
 done
-jq -r '.domains[] | [.name,.user,.stateRoot,.graphRoot,.volumeRoot,(.uid // ""),(.subuidStart // "")] | @tsv' "$DOMAINS_FILE" |
-  while IFS="$(printf '\t')" read -r domain user state_root graph_root volume_root expected_uid expected_subuid; do
+jq -r '.domains[] | [.name,.user,.stateRoot,.graphRoot,.volumeRoot,(.uid // ""),(.subuidStart // ""),((.hostCapabilities // []) | join(","))] | @tsv' "$DOMAINS_FILE" |
+  while IFS="$(printf '\t')" read -r domain user state_root graph_root volume_root expected_uid expected_subuid host_capabilities; do
     if id "$user" >/dev/null 2>&1; then
       printf '[domain-accounts] current domain=%s user=%s uid=%s\n' "$domain" "$user" "$(id -u "$user")"
     else
@@ -51,6 +51,7 @@ jq -r '.domains[] | [.name,.user,.stateRoot,.graphRoot,.volumeRoot,(.uid // ""),
     fi
     [ -z "$expected_uid" ] || printf '[domain-accounts] identity domain=%s uid=%s subuid_start=%s\n' "$domain" "$expected_uid" "$expected_subuid"
     printf '[domain-accounts] storage domain=%s state=%s graph=%s volumes=%s\n' "$domain" "$state_root" "$graph_root" "$volume_root"
+    [ -z "$host_capabilities" ] || printf '[domain-accounts] capabilities domain=%s values=%s\n' "$domain" "$host_capabilities"
   done
 
 [ "$MODE" = apply ] || exit 0
@@ -141,8 +142,8 @@ install_maintenance_user() {
 install_maintenance_user software_lab
 install_maintenance_user stack_lab
 
-jq -r '.domains[] | [.name,.user,.stateRoot,.graphRoot,.volumeRoot,(.uid // ""),(.subuidStart // "")] | @tsv' "$DOMAINS_FILE" |
-  while IFS="$(printf '\t')" read -r domain user state_root graph_root volume_root expected_uid expected_subuid; do
+jq -r '.domains[] | [.name,.user,.stateRoot,.graphRoot,.volumeRoot,(.uid // ""),(.subuidStart // ""),((.hostCapabilities // []) | join(","))] | @tsv' "$DOMAINS_FILE" |
+  while IFS="$(printf '\t')" read -r domain user state_root graph_root volume_root expected_uid expected_subuid host_capabilities; do
     existed=false
     id "$user" >/dev/null 2>&1 && existed=true
     if [ "$existed" = true ]; then
@@ -158,6 +159,16 @@ jq -r '.domains[] | [.name,.user,.stateRoot,.graphRoot,.volumeRoot,(.uid // ""),
     # otherwise sshd authenticates the key but cannot run its forced command.
     [ "$(getent passwd "$user" | cut -d: -f7)" = /bin/bash ] || usermod --shell /bin/bash "$user"
     ensure_subids "$user" "$expected_subuid"
+    case ",$host_capabilities," in
+      *,kvm,*)
+        getent group kvm >/dev/null || { printf 'kvm capability requested but kvm group is missing\n' >&2; exit 1; }
+        [ -c /dev/kvm ] || { printf 'kvm capability requested but /dev/kvm is missing\n' >&2; exit 1; }
+        if ! id -nG "$user" | tr ' ' '\n' | grep -Fxq kvm; then
+          usermod --append --groups kvm "$user"
+          loginctl terminate-user "$user" 2>/dev/null || true
+        fi
+        ;;
+    esac
     install_authorized_keys "$user"
     [ ! -d "/home/$user/.config" ] || chown "$user:$user" "/home/$user/.config"
     # Shared storage parents are traversal-only; each domain directory is

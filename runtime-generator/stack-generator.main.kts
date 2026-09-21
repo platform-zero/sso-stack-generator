@@ -115,7 +115,7 @@ fun importService(name: String, source: ObjectNode): ObjectNode {
         "tmpfs" to "tmpfs", "read_only" to "readOnly", "init" to "init", "cap_add" to "capAdd",
         "cap_drop" to "capDrop", "security_opt" to "securityOpt", "sysctls" to "sysctls",
         "ulimits" to "ulimits", "shm_size" to "shmSize", "stop_grace_period" to "stopGracePeriod",
-        "userns_mode" to "userns", "group_add" to "groupAdd"
+        "userns_mode" to "userns", "group_add" to "groupAdd", "devices" to "devices"
     ).forEach { (from, to) -> copyField(source, service, from, to) }
     source.path("deploy").path("resources").takeUnless { it.isMissingNode }?.let {
         service.set<JsonNode>("resources", it.deepCopy())
@@ -330,7 +330,9 @@ data class RootlessDomainPolicy(
     val modules: Set<String>,
     val allowDependencies: Set<String>,
     val uid: Int?,
-    val subuidStart: Int?
+    val subuidStart: Int?,
+    val maintenanceLane: String,
+    val hostCapabilities: Set<String>
 )
 
 data class CrossDomainEndpointPolicy(
@@ -400,7 +402,14 @@ fun readPodmanPolicy(manifestPath: Path): PodmanPolicy {
         val subuidStart = raw.path("subuid_start").takeUnless(JsonNode::isMissingNode)?.asInt()
         if (uid != null && uid < 1) fail("Podman domain '$name' has invalid uid")
         if (subuidStart != null && subuidStart < 100000) fail("Podman domain '$name' has invalid subuid_start")
-        RootlessDomainPolicy(name, user, stateRoot, graphRoot, volumeRoot, modules, allowDependencies, uid, subuidStart)
+        val maintenanceLane = raw.path("maintenance_lane").asText(name)
+        if (!maintenanceLane.matches(Regex("[a-z0-9][a-z0-9-]*"))) fail("Podman domain '$name' has invalid maintenance_lane")
+        val hostCapabilities = raw.path("host_capabilities").let {
+            if (it.isMissingNode) emptySet() else stringSet(it, "podman.domains.$name.host_capabilities")
+        }
+        val unsupportedCapabilities = hostCapabilities - setOf("kvm")
+        if (unsupportedCapabilities.isNotEmpty()) fail("Podman domain '$name' has unsupported host capabilities: ${unsupportedCapabilities.sorted().joinToString()}")
+        RootlessDomainPolicy(name, user, stateRoot, graphRoot, volumeRoot, modules, allowDependencies, uid, subuidStart, maintenanceLane, hostCapabilities)
     }
     domains.forEach { domain ->
         val unknown = domain.allowDependencies - domains.map { it.name }.toSet()
@@ -1341,6 +1350,9 @@ fun resourceLimit(node: JsonNode, kind: String): String? {
         "cpus" -> if (!resolved.matches(Regex("^(?:[1-9][0-9]*|0\\.[0-9]+|[1-9][0-9]*\\.[0-9]+)$")) || resolved.toDouble() <= 0.0) {
             fail("invalid resources.limits.cpus '$raw'; use a positive number or ${'$'}{VAR:-default}")
         }
+        "pids" -> if (!resolved.matches(Regex("^[1-9][0-9]*$"))) {
+            fail("invalid resources.limits.pids '$raw'; use a positive integer")
+        }
         else -> fail("unsupported resource limit '$kind'")
     }
     return resolved
@@ -1392,6 +1404,8 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
     service.path("ephemeralImageVolumes").forEach { lines += "Tmpfs=${it.asText()}" }
     service.path("userns").textOrNull()?.let { lines += "UserNS=$it" }
     service.path("groupAdd").forEach { lines += "GroupAdd=${it.asText()}" }
+    service.path("devices").forEach { lines += "AddDevice=${it.asText()}" }
+    resourceLimit(limits.path("pids"), "pids")?.let { lines += "PidsLimit=$it" }
     if (!hostNetwork) {
         service.path("ports").forEach { port ->
             val value = if (port.isTextual) port.asText() else {
@@ -1489,7 +1503,7 @@ fun renderPodman(ir: ObjectNode, output: Path) {
         ir.path("services").fieldsMap()
             .filter { (_, service) ->
                 podmanDomainForService(service).name == domain.name &&
-                    service.path("lifecycle").asText() != "on-demand"
+                    (service.path("lifecycle").asText() != "on-demand" || service.path("quadletManaged").asBoolean(false))
             }
             .forEach { (name, service) -> renderQuadletService(name, service as ObjectNode, ir, output, domain, loopbacks) }
         listOf("core", "apps", "observability").forEach { target ->
@@ -1515,6 +1529,8 @@ fun renderPodman(ir: ObjectNode, output: Path) {
     )
     generatorRoot.resolve("ops/host-admin/provision-domain-accounts.sh")
         .copyTo(output.resolve("ops/provision-domain-accounts.sh"), overwrite = true)
+    generatorRoot.resolve("ops/host-admin/migrate-domain-authorities.py")
+        .copyTo(output.resolve("ops/migrate-domain-authorities.py"), overwrite = true)
     generatorRoot.resolve("ops/host-admin/retire-legacy-webservices-account.sh")
         .copyTo(output.resolve("ops/retire-legacy-webservices-account.sh"), overwrite = true)
     generatorRoot.resolve("ops/maintenance/materialize-workspaces.py")
@@ -1576,6 +1592,8 @@ fun writeDomainMetadata(ir: ObjectNode, modules: List<ModuleCheckout>, manifestP
             row.put("volumeRoot", policy.volumeRoot)
             policy.uid?.let { row.put("uid", it) }
             policy.subuidStart?.let { row.put("subuidStart", it) }
+            row.put("maintenanceLane", policy.maintenanceLane)
+            row.set<ArrayNode>("hostCapabilities", arr().addAll(policy.hostCapabilities.sorted().map(nodes::textNode)))
             row.set<ArrayNode>("modules", arr().addAll(policy.modules.sorted().map(nodes::textNode)))
             row.set<ArrayNode>("services", arr().addAll(services.map(nodes::textNode)))
             row.set<ArrayNode>("persistentServices", arr().addAll(persistentServices.map(nodes::textNode)))
@@ -1651,14 +1669,20 @@ fun writeDomainMetadata(ir: ObjectNode, modules: List<ModuleCheckout>, manifestP
         baseline.forEach { rows.add(it.deepCopy().also { row -> row.put("writable", true) }) }
     }))
     workspaces.add(obj().put("name", "host").put("role", "host").put("startAtBoot", false).set<ArrayNode>("repositories", reposFor(activePodmanPolicy.rootfulModules)))
-    activePodmanPolicy.domains.forEach { domain ->
+    activePodmanPolicy.domains.groupBy { it.maintenanceLane }.toSortedMap().forEach { (lane, domains) ->
         workspaces.add(obj().also { row ->
-            row.put("name", domain.name)
+            row.put("name", lane)
             row.put("role", "domain")
             row.put("startAtBoot", false)
-            row.put("serviceAccount", domain.user)
-            row.set<ArrayNode>("services", domainRows.first { it.path("name").asText() == domain.name }.path("services").deepCopy())
-            row.set<ArrayNode>("repositories", reposFor(domain.modules))
+            row.set<ArrayNode>("authorities", arr().also { authorities ->
+                domains.sortedBy { it.name }.forEach { domain ->
+                    authorities.add(obj().put("name", domain.name).put("serviceAccount", domain.user))
+                }
+            })
+            row.set<ArrayNode>("services", arr().addAll(domains.flatMap { domain ->
+                domainRows.first { it.path("name").asText() == domain.name }.path("services").map(JsonNode::asText)
+            }.distinct().sorted().map(nodes::textNode)))
+            row.set<ArrayNode>("repositories", reposFor(domains.flatMap { it.modules }.toSet()))
         })
     }
     writeJson(output.resolve("maintenance-workspaces.json"), obj()

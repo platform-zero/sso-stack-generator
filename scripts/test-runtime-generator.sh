@@ -113,9 +113,9 @@ WEBSERVICES_OVERLAY_ROOT="$WORK_DIR/podman-a" "$ROOT_DIR/scripts/test-host-lifec
 
 jq -e '
   (.schemaVersion == 1) and
-  (.domains | length == 14) and
-  (([.domains[].name] | unique | length) == 14) and
-  (([.domains[].user] | unique | length) == 14) and
+  (.domains | length == 7) and
+  (([.domains[].name] | unique | length) == 7) and
+  (([.domains[].user] | unique | length) == 7) and
   all(.domains[]; (.stateRoot | startswith("/mnt/stack/")) and (.graphRoot | startswith("/mnt/stack/")) and (.volumeRoot | startswith("/mnt/stack/")))
 ' "$WORK_DIR/podman-a/podman-domains.json" >/dev/null
 
@@ -129,14 +129,14 @@ jq -e --slurpfile domains "$WORK_DIR/podman-a/podman-domains.json" '
     ($domains[0].domains[] | select(.name == $entry.value.rootlessDomain) | .user) == $entry.value.rootlessUser)
 ' "$WORK_DIR/podman-a/stack.ir.json" >/dev/null
 
-jq -e '(.schemaVersion == 1) and (.workspaces | length == 16) and ([.workspaces[].name] | unique | length == 16) and all(.workspaces[]; .startAtBoot == false)' \
+jq -e '(.schemaVersion == 1) and (.workspaces | length == 6) and ([.workspaces[].name] | unique | length == 6) and all(.workspaces[]; .startAtBoot == false)' \
   "$WORK_DIR/podman-a/maintenance-workspaces.json" >/dev/null
 
 jq -e '
   (.schemaVersion == 1) and (.owner == "software_lab") and
   (.root == "/mnt/lab_debian/software_lab") and
-  (.workspaces | length == 9) and
-  ([.workspaces[].name] | sort == ["auto_scad", "backup", "chatex", "crypto_trading", "hitl", "my_brand", "obelisks", "poe_intelligence", "worklane"]) and
+  (.workspaces | length == 10) and
+  ([.workspaces[].name] | sort == ["arbitrage_exploration", "auto_scad", "backup", "chatex", "crypto_trading", "hitl", "my_brand", "obelisks", "poe_intelligence", "worklane"]) and
   all(.workspaces[];
     .role == "software" and .profile == "software-gpu" and .startAtBoot == false and
     .devices == ["nvidia.com/gpu=all"] and (.projectPath | startswith("/mnt/lab_debian/software_lab/")))
@@ -152,10 +152,13 @@ grep -Fq "fs.inotify.max_user_instances = 1024" "$WORK_DIR/podman-a/ops/provisio
 grep -Fq "/etc/sysctl.d/90-platform-zero-worklanes.conf" "$WORK_DIR/podman-a/ops/provision-domain-accounts.sh"
 grep -Fq 'usermod --shell /bin/bash "$user"' "$WORK_DIR/podman-a/ops/provision-domain-accounts.sh"
 
-grep -Eq '^PodmanArgs=.*--memory=2G.*--cpus=2\.0' "$WORK_DIR/podman-a/quadlet/rootless-identity/webservices-keycloak.container"
-grep -Eq '^PodmanArgs=.*--memory=3G.*--cpus=2\.0' "$WORK_DIR/podman-a/quadlet/rootless-data/webservices-opensearch.container"
-grep -Eq '^PodmanArgs=.*--memory=2G.*--cpus=1\.0' "$WORK_DIR/podman-a/quadlet/rootless-collaboration/webservices-huly-redpanda.container"
-grep -Eq '^PodmanArgs=.*--memory=2G.*--cpus=1\.5' "$WORK_DIR/podman-a/quadlet/rootless-collaboration/webservices-huly-elastic.container"
+grep -Eq '^PodmanArgs=.*--memory=2G.*--cpus=2\.0' "$WORK_DIR/podman-a/quadlet/rootless-platform/webservices-keycloak.container"
+grep -Eq '^PodmanArgs=.*--memory=3G.*--cpus=2\.0' "$WORK_DIR/podman-a/quadlet/rootless-platform/webservices-opensearch.container"
+grep -Eq '^PodmanArgs=.*--memory=2G.*--cpus=1\.0' "$WORK_DIR/podman-a/quadlet/rootless-apps/webservices-huly-redpanda.container"
+grep -Eq '^PodmanArgs=.*--memory=2G.*--cpus=1\.5' "$WORK_DIR/podman-a/quadlet/rootless-apps/webservices-huly-elastic.container"
+grep -Fxq 'AddDevice=/dev/kvm:/dev/kvm' "$WORK_DIR/podman-a/quadlet/rootless-test-runners/webservices-android-test-runner-api36.container"
+grep -Fxq 'GroupAdd=keep-groups' "$WORK_DIR/podman-a/quadlet/rootless-test-runners/webservices-android-test-runner-api36.container"
+grep -Fxq 'PidsLimit=4096' "$WORK_DIR/podman-a/quadlet/rootless-test-runners/webservices-android-test-runner-api36.container"
 
 python3 - "$WORK_DIR/podman-a/ops/materialize-workspaces.py" <<'PY'
 import importlib.util
@@ -176,7 +179,7 @@ control = {
 guidance = module.agents_text(control)
 assert "You are operating inside the `control` Worklane" in guidance
 assert "stack_lab@192.168.0.11" in guidance
-assert "14 rootless `webservices-*` Linux-user authorities" in guidance
+assert "7 rootless `webservices-*` Linux-user authorities" in guidance
 assert "p0-hostctl status" in guidance
 assert "stage, preflight, snapshot, activate, then verify" in guidance
 assert "RTX 3060" in guidance
@@ -189,16 +192,16 @@ assert previous in module.managed_agents_texts(control)
 assert guidance + "user edit\n" not in module.managed_agents_texts(control)
 assert guidance not in module.legacy_agents_texts({"name": "host", "role": "host", "repositories": []})
 domain = {
-    "name": "identity",
+    "name": "platform",
     "role": "domain",
-    "serviceAccount": "webservices-identity",
+    "authorities": [{"name": "platform", "serviceAccount": "webservices-platform"}],
     "repositories": [],
 }
-assert "./.p0/domainctl" in module.agents_text(domain)
-dispatcher = module.domainctl_text(domain)
+assert "./.p0/<authority>ctl" in module.agents_text(domain)
+dispatcher = module.domainctl_text(domain["authorities"][0])
 assert "BatchMode=yes" in dispatcher
 assert "dispatcher_ed25519" in dispatcher
-assert "webservices-identity@${P0_HOST:-192.168.0.11}" in dispatcher
+assert "webservices-platform@${P0_HOST:-192.168.0.11}" in dispatcher
 assert len(module.HOST_ACCESS_MOUNTS) == 3
 assert "/run/platform-zero" in module.PROFILES
 PY
@@ -246,7 +249,7 @@ if jq -e '.services | has("valkey")' "$WORK_DIR/podman-a/stack.ir.json" >/dev/nu
     printf '[runtime-test] Compose output lost the escaped container-side Valkey variable\n' >&2
     exit 1
   fi
-  if ! rg -Fq '$$VALKEY_PASSWORD' "$WORK_DIR/podman-a/quadlet/rootless-data/webservices-valkey.container"; then
+  if ! rg -Fq '$$VALKEY_PASSWORD' "$WORK_DIR/podman-a/quadlet/rootless-platform/webservices-valkey.container"; then
     printf '[runtime-test] Quadlet output does not preserve the container-side Valkey variable\n' >&2
     exit 1
   fi
@@ -268,12 +271,12 @@ jq -e '
   all(["alloy", "caddy", "crowdsec", "kopia", "mailserver", "node-exporter", "volume-init"][]; $services[.].placement == "rootful") and
   ($services["test-runner"].rootlessDomain == "test-runners") and
   ($services["test-runner-managed"].rootlessDomain == "test-runners") and
-  (($services | has("forgejo-runner") | not) or $services["forgejo-runner"].rootlessDomain == "forgejo-runner") and
-  ($services["jupyterhub"].rootlessDomain == "jupyterhub") and
-  ($services["jupyter-notebook-build"].rootlessDomain == "jupyterhub") and
-  (($services | has("workload-spawner-postgres") | not) or $services["workload-spawner-postgres"].rootlessDomain == "workload-spawner") and
-  (($services | has("workload-spawner-api") | not) or $services["workload-spawner-api"].rootlessDomain == "workload-spawner") and
-  (($services | has("workload-spawner-router") | not) or $services["workload-spawner-router"].rootlessDomain == "workload-spawner") and
+  (($services | has("forgejo-runner") | not) or $services["forgejo-runner"].rootlessDomain == "ci-runner") and
+  ($services["jupyterhub"].rootlessDomain == "workloads") and
+  ($services["jupyter-notebook-build"].rootlessDomain == "workloads") and
+  (($services | has("workload-spawner-postgres") | not) or $services["workload-spawner-postgres"].rootlessDomain == "workloads") and
+  (($services | has("workload-spawner-api") | not) or $services["workload-spawner-api"].rootlessDomain == "workloads") and
+  (($services | has("workload-spawner-router") | not) or $services["workload-spawner-router"].rootlessDomain == "workloads") and
   ($services["caddy"].networks | keys == ["caddy"])
 ' "$WORK_DIR/podman-a/stack.ir.json" >/dev/null
 
@@ -281,7 +284,7 @@ while IFS= read -r domain; do
   test -d "$WORK_DIR/podman-a/quadlet/rootless-$domain"
 done < <(jq -r '.domains[].name' "$WORK_DIR/podman-a/podman-domains.json")
 
-if ! rg -Fxq 'StopTimeout=60' "$WORK_DIR/podman-a/quadlet/rootless-data/webservices-mariadb.container"; then
+if ! rg -Fxq 'StopTimeout=60' "$WORK_DIR/podman-a/quadlet/rootless-platform/webservices-mariadb.container"; then
   printf '[runtime-test] MariaDB Quadlet is missing its graceful container stop timeout\n' >&2
   exit 1
 fi
@@ -292,7 +295,7 @@ if ! rg -Fxq 'Network=host' "$WORK_DIR/podman-a/quadlet/rootful/webservices-allo
   exit 1
 fi
 
-if ! rg -Fxq 'PublishPort=127.0.0.1:13100:3100' "$WORK_DIR/podman-a/quadlet/rootless-observability/webservices-loki.container" ||
+if ! rg -Fxq 'PublishPort=127.0.0.1:13100:3100' "$WORK_DIR/podman-a/quadlet/rootless-platform/webservices-loki.container" ||
    ! rg -Fq 'url = "http://127.0.0.1:13100/loki/api/v1/push"' "$WORK_DIR/podman-a/runtime/configs/alloy/alloy.hcl"; then
   printf '[runtime-test] Alloy/Loki cross-domain loopback bridge is incomplete\n' >&2
   exit 1
@@ -300,25 +303,23 @@ fi
 
 if yq -e '.podman.cross_domain_endpoints | length > 0' "$SOURCE_SITE_DIR/global.settings/stack.config.yaml" >/dev/null 2>&1; then
   jq -e '
-    any(.endpoints[]; .service == "postgres" and .containerPort == "5432" and .hostPort == 25001 and (.consumers | index("identity"))) and
-    any(.endpoints[]; .service == "postgres-ssd" and .hostPort == 25002 and (.consumers | index("observability")))
+    any(.endpoints[]; .service == "postgres" and .containerPort == "5432" and .hostPort == 25001 and (.consumers | index("apps"))) and
+    any(.endpoints[]; .service == "postgres-ssd" and .hostPort == 25002 and (.consumers | index("workloads")))
   ' "$WORK_DIR/podman-a/podman-loopback-endpoints.json" >/dev/null
-  rg -Fxq 'PublishPort=127.0.0.1:25001:5432' "$WORK_DIR/podman-a/quadlet/rootless-data/webservices-postgres.container"
-  rg -Fxq 'PublishPort=127.0.0.1:25002:5432' "$WORK_DIR/podman-a/quadlet/rootless-data/webservices-postgres-ssd.container"
+  rg -Fxq 'PublishPort=127.0.0.1:25001:5432' "$WORK_DIR/podman-a/quadlet/rootless-platform/webservices-postgres.container"
+  rg -Fxq 'PublishPort=127.0.0.1:25002:5432' "$WORK_DIR/podman-a/quadlet/rootless-platform/webservices-postgres-ssd.container"
   rg -Fxq 'KC_DB=postgres' "$WORK_DIR/podman-a/runtime-env/keycloak.env.template"
-  rg -Fq 'jdbc:postgresql://host.containers.internal:25001/keycloak' "$WORK_DIR/podman-a/runtime-env/keycloak.env.template"
+  rg -Fq 'jdbc:postgresql://postgres:5432/keycloak' "$WORK_DIR/podman-a/runtime-env/keycloak.env.template"
   rg -Fxq 'POSTGRES_PORT=25002' "$WORK_DIR/podman-a/runtime-env/jupyterhub.env.template"
-  test -f "$WORK_DIR/podman-a/quadlet/rootless-identity/webservices-p0-egress.network"
-  rg -Fq 'Network=webservices-p0-egress.network' "$WORK_DIR/podman-a/quadlet/rootless-identity/webservices-keycloak-bootstrap.container"
+  test -f "$WORK_DIR/podman-a/quadlet/rootless-platform/webservices-p0-egress.network"
   rg -Fq 'http://host.containers.internal:25007' "$WORK_DIR/podman-a/runtime/configs/matrix-authentication-service/config.yaml"
   rg -q -e 'host:[[:space:]]+host\.containers\.internal' "$WORK_DIR/podman-a/runtime/configs/synapse/homeserver.yaml"
   rg -q -e 'port:[[:space:]]+25001' "$WORK_DIR/podman-a/runtime/configs/synapse/homeserver.yaml"
-  rg -Fxq 'DB_HOST=host.containers.internal' "$WORK_DIR/podman-a/runtime/configs/mastodon/mastodon.env"
-  rg -Fq 'host.containers.internal:25002' "$WORK_DIR/podman-a/runtime/configs/grafana/provisioning/datasources/timescaledb.yml"
-  rg -Fq 'psql -h host.containers.internal' "$WORK_DIR/podman-a/stack.ir.json"
+  jq -e '.services["mastodon-web"].environment.DB_HOST == "host.containers.internal"' "$WORK_DIR/podman-a/stack.ir.json" >/dev/null
+  rg -Fq 'postgres-ssd:5432' "$WORK_DIR/podman-a/runtime/configs/grafana/provisioning/datasources/timescaledb.yml"
   rg -Fq 'chown postgres:postgres' "$WORK_DIR/podman-a/runtime/configs/postgres/ssd-entrypoint.sh"
   test -s "$WORK_DIR/podman-a/ops/platform-zero.nft"
-  rg -Fq 'meta skuid 993 tcp dport' "$WORK_DIR/podman-a/ops/platform-zero.nft"
+  rg -Fq 'meta skuid 988 tcp dport' "$WORK_DIR/podman-a/ops/platform-zero.nft"
   rg -Fq 'ip daddr 127.0.0.0/8 tcp dport' "$WORK_DIR/podman-a/ops/platform-zero.nft"
 fi
 

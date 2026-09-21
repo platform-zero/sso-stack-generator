@@ -185,7 +185,7 @@ def inspect_repo(path: Path, repo: dict[str, object]) -> dict[str, object]:
 def agents_text(workspace: dict[str, object]) -> str:
     name = str(workspace["name"])
     role = str(workspace["role"])
-    service_account = workspace.get("serviceAccount")
+    authorities = list(workspace.get("authorities", []))
     writable = [
         str(repo["name"])
         for repo in workspace.get("repositories", [])
@@ -199,8 +199,15 @@ def agents_text(workspace: dict[str, object]) -> str:
         f"You are operating inside the `{name}` Worklane. This is the `{role}` workspace.",
         f"Role: `{role}`.",
     ]
-    if service_account:
-        lines += [f"Runtime account: `{service_account}`."]
+    if authorities:
+        lines += [
+            "Runtime authorities: "
+            + ", ".join(
+                f"`{authority['name']}` (`{authority['serviceAccount']}`)"
+                for authority in authorities
+            )
+            + "."
+        ]
     if services:
         lines += [f"Owned services: {', '.join(f'`{item}`' for item in services)}."]
     lines += [
@@ -218,8 +225,8 @@ def agents_text(workspace: dict[str, object]) -> str:
             "- It validates the full composition but intentionally has no domain deployment keys.",
             "- A human enters this environment as `stack_lab@192.168.0.11`; you are already inside",
             "  its `control` Worklane at `/mnt/lab_debian/stack_lab/stack_work/control`.",
-            "- The service stack is split across 14 rootless `webservices-*` Linux-user authorities",
-            "  plus a separate rootful host authority. Use each domain lane for domain-owned changes.",
+            "- The service stack is split across 7 rootless `webservices-*` Linux-user authorities",
+            "  plus a separate rootful host authority. Use each role lane for authority-owned changes.",
             "- Treat `software_lab` and `/mnt/lab_debian/software_lab` as a separate authority. Never",
             "  restart, replace, or inspect its active Worklanes during stack maintenance.",
             "- Software Worklanes require the RTX 3060 through CDI as `nvidia.com/gpu=all`; preserve",
@@ -241,8 +248,8 @@ def agents_text(workspace: dict[str, object]) -> str:
         ]
     else:
         lines += [
-            "- Use `./.p0/domainctl` for remote status, logs, verification, and restart operations.",
-            "  It uses this lane's restricted dispatcher key; ordinary SSH credentials are unrelated.",
+            "- Use `./.p0/<authority>ctl` for remote status, logs, verification, and restart operations.",
+            "  Each command uses that authority's restricted dispatcher key; ordinary SSH credentials are unrelated.",
             "- Build and deploy only this lane's named domain.",
             "- Global site-config changes flow through the control lane.",
         ]
@@ -274,13 +281,14 @@ def agents_text(workspace: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
-def domainctl_text(workspace: dict[str, object]) -> str:
-    account = str(workspace["serviceAccount"])
+def domainctl_text(authority: dict[str, object]) -> str:
+    name = str(authority["name"])
+    account = str(authority["serviceAccount"])
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 here="$(cd -- "$(dirname -- "$0")" && pwd)"
 exec ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \\
-  -i "$here/dispatcher_ed25519" "{account}@${{P0_HOST:-192.168.0.11}}" "$@"
+  -i "$here/{name}/dispatcher_ed25519" "{account}@${{P0_HOST:-192.168.0.11}}" "$@"
 """
 
 
@@ -342,8 +350,8 @@ def legacy_agents_texts(workspace: dict[str, object]) -> set[str]:
         previous = previous.replace(
             "- Enter this maintenance environment as `stack_lab@192.168.0.11`; its workspace root is\n"
             "  `/mnt/lab_debian/stack_lab/stack_work`.\n"
-            "- The service stack is split across 14 rootless `webservices-*` Linux-user authorities\n"
-            "  plus a separate rootful host authority. Use each domain lane for domain-owned changes.\n"
+            "- The service stack is split across 7 rootless `webservices-*` Linux-user authorities\n"
+            "  plus a separate rootful host authority. Use each role lane for authority-owned changes.\n"
             "- Treat `software_lab` and `/mnt/lab_debian/software_lab` as a separate authority. Never\n"
             "  restart, replace, or inspect its active Worklanes during stack maintenance.\n"
             "- Software Worklanes require the RTX 3060 through CDI as `nvidia.com/gpu=all`; preserve\n"
@@ -470,13 +478,15 @@ def main() -> int:
         agents.write_text(expected)
         os.chmod(agents, 0o600)
         if workspace.get("role") == "domain":
-            dispatcher = destination / ".p0/domainctl"
-            dispatcher.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            expected_dispatcher = domainctl_text(workspace)
-            if dispatcher.exists() and dispatcher.read_text() != expected_dispatcher:
-                fail(f"refusing to replace locally changed {dispatcher}")
-            dispatcher.write_text(expected_dispatcher)
-            os.chmod(dispatcher, 0o700)
+            for authority in workspace.get("authorities", []):
+                name = str(authority["name"])
+                dispatcher = destination / f".p0/{name}ctl"
+                dispatcher.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                expected_dispatcher = domainctl_text(authority)
+                if dispatcher.exists() and dispatcher.read_text() != expected_dispatcher:
+                    fail(f"refusing to replace locally changed {dispatcher}")
+                dispatcher.write_text(expected_dispatcher)
+                os.chmod(dispatcher, 0o700)
         if not (destination / ".worklane" / "lane.toml").exists():
             profile = {
                 "control": "p0-control",

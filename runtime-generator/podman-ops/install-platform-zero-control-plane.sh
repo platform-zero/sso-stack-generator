@@ -47,9 +47,9 @@ if [ -n "$SOPS_BINARY" ]; then
 fi
 command -v sops >/dev/null || { printf 'sops must be installed in the root service PATH\n' >&2; exit 1; }
 
-while IFS="$(printf '\t')" read -r domain user; do
+while IFS="$(printf '\t')" read -r domain user maintenance_lane; do
   id "$user" >/dev/null 2>&1 || { printf 'missing domain account: %s\n' "$user" >&2; exit 1; }
-  key_dir="$STACK_LAB_ROOT/stack_work/$domain/.p0"
+  key_dir="$STACK_LAB_ROOT/stack_work/$maintenance_lane/.p0/$domain"
   private_key="$key_dir/dispatcher_ed25519"
   install -d -m 0700 -o stack_lab -g stack_lab "$key_dir"
   if [ ! -f "$private_key" ]; then
@@ -66,7 +66,7 @@ while IFS="$(printf '\t')" read -r domain user; do
     "$domain" "$(cut -d' ' -f1,2 "$private_key.pub")" "$domain" >>"$authorized"
   chown "$user:$user" "$authorized"
   chmod 0600 "$authorized"
-done < <(jq -r '.domains[] | [.name, .user] | @tsv' "$BUNDLE/podman-domains.json")
+done < <(jq -r '.domains[] | [.name, .user, (.maintenanceLane // .name)] | @tsv' "$BUNDLE/podman-domains.json")
 
 install_workspace_lifecycle() {
   local manifest="$1" owner home uid config wants timer_wants
