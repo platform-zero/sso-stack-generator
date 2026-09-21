@@ -709,7 +709,7 @@ install_runtime_env_unit() {
     '[Service]' \
     'Type=oneshot' \
     'WorkingDirectory=/' \
-    "ExecStart=/bin/sh -ec '/usr/bin/install -d -m 0700 $runtime_dir; /usr/bin/find $source_dir -maxdepth 1 -type f -name \"*.env\" -exec /usr/bin/install -m 0600 {} $runtime_dir/ \\;'" \
+    "ExecStart=/bin/sh -ec '/usr/bin/install -d -m 0700 $runtime_dir; for env_file in $source_dir/*.env; do [ -e \"\$env_file\" ] || continue; /usr/bin/install -m 0600 \"\$env_file\" $runtime_dir/; done'" \
     'RemainAfterExit=yes' \
     >"$unit_file"
   printf '%s\n' \
@@ -881,7 +881,7 @@ restart_rootless_network_units() {
 
 wait_for_cross_domain_producers() {
   local endpoints="$BUNDLE/podman-loopback-endpoints.json"
-  local service domain index unit state deadline
+  local service domain index unit state job deadline
   [ -f "$endpoints" ] || return 0
   while IFS=$'\t' read -r service domain; do
     [ -n "$service" ] && [ -n "$domain" ] || continue
@@ -891,7 +891,8 @@ wait_for_cross_domain_producers() {
     while true; do
       state="$(user_systemctl "$index" is-active "$unit" 2>/dev/null || true)"
       [ "$state" = "active" ] && break
-      if [ "$state" = "failed" ]; then
+      job="$(user_systemctl "$index" show -p Job --value "$unit" 2>/dev/null || true)"
+      if [ "$state" = "failed" ] && [ -z "$job" ]; then
         printf '[podman-install] cross-domain producer failed: domain=%s unit=%s\n' "$domain" "$unit" >&2
         user_systemctl "$index" status "$unit" --no-pager -l >&2 || true
         return 1

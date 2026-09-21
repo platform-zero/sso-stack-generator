@@ -414,6 +414,10 @@ if ! rg -Fq 'wait_for_cross_domain_producers' "$WORK_DIR/podman-a/ops/install-po
   printf '[runtime-test] installer does not sequence cross-domain producers before retrying consumers\n' >&2
   exit 1
 fi
+if ! rg -Fq 'if [ "$state" = "failed" ] && [ -z "$job" ]; then' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-generator-test] producer readiness must not fail while a restart job is queued\n' >&2
+  exit 1
+fi
 if ! rg -Fq 'quiet_passes=$((quiet_passes + 1))' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
   printf '[runtime-test] installer does not observe a post-producer quiet window for late consumer failures\n' >&2
   exit 1
@@ -427,8 +431,8 @@ if ! rg -Fq -- 'WorkingDirectory=/' "$WORK_DIR/podman-a/ops/install-podman-bundl
   printf '[runtime-generator-test] runtime environment restore must not inherit an inaccessible working directory\n' >&2
   exit 1
 fi
-if ! rg -Fq -- '$runtime_dir/ \\;' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
-  printf '[runtime-generator-test] runtime environment restore must use a portable find terminator\n' >&2
+if ! rg -Fq -- 'for env_file in $source_dir/*.env' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-generator-test] runtime environment restore must use a systemd-safe copy loop\n' >&2
   exit 1
 fi
 if [ "$(rg -Fc 'except FileNotFoundError:' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh")" -lt 2 ]; then
