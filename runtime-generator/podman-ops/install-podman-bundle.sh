@@ -617,11 +617,20 @@ for directory, names, files in os.walk(root):
     paths.extend(base / name for name in names)
     paths.extend(base / name for name in files)
 for path in paths:
-    stat = path.lstat()
+    try:
+        stat = path.lstat()
+    except FileNotFoundError:
+        # Mutable stores (for example Loki WALs) may remove a file between
+        # os.walk() and ownership translation. A later activation will see
+        # any replacement; a vanished path needs no ownership update.
+        continue
     uid = translated(stat.st_uid, legacy_uid, target_uid)
     gid = translated(stat.st_gid, legacy_gid, target_gid)
     if (uid, gid) != (stat.st_uid, stat.st_gid):
-        os.lchown(path, uid, gid)
+        try:
+            os.lchown(path, uid, gid)
+        except FileNotFoundError:
+            continue
 PY
 }
 

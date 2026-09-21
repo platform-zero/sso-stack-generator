@@ -431,6 +431,10 @@ if ! rg -Fq -- '$runtime_dir/ \\;' "$WORK_DIR/podman-a/ops/install-podman-bundle
   printf '[runtime-generator-test] runtime environment restore must use a portable find terminator\n' >&2
   exit 1
 fi
+if [ "$(rg -Fc 'except FileNotFoundError:' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh")" -lt 2 ]; then
+  printf '[runtime-generator-test] mutable volume ownership translation must tolerate disappearing paths\n' >&2
+  exit 1
+fi
 
 test -f "$WORK_DIR/podman-a/runtime/configs/vaultwarden/index.html"
 test -f "$WORK_DIR/podman-a/runtime/configs/vaultwarden/seed.sh"
