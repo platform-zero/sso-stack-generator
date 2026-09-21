@@ -88,7 +88,11 @@ def rewrite_subids(old: str, new: str, expected: int) -> None:
 
 def snapshot(plan: dict, snapshot_dir: Path) -> None:
     if snapshot_dir.exists():
-        fail(f"snapshot already exists: {snapshot_dir}")
+        saved_plan = snapshot_dir / "plan.json"
+        if (snapshot_dir / "APPLIED").exists() or not saved_plan.exists() or json.loads(saved_plan.read_text()) != plan:
+            fail(f"snapshot already exists and is not reusable: {snapshot_dir}")
+        print(f"[authority-migration] reusing complete unapplied snapshot {snapshot_dir}")
+        return
     snapshot_dir.mkdir(parents=True, mode=0o700)
     shutil.copy2(args.plan, snapshot_dir / "plan.json")
     etc = snapshot_dir / "etc"
@@ -112,6 +116,9 @@ def apply(plan: dict, snapshot_dir: Path) -> None:
     if not stack_is_stopped(users):
         fail("a source authority still has running containers")
     snapshot(plan, snapshot_dir)
+    for user in sorted(users):
+        if account(user) is not None:
+            subprocess.run(["loginctl", "terminate-user", user], check=False)
     for target in plan["targets"]:
         survivor = next(source for source in target["sources"] if source["name"] == target["survivor"])
         old_user, new_user = survivor["user"], target["user"]
