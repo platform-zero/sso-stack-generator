@@ -55,8 +55,16 @@ def merge_tree(source: Path, destination: Path) -> None:
     for child in source.iterdir():
         target = destination / child.name
         if target.exists():
-            fail(f"volume collision: {child} -> {target}")
-        shutil.move(str(child), str(target))
+            if child.is_dir() and target.is_dir():
+                merge_tree(child, target)
+                child.rmdir()
+                continue
+            if child.is_file() and target.is_file() and child.read_bytes() == target.read_bytes():
+                child.unlink()
+                continue
+            fail(f"non-identical volume collision: {child} -> {target}")
+        else:
+            shutil.move(str(child), str(target))
 
 
 def stack_is_stopped(users: set[str]) -> bool:
@@ -150,7 +158,8 @@ def apply(plan: dict, snapshot_dir: Path) -> None:
                 shutil.rmtree(podman_root)
             if source_root.exists():
                 source_root.rmdir()
-            run("userdel", source["user"])
+            if account(source["user"]) is not None:
+                run("userdel", source["user"])
         translate_tree(destination, int(survivor["uid"]), int(survivor["subid"]), int(target["uid"]), int(target["uid"]), int(target["subid"]))
     (snapshot_dir / "APPLIED").write_text(f"{int(time.time())}\n")
 
