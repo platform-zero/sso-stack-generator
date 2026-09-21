@@ -19,7 +19,7 @@ done
 
 [ "$(id -u)" -eq 0 ] || { printf 'control-plane installation requires root\n' >&2; exit 1; }
 [ -f "$BUNDLE/podman-domains.json" ] || { printf 'missing podman-domains.json\n' >&2; exit 1; }
-for command in install jq ssh-keygen systemctl; do command -v "$command" >/dev/null; done
+for command in install jq ssh-keygen systemctl udevadm; do command -v "$command" >/dev/null; done
 id stack_lab >/dev/null 2>&1 || { printf 'stack_lab account does not exist\n' >&2; exit 1; }
 [ -z "$SOPS_AGE_KEY_FILE" ] || [ -f "$SOPS_AGE_KEY_FILE" ] || { printf 'SOPS age key file does not exist\n' >&2; exit 1; }
 [ -z "$SOPS_BINARY" ] || [ -x "$SOPS_BINARY" ] || { printf 'SOPS binary is not executable\n' >&2; exit 1; }
@@ -38,6 +38,17 @@ install -m 0644 "$BUNDLE/ops/platform-zero-worklane-idle-reaper.timer" /etc/syst
 install -m 0644 "$BUNDLE/ops/platform-zero-host-broker.service" /etc/systemd/system/
 install -m 0644 "$BUNDLE/ops/platform-zero-host-broker.socket" /etc/systemd/system/
 install -m 0644 "$BUNDLE/podman-domains.json" /etc/platform-zero/podman-domains.json
+kvm_user="$(jq -r '.domains[] | select(any(.devices[]?; startswith("/dev/kvm"))) | .user' "$BUNDLE/podman-domains.json" | head -n 1)"
+if [ -n "$kvm_user" ]; then
+  id "$kvm_user" >/dev/null 2>&1 || { printf 'missing KVM domain account: %s\n' "$kvm_user" >&2; exit 1; }
+  printf 'KERNEL=="kvm", OWNER="%s", GROUP="kvm", MODE="0660"\n' "$kvm_user" \
+    >/etc/udev/rules.d/70-platform-zero-kvm.rules
+  udevadm control --reload-rules
+  if [ -e /dev/kvm ]; then
+    chown "$kvm_user:kvm" /dev/kvm
+    chmod 0660 /dev/kvm
+  fi
+fi
 if [ -n "$SOPS_AGE_KEY_FILE" ]; then
   install -d -m 0700 /root/.config/sops/age
   install -m 0600 "$SOPS_AGE_KEY_FILE" /root/.config/sops/age/keys.txt

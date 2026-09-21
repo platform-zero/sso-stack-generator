@@ -373,6 +373,17 @@ ensure_rootless_domain() {
     setfacl -b -k "$graph_root" "$volume_root"
   fi
   chown "$user:$user" "$state_root" "$state_root/releases" "${ROOTLESS_RELEASES[$index]}" "$graph_root" "$volume_root" "$runtime" "$env_store"
+  # The account-private parent is setgid for host-side administration. Podman
+  # graph directories must not inherit that bit: it otherwise turns overlay
+  # layer roots into mode 2550 and prevents non-root container users from
+  # traversing their own root filesystem.
+  chmod 0700 "$graph_root"
+  find "$graph_root" -mindepth 1 -maxdepth 1 -type d -perm -2000 -exec chmod g-s {} +
+  if [ -d "$graph_root/overlay" ]; then
+    find "$graph_root/overlay" -mindepth 1 -maxdepth 1 -type d -exec chmod 0700 {} +
+    find "$graph_root/overlay" -mindepth 2 -maxdepth 2 -type d \
+      \( -name diff -o -name merged \) -exec chmod 0755 {} +
+  fi
   chown -R "$user:$user" "$home/.config"
   chmod 0700 "$env_store"
   printf '[storage]\ndriver = "overlay"\ngraphroot = "%s"\n' "$graph_root" > "$home/.config/containers/storage.conf"

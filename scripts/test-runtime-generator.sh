@@ -444,6 +444,18 @@ if ! rg -Fq '"$STACK_LAB_ROOT/stack_work/$maintenance_lane/.p0"' "$WORK_DIR/podm
   printf '[runtime-generator-test] control-plane install must assign role-lane parents to stack_lab\n' >&2
   exit 1
 fi
+if ! rg -Fq 'KERNEL=="kvm", OWNER="%s", GROUP="kvm", MODE="0660"' "$WORK_DIR/podman-a/ops/install-platform-zero-control-plane.sh"; then
+  printf '[runtime-generator-test] KVM ownership must persist for the isolated test authority\n' >&2
+  exit 1
+fi
+if ! rg -Fq 'chmod 0700 "$graph_root"' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-generator-test] rootless graph roots must strip inherited setgid mode\n' >&2
+  exit 1
+fi
+if ! rg -Fq '\( -name diff -o -name merged \) -exec chmod 0755 {} +' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-generator-test] existing overlay roots must be traversable by non-root container users\n' >&2
+  exit 1
+fi
 
 test -f "$WORK_DIR/podman-a/runtime/configs/vaultwarden/index.html"
 test -f "$WORK_DIR/podman-a/runtime/configs/vaultwarden/seed.sh"
