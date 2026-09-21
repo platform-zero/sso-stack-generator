@@ -51,6 +51,9 @@ while IFS="$(printf '\t')" read -r domain user maintenance_lane; do
   id "$user" >/dev/null 2>&1 || { printf 'missing domain account: %s\n' "$user" >&2; exit 1; }
   key_dir="$STACK_LAB_ROOT/stack_work/$maintenance_lane/.p0/$domain"
   private_key="$key_dir/dispatcher_ed25519"
+  install -d -m 0700 -o stack_lab -g stack_lab \
+    "$STACK_LAB_ROOT/stack_work/$maintenance_lane" \
+    "$STACK_LAB_ROOT/stack_work/$maintenance_lane/.p0"
   install -d -m 0700 -o stack_lab -g stack_lab "$key_dir"
   if [ ! -f "$private_key" ]; then
     runuser -u stack_lab -- ssh-keygen -q -t ed25519 -N '' -C "p0-$domain" -f "$private_key"

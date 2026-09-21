@@ -435,6 +435,10 @@ if [ "$(rg -Fc 'except FileNotFoundError:' "$WORK_DIR/podman-a/ops/install-podma
   printf '[runtime-generator-test] mutable volume ownership translation must tolerate disappearing paths\n' >&2
   exit 1
 fi
+if ! rg -Fq '"$STACK_LAB_ROOT/stack_work/$maintenance_lane/.p0"' "$WORK_DIR/podman-a/ops/install-platform-zero-control-plane.sh"; then
+  printf '[runtime-generator-test] control-plane install must assign role-lane parents to stack_lab\n' >&2
+  exit 1
+fi
 
 test -f "$WORK_DIR/podman-a/runtime/configs/vaultwarden/index.html"
 test -f "$WORK_DIR/podman-a/runtime/configs/vaultwarden/seed.sh"
