@@ -423,12 +423,12 @@ if ! rg -Fq '"${ROOTLESS_RELEASES[$i]}/runtime/stack.env"' "$WORK_DIR/podman-a/o
   exit 1
 fi
 
-if ! rg -Fq -- '-exec /usr/bin/install -m 0600 {} $runtime_dir/ +' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
-  printf '[runtime-generator-test] runtime environment restore must use a systemd-safe find batch terminator\n' >&2
+if ! rg -Fq -- 'WorkingDirectory=/' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-generator-test] runtime environment restore must not inherit an inaccessible working directory\n' >&2
   exit 1
 fi
-if rg -Fq -- '$runtime_dir/ \\;' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
-  printf '[runtime-generator-test] runtime environment restore contains an invalid systemd escape\n' >&2
+if ! rg -Fq -- '$runtime_dir/ \\;' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-generator-test] runtime environment restore must use a portable find terminator\n' >&2
   exit 1
 fi
 
