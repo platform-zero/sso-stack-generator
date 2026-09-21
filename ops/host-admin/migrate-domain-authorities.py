@@ -124,7 +124,10 @@ def apply(plan: dict, snapshot_dir: Path) -> None:
         old_user, new_user = survivor["user"], target["user"]
         old_domain, new_domain = survivor["name"], target["name"]
         if old_user != new_user:
-            run("usermod", "--login", new_user, "--home", f"/home/{new_user}", "--move-home", old_user)
+            if account(old_user) is not None:
+                run("usermod", "--login", new_user, "--home", f"/home/{new_user}", "--move-home", old_user)
+            elif account(new_user) is None or account(new_user).pw_uid != int(target["uid"]):
+                fail(f"neither resumable source nor valid target account exists for {target['name']}")
             old_group = subprocess.check_output(["id", "-gn", new_user], text=True).strip()
             if old_group == old_user:
                 run("groupmod", "--new-name", new_user, old_group)
