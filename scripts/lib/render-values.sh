@@ -288,6 +288,7 @@ build_derived_render_values() {
   derive_if_missing OAUTH2_PROXY_COOKIE_SECRET oauth2-proxy-cookie 32
   derive_laravel_app_key_if_missing BOOKSTACK_APP_KEY bookstack-app-key
   derive_if_missing BOOKSTACK_OAUTH_SECRET bookstack-oauth 48
+  derive_if_missing HULY_OPENID_CLIENT_SECRET huly-openid 48
   derive_if_missing FORGEJO_OAUTH_SECRET forgejo-oauth 48
   derive_if_missing MASTODON_OAUTH_SECRET mastodon-oauth 48
   derive_if_missing MASTODON_SECRET_KEY_BASE mastodon-secret-key-base 64
