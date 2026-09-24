@@ -61,7 +61,10 @@ if [ -n "$AUTHORITIES" ]; then
     requested_authorities["$authority"]=1
   done
   ROOTFUL_SELECTED=false
-  if [[ -v requested_authorities[rootful] ]]; then ROOTFUL_SELECTED=true; fi
+  if [[ -v requested_authorities[rootful] ]]; then
+    ROOTFUL_SELECTED=true
+    unset 'requested_authorities[rootful]'
+  fi
   declare -a selected_names=() selected_users=() selected_state_roots=() selected_graph_roots=()
   declare -a selected_volume_roots=() selected_uids=() selected_subuid_starts=()
   for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do

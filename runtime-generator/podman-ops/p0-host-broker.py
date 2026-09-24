@@ -60,7 +60,10 @@ def require_gerald_approval(request: dict[str, object], operation: str) -> None:
 
 
 def run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(args, text=True, capture_output=True, check=False)
+    env = os.environ.copy()
+    env.setdefault("HOME", "/root")
+    env.setdefault("XDG_CONFIG_HOME", "/root/.config")
+    result = subprocess.run(args, text=True, capture_output=True, check=False, env=env)
     if check and result.returncode:
         raise RequestError(f"command failed ({result.returncode}): {' '.join(args)}\n{result.stderr[-4000:]}")
     return result
@@ -392,7 +395,8 @@ def run_operation(operation_id: str) -> dict[str, object]:
         if previous:
             try:
                 activate({"release": str(previous),
-                          "authorities": operation.get("scope", {}).get("affectedAuthorities", [])})
+                          "authorities": operation.get("scope", {}).get("affectedAuthorities", []),
+                          "installer_release": str(operation["release"])})
                 operation["rollback"] = {"state": "succeeded", "release": previous,
                                           "applicationDataRestored": False}
             except Exception as rollback_error:
@@ -646,6 +650,11 @@ def preflight(request: dict[str, object]) -> dict[str, object]:
     with tempfile.TemporaryDirectory(prefix="p0-preflight-") as temporary:
         working = Path(temporary) / "bundle"
         shutil.copytree(path, working)
+        installer_release = str(request.get("installer_release", path.name))
+        installer = release_path({"release": installer_release}) / "ops/install-podman-bundle.sh"
+        if not installer.is_file():
+            raise RequestError("compatible deployment installer is unavailable")
+        shutil.copy2(installer, working / "ops/install-podman-bundle.sh")
         args = [str(working / "ops/install-podman-bundle.sh"), "--bundle", str(working)]
         authorities = request.get("authorities")
         if isinstance(authorities, list) and authorities:
@@ -768,7 +777,11 @@ def finalize_access(request: dict[str, object]) -> dict[str, object]:
 
 def activate(request: dict[str, object]) -> dict[str, object]:
     path = release_path(request)
-    preflight(request)
+    installer_release = str(request.get("installer_release", path.name))
+    installer_source = release_path({"release": installer_release}) / "ops/install-podman-bundle.sh"
+    if not installer_source.is_file():
+        raise RequestError("compatible deployment installer is unavailable")
+    preflight({**request, "installer_release": installer_release})
     scope = request.get("authorities")
     authorities = [str(item) for item in scope] if isinstance(scope, list) else []
     if not authorities:
@@ -784,10 +797,13 @@ def activate(request: dict[str, object]) -> dict[str, object]:
         apply_platform_zero_nftables(path / "ops/platform-zero.nft")
     stop_legacy_runtime()
     env = os.environ.copy()
+    env.setdefault("HOME", "/root")
+    env.setdefault("XDG_CONFIG_HOME", "/root/.config")
     env["WEBSERVICES_ACTIVATION_ROLLBACK"] = "1"
     with tempfile.TemporaryDirectory(prefix="p0-activate-") as temporary:
         working = Path(temporary) / "bundle"
         shutil.copytree(path, working)
+        shutil.copy2(installer_source, working / "ops/install-podman-bundle.sh")
         command = [str(working / "ops/install-podman-bundle.sh"), "--bundle", str(working),
                    "--authorities", ",".join(authorities), "--candidate-release", path.name, "--activate"]
         result = subprocess.run(command, text=True, capture_output=True, check=False, env=env)
