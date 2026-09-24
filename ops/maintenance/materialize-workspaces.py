@@ -13,53 +13,26 @@ import sys
 import tomllib
 
 
-PROFILES = """[profiles.p0-control]
+PROFILES = """[profiles.p0-stack]
 image = "worklane:latest"
 network = "outbound"
 mount_codex_credentials = true
 mount_gh_credentials = true
 
-[[profiles.p0-control.mounts]]
+[[profiles.p0-stack.mounts]]
 source = "/usr/local/bin/p0-hostctl"
 target = "/home/dev/.local/bin/p0-hostctl"
 read_only = true
 
-[[profiles.p0-control.mounts]]
+[[profiles.p0-stack.mounts]]
 source = "/run/platform-zero"
 target = "/run/platform-zero"
 read_only = true
 
-[[profiles.p0-control.mounts]]
+[[profiles.p0-stack.mounts]]
 source = "/home/stack_lab/.config/platform-zero"
 target = "/home/dev/.config/platform-zero"
 read_only = true
-
-[profiles.p0-host]
-image = "worklane:latest"
-network = "outbound"
-mount_codex_credentials = true
-mount_gh_credentials = true
-
-[[profiles.p0-host.mounts]]
-source = "/usr/local/bin/p0-hostctl"
-target = "/home/dev/.local/bin/p0-hostctl"
-read_only = true
-
-[[profiles.p0-host.mounts]]
-source = "/run/platform-zero"
-target = "/run/platform-zero"
-read_only = true
-
-[[profiles.p0-host.mounts]]
-source = "/home/stack_lab/.config/platform-zero"
-target = "/home/dev/.config/platform-zero"
-read_only = true
-
-[profiles.p0-domain]
-image = "worklane:latest"
-network = "outbound"
-mount_codex_credentials = true
-mount_gh_credentials = false
 
 [profiles.software-gpu]
 image = "worklane:latest"
@@ -192,7 +165,7 @@ def agents_text(workspace: dict[str, object]) -> str:
         if repo.get("writable", False)
     ]
     services = [str(service) for service in workspace.get("services", [])]
-    heading = "software lane" if role == "software" else "maintenance lane"
+    heading = "software lane" if role == "software" else "stack engineering lane"
     lines = [
         f"# Platform Zero {heading}: {name}",
         "",
@@ -219,25 +192,20 @@ def agents_text(workspace: dict[str, object]) -> str:
         "- Keep secrets encrypted; never commit private keys or rendered environment files.",
         "- Coordinate repository edits through the Worklane agent claim directory.",
     ]
-    if role == "control":
+    if role == "stack":
         lines += [
-            "- This lane owns global domain configuration and repository pins.",
-            "- It validates the full composition but intentionally has no domain deployment keys.",
+            "- This lane owns the complete stack source, encrypted SOPS inputs, repository pins, and test infrastructure.",
             "- A human enters this environment as `stack_lab@192.168.0.11`; you are already inside",
-            "  its `control` Worklane at `/mnt/lab_debian/stack_lab/stack_work/control`.",
-            "- The service stack is split across 7 rootless `webservices-*` Linux-user authorities",
-            "  plus a separate rootful host authority. Use each role lane for authority-owned changes.",
+            "  its `stack` Worklane at `/mnt/lab_debian/stack_lab/stack_work`.",
+            "- Runtime remains split across the named rootless `webservices-*` Linux-user authorities",
+            "  and the separate rootful host authority. Workspace consolidation does not change ownership.",
             "- Treat `software_lab` and `/mnt/lab_debian/software_lab` as a separate authority. Never",
             "  restart, replace, or inspect its active Worklanes during stack maintenance.",
             "- Software Worklanes require the RTX 3060 through CDI as `nvidia.com/gpu=all`; preserve",
             "  that contract in generated profiles and host configuration.",
-            "- Gerald passwordless sudo is intentionally retained, but routine deployments must use",
-            "  the checksum-gated Platform Zero broker rather than an unrestricted sudo shell.",
-        ]
-    elif role == "host":
-        lines += [
-            "- This is the only lane permitted to prepare rootful and host-policy changes.",
-            "- Gerald passwordless sudo is intentionally retained; use only the documented hash-gated host plan.",
+            "- Gerald passwordless sudo is intentionally retained; routine changes use the typed broker.",
+            "- Protected databases, volumes, media, service homes, rendered environments, raw logs, and",
+            "  service sockets are not mounted here. Use broker status, diagnostics, and scrubbed evidence.",
         ]
     elif role == "software":
         lines += [
@@ -246,27 +214,21 @@ def agents_text(workspace: dict[str, object]) -> str:
             "- Account-level Codex, GitHub, and SSH credentials are mounted; never copy them into the project.",
             "- Recreate dependencies from project lockfiles and the commands declared in `software-workspaces.json`.",
         ]
-    else:
-        lines += [
-            "- Use `./.p0/<authority>ctl` for remote status, logs, verification, and restart operations.",
-            "  Each command uses that authority's restricted dispatcher key; ordinary SSH credentials are unrelated.",
-            "- Build and deploy only this lane's named domain.",
-            "- Global site-config changes flow through the control lane.",
-        ]
-    if role == "control":
+    if role == "stack":
         lines += [
             "",
             "## Maintenance workflow",
             "",
             "- Read `~/.config/platform-zero/workspaces.json` for current repository pins and domains.",
             "- Query live state with `p0-hostctl status`; do not copy a release ID from this document.",
-            "- Build and validate the complete composition before requesting any host-side change.",
-            "- Deploy only a reviewed immutable bundle through `p0-hostctl` using its full SHA-256:",
-            "  stage, preflight, snapshot, activate, then verify with that same digest.",
+            "- Build and validate an immutable candidate bundle, then use `p0-hostctl plan` and",
+            "  `p0-hostctl apply` with the returned plan ID. Poll `operation-status` after disconnects.",
+            "- Scope is derived from changed authorities and the dependency graph; never request a",
+            "  broader service restart than the candidate requires.",
             "- Review `/mnt/stack/podman/test-runners/state/test-runner/results/all-summary.txt` after",
             "  the mandatory Kotlin, TypeScript, isolated end-to-end, and MatrixRTC/LiveKit gates.",
-            "- Stop on dirty repositories, manifest drift, a failed authority, or a changed software",
-            "  Worklane container ID. Do not reset or overwrite user-owned changes.",
+            "- Destructive actions, secret operations, account/storage changes, irreversible migrations,",
+            "  and host-security changes require Gerald's separate approval.",
         ]
     lines += [
         "",
@@ -281,19 +243,8 @@ def agents_text(workspace: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
-def domainctl_text(authority: dict[str, object]) -> str:
-    name = str(authority["name"])
-    account = str(authority["serviceAccount"])
-    return f"""#!/usr/bin/env bash
-set -euo pipefail
-here="$(cd -- "$(dirname -- "$0")" && pwd)"
-exec ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \\
-  -i "$here/{name}/dispatcher_ed25519" "{account}@${{P0_HOST:-192.168.0.11}}" "$@"
-"""
-
-
 def reconcile_host_access_profile(destination: Path, workspace: dict[str, object]) -> bool:
-    if workspace.get("role") not in {"control", "host"}:
+    if workspace.get("role") != "stack":
         return False
     manifest = destination / ".worklane/lane.toml"
     if not manifest.exists():
@@ -337,11 +288,6 @@ def legacy_agents_texts(workspace: dict[str, object]) -> set[str]:
         "  its `control` Worklane at `/mnt/lab_debian/stack_lab/stack_work/control`.\n",
         "- Enter this maintenance environment as `stack_lab@192.168.0.11`; its workspace root is\n"
         "  `/mnt/lab_debian/stack_lab/stack_work`.\n",
-    )
-    prior = prior.replace(
-        "- Use `./.p0/domainctl` for remote status, logs, verification, and restart operations.\n"
-        "  It uses this lane's restricted dispatcher key; ordinary SSH credentials are unrelated.\n",
-        "- Use the domain dispatcher for remote status, logs, verification, restart, and deployment.\n",
     )
     if role == "software":
         return {prior}
@@ -414,6 +360,8 @@ def main() -> int:
     if not owner or "/" in owner:
         fail(f"unsafe workspace owner: {owner!r}")
     names: set[str] = set()
+    if owner == "stack_lab" and (len(manifest["workspaces"]) != 1 or manifest["workspaces"][0].get("name") != "stack" or manifest["workspaces"][0].get("role") != "stack"):
+        fail("maintenance manifest must contain exactly one unified stack workspace")
     for workspace in manifest["workspaces"]:
         name = str(workspace["name"])
         if not name or "/" in name or name in {".", ".."} or name in names:
@@ -477,23 +425,8 @@ def main() -> int:
             fail(f"refusing to replace locally changed {agents}")
         agents.write_text(expected)
         os.chmod(agents, 0o600)
-        if workspace.get("role") == "domain":
-            for authority in workspace.get("authorities", []):
-                name = str(authority["name"])
-                dispatcher = destination / f".p0/{name}ctl"
-                dispatcher.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                expected_dispatcher = domainctl_text(authority)
-                if dispatcher.exists() and dispatcher.read_text() != expected_dispatcher:
-                    fail(f"refusing to replace locally changed {dispatcher}")
-                dispatcher.write_text(expected_dispatcher)
-                os.chmod(dispatcher, 0o700)
         if not (destination / ".worklane" / "lane.toml").exists():
-            profile = {
-                "control": "p0-control",
-                "host": "p0-host",
-                "domain": "p0-domain",
-                "software": str(workspace.get("profile", "software-gpu")),
-            }.get(str(workspace["role"]))
+            profile = "p0-stack" if workspace.get("role") == "stack" else str(workspace.get("profile", "software-gpu"))
             if profile is None:
                 fail(f"unknown workspace role: {workspace['role']}")
             run("worklane", "lane", "create", str(workspace["name"]), "--project", str(destination), "--profile", profile)
