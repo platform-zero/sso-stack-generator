@@ -237,6 +237,13 @@ with tempfile.TemporaryDirectory() as temporary:
     assert scope["sharedChange"] is False
 
     (candidate / "ops").mkdir()
+    (candidate / "ops/p0-host-broker.py").write_text("control plane change\n")
+    with patch.object(BROKER, "ACTIVE_RELEASE", active_release), \
+         patch.object(BROKER, "release_path", return_value=old):
+        scope = BROKER.candidate_scope(candidate)
+    assert scope["sharedChange"] is False
+    assert scope["affectedAuthorities"] == ["apps", "other"]
+
     (candidate / "ops/shared-runtime.conf").write_text("changed\n")
     with patch.object(BROKER, "ACTIVE_RELEASE", active_release), \
          patch.object(BROKER, "release_path", return_value=old):

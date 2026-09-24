@@ -271,7 +271,23 @@ def candidate_scope(bundle: Path) -> dict[str, object]:
                 affected.update(owners)
             else:
                 shared = True
-        elif relative.startswith(("site/", "repos/")) or relative in {"runtime-model.yml", "compose.yml", "README.md"}:
+        elif relative.startswith(("site/", "repos/", "scripts/", "docs/")) or relative in {
+            "runtime-model.yml", "compose.yml", "README.md", "maintenance-workspaces.json", "software-workspaces.json",
+        }:
+            continue
+        elif relative.startswith("build/stack.containers/"):
+            image_name = relative.removeprefix("build/stack.containers/").split("/", 1)[0]
+            service = image_name.removesuffix("-managed")
+            if service in candidate_services or service in previous_services:
+                affected.add(service_authority(service, candidate_services.get(service, previous_services.get(service))))
+            else:
+                shared = True
+        elif relative.startswith("ops/") and relative in {
+            "ops/p0-host-broker.py", "ops/p0-hostctl.py", "ops/p0-domain-dispatch",
+            "ops/install-platform-zero-control-plane.sh", "ops/install-podman-bundle.sh",
+            "ops/materialize-workspaces.py", "ops/start-worklane-containers.py",
+            "ops/reap-idle-worklanes.py",
+        }:
             continue
         else:
             # Runtime behavior not attributable to one authority is shared.
@@ -381,6 +397,8 @@ def run_operation(operation_id: str) -> dict[str, object]:
     plan_record = read_record(plan_id)
     previous = plan_record.get("scope", {}).get("previousRelease")
     try:
+        operation.update({"phase": "activation", "updatedAt": int(time.time())})
+        write_record(operation)
         result = activate({"release": str(operation["release"]),
                            "authorities": operation.get("scope", {}).get("affectedAuthorities", [])})
         operation.update({"state": "succeeded", "phase": "complete", "finishedAt": int(time.time()),
@@ -799,7 +817,9 @@ def activate(request: dict[str, object]) -> dict[str, object]:
     env = os.environ.copy()
     env.setdefault("HOME", "/root")
     env.setdefault("XDG_CONFIG_HOME", "/root/.config")
-    env["WEBSERVICES_ACTIVATION_ROLLBACK"] = "1"
+    # The durable operation worker owns rollback. Avoid a second full restart
+    # from the installer's legacy in-process rollback handler.
+    env["WEBSERVICES_ACTIVATION_ROLLBACK"] = "0"
     with tempfile.TemporaryDirectory(prefix="p0-activate-") as temporary:
         working = Path(temporary) / "bundle"
         shutil.copytree(path, working)
@@ -814,7 +834,7 @@ def activate(request: dict[str, object]) -> dict[str, object]:
             except Exception as nft_error:
                 raise RequestError("activation failed and nftables rollback failed: " + scrub(str(nft_error)))
         details = scrub(result.stdout + "\n" + result.stderr)
-        raise RequestError(f"activation failed ({result.returncode}); installer rollback was attempted\n{details}")
+        raise RequestError(f"activation failed ({result.returncode}); durable broker rollback will be attempted\n{details}")
     active_record = {}
     if ACTIVE_RELEASE.is_file():
         try:
