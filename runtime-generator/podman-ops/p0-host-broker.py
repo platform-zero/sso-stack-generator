@@ -675,7 +675,8 @@ def preflight(request: dict[str, object]) -> dict[str, object]:
         working = Path(temporary) / "bundle"
         shutil.copytree(path, working)
         installer_release = str(request.get("installer_release", path.name))
-        installer = release_path({"release": installer_release}) / "ops/install-podman-bundle.sh"
+        installer_bundle = release_path({"release": installer_release})
+        installer = installer_bundle / "ops/install-podman-bundle.sh"
         if not installer.is_file():
             raise RequestError("compatible deployment installer is unavailable")
         shutil.copy2(installer, working / "ops/install-podman-bundle.sh")
@@ -802,7 +803,8 @@ def finalize_access(request: dict[str, object]) -> dict[str, object]:
 def activate(request: dict[str, object]) -> dict[str, object]:
     path = release_path(request)
     installer_release = str(request.get("installer_release", path.name))
-    installer_source = release_path({"release": installer_release}) / "ops/install-podman-bundle.sh"
+    installer_bundle = release_path({"release": installer_release})
+    installer_source = installer_bundle / "ops/install-podman-bundle.sh"
     if not installer_source.is_file():
         raise RequestError("compatible deployment installer is unavailable")
     preflight({**request, "installer_release": installer_release})
@@ -968,6 +970,19 @@ def logs(request: dict[str, object]) -> dict[str, object]:
         if item is None:
             raise RequestError("unknown domain")
         result = user_systemctl(item["user"], "status", unit, "--no-pager", "-l", check=False)
+        # Rootless Quadlet container output is recorded by journald under the
+        # container name, not necessarily attached to the user unit's journal
+        # stream. Read only this user's matching container records; the common
+        # scrubber still gates everything returned to the caller.
+        container = unit.removeprefix("webservices-").removesuffix(".service")
+        uid = pwd.getpwnam(str(item["user"])).pw_uid
+        journal = run(
+            "journalctl", "--no-pager", "-n", "200",
+            f"_UID={uid}", f"CONTAINER_NAME={container}", check=False,
+        )
+        if journal.stdout.strip():
+            result.stdout += "\n" + journal.stdout
+            result.stderr += journal.stderr
     return safe_log_evidence(result.stdout + result.stderr)
 
 
