@@ -737,7 +737,9 @@ def summarize_test_output(output: str) -> dict[str, object] | None:
         r"login-form-(?:ready|timeout)|login-credentials-filled|login-submit-(?:started|clicked)|"
         r"signup-button-(?:visible|absent)|signup-clicked|signup-form-ready|"
         r"signup-credentials-filled|signup-submit-(?:started|clicked)|"
-        r"keycloak-password-absent|openid-flow-(?:entry-missing|redirect-missing|timeout|other)|"
+        r"keycloak-password-absent|accounts-providers-(?:network-error|5xx|4xx|2xx|other)|"
+        r"openid-provider-(?:present|absent|unavailable)|"
+        r"openid-flow-(?:entry-missing|redirect-missing|timeout|other)|"
         r"post-submit-ui-(?:invalid-credentials|email-verification|workspace-selection|"
         r"verification-challenge|service-error|loading|auth-required|other|empty)|"
         r"workspace-(?:ready|timeout))\s+route=huly\b",

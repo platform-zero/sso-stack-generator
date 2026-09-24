@@ -445,6 +445,8 @@ diagnostic = BROKER.summarize_test_output(
        [p0-test-evidence] huly-prepare=post-submit-ui-email-verification route=huly
        [p0-test-evidence] huly-prepare=keycloak-password-absent route=huly
        [p0-test-evidence] huly-prepare=openid-flow-entry-missing route=huly
+       [p0-test-evidence] huly-prepare=accounts-providers-5xx route=huly
+       [p0-test-evidence] huly-prepare=openid-provider-unavailable route=huly
        Request body: user@example.test secret-value
        https://private.invalid/path
     """
@@ -453,9 +455,9 @@ assert diagnostic["failureDiagnostics"] == [
     {"route": "jupyterhub", "category": "navigation-timeout"},
 ]
 assert diagnostic["readinessStagesByRoute"] == {
-    "huly": ["initial-fields-none", "initial-other-shell", "initial-ui-other",
-             "keycloak-password-absent", "login-submit-started",
-             "openid-flow-entry-missing",
+    "huly": ["accounts-providers-5xx", "initial-fields-none", "initial-other-shell",
+             "initial-ui-other", "keycloak-password-absent", "login-submit-started",
+             "openid-flow-entry-missing", "openid-provider-unavailable",
              "post-submit-ui-email-verification", "workspace-timeout"],
     "jupyterhub": ["start-button-visible", "start-transition-timeout"],
 }
