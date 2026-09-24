@@ -304,6 +304,11 @@ def candidate_scope(bundle: Path) -> dict[str, object]:
     if current and (candidate_ir.get("networks") != previous_ir.get("networks") or
                     candidate_ir.get("volumes") != previous_ir.get("volumes")):
         shared = True
+    # The broker's active-release record can outlive a failed/partial runtime
+    # activation. Treat release-marker drift as a full reconciliation request
+    # even when the staged bundle itself is byte-identical to that record.
+    if current and diagnostics({}).get("drift", {}).get("state") != "clean":
+        shared = True
     if changed_services and not affected:
         shared = True
     if shared:
