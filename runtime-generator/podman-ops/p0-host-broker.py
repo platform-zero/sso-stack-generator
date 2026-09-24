@@ -730,6 +730,7 @@ def summarize_test_output(output: str) -> dict[str, object] | None:
     )
     huly_stage_matches = re.findall(
         r"\[p0-test-evidence\]\s+huly-prepare=(prepare-started|"
+        r"initial-(?:workspace-visible|service-error|signup-shell|login-shell|empty-shell|other-shell)|"
         r"password-input-(?:visible|absent)|login-button-(?:visible|absent)|login-clicked|"
         r"login-form-(?:ready|timeout)|login-credentials-filled|login-submit-(?:started|clicked)|"
         r"signup-button-(?:visible|absent)|signup-clicked|signup-form-ready|"
