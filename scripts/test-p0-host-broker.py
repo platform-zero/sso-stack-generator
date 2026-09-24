@@ -442,6 +442,7 @@ diagnostic = BROKER.summarize_test_output(
        [p0-test-evidence] huly-prepare=initial-other-shell route=huly
        [p0-test-evidence] huly-prepare=initial-ui-other route=huly
        [p0-test-evidence] huly-prepare=initial-fields-none route=huly
+       [p0-test-evidence] huly-prepare=post-submit-ui-email-verification route=huly
        Request body: user@example.test secret-value
        https://private.invalid/path
     """
@@ -451,7 +452,7 @@ assert diagnostic["failureDiagnostics"] == [
 ]
 assert diagnostic["readinessStagesByRoute"] == {
     "huly": ["initial-fields-none", "initial-other-shell", "initial-ui-other",
-             "login-submit-started", "workspace-timeout"],
+             "login-submit-started", "post-submit-ui-email-verification", "workspace-timeout"],
     "jupyterhub": ["start-button-visible", "start-transition-timeout"],
 }
 assert "user@example.test" not in json.dumps(diagnostic)
