@@ -238,6 +238,8 @@ with tempfile.TemporaryDirectory() as temporary:
 
     (candidate / "ops").mkdir()
     (candidate / "ops/p0-host-broker.py").write_text("control plane change\n")
+    (candidate / "scripts").mkdir()
+    (candidate / "scripts/test-broker.sh").write_text("test-only change\n")
     with patch.object(BROKER, "ACTIVE_RELEASE", active_release), \
          patch.object(BROKER, "release_path", return_value=old):
         scope = BROKER.candidate_scope(candidate)

@@ -271,10 +271,14 @@ def candidate_scope(bundle: Path) -> dict[str, object]:
                 affected.update(owners)
             else:
                 shared = True
-        elif relative.startswith(("site/", "repos/", "scripts/", "docs/")) or relative in {
+        elif relative.startswith(("site/", "repos/", "docs/")) or relative in {
             "runtime-model.yml", "compose.yml", "README.md", "maintenance-workspaces.json", "software-workspaces.json",
         }:
             continue
+        elif relative.startswith(("scripts/test-", "scripts/tests/", "scripts/deploy/__pycache__/", "scripts/__pycache__/")):
+            continue
+        elif relative.startswith("scripts/"):
+            shared = True
         elif relative.startswith("build/stack.containers/"):
             image_name = relative.removeprefix("build/stack.containers/").split("/", 1)[0]
             service = image_name.removesuffix("-managed")
@@ -288,6 +292,8 @@ def candidate_scope(bundle: Path) -> dict[str, object]:
             "ops/materialize-workspaces.py", "ops/start-worklane-containers.py",
             "ops/reap-idle-worklanes.py",
         }:
+            continue
+        elif relative.startswith("ops/__pycache__/"):
             continue
         else:
             # Runtime behavior not attributable to one authority is shared.
