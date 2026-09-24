@@ -728,8 +728,21 @@ def summarize_test_output(output: str) -> dict[str, object] | None:
         r"\s+route=jupyterhub\b",
         plain,
     )
-    readiness_stages_by_route = {"jupyterhub": sorted(set(stage_matches))} if stage_matches else {}
-    if not counters and not failures and not failure_kinds and not readiness_states and not stage_matches:
+    huly_stage_matches = re.findall(
+        r"\[p0-test-evidence\]\s+huly-prepare=(prepare-started|"
+        r"password-input-(?:visible|absent)|login-button-(?:visible|absent)|login-clicked|"
+        r"login-form-(?:ready|timeout)|login-credentials-filled|login-submit-(?:started|clicked)|"
+        r"signup-button-(?:visible|absent)|signup-clicked|signup-form-ready|"
+        r"signup-credentials-filled|signup-submit-(?:started|clicked)|"
+        r"workspace-(?:ready|timeout))\s+route=huly\b",
+        plain,
+    )
+    readiness_stages_by_route = {}
+    if stage_matches:
+        readiness_stages_by_route["jupyterhub"] = sorted(set(stage_matches))
+    if huly_stage_matches:
+        readiness_stages_by_route["huly"] = sorted(set(huly_stage_matches))
+    if not counters and not failures and not failure_kinds and not readiness_states and not stage_matches and not huly_stage_matches:
         return None
     return {
         "counts": counters,
