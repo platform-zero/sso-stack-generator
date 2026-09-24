@@ -449,6 +449,7 @@ diagnostic = BROKER.summarize_test_output(
        [p0-test-evidence] huly-prepare=openid-provider-unavailable route=huly
        [p0-test-evidence] huly-prepare=openid-callback-http-5xx route=huly
        [p0-test-evidence] huly-prepare=post-auth-location-account-callback route=huly
+       [p0-test-evidence] huly-prepare=post-auth-location-auth-gateway route=huly
        Request body: user@example.test secret-value
        https://private.invalid/path
     """
@@ -461,6 +462,7 @@ assert diagnostic["readinessStagesByRoute"] == {
              "initial-ui-other", "keycloak-password-absent", "login-submit-started",
              "openid-callback-http-5xx", "openid-flow-entry-missing",
              "openid-provider-unavailable", "post-auth-location-account-callback",
+             "post-auth-location-auth-gateway",
              "post-submit-ui-email-verification", "workspace-timeout"],
     "jupyterhub": ["start-button-visible", "start-transition-timeout"],
 }

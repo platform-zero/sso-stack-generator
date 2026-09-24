@@ -740,7 +740,7 @@ def summarize_test_output(output: str) -> dict[str, object] | None:
         r"keycloak-password-absent|accounts-providers-(?:network-error|5xx|4xx|2xx|other)|"
         r"openid-provider-(?:present|absent|unavailable)|"
         r"openid-callback-http-(?:unobserved|5xx|4xx|3xx|2xx|other)|"
-        r"post-auth-location-(?:keycloak|account-callback|app-login|app-root|other)|"
+        r"post-auth-location-(?:keycloak|auth-gateway|account-callback|app-login|app-root|huly-front|other)|"
         r"openid-flow-(?:entry-missing|redirect-missing|timeout|other)|"
         r"post-submit-ui-(?:invalid-credentials|email-verification|workspace-selection|"
         r"verification-challenge|service-error|loading|auth-required|other|empty)|"
