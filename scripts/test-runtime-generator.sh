@@ -16,7 +16,7 @@ default_site="$ROOT_DIR/../site-config/sites/latium/manifest.json"
 synthetic_site=false
 if [ -n "${SITE_MANIFEST:-}" ]; then
   SOURCE_SITE="$SITE_MANIFEST"
-elif [ -f "$default_site" ]; then
+elif [ -f "$default_site" ] && [ -f "$(dirname "$default_site")/global.settings/webservices.sops.json" ]; then
   SOURCE_SITE="$default_site"
 else
   synthetic_site=true
@@ -41,7 +41,11 @@ else
         components: ["full", "searxng", "workload-spawner"],
         modules: .
       }' > "$fixture_site/manifest.json"
-  cat > "$fixture_site/global.settings/stack.config.yaml" <<'EOF_STACK_CONFIG'
+  if [ -f "$default_site" ]; then
+    cp "$(dirname "$default_site")/global.settings/stack.config.yaml" \
+      "$fixture_site/global.settings/stack.config.yaml"
+  else
+    cat > "$fixture_site/global.settings/stack.config.yaml" <<'EOF_STACK_CONFIG'
 storage:
   media_writer_uid: 1000
   media_writer_gid: 1000
@@ -66,6 +70,7 @@ vaultwarden:
   org_identifier: "example.test"
   org_id: "00000000-0000-0000-0000-000000000000"
 EOF_STACK_CONFIG
+  fi
   mapfile -t fixture_secret_keys < <(
     {
       rg --follow -o --no-filename '\{\{[A-Z_][A-Z0-9_]*\}\}' "$MODULES_DIR" \
@@ -129,7 +134,7 @@ jq -e --slurpfile domains "$WORK_DIR/podman-a/podman-domains.json" '
     ($domains[0].domains[] | select(.name == $entry.value.rootlessDomain) | .user) == $entry.value.rootlessUser)
 ' "$WORK_DIR/podman-a/stack.ir.json" >/dev/null
 
-jq -e '(.schemaVersion == 1) and (.workspaces | length == 6) and ([.workspaces[].name] | unique | length == 6) and all(.workspaces[]; .startAtBoot == false)' \
+jq -e '(.schemaVersion == 1) and (.workspaces | length == 1) and ([.workspaces[].name] == ["stack"]) and all(.workspaces[]; .role == "stack" and .startAtBoot == true and .projectPath == "/mnt/lab_debian/stack_lab/stack_work") and all(.workspaces[].repositories[]; .writable == true)' \
   "$WORK_DIR/podman-a/maintenance-workspaces.json" >/dev/null
 
 jq -e '
@@ -171,38 +176,25 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 assert module.LEGACY_PROFILES.endswith("\n")
 assert not module.LEGACY_PROFILES.endswith("\n\n")
-control = {
-    "name": "control",
-    "role": "control",
+stack = {
+    "name": "stack",
+    "role": "stack",
+    "authorities": [],
     "repositories": [],
 }
-guidance = module.agents_text(control)
-assert "You are operating inside the `control` Worklane" in guidance
+guidance = module.agents_text(stack)
+assert "You are operating inside the `stack` Worklane" in guidance
 assert "stack_lab@192.168.0.11" in guidance
-assert "7 rootless `webservices-*` Linux-user authorities" in guidance
-assert "p0-hostctl status" in guidance
-assert "stage, preflight, snapshot, activate, then verify" in guidance
+assert "Runtime remains split across" in guidance
+assert "p0-hostctl.py diagnostics" in guidance
+assert "p0-hostctl apply" in guidance
 assert "RTX 3060" in guidance
 assert "Gerald passwordless sudo is intentionally retained" in guidance
-previous = next(text for text in module.legacy_agents_texts(control) if "## Maintenance workflow" not in text)
-assert previous != guidance
-assert "stack_lab@192.168.0.11" not in previous
-assert guidance in module.managed_agents_texts(control)
-assert previous in module.managed_agents_texts(control)
-assert guidance + "user edit\n" not in module.managed_agents_texts(control)
-assert guidance not in module.legacy_agents_texts({"name": "host", "role": "host", "repositories": []})
-domain = {
-    "name": "platform",
-    "role": "domain",
-    "authorities": [{"name": "platform", "serviceAccount": "webservices-platform"}],
-    "repositories": [],
-}
-assert "./.p0/<authority>ctl" in module.agents_text(domain)
-dispatcher = module.domainctl_text(domain["authorities"][0])
-assert "BatchMode=yes" in dispatcher
-assert "dispatcher_ed25519" in dispatcher
-assert "webservices-platform@${P0_HOST:-192.168.0.11}" in dispatcher
-assert len(module.HOST_ACCESS_MOUNTS) == 3
+assert guidance in module.managed_agents_texts(stack)
+assert guidance + "user edit\n" not in module.managed_agents_texts(stack)
+assert "dispatcher_ed25519" not in guidance
+assert len(module.HOST_ACCESS_MOUNTS) == 1
+assert module.HOST_ACCESS_MOUNTS[0]["target"] == "/run/platform-zero/host-broker.sock"
 assert "/run/platform-zero" in module.PROFILES
 PY
 
@@ -440,8 +432,8 @@ if [ "$(rg -Fc 'except FileNotFoundError:' "$WORK_DIR/podman-a/ops/install-podma
   printf '[runtime-generator-test] mutable volume ownership translation must tolerate disappearing paths\n' >&2
   exit 1
 fi
-if ! rg -Fq '"$STACK_LAB_ROOT/stack_work/$maintenance_lane/.p0"' "$WORK_DIR/podman-a/ops/install-platform-zero-control-plane.sh"; then
-  printf '[runtime-generator-test] control-plane install must assign role-lane parents to stack_lab\n' >&2
+if rg -Fq 'dispatcher_ed25519' "$WORK_DIR/podman-a/ops/install-platform-zero-control-plane.sh"; then
+  printf '[runtime-generator-test] control-plane install must not create per-domain dispatcher keys\n' >&2
   exit 1
 fi
 if ! rg -Fq 'KERNEL=="kvm", OWNER="%s", GROUP="kvm", MODE="0660"' "$WORK_DIR/podman-a/ops/install-platform-zero-control-plane.sh"; then

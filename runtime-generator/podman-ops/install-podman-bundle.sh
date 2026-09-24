@@ -9,6 +9,9 @@ STATE_ROOT="${WEBSERVICES_STATE_ROOT:-/var/lib/webservices}"
 ROOTLESS_STATE_ROOT="${WEBSERVICES_ROOTLESS_STATE_ROOT:-/var/lib/webservices-rootless}"
 ROOTLESS_USER="${WEBSERVICES_ROOTLESS_USER:-webservices}"
 QUADLET_DIR="${WEBSERVICES_QUADLET_DIR:-/etc/containers/systemd}"
+AUTHORITIES="${WEBSERVICES_AUTHORITIES:-}"
+DEPLOYMENT_RELEASE="${WEBSERVICES_CANDIDATE_RELEASE:-}"
+ROOTFUL_SELECTED=true
 declare -a ROOTLESS_DOMAIN_NAMES=()
 declare -a ROOTLESS_DOMAIN_USERS=()
 declare -a ROOTLESS_DOMAIN_STATE_ROOTS=()
@@ -18,13 +21,15 @@ declare -a ROOTLESS_DOMAIN_UIDS=()
 declare -a ROOTLESS_DOMAIN_SUBUID_STARTS=()
 
 usage() {
-  printf 'Usage: %s --bundle DIR [--env-dir DIR] [--activate]\n' "${0##*/}" >&2
+  printf 'Usage: %s --bundle DIR [--env-dir DIR] [--authorities CSV] [--candidate-release SHA256] [--activate]\n' "${0##*/}" >&2
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --bundle) BUNDLE="$2"; shift 2 ;;
     --env-dir) ENV_DIR="$2"; shift 2 ;;
+    --authorities) AUTHORITIES="$2"; shift 2 ;;
+    --candidate-release) DEPLOYMENT_RELEASE="$2"; shift 2 ;;
     --activate) ACTIVATE=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage; exit 2 ;;
@@ -32,6 +37,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -d "$BUNDLE/quadlet" ] || { printf 'invalid Podman bundle: %s\n' "$BUNDLE" >&2; exit 1; }
+if [ -n "$DEPLOYMENT_RELEASE" ]; then
+  [[ "$DEPLOYMENT_RELEASE" =~ ^[a-f0-9]{64}$ ]] || { printf 'candidate release must be a SHA-256 digest\n' >&2; exit 1; }
+fi
 ROOTFUL_QUADLET_SOURCE="$BUNDLE/quadlet/rootful"
 [ -d "$ROOTFUL_QUADLET_SOURCE" ] || ROOTFUL_QUADLET_SOURCE="$BUNDLE/quadlet"
 jq -e '.backend == "podman"' "$BUNDLE/bundle.json" >/dev/null
@@ -45,6 +53,43 @@ mapfile -t ROOTLESS_DOMAIN_GRAPH_ROOTS < <(jq -r '.domains[].graphRoot' "$DOMAIN
 mapfile -t ROOTLESS_DOMAIN_VOLUME_ROOTS < <(jq -r '.domains[].volumeRoot' "$DOMAINS_FILE")
 mapfile -t ROOTLESS_DOMAIN_UIDS < <(jq -r '.domains[] | .uid // ""' "$DOMAINS_FILE")
 mapfile -t ROOTLESS_DOMAIN_SUBUID_STARTS < <(jq -r '.domains[] | .subuidStart // ""' "$DOMAINS_FILE")
+if [ -n "$AUTHORITIES" ]; then
+  declare -A requested_authorities=()
+  IFS=',' read -r -a requested_rows <<< "$AUTHORITIES"
+  for authority in "${requested_rows[@]}"; do
+    [ -n "$authority" ] || continue
+    requested_authorities["$authority"]=1
+  done
+  ROOTFUL_SELECTED=false
+  if [[ -v requested_authorities[rootful] ]]; then
+    ROOTFUL_SELECTED=true
+    unset 'requested_authorities[rootful]'
+  fi
+  declare -a selected_names=() selected_users=() selected_state_roots=() selected_graph_roots=()
+  declare -a selected_volume_roots=() selected_uids=() selected_subuid_starts=()
+  for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+    domain="${ROOTLESS_DOMAIN_NAMES[$i]}"
+    if [[ -v requested_authorities["$domain"] ]]; then
+      selected_names+=("$domain"); selected_users+=("${ROOTLESS_DOMAIN_USERS[$i]}")
+      selected_state_roots+=("${ROOTLESS_DOMAIN_STATE_ROOTS[$i]}"); selected_graph_roots+=("${ROOTLESS_DOMAIN_GRAPH_ROOTS[$i]}")
+      selected_volume_roots+=("${ROOTLESS_DOMAIN_VOLUME_ROOTS[$i]}"); selected_uids+=("${ROOTLESS_DOMAIN_UIDS[$i]}")
+      selected_subuid_starts+=("${ROOTLESS_DOMAIN_SUBUID_STARTS[$i]}")
+      unset 'requested_authorities[$domain]'
+    fi
+  done
+  for authority in "${!requested_authorities[@]}"; do
+    printf 'unknown deployment authority: %s\n' "$authority" >&2
+    exit 1
+  done
+  [ "$ROOTFUL_SELECTED" = true ] || [ "${#selected_names[@]}" -gt 0 ] || {
+    printf 'deployment scope is empty\n' >&2
+    exit 1
+  }
+  ROOTLESS_DOMAIN_NAMES=("${selected_names[@]}"); ROOTLESS_DOMAIN_USERS=("${selected_users[@]}")
+  ROOTLESS_DOMAIN_STATE_ROOTS=("${selected_state_roots[@]}"); ROOTLESS_DOMAIN_GRAPH_ROOTS=("${selected_graph_roots[@]}")
+  ROOTLESS_DOMAIN_VOLUME_ROOTS=("${selected_volume_roots[@]}"); ROOTLESS_DOMAIN_UIDS=("${selected_uids[@]}")
+  ROOTLESS_DOMAIN_SUBUID_STARTS=("${selected_subuid_starts[@]}")
+fi
 command -v podman >/dev/null
 command -v systemd-analyze >/dev/null
 
@@ -295,7 +340,7 @@ verify_quadlet_dir() {
   systemd-analyze verify "${units[@]}"
 }
 
-verify_quadlet_dir rootful "$ROOTFUL_QUADLET_SOURCE"
+if [ "$ROOTFUL_SELECTED" = true ]; then verify_quadlet_dir rootful "$ROOTFUL_QUADLET_SOURCE"; fi
 for domain in "${ROOTLESS_DOMAIN_NAMES[@]}"; do
   source="$BUNDLE/quadlet/rootless-$domain"
   [ -d "$source" ] || { printf 'missing rootless Quadlet domain: %s\n' "$source" >&2; exit 1; }
@@ -323,34 +368,29 @@ declare -a ROOTLESS_QUADLET_DIRS=()
 declare -a ROOTLESS_SYSTEMD_DIRS=()
 
 ensure_rootless_domain() {
-  local index="$1" user state_root graph_root volume_root expected_uid expected_subuid uid home runtime env_store quadlet_dir systemd_dir subid_start current_subuid current_subgid
+  local index="$1" user state_root graph_root volume_root expected_uid expected_subuid uid gid home runtime env_store quadlet_dir systemd_dir current_subuid current_subgid linger
   user="${ROOTLESS_DOMAIN_USERS[$index]}"
   state_root="${ROOTLESS_DOMAIN_STATE_ROOTS[$index]}"
   graph_root="${ROOTLESS_DOMAIN_GRAPH_ROOTS[$index]}"
   volume_root="${ROOTLESS_DOMAIN_VOLUME_ROOTS[$index]}"
   expected_uid="${ROOTLESS_DOMAIN_UIDS[$index]}"
   expected_subuid="${ROOTLESS_DOMAIN_SUBUID_STARTS[$index]}"
-  if ! id "$user" >/dev/null 2>&1; then
-    if [ -n "$expected_uid" ]; then
-      useradd --system --uid "$expected_uid" --create-home --home-dir "/home/$user" --shell /usr/sbin/nologin "$user"
-    else
-      useradd --system --create-home --home-dir "/home/$user" --shell /usr/sbin/nologin "$user"
-    fi
-  fi
+  id "$user" >/dev/null 2>&1 || { printf 'missing runtime account %s; provision accounts separately before deployment\n' "$user" >&2; exit 1; }
   uid="$(id -u "$user")"
+  gid="$(id -g "$user")"
   [ -z "$expected_uid" ] || [ "$uid" = "$expected_uid" ] || { printf 'uid drift for %s: expected %s, found %s\n' "$user" "$expected_uid" "$uid" >&2; exit 1; }
   home="$(getent passwd "$user" | cut -d: -f6)"
-  if ! grep -q "^${user}:" /etc/subuid || ! grep -q "^${user}:" /etc/subgid; then
-    subid_start="${expected_subuid:-$(next_subid_start)}"
-    grep -q "^${user}:" /etc/subuid || usermod --add-subuids "${subid_start}-$((subid_start + 65535))" "$user"
-    grep -q "^${user}:" /etc/subgid || usermod --add-subgids "${subid_start}-$((subid_start + 65535))" "$user"
-  fi
+  [ -d "$home" ] && [ "$(stat -c %u "$home")" = "$uid" ] || { printf 'runtime home ownership drift for %s\n' "$user" >&2; exit 1; }
+  current_subuid="$(awk -F: -v user="$user" '$1 == user { print $2; exit }' /etc/subuid)"
+  current_subgid="$(awk -F: -v user="$user" '$1 == user { print $2; exit }' /etc/subgid)"
+  [ -n "$current_subuid" ] && [ -n "$current_subgid" ] || { printf 'missing subordinate IDs for %s; provision accounts separately before deployment\n' "$user" >&2; exit 1; }
   if [ -n "$expected_subuid" ]; then
     current_subuid="$(awk -F: -v user="$user" '$1 == user { print $2; exit }' /etc/subuid)"
     current_subgid="$(awk -F: -v user="$user" '$1 == user { print $2; exit }' /etc/subgid)"
     [ "$current_subuid" = "$expected_subuid" ] && [ "$current_subgid" = "$expected_subuid" ] || { printf 'subordinate-id drift for %s\n' "$user" >&2; exit 1; }
   fi
-  loginctl enable-linger "$user"
+  linger="$(loginctl show-user "$user" -p Linger --value)"
+  [ "$linger" = yes ] || { printf 'linger is not enabled for %s; reconcile account policy before deployment\n' "$user" >&2; exit 1; }
   systemctl start "user@${uid}.service"
   runtime="/run/user/${uid}/webservices"
   env_store="$state_root/runtime-env"
@@ -364,15 +404,15 @@ ensure_rootless_domain() {
   ROOTLESS_ENV_STORES[$index]="$env_store"
   ROOTLESS_QUADLET_DIRS[$index]="$quadlet_dir"
   ROOTLESS_SYSTEMD_DIRS[$index]="$systemd_dir"
-  install -d -m 0711 -o root -g root /mnt/stack/podman
-  case "$(dirname "$graph_root")" in
-    /mnt/stack/podman/*) install -d -m 0710 -o root -g "$user" "$(dirname "$graph_root")" ;;
-  esac
-  mkdir -p "${ROOTLESS_RELEASES[$index]}" "$state_root/releases" "$graph_root" "$volume_root" "$runtime" "$env_store" "$quadlet_dir" "$systemd_dir" "$home/.config/containers"
-  if command -v setfacl >/dev/null 2>&1; then
-    setfacl -b -k "$graph_root" "$volume_root"
-  fi
-  chown "$user:$user" "$state_root" "$state_root/releases" "${ROOTLESS_RELEASES[$index]}" "$graph_root" "$volume_root" "$runtime" "$env_store"
+  for protected_path in "$state_root" "$graph_root" "$volume_root"; do
+    [ -d "$protected_path" ] || { printf 'missing protected runtime/storage path %s; provision storage separately\n' "$protected_path" >&2; exit 1; }
+    [ "$(stat -c %u "$protected_path")" = "$uid" ] || { printf 'runtime/storage ownership drift at %s\n' "$protected_path" >&2; exit 1; }
+  done
+  [ -f "$home/.config/containers/storage.conf" ] && grep -Fqx "graphroot = \"$graph_root\"" "$home/.config/containers/storage.conf" || {
+    printf 'Podman graphroot configuration drift for %s\n' "$user" >&2; exit 1;
+  }
+  install -d -m 0700 -o "$user" -g "$gid" "$state_root/releases" "${ROOTLESS_RELEASES[$index]}" "$runtime" "$env_store" "$quadlet_dir" "$systemd_dir"
+  return 0
   # The account-private parent is setgid for host-side administration. Podman
   # graph directories must not inherit that bit: it otherwise turns overlay
   # layer roots into mode 2550 and prevents non-root container users from
@@ -418,15 +458,18 @@ cancel_webservices_start_jobs() {
   fi
 }
 
-mkdir -p "$release" "$STATE_ROOT/releases" "$STATE_ROOT/test-results" "$STATE_ROOT/runtime-env" "$QUADLET_DIR" /run/webservices /var/log/webservices/caddy
-chmod 0700 "$STATE_ROOT/runtime-env"
+mkdir -p "$release" "$STATE_ROOT/releases"
+if [ "$ROOTFUL_SELECTED" = true ]; then
+  mkdir -p "$STATE_ROOT/test-results" "$STATE_ROOT/runtime-env" "$QUADLET_DIR" /run/webservices /var/log/webservices/caddy
+  chmod 0700 "$STATE_ROOT/runtime-env"
+fi
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   ensure_rootless_domain "$i"
 done
 
 # The persistent rootful store is also the natural input for an update. Snapshot
 # it before stale-file cleanup so an in-place update cannot erase its own source.
-if [ "$(readlink -f "$ENV_DIR")" = "$(readlink -f "$STATE_ROOT/runtime-env")" ]; then
+if [ "$ROOTFUL_SELECTED" = true ] && [ "$(readlink -f "$ENV_DIR")" = "$(readlink -f "$STATE_ROOT/runtime-env")" ]; then
   env_input_snapshot="$(mktemp -d)"
   cleanup_paths+=("$env_input_snapshot")
   chmod 0700 "$env_input_snapshot"
@@ -436,23 +479,25 @@ fi
 
 # A service moved between rootless domains can otherwise keep its old host port
 # and volume mounts while the replacement domain starts.
-cancel_webservices_start_jobs rootful 0
+if [ "$ROOTFUL_SELECTED" = true ]; then cancel_webservices_start_jobs rootful 0; fi
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   cancel_webservices_start_jobs rootless "$i"
 done
-systemctl stop webservices.target || true
+if [ "$ROOTFUL_SELECTED" = true ]; then systemctl stop webservices.target || true; fi
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user_systemctl "$i" stop webservices.target || true
   user_systemctl "$i" reset-failed 'webservices-*' || true
 done
-systemctl reset-failed 'webservices-*' || true
+if [ "$ROOTFUL_SELECTED" = true ]; then systemctl reset-failed 'webservices-*' || true; fi
 cp -a "$BUNDLE/." "$release/"
+if [ -n "$DEPLOYMENT_RELEASE" ]; then printf '%s\n' "$DEPLOYMENT_RELEASE" > "$release/.platform-zero-release"; chmod 0600 "$release/.platform-zero-release"; fi
 install -d -m 0755 "$release/repos"
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user="${ROOTLESS_DOMAIN_USERS[$i]}"
   domain="${ROOTLESS_DOMAIN_NAMES[$i]}"
   rootless_release="${ROOTLESS_RELEASES[$i]}"
   cp -a "$BUNDLE/." "$rootless_release/"
+  if [ -n "$DEPLOYMENT_RELEASE" ]; then printf '%s\n' "$DEPLOYMENT_RELEASE" > "$rootless_release/.platform-zero-release"; chmod 0600 "$rootless_release/.platform-zero-release"; fi
   install -d -m 0755 "$rootless_release/repos"
   python3 - "$rootless_release" "$domain" <<'PY'
 import json
@@ -526,29 +571,35 @@ done
 # authenticated flows across every declared dependency, while ordinary
 # service domains continue to receive only their own per-service env files.
 test_runner_domain="$(jq -r '.services["test-runner"].rootlessDomain // empty' "$BUNDLE/stack.ir.json")"
-if [ -n "$test_runner_domain" ]; then
+if [ -n "$test_runner_domain" ] && [[ " ${ROOTLESS_DOMAIN_NAMES[*]} " == *" $test_runner_domain "* ]]; then
   i="$(domain_index_by_name "$test_runner_domain")" || { printf 'test-runner names unknown domain: %s\n' "$test_runner_domain" >&2; exit 1; }
   user="${ROOTLESS_DOMAIN_USERS[$i]}"
   install -m 0600 -o "$user" -g "$user" "$BUNDLE/runtime/stack.env" "${ROOTLESS_RELEASES[$i]}/runtime/stack.env"
 fi
-chmod 0700 /run/webservices
-find "$STATE_ROOT/runtime-env" -maxdepth 1 -type f -name '*.env' -delete
+if [ "$ROOTFUL_SELECTED" = true ]; then
+  chmod 0700 /run/webservices
+  find "$STATE_ROOT/runtime-env" -maxdepth 1 -type f -name '*.env' -delete
+fi
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   find "${ROOTLESS_ENV_STORES[$i]}" -maxdepth 1 -type f -name '*.env' -delete
 done
 for env_file in "$ENV_DIR"/*.env; do
   [ -e "$env_file" ] || continue
-  destination="/run/webservices/${env_file##*/}"
-  if [ "$(readlink -f "$env_file")" = "$(readlink -f "$destination" 2>/dev/null || printf '%s' "$destination")" ]; then
-    chmod 0600 "$destination"
-  else
-    install -m 0600 "$env_file" "$destination"
-  fi
-  install -m 0600 "$env_file" "$STATE_ROOT/runtime-env/${env_file##*/}"
   service="${env_file##*/}"
   service="${service%.env}"
+  placement="$(jq -r --arg service "$service" '.services[$service].placement // empty' "$BUNDLE/stack.ir.json")"
   domain="$(jq -r --arg service "$service" '.services[$service] | select(.placement == "rootless") | .rootlessDomain // empty' "$BUNDLE/stack.ir.json")"
+  if [ "$placement" != "rootless" ] && [ "$ROOTFUL_SELECTED" = true ]; then
+    destination="/run/webservices/${env_file##*/}"
+    if [ "$(readlink -f "$env_file")" = "$(readlink -f "$destination" 2>/dev/null || printf '%s' "$destination")" ]; then
+      chmod 0600 "$destination"
+    else
+      install -m 0600 "$env_file" "$destination"
+    fi
+    install -m 0600 "$env_file" "$STATE_ROOT/runtime-env/${env_file##*/}"
+  fi
   if [ -n "$domain" ]; then
+    [[ " ${ROOTLESS_DOMAIN_NAMES[*]} " == *" $domain "* ]] || continue
     i="$(domain_index_by_name "$domain")" || { printf 'environment names unknown domain: %s\n' "$domain" >&2; exit 1; }
     user="${ROOTLESS_DOMAIN_USERS[$i]}"
     rootless_destination="${ROOTLESS_RUNTIMES[$i]}/${env_file##*/}"
@@ -558,7 +609,7 @@ for env_file in "$ENV_DIR"/*.env; do
 done
 
 forgejo_runner_ssh_dir="$(sed -n 's/^FORGEJO_RUNNER_SSH_DIR=//p' "$ENV_DIR/forgejo-runner.env" 2>/dev/null | tail -n 1)"
-if [ -n "$forgejo_runner_ssh_dir" ]; then
+if [ -n "$forgejo_runner_ssh_dir" ] && [[ " ${ROOTLESS_DOMAIN_NAMES[*]} " == *" forgejo-runner "* ]]; then
   forgejo_index="$(domain_index_by_name forgejo-runner)"
   forgejo_user="${ROOTLESS_DOMAIN_USERS[$forgejo_index]}"
   install -d -m 0700 -o "$forgejo_user" -g "$forgejo_user" "$forgejo_runner_ssh_dir"
@@ -566,6 +617,7 @@ if [ -n "$forgejo_runner_ssh_dir" ]; then
 fi
 
 jq -r '.volumes | to_entries[] | [.key, (.value.hostPath // "")] | @tsv' "$BUNDLE/stack.ir.json" | while IFS="$(printf '\t')" read -r name path; do
+  [ "$ROOTFUL_SELECTED" = true ] || continue
   case "$path" in
     "")
       ;;
@@ -654,14 +706,17 @@ grant_shared_access() {
 }
 
 command -v python3 >/dev/null
-python3 - "$BUNDLE/stack.ir.json" "$DOMAINS_FILE" <<'PY' | while IFS="$(printf '\t')" read -r domain strategy source destination; do
+python3 - "$BUNDLE/stack.ir.json" "$DOMAINS_FILE" "${ROOTLESS_DOMAIN_NAMES[@]}" <<'PY' | while IFS="$(printf '\t')" read -r domain strategy source destination; do
 import json
 import sys
 
 ir = json.load(open(sys.argv[1]))
 domain_config = {item["name"]: item for item in json.load(open(sys.argv[2]))["domains"]}
+selected_domains = set(sys.argv[3:])
 volumes = ir.get("volumes", {})
-rootless_services = [svc for svc in ir.get("services", {}).values() if svc.get("placement", "rootful") == "rootless"]
+rootless_services = [svc for svc in ir.get("services", {}).values()
+                    if svc.get("placement", "rootful") == "rootless"
+                    and (not selected_domains or svc.get("rootlessDomain", "webservices") in selected_domains)]
 seen = set()
 
 def rootless_host_path(domain, name):
@@ -732,24 +787,28 @@ install_runtime_env_unit() {
   chmod 0644 "$unit_file" "$dropin_dir/10-runtime-env.conf"
 }
 
-ln -sfn "$release" "$STATE_ROOT/.current-new"
-mv -Tf "$STATE_ROOT/.current-new" "$STATE_ROOT/current"
+if [ "$ROOTFUL_SELECTED" = true ]; then
+  ln -sfn "$release" "$STATE_ROOT/.current-new"
+  mv -Tf "$STATE_ROOT/.current-new" "$STATE_ROOT/current"
+fi
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   state_root="${ROOTLESS_DOMAIN_STATE_ROOTS[$i]}"
   rootless_release="${ROOTLESS_RELEASES[$i]}"
   ln -sfn "$rootless_release" "$state_root/.current-new"
   mv -Tf "$state_root/.current-new" "$state_root/current"
 done
-find "$QUADLET_DIR" -maxdepth 1 -type f -name 'webservices-*' -delete
-find /etc/systemd/system -maxdepth 1 -type f -name 'webservices-*.target' -delete
-find /etc/systemd/system -maxdepth 1 -type f -name 'webservices.target' -delete
-find "$release/quadlet/rootful" -maxdepth 1 -type f ! -name '*.target' -exec install -m 0644 {} "$QUADLET_DIR/" \;
-install -m 0644 "$release/quadlet/rootful"/*.target /etc/systemd/system/
-install_runtime_env_unit \
-  /etc/systemd/system/webservices-runtime-env.service \
-  /etc/systemd/system/webservices.target.d \
-  "$STATE_ROOT/runtime-env" \
-  /run/webservices
+if [ "$ROOTFUL_SELECTED" = true ]; then
+  find "$QUADLET_DIR" -maxdepth 1 -type f -name 'webservices-*' -delete
+  find /etc/systemd/system -maxdepth 1 -type f -name 'webservices-*.target' -delete
+  find /etc/systemd/system -maxdepth 1 -type f -name 'webservices.target' -delete
+  find "$release/quadlet/rootful" -maxdepth 1 -type f ! -name '*.target' -exec install -m 0644 {} "$QUADLET_DIR/" \;
+  install -m 0644 "$release/quadlet/rootful"/*.target /etc/systemd/system/
+  install_runtime_env_unit \
+    /etc/systemd/system/webservices-runtime-env.service \
+    /etc/systemd/system/webservices.target.d \
+    "$STATE_ROOT/runtime-env" \
+    /run/webservices
+fi
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   domain="${ROOTLESS_DOMAIN_NAMES[$i]}"
   user="${ROOTLESS_DOMAIN_USERS[$i]}"
@@ -769,14 +828,18 @@ for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
     "$user" \
     "$user"
 done
-install -m 0755 "$release/ops/webservices-auto-update" /usr/local/sbin/webservices-auto-update
-install -m 0644 "$release/ops/webservices-auto-update.service" "$release/ops/webservices-auto-update.timer" /etc/systemd/system/
+if [ "$ROOTFUL_SELECTED" = true ]; then
+  install -m 0755 "$release/ops/webservices-auto-update" /usr/local/sbin/webservices-auto-update
+  install -m 0644 "$release/ops/webservices-auto-update.service" "$release/ops/webservices-auto-update.timer" /etc/systemd/system/
+fi
 
 rollback() {
   status=$?
   printf '[podman-install] activation failed; restoring previous release\n' >&2
-  cancel_webservices_start_jobs rootful 0
-  systemctl stop webservices.target || true
+  if [ "$ROOTFUL_SELECTED" = true ]; then
+    cancel_webservices_start_jobs rootful 0
+    systemctl stop webservices.target || true
+  fi
   for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
     cancel_webservices_start_jobs rootless "$i"
     user_systemctl "$i" stop webservices.target || true
@@ -802,7 +865,7 @@ rollback() {
       user_systemctl "$i" restart webservices.target || true
     fi
   done
-  if [ -n "$previous" ] && [ -d "$previous/quadlet" ]; then
+  if [ "$ROOTFUL_SELECTED" = true ] && [ -n "$previous" ] && [ -d "$previous/quadlet" ]; then
     ln -sfn "$previous" "$STATE_ROOT/.current-old"
     mv -Tf "$STATE_ROOT/.current-old" "$STATE_ROOT/current"
     find "$QUADLET_DIR" -maxdepth 1 -type f -name 'webservices-*' -delete
@@ -820,7 +883,7 @@ rollback() {
 if [ "$ACTIVATION_ROLLBACK" = "1" ]; then
   trap rollback ERR
 else
-  trap - ERR
+  trap 'status=$?; printf "[podman-install] activation command failed at line=%s status=%s\\n" "$LINENO" "$status" >&2; exit "$status"' ERR
   printf '[podman-install] automatic rollback disabled; activation failures will remain in place for fix-forward repair\n' >&2
 fi
 
@@ -897,7 +960,12 @@ wait_for_cross_domain_producers() {
   while IFS=$'\t' read -r service domain; do
     [ -n "$service" ] && [ -n "$domain" ] || continue
     unit="webservices-${service}.service"
-    index="$(domain_index_by_name "$domain")"
+    # A scoped activation deliberately leaves unaffected producer domains
+    # alone. Their health is validated by preflight; only wait on units in a
+    # domain this operation is actually activating.
+    if ! index="$(domain_index_by_name "$domain")"; then
+      continue
+    fi
     deadline=$((SECONDS + ${WEBSERVICES_ACTIVATION_TIMEOUT_SECONDS:-1800}))
     while true; do
       state="$(user_systemctl "$index" is-active "$unit" 2>/dev/null || true)"
@@ -954,6 +1022,8 @@ grant_test_runner_managed_socket_access() {
   launch_domain="$(jq -r '.services["test-runner"].rootlessDomain // empty' "$BUNDLE/stack.ir.json")"
   managed_domain="$(jq -r '.services["test-runner-managed"].rootlessDomain // empty' "$BUNDLE/stack.ir.json")"
   [ -n "$launch_domain" ] && [ -n "$managed_domain" ] || return 0
+  [[ " ${ROOTLESS_DOMAIN_NAMES[*]} " == *" $launch_domain "* ]] || return 0
+  [[ " ${ROOTLESS_DOMAIN_NAMES[*]} " == *" $managed_domain "* ]] || return 0
   launch_index="$(domain_index_by_name "$launch_domain")"
   managed_index="$(domain_index_by_name "$managed_domain")"
   [ "$launch_index" != "$managed_index" ] || return 0
@@ -973,10 +1043,12 @@ grant_test_runner_managed_socket_access() {
   [ -S "$socket" ] && chgrp "$managed_user" "$socket" && chmod go+rw "$socket"
 }
 
-systemctl daemon-reload
-restart_rootful_network_units
-if systemctl list-unit-files webservices-caddy.service --no-legend --no-pager | grep -q '^webservices-caddy\.service'; then
-  systemctl restart webservices-caddy.service || true
+if [ "$ROOTFUL_SELECTED" = true ]; then
+  systemctl daemon-reload
+  restart_rootful_network_units
+  if systemctl list-unit-files webservices-caddy.service --no-legend --no-pager | grep -q '^webservices-caddy\.service'; then
+    systemctl restart webservices-caddy.service || true
+  fi
 fi
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user_systemctl "$i" daemon-reload
@@ -987,7 +1059,7 @@ for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   restart_rootless_network_units "$i"
 done
 grant_test_runner_managed_socket_access
-systemctl enable --now webservices-auto-update.timer
+if [ "$ROOTFUL_SELECTED" = true ]; then systemctl enable --now webservices-auto-update.timer; fi
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user_systemctl "$i" --no-block restart webservices.target
 done
@@ -997,13 +1069,15 @@ for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   wait_for_target_services rootless "$i" "${ROOTLESS_SYSTEMD_DIRS[$i]}"
   user_systemctl "$i" --quiet is-active webservices.target
 done
-systemctl reset-failed 'webservices-*' || true
-systemctl enable webservices.target
-systemctl restart webservices.target
-wait_for_target_services rootful 0 /etc/systemd/system
-systemctl --quiet is-active webservices.target
+if [ "$ROOTFUL_SELECTED" = true ]; then
+  systemctl reset-failed 'webservices-*' || true
+  systemctl enable webservices.target
+  systemctl restart webservices.target
+  wait_for_target_services rootful 0 /etc/systemd/system
+  systemctl --quiet is-active webservices.target
+fi
 trap - ERR
-printf '[podman-install] active rootful release: %s\n' "$release"
+if [ "$ROOTFUL_SELECTED" = true ]; then printf '[podman-install] active rootful release: %s\n' "$release"; fi
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   printf '[podman-install] active rootless %s release: %s\n' "${ROOTLESS_DOMAIN_NAMES[$i]}" "${ROOTLESS_RELEASES[$i]}"
 done
