@@ -451,6 +451,8 @@ diagnostic = BROKER.summarize_test_output(
        [p0-test-evidence] huly-prepare=post-auth-location-account-callback route=huly
        [p0-test-evidence] huly-prepare=post-auth-location-auth-gateway route=huly
        [p0-test-evidence] huly-prepare=openid-start-http-5xx route=huly
+       [p0-test-evidence] huly-prepare=keycloak-backchannel-2xx route=huly
+       [p0-test-evidence] huly-prepare=keycloak-metadata-endpoints-mixed route=huly
        [p0-test-evidence] huly-prepare=post-auth-location-account-auth route=huly
        Request body: user@example.test secret-value
        https://private.invalid/path
@@ -461,7 +463,8 @@ assert diagnostic["failureDiagnostics"] == [
 ]
 assert diagnostic["readinessStagesByRoute"] == {
     "huly": ["accounts-providers-5xx", "initial-fields-none", "initial-other-shell",
-             "initial-ui-other", "keycloak-password-absent", "login-submit-started",
+             "initial-ui-other", "keycloak-backchannel-2xx", "keycloak-metadata-endpoints-mixed",
+             "keycloak-password-absent", "login-submit-started",
              "openid-callback-http-5xx", "openid-flow-entry-missing",
              "openid-provider-unavailable", "openid-start-http-5xx",
              "post-auth-location-account-auth", "post-auth-location-account-callback",

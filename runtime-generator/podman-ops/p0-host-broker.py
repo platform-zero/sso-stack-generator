@@ -739,6 +739,8 @@ def summarize_test_output(output: str) -> dict[str, object] | None:
         r"signup-credentials-filled|signup-submit-(?:started|clicked)|"
         r"keycloak-password-absent|accounts-providers-(?:network-error|5xx|4xx|2xx|other)|"
         r"openid-provider-(?:present|absent|unavailable)|"
+        r"keycloak-backchannel-(?:network-error|5xx|4xx|2xx|other)|"
+        r"keycloak-metadata-endpoints-(?:mixed|public|private|other|unavailable)|"
         r"openid-callback-http-(?:unobserved|5xx|4xx|3xx|2xx|other)|"
         r"openid-start-http-(?:unobserved|5xx|4xx|3xx|2xx|other)|"
         r"post-auth-location-(?:keycloak|auth-gateway|account-callback|account-auth|account-api|app-login|app-root|huly-front|other)|"
