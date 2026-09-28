@@ -311,6 +311,8 @@ build_derived_render_values() {
   derive_if_missing SEAFILE_EMAIL_PASSWORD seafile-email 48
   derive_if_missing SEAFILE_SECRET_KEY seafile-secret 48
   derive_if_missing KOPIA_PASSWORD kopia-password 64
+  derive_if_missing NTFY_SSO_PASSWORD ntfy-sso 48
+  render_set NTFY_SSO_AUTHORIZATION "Basic $(printf 'ntfy-sso:%s' "$(render_get NTFY_SSO_PASSWORD)" | base64 | tr -d '\n')"
   if ! render_has KOPIA_SERVER_USERNAME || [ -z "$(render_get KOPIA_SERVER_USERNAME)" ]; then
     render_set KOPIA_SERVER_USERNAME "kopia"
   fi
