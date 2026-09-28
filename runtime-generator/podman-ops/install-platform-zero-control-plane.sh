@@ -93,6 +93,17 @@ install_workspace_lifecycle() {
 install_workspace_lifecycle "$BUNDLE/maintenance-workspaces.json"
 install_workspace_lifecycle "$BUNDLE/software-workspaces.json"
 
+# Retire the former nightly Android timer; the connectivity suite is on demand.
+android_timer=/etc/systemd/system/platform-zero-android-apps.timer
+if [ -f "$android_timer" ]; then
+  grep -Fqx 'Description=Nightly Android application matrix' "$android_timer" || {
+    printf 'refusing to remove locally changed Android timer: %s\n' "$android_timer" >&2
+    exit 1
+  }
+  systemctl disable --now platform-zero-android-apps.timer
+  rm -f "$android_timer" /etc/systemd/system/platform-zero-android-apps.service
+fi
+
 systemctl daemon-reload
 systemctl enable --now platform-zero-host-broker.socket
 printf '[platform-zero] restricted control plane installed; Gerald sudo remains unchanged\n'
