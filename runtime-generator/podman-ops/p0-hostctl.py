@@ -11,7 +11,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=[
         "plan", "apply", "operation-status", "diagnostics", "verify", "rollback",
-        "status", "logs", "break-glass-request", "break-glass-approve", "break-glass-read",
+        "status", "logs", "test", "break-glass-request", "break-glass-approve", "break-glass-read",
     ])
     parser.add_argument("--bundle")
     parser.add_argument("--release")
@@ -22,6 +22,7 @@ def main() -> int:
     parser.add_argument("--operation-id")
     parser.add_argument("--request-id")
     parser.add_argument("--service")
+    parser.add_argument("--suite")
     parser.add_argument("--reason")
     parser.add_argument("--path")
     parser.add_argument("--ttl-seconds", type=int)

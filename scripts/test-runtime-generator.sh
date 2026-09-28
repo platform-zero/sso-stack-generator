@@ -16,7 +16,7 @@ default_site="$ROOT_DIR/../site-config/sites/latium/manifest.json"
 synthetic_site=false
 if [ -n "${SITE_MANIFEST:-}" ]; then
   SOURCE_SITE="$SITE_MANIFEST"
-elif [ -f "$default_site" ]; then
+elif [ "${RUNTIME_TEST_SYNTHETIC:-0}" != "1" ] && [ -f "$default_site" ]; then
   SOURCE_SITE="$default_site"
 else
   synthetic_site=true
@@ -41,7 +41,10 @@ else
         components: ["full", "searxng", "workload-spawner"],
         modules: .
       }' > "$fixture_site/manifest.json"
-  cat > "$fixture_site/global.settings/stack.config.yaml" <<'EOF_STACK_CONFIG'
+  if [ -f "$default_site" ]; then
+    cp "$(dirname "$default_site")/global.settings/stack.config.yaml" "$fixture_site/global.settings/stack.config.yaml"
+  else
+    cat > "$fixture_site/global.settings/stack.config.yaml" <<'EOF_STACK_CONFIG'
 storage:
   media_writer_uid: 1000
   media_writer_gid: 1000
@@ -66,6 +69,7 @@ vaultwarden:
   org_identifier: "example.test"
   org_id: "00000000-0000-0000-0000-000000000000"
 EOF_STACK_CONFIG
+  fi
   mapfile -t fixture_secret_keys < <(
     {
       rg --follow -o --no-filename '\{\{[A-Z_][A-Z0-9_]*\}\}' "$MODULES_DIR" \

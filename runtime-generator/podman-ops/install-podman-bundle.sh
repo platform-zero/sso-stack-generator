@@ -883,7 +883,7 @@ rollback() {
 if [ "$ACTIVATION_ROLLBACK" = "1" ]; then
   trap rollback ERR
 else
-  trap - ERR
+  trap 'status=$?; printf "[podman-install] activation command failed at line=%s status=%s\\n" "$LINENO" "$status" >&2; exit "$status"' ERR
   printf '[podman-install] automatic rollback disabled; activation failures will remain in place for fix-forward repair\n' >&2
 fi
 
@@ -960,7 +960,12 @@ wait_for_cross_domain_producers() {
   while IFS=$'\t' read -r service domain; do
     [ -n "$service" ] && [ -n "$domain" ] || continue
     unit="webservices-${service}.service"
-    index="$(domain_index_by_name "$domain")"
+    # A scoped activation deliberately leaves unaffected producer domains
+    # alone. Their health is validated by preflight; only wait on units in a
+    # domain this operation is actually activating.
+    if ! index="$(domain_index_by_name "$domain")"; then
+      continue
+    fi
     deadline=$((SECONDS + ${WEBSERVICES_ACTIVATION_TIMEOUT_SECONDS:-1800}))
     while true; do
       state="$(user_systemctl "$index" is-active "$unit" 2>/dev/null || true)"
