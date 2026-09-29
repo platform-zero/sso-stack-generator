@@ -313,6 +313,9 @@ build_derived_render_values() {
   derive_if_missing KOPIA_PASSWORD kopia-password 64
   derive_if_missing NTFY_SSO_PASSWORD ntfy-sso 48
   render_set NTFY_SSO_AUTHORIZATION "Basic $(printf 'ntfy-sso:%s' "$(render_get NTFY_SSO_PASSWORD)" | base64 | tr -d '\n')"
+  derive_if_missing NTFY_NATIVE_CLIENT_SECRET ntfy-native-client 48
+  derive_if_missing NTFY_NATIVE_GATEWAY_SECRET ntfy-native-gateway 48
+  render_set NTFY_PUBLISHER_AUTHORIZATION "Basic $(printf '%s:%s' "$(render_get NTFY_USERNAME)" "$(render_get NTFY_PASSWORD)" | base64 | tr -d '\n')"
   if ! render_has KOPIA_SERVER_USERNAME || [ -z "$(render_get KOPIA_SERVER_USERNAME)" ]; then
     render_set KOPIA_SERVER_USERNAME "kopia"
   fi
