@@ -58,10 +58,10 @@ state, and writes `bundle.tar`, `bundle.tar.sha256`, and `bundle.json`.
 ```bash
 ./site-build.sh --site-lock /path/to/site.lock.json --output /tmp/site-release
 ./scripts/site/deploy-site.sh --site-lock /path/to/site.lock.json --bundle-dir /tmp/site-release \
-  --readiness-command './verify.sh'
+  --readiness-command './verify.sh' --host user@example.org
 ```
 
-The deploy command uploads only the completed bundle to `gerald@192.168.0.11`.
+The deploy command uploads only the completed bundle to the specified host.
 The host verifies the checksum, artifact manifest, and lock hash, extracts a
 new release under `~/webservices/releases`, runs the configured readiness
 command, then atomically updates `~/webservices/current`. It never clones or
