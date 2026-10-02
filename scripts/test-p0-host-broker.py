@@ -7,6 +7,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,11 +18,21 @@ BROKER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BROKER)
 
 
-def fixture(root: Path, relative: str, quadlet: str, owner: str = "webservices-communications") -> Path:
+with tempfile.TemporaryDirectory() as temporary:
+    subuids = Path(temporary) / "subuid"
+    subuids.write_text("stack_lab:2000000:65536\nother:3000000:65536\n")
+    with patch.object(BROKER.pwd, "getpwnam", return_value=type("Record", (), {"pw_uid": 1002})()):
+        direct, subordinate = BROKER.authorized_uid_ranges("stack_lab", subuids)
+    assert BROKER.authorized_peer(1002, direct, subordinate)
+    assert BROKER.authorized_peer(2000999, direct, subordinate)
+    assert not BROKER.authorized_peer(3000999, direct, subordinate)
+
+
+def fixture(root: Path, relative: str, quadlet: str, owner: str = "webservices-apps", capabilities=None) -> Path:
     files = {
         "bundle.json": {"backend": "podman"},
         "stack.ir.json": {},
-        "podman-domains.json": {"domains": [{"name": "communications", "user": owner}]},
+        "podman-domains.json": {"domains": [{"name": "apps", "user": owner, "hostCapabilities": capabilities or []}]},
         "podman-loopback-endpoints.json": {},
     }
     for name, value in files.items():
@@ -52,30 +63,45 @@ with tempfile.TemporaryDirectory() as temporary:
     BROKER.validate_bundle(
         fixture(
             allowed,
-            "quadlet/rootless-communications/webservices-livekit.container",
+            "quadlet/rootless-apps/webservices-livekit.container",
             "[Container]\nNetwork=host\n",
         )
     )
     rejected(
         fixture(
             base / "wrong-service",
-            "quadlet/rootless-communications/webservices-element.container",
+            "quadlet/rootless-apps/webservices-element.container",
             "[Container]\nNetwork=host\n",
         )
     )
     rejected(
         fixture(
             base / "wrong-owner",
-            "quadlet/rootless-communications/webservices-livekit.container",
+            "quadlet/rootless-apps/webservices-livekit.container",
             "[Container]\nNetwork=host\n",
-            owner="webservices-media",
+            owner="webservices-platform",
         )
     )
     rejected(
         fixture(
             base / "privileged",
-            "quadlet/rootless-communications/webservices-livekit.container",
+            "quadlet/rootless-apps/webservices-livekit.container",
             "[Container]\nNetwork=host\nPrivileged=true\n",
+        )
+    )
+    BROKER.validate_bundle(
+        fixture(
+            base / "kvm",
+            "quadlet/rootless-apps/webservices-android.container",
+            "[Container]\nAddDevice=/dev/kvm:/dev/kvm\nGroupAdd=keep-groups\n",
+            capabilities=["kvm"],
+        )
+    )
+    rejected(
+        fixture(
+            base / "kvm-without-capability",
+            "quadlet/rootless-apps/webservices-android.container",
+            "[Container]\nAddDevice=/dev/kvm:/dev/kvm\nGroupAdd=keep-groups\n",
         )
     )
 
@@ -138,3 +164,43 @@ finally:
     BROKER.user_systemctl = original_user_systemctl
 
 print("[test-p0-host-broker-retired-legacy] ok")
+
+with tempfile.TemporaryDirectory() as temporary:
+    root = Path(temporary)
+    incoming = root / "incoming"
+    snapshots = root / "snapshots"
+    releases = root / "releases"
+    domains = root / "podman-domains.json"
+    active = root / "active.json"
+    for parent, count in ((snapshots, 7), (releases, 5)):
+        parent.mkdir()
+        for index in range(count):
+            path = parent / f"release-{index}"
+            path.mkdir()
+            path.touch()
+            BROKER.os.utime(path, (index + 1, index + 1))
+    incoming.mkdir()
+    old = incoming / ("a" * 64)
+    current = incoming / ("b" * 64)
+    old.mkdir()
+    current.mkdir()
+    BROKER.os.utime(old, (1, 1))
+    BROKER.os.utime(current, (1, 1))
+    active.write_text(json.dumps({"release": current.name}))
+    domains.write_text(json.dumps({"domains": []}))
+    with patch.multiple(
+        BROKER,
+        INCOMING=incoming,
+        SNAPSHOTS=snapshots,
+        DOMAINS_MANIFEST=domains,
+        ACTIVE_RELEASE=active,
+        ROOTFUL_RELEASES=releases,
+    ):
+        preview = BROKER.garbage_collect({"dry_run": True})
+        assert preview["dryRun"] and str(old) in preview["removed"]
+        assert old.exists() and len(list(snapshots.iterdir())) == 7
+        result = BROKER.garbage_collect({})
+        assert not result["dryRun"] and not old.exists() and current.exists()
+        assert len(list(snapshots.iterdir())) == BROKER.SNAPSHOT_RETENTION
+
+print("[test-p0-host-broker-gc] ok")

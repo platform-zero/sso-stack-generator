@@ -373,6 +373,17 @@ ensure_rootless_domain() {
     setfacl -b -k "$graph_root" "$volume_root"
   fi
   chown "$user:$user" "$state_root" "$state_root/releases" "${ROOTLESS_RELEASES[$index]}" "$graph_root" "$volume_root" "$runtime" "$env_store"
+  # The account-private parent is setgid for host-side administration. Podman
+  # graph directories must not inherit that bit: it otherwise turns overlay
+  # layer roots into mode 2550 and prevents non-root container users from
+  # traversing their own root filesystem.
+  chmod 0700 "$graph_root"
+  find "$graph_root" -mindepth 1 -maxdepth 1 -type d -perm -2000 -exec chmod g-s {} +
+  if [ -d "$graph_root/overlay" ]; then
+    find "$graph_root/overlay" -mindepth 1 -maxdepth 1 -type d -exec chmod 0700 {} +
+    find "$graph_root/overlay" -mindepth 2 -maxdepth 2 -type d \
+      \( -name diff -o -name merged \) -exec chmod 0755 {} +
+  fi
   chown -R "$user:$user" "$home/.config"
   chmod 0700 "$env_store"
   printf '[storage]\ndriver = "overlay"\ngraphroot = "%s"\n' "$graph_root" > "$home/.config/containers/storage.conf"
@@ -617,11 +628,20 @@ for directory, names, files in os.walk(root):
     paths.extend(base / name for name in names)
     paths.extend(base / name for name in files)
 for path in paths:
-    stat = path.lstat()
+    try:
+        stat = path.lstat()
+    except FileNotFoundError:
+        # Mutable stores (for example Loki WALs) may remove a file between
+        # os.walk() and ownership translation. A later activation will see
+        # any replacement; a vanished path needs no ownership update.
+        continue
     uid = translated(stat.st_uid, legacy_uid, target_uid)
     gid = translated(stat.st_gid, legacy_gid, target_gid)
     if (uid, gid) != (stat.st_uid, stat.st_gid):
-        os.lchown(path, uid, gid)
+        try:
+            os.lchown(path, uid, gid)
+        except FileNotFoundError:
+            continue
 PY
 }
 
@@ -699,7 +719,8 @@ install_runtime_env_unit() {
     '' \
     '[Service]' \
     'Type=oneshot' \
-    "ExecStart=/bin/sh -ec '/usr/bin/install -d -m 0700 $runtime_dir; /usr/bin/find $source_dir -maxdepth 1 -type f -name \"*.env\" -exec /usr/bin/install -m 0600 {} $runtime_dir/ \\;'" \
+    'WorkingDirectory=/' \
+    "ExecStart=/bin/sh -ec '/usr/bin/install -d -m 0700 $runtime_dir; for env_file in $source_dir/*.env; do [ -e \"\$env_file\" ] || continue; /usr/bin/install -m 0600 \"\$env_file\" $runtime_dir/; done'" \
     'RemainAfterExit=yes' \
     >"$unit_file"
   printf '%s\n' \
@@ -871,7 +892,7 @@ restart_rootless_network_units() {
 
 wait_for_cross_domain_producers() {
   local endpoints="$BUNDLE/podman-loopback-endpoints.json"
-  local service domain index unit state deadline
+  local service domain index unit state job deadline
   [ -f "$endpoints" ] || return 0
   while IFS=$'\t' read -r service domain; do
     [ -n "$service" ] && [ -n "$domain" ] || continue
@@ -881,7 +902,8 @@ wait_for_cross_domain_producers() {
     while true; do
       state="$(user_systemctl "$index" is-active "$unit" 2>/dev/null || true)"
       [ "$state" = "active" ] && break
-      if [ "$state" = "failed" ]; then
+      job="$(user_systemctl "$index" show -p Job --value "$unit" 2>/dev/null || true)"
+      if [ "$state" = "failed" ] && [ -z "$job" ]; then
         printf '[podman-install] cross-domain producer failed: domain=%s unit=%s\n' "$domain" "$unit" >&2
         user_systemctl "$index" status "$unit" --no-pager -l >&2 || true
         return 1

@@ -3,12 +3,13 @@ Description=Platform Zero restricted host broker socket
 
 [Socket]
 ListenStream=/run/platform-zero/host-broker.sock
-# The socket remains group-restricted; the parent must be searchable so
-# stack_lab can reach it after systemd recreates /run on every boot.
+# Kernel peer credentials remain the authorization boundary. The socket must
+# admit stack_lab's subordinate UIDs so its explicitly mounted control/host
+# Worklanes can connect; the broker rejects every unrelated UID.
 DirectoryMode=0755
 SocketUser=root
 SocketGroup=stack_lab
-SocketMode=0660
+SocketMode=0666
 RemoveOnStop=true
 
 [Install]
