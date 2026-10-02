@@ -129,11 +129,10 @@ on_verify_error() {
 trap 'on_verify_error' ERR
 
 verify_podman_release_ready() {
-  local rootless_user="${WEBSERVICES_ROOTLESS_USER:-webservices}"
-  local rootless_uid rootless_home failed_rootful failed_rootless
-
-  rootless_uid="$(id -u "$rootless_user")"
-  rootless_home="$(getent passwd "$rootless_user" | cut -d: -f6)"
+  local domains_file rootless_user rootless_uid rootless_home failed_rootful failed_rootless
+  domains_file="$BUNDLE_ROOT/podman-domains.json"
+  [ -f "$domains_file" ] || domains_file="$DEPLOY_ROOT/podman-domains.json"
+  [ -f "$domains_file" ] || die "Podman release is missing podman-domains.json"
 
   set_phase "podman-readiness"
   systemctl is-active --quiet webservices.target
@@ -143,16 +142,21 @@ verify_podman_release_ready() {
     die "one or more rootful webservices units are failed"
   fi
 
-  /usr/sbin/runuser -u "$rootless_user" -- \
-    env HOME="$rootless_home" XDG_RUNTIME_DIR="/run/user/${rootless_uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${rootless_uid}/bus" \
-    systemctl --user is-active --quiet webservices.target
-  failed_rootless="$(/usr/sbin/runuser -u "$rootless_user" -- \
-    env HOME="$rootless_home" XDG_RUNTIME_DIR="/run/user/${rootless_uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${rootless_uid}/bus" \
-    systemctl --user list-units --failed --no-legend 'webservices*' || true)"
-  if [ -n "$failed_rootless" ]; then
-    printf '%s\n' "$failed_rootless" >&2
-    die "one or more rootless webservices units are failed"
-  fi
+  while IFS= read -r rootless_user; do
+    id "$rootless_user" >/dev/null 2>&1 || die "missing Podman domain account: $rootless_user"
+    rootless_uid="$(id -u "$rootless_user")"
+    rootless_home="$(getent passwd "$rootless_user" | cut -d: -f6)"
+    /usr/sbin/runuser -u "$rootless_user" -- \
+      env HOME="$rootless_home" XDG_RUNTIME_DIR="/run/user/${rootless_uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${rootless_uid}/bus" \
+      systemctl --user is-active --quiet webservices.target
+    failed_rootless="$(/usr/sbin/runuser -u "$rootless_user" -- \
+      env HOME="$rootless_home" XDG_RUNTIME_DIR="/run/user/${rootless_uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${rootless_uid}/bus" \
+      systemctl --user list-units --failed --no-legend 'webservices*' || true)"
+    if [ -n "$failed_rootless" ]; then
+      printf '%s\n' "$failed_rootless" >&2
+      die "one or more rootless webservices units are failed for $rootless_user"
+    fi
+  done < <(jq -r '.domains[].user' "$domains_file")
 
   if [ "$READY_ONLY" != "1" ]; then
     die "installed Podman release verification supports --ready-only; run test suites from the source checkout"

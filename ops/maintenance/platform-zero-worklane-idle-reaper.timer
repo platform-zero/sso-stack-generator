@@ -1,0 +1,12 @@
+[Unit]
+Description=Check Platform Zero Worklanes for four hours of inactivity
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Persistent=true
+Unit=platform-zero-worklane-idle-reaper.service
+
+[Install]
+WantedBy=timers.target

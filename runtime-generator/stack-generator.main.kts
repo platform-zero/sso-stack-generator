@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode
 import com.fasterxml.jackson.databind.node.JsonNodeFactory
 import com.fasterxml.jackson.databind.node.ObjectNode
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory
+import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -320,46 +321,237 @@ fun validateServicePlacement(name: String, service: ObjectNode) {
     if (placement !in setOf("rootful", "rootless")) fail("service '$name' has invalid placement '$placement'")
 }
 
-val podmanRootfulServices = setOf(
-    "alloy",
-    "caddy",
-    "crowdsec",
-    "kopia",
-    "kopia-snapshotter",
-    "mailserver",
-    "node-exporter",
-    "volume-init"
+data class RootlessDomainPolicy(
+    val name: String,
+    val user: String,
+    val stateRoot: String,
+    val graphRoot: String,
+    val volumeRoot: String,
+    val modules: Set<String>,
+    val allowDependencies: Set<String>,
+    val uid: Int?,
+    val subuidStart: Int?
 )
 
-val podmanRootlessServiceDomains = mapOf(
-    "test-runner-managed" to "test-runners",
-    "forgejo-runner" to "forgejo-runner",
-    "jupyter-notebook-build" to "jupyterhub",
-    "jupyterhub" to "jupyterhub",
-    "workload-spawner-api" to "workload-spawner",
-    "workload-spawner-router" to "workload-spawner",
-    "workload-spawner-postgres" to "workload-spawner"
+data class CrossDomainEndpointPolicy(
+    val service: String,
+    val containerPort: Int,
+    val hostPort: Int,
+    val protocol: String,
+    val consumers: Set<String>
 )
 
-val podmanRootlessSocketUsers = mapOf(
-    "webservices" to "webservices",
-    "test-runners" to "webservices-test-runners",
-    "forgejo-runner" to "webservices-forgejo-runner",
-    "jupyterhub" to "webservices-jupyterhub",
-    "workload-spawner" to "webservices-workload-spawner"
+data class PodmanPolicy(
+    val rootfulModules: Set<String>,
+    val rootfulServices: Set<String>,
+    val domains: List<RootlessDomainPolicy>,
+    val serviceDomains: Map<String, String>,
+    val crossDomainEndpoints: List<CrossDomainEndpointPolicy>,
+    val maintenanceRoot: String
 )
 
-fun applyPodmanPlacementPolicy(ir: ObjectNode) {
+lateinit var activePodmanPolicy: PodmanPolicy
+
+fun stringSet(node: JsonNode, label: String): Set<String> {
+    if (!node.isArray) fail("$label must be an array")
+    val values = node.map(JsonNode::asText)
+    if (values.any(String::isBlank)) fail("$label contains an empty value")
+    if (values.size != values.toSet().size) fail("$label contains duplicate values")
+    return values.toSet()
+}
+
+fun readPodmanPolicy(manifestPath: Path): PodmanPolicy {
+    val manifest = readTree(manifestPath)
+    val stackConfig = manifest.path("stackConfig").textOrNull()
+        ?: fail("site manifest must declare stackConfig for Podman domain policy")
+    val configPath = manifestPath.parent.resolve(stackConfig).normalize()
+    val podman = readTree(configPath).path("podman")
+    if (!podman.isObject) fail("$configPath must define podman")
+    val rootfulModules = stringSet(podman.path("rootful_modules"), "podman.rootful_modules")
+    val rootfulServices = podman.path("rootful_services").let {
+        if (it.isMissingNode) emptySet() else stringSet(it, "podman.rootful_services")
+    }
+    val domainsNode = podman.path("domains")
+    if (!domainsNode.isObject || domainsNode.isEmpty) fail("podman.domains must be a non-empty object")
+    val moduleOwners = mutableMapOf<String, String>()
+    val users = mutableSetOf<String>()
+    val stateRoots = mutableSetOf<String>()
+    val graphRoots = mutableSetOf<String>()
+    val domains = domainsNode.fieldsMap().map { (name, raw) ->
+        if (!name.matches(Regex("[a-z0-9][a-z0-9-]*"))) fail("invalid Podman domain name '$name'")
+        val user = raw.path("user").asText().ifBlank { fail("podman domain '$name' has no user") }
+        if (!users.add(user)) fail("Podman user '$user' is assigned to more than one domain")
+        val stateRoot = raw.path("state_root").asText("/mnt/stack/podman/$name/state")
+        val graphRoot = raw.path("graph_root").asText("/mnt/stack/podman/$name/storage")
+        val volumeRoot = raw.path("volume_root").asText("/mnt/stack/rootless/$name")
+        if (!stateRoot.startsWith("/mnt/stack/") || !graphRoot.startsWith("/mnt/stack/") || !volumeRoot.startsWith("/mnt/stack/")) {
+            fail("Podman domain '$name' storage must live below /mnt/stack")
+        }
+        if (!stateRoots.add(stateRoot)) fail("duplicate Podman state root '$stateRoot'")
+        if (!graphRoots.add(graphRoot)) fail("duplicate Podman graph root '$graphRoot'")
+        val modules = stringSet(raw.path("modules"), "podman.domains.$name.modules")
+        modules.forEach { module -> moduleOwners.put(module, name)?.let { fail("module '$module' belongs to both '$it' and '$name'") } }
+        val allowDependencies = raw.path("allow_dependencies").let {
+            if (it.isMissingNode) emptySet() else stringSet(it, "podman.domains.$name.allow_dependencies")
+        }
+        val uid = raw.path("uid").takeUnless(JsonNode::isMissingNode)?.asInt()
+        val subuidStart = raw.path("subuid_start").takeUnless(JsonNode::isMissingNode)?.asInt()
+        if (uid != null && uid < 1) fail("Podman domain '$name' has invalid uid")
+        if (subuidStart != null && subuidStart < 100000) fail("Podman domain '$name' has invalid subuid_start")
+        RootlessDomainPolicy(name, user, stateRoot, graphRoot, volumeRoot, modules, allowDependencies, uid, subuidStart)
+    }
+    domains.forEach { domain ->
+        val unknown = domain.allowDependencies - domains.map { it.name }.toSet()
+        if (unknown.isNotEmpty()) fail("Podman domain '${domain.name}' allows unknown dependencies: ${unknown.sorted().joinToString()}")
+        if (domain.name in domain.allowDependencies) fail("Podman domain '${domain.name}' cannot declare itself as a cross-domain dependency")
+    }
+    val configuredUids = domains.mapNotNull { it.uid }
+    if (configuredUids.size != configuredUids.toSet().size) fail("Podman domain UIDs must be unique")
+    val configuredSubuids = domains.mapNotNull { it.subuidStart }
+    if (configuredSubuids.size != configuredSubuids.toSet().size) fail("Podman domain subuid_start values must be unique")
+    val serviceDomains = mutableMapOf<String, String>()
+    podman.path("service_domains").fieldsMap().forEach { (service, domain) ->
+        val domainName = domain.asText()
+        if (domains.none { it.name == domainName }) fail("service '$service' names unknown domain '$domainName'")
+        serviceDomains[service] = domainName
+    }
+    val endpointKeys = mutableSetOf<String>()
+    val endpointPorts = mutableSetOf<Pair<String, Int>>()
+    val crossDomainEndpoints = podman.path("cross_domain_endpoints").let { endpointNode ->
+        if (endpointNode.isMissingNode) emptyList() else {
+            if (!endpointNode.isArray) fail("podman.cross_domain_endpoints must be an array")
+            endpointNode.mapIndexed { index, raw ->
+                val label = "podman.cross_domain_endpoints[$index]"
+                val service = raw.path("service").asText().ifBlank { fail("$label has no service") }
+                val containerPort = raw.path("container_port").asInt()
+                val hostPort = raw.path("host_port").asInt()
+                val protocol = raw.path("protocol").asText("tcp")
+                val consumers = stringSet(raw.path("consumers"), "$label.consumers")
+                if (containerPort !in 1..65535 || hostPort !in 1024..65535) fail("$label has an invalid port")
+                if (protocol !in setOf("tcp", "udp")) fail("$label protocol must be tcp or udp")
+                if (consumers.isEmpty()) fail("$label must name at least one consumer domain")
+                val unknownConsumers = consumers - (domains.map { it.name }.toSet() + "rootful")
+                if (unknownConsumers.isNotEmpty()) fail("$label names unknown consumers: ${unknownConsumers.sorted().joinToString()}")
+                val key = "$service/$containerPort/$protocol"
+                if (!endpointKeys.add(key)) fail("duplicate cross-domain endpoint $key")
+                if (!endpointPorts.add(protocol to hostPort)) fail("duplicate cross-domain host port $protocol/$hostPort")
+                CrossDomainEndpointPolicy(service, containerPort, hostPort, protocol, consumers)
+            }
+        }
+    }
+    return PodmanPolicy(
+        rootfulModules,
+        rootfulServices,
+        domains,
+        serviceDomains,
+        crossDomainEndpoints,
+        podman.path("maintenance_root").asText("/mnt/lab_debian/stack_lab/stack_work")
+    )
+}
+
+fun rewriteEndpointText(value: String, provider: String, containerPort: Int, hostPort: Int): String {
+    return value.replace(
+        Regex("(?<![a-zA-Z0-9_-])${Regex.escape(provider)}:${containerPort}(?![0-9])"),
+        "host.containers.internal:$hostPort"
+    )
+}
+
+fun rewriteEndpointConfigText(value: String, provider: String, containerPort: Int, hostPort: Int): String {
+    val pairedPort = Regex(
+        "(?is)((?:host|hostname|db_host|postgres_host)\\s*[:=]\\s*[\\\"']?${Regex.escape(provider)}[\\\"']?.{0,160}?(?:port|db_port|postgres_port)\\s*[:=]\\s*[\\\"']?)${containerPort}(?![0-9])"
+    ).replace(value) { match -> "${match.groupValues[1]}$hostPort" }
+    return rewriteEndpointText(pairedPort, provider, containerPort, hostPort).replace(
+        Regex("(?i)((?:host|hostname|db_host|postgres_host)\\s*[:=]\\s*[\\\"']?)${Regex.escape(provider)}(?![a-zA-Z0-9_-])")
+    ) { match -> "${match.groupValues[1]}host.containers.internal" }
+}
+
+fun rewriteEndpointCommand(value: JsonNode, provider: String, containerPort: Int, hostPort: Int): JsonNode {
+    val rewritten = rewriteEndpointTree(value, provider, containerPort, hostPort)
+    fun replaceBare(text: String): String = text.replace(
+        Regex("(?<![a-zA-Z0-9_-])${Regex.escape(provider)}(?![a-zA-Z0-9_-])"),
+        "host.containers.internal"
+    )
+    return when {
+        rewritten.isTextual -> nodes.textNode(replaceBare(rewritten.asText()))
+        rewritten.isArray -> arr().also { output -> rewritten.forEach { child ->
+            output.add(if (child.isTextual) nodes.textNode(replaceBare(child.asText())) else child)
+        } }
+        else -> rewritten
+    }
+}
+
+fun rewriteEndpointTree(value: JsonNode, provider: String, containerPort: Int, hostPort: Int): JsonNode = when {
+    value.isTextual -> nodes.textNode(rewriteEndpointText(value.asText(), provider, containerPort, hostPort))
+    value.isArray -> arr().also { output -> value.forEach { output.add(rewriteEndpointTree(it, provider, containerPort, hostPort)) } }
+    value.isObject -> obj().also { output -> value.fieldsMap().forEach { (key, child) ->
+        output.set<JsonNode>(key, rewriteEndpointTree(child, provider, containerPort, hostPort))
+    } }
+    else -> value.deepCopy()
+}
+
+fun applyCrossDomainEndpointPolicy(ir: ObjectNode, policy: PodmanPolicy) {
+    val services = ir.path("services") as ObjectNode
+    policy.crossDomainEndpoints.forEach { endpoint ->
+        val provider = services.path(endpoint.service)
+        if (provider.isMissingNode) fail("cross-domain endpoint names unknown service '${endpoint.service}'")
+        val providerDomain = podmanDomainForService(provider).name
+        if (providerDomain in endpoint.consumers) fail("cross-domain endpoint '${endpoint.service}' includes its provider domain '$providerDomain'")
+        endpoint.consumers.forEach { consumerDomain ->
+            if (consumerDomain != "rootful") {
+                val allowed = policy.domains.first { it.name == consumerDomain }.allowDependencies
+                if (providerDomain != "rootful" && providerDomain !in allowed) {
+                    fail("endpoint consumer '$consumerDomain' does not allow provider domain '$providerDomain'")
+                }
+            }
+            val consumers = services.fieldsMap().filter { (_, service) -> podmanDomainForService(service).name == consumerDomain }
+            consumers.forEach consumerService@{ (_, rawService) ->
+                val service = rawService as ObjectNode
+                service.get("environment")?.let { current ->
+                    service.set<JsonNode>("environment", rewriteEndpointTree(current, endpoint.service, endpoint.containerPort, endpoint.hostPort))
+                }
+                listOf("command", "entrypoint", "health").forEach { field ->
+                    val current = service.get(field) ?: return@forEach
+                    service.set<JsonNode>(field, rewriteEndpointCommand(current, endpoint.service, endpoint.containerPort, endpoint.hostPort))
+                }
+                val environment = service.path("environment") as? ObjectNode ?: return@consumerService
+                environment.fieldsMap()
+                    .filter { (key, value) -> key.endsWith("HOST") && value.asText() == endpoint.service }
+                    .forEach { (key, _) -> environment.put(key, "host.containers.internal") }
+                val hostKeys = environment.fieldsMap()
+                    .filter { (key, value) -> key.endsWith("HOST") && value.asText() == "host.containers.internal" }
+                    .map { it.first }
+                hostKeys.forEach { hostKey ->
+                    val portKey = hostKey.removeSuffix("HOST") + "PORT"
+                    if (environment.has(portKey) && environment.path(portKey).asInt(-1) == endpoint.containerPort) {
+                        environment.put(portKey, endpoint.hostPort)
+                    }
+                }
+            }
+        }
+    }
+}
+
+fun applyPodmanPlacementPolicy(ir: ObjectNode, policy: PodmanPolicy) {
+    val moduleDomains = policy.domains.flatMap { domain -> domain.modules.map { it to domain.name } }.toMap()
+    val knownModules = ir.path("modules").map { it.path("id").asText() }.toSet()
+    val configuredModules = policy.rootfulModules + moduleDomains.keys
+    val unknownModules = configuredModules - knownModules
+    if (unknownModules.isNotEmpty()) fail("Podman policy names unselected modules: ${unknownModules.sorted().joinToString()}")
     ir.path("services").fieldsMap().forEach { (name, serviceNode) ->
         val service = serviceNode as ObjectNode
-        if (name in podmanRootfulServices) {
+        val module = service.path("module").asText()
+        if (name in policy.rootfulServices || module in policy.rootfulModules) {
             service.put("placement", "rootful")
         } else {
-            val domain = podmanRootlessServiceDomains[name] ?: "webservices"
+            val domain = policy.serviceDomains[name] ?: moduleDomains[module]
+                ?: fail("service '$name' from module '$module' has no Podman domain owner")
+            val domainPolicy = policy.domains.first { it.name == domain }
             service.put("placement", "rootless")
             service.put("rootlessDomain", domain)
-            service.put("rootlessUser", podmanRootlessSocketUsers.getValue(domain))
-            service.put("rootlessStateRoot", if (domain == "webservices") "/var/lib/webservices-rootless" else "/var/lib/webservices-rootless-$domain")
+            service.put("rootlessUser", domainPolicy.user)
+            service.put("rootlessStateRoot", domainPolicy.stateRoot)
+            service.put("rootlessGraphRoot", domainPolicy.graphRoot)
+            service.put("rootlessVolumeRoot", domainPolicy.volumeRoot)
             service.put("rootlessRuntimeDir", "/run/user/\${${domain.uppercase().replace("-", "_")}_ROOTLESS_UID}/webservices")
         }
         if (name == "caddy") {
@@ -815,7 +1007,9 @@ data class PodmanDomain(
     val rootlessUser: String?,
     val envFilePrefix: String,
     val targetInstall: String,
-    val releaseRoot: String
+    val releaseRoot: String,
+    val graphRoot: String? = null,
+    val volumeRoot: String? = null
 )
 
 val rootfulDomain = PodmanDomain(
@@ -828,63 +1022,36 @@ val rootfulDomain = PodmanDomain(
     releaseRoot = "/var/lib/webservices/current"
 )
 
-val rootlessDomains = listOf(
-    PodmanDomain(
-        name = "webservices",
-        quadletDir = "quadlet/rootless-webservices",
-        stateRoot = "/var/lib/webservices-rootless",
-        rootlessUser = "webservices",
-        envFilePrefix = "%t/webservices",
-        targetInstall = "default.target",
-        releaseRoot = "/var/lib/webservices-rootless/current"
-    ),
-    PodmanDomain(
-        name = "test-runners",
-        quadletDir = "quadlet/rootless-test-runners",
-        stateRoot = "/var/lib/webservices-rootless-test-runners",
-        rootlessUser = "webservices-test-runners",
-        envFilePrefix = "%t/webservices",
-        targetInstall = "default.target",
-        releaseRoot = "/var/lib/webservices-rootless-test-runners/current"
-    ),
-    PodmanDomain(
-        name = "forgejo-runner",
-        quadletDir = "quadlet/rootless-forgejo-runner",
-        stateRoot = "/var/lib/webservices-rootless-forgejo-runner",
-        rootlessUser = "webservices-forgejo-runner",
-        envFilePrefix = "%t/webservices",
-        targetInstall = "default.target",
-        releaseRoot = "/var/lib/webservices-rootless-forgejo-runner/current"
-    ),
-    PodmanDomain(
-        name = "jupyterhub",
-        quadletDir = "quadlet/rootless-jupyterhub",
-        stateRoot = "/var/lib/webservices-rootless-jupyterhub",
-        rootlessUser = "webservices-jupyterhub",
-        envFilePrefix = "%t/webservices",
-        targetInstall = "default.target",
-        releaseRoot = "/var/lib/webservices-rootless-jupyterhub/current"
-    ),
-    PodmanDomain(
-        name = "workload-spawner",
-        quadletDir = "quadlet/rootless-workload-spawner",
-        stateRoot = "/var/lib/webservices-rootless-workload-spawner",
-        rootlessUser = "webservices-workload-spawner",
-        envFilePrefix = "%t/webservices",
-        targetInstall = "default.target",
-        releaseRoot = "/var/lib/webservices-rootless-workload-spawner/current"
-    )
-)
+val rootlessDomains: List<PodmanDomain>
+    get() = activePodmanPolicy.domains.map {
+        PodmanDomain(
+            name = it.name,
+            quadletDir = "quadlet/rootless-${it.name}",
+            stateRoot = it.stateRoot,
+            rootlessUser = it.user,
+            envFilePrefix = "%t/webservices",
+            targetInstall = "default.target",
+            releaseRoot = "${it.stateRoot}/current",
+            graphRoot = it.graphRoot,
+            volumeRoot = it.volumeRoot
+        )
+    }
 
-val rootlessDomainByName = rootlessDomains.associateBy { it.name }
-val defaultRootlessDomain = rootlessDomainByName.getValue("webservices")
+val rootlessDomainByName: Map<String, PodmanDomain>
+    get() = rootlessDomains.associateBy { it.name }
 
 fun podmanDomainForService(service: JsonNode): PodmanDomain =
     if (service.path("placement").asText("rootful") == "rootful") rootfulDomain
-    else rootlessDomainByName[service.path("rootlessDomain").asText("webservices")]
+    else rootlessDomainByName[service.path("rootlessDomain").asText()]
         ?: fail("service has unknown rootless domain '${service.path("rootlessDomain").asText()}'")
 
-data class LoopbackEndpoint(val service: String, val containerPort: String, val hostPort: Int)
+data class LoopbackEndpoint(
+    val service: String,
+    val containerPort: String,
+    val hostPort: Int,
+    val protocol: String = "tcp",
+    val consumers: Set<String> = setOf("rootful")
+)
 fun podmanNetworkName(domain: PodmanDomain, name: String): String =
     if (domain.name == "rootful") "webservices_$name" else "webservices_${domain.name}_$name"
 
@@ -896,20 +1063,14 @@ fun qualifiedImage(image: String, updatePolicy: String): String {
     return ref
 }
 
-fun rootlessHostPath(name: String, hostPath: String): String {
-    return when {
-        hostPath.startsWith("/mnt/stack/volumes/") -> "/mnt/stack/rootless/volumes/${hostPath.removePrefix("/mnt/stack/volumes/")}"
-        hostPath.startsWith("/mnt/stack/pg-ssd/") -> "/mnt/stack/rootless/pg-ssd/${hostPath.removePrefix("/mnt/stack/pg-ssd/")}"
-        hostPath.startsWith("/mnt/stack/vector-dbs/") -> "/mnt/stack/rootless/vector-dbs/${hostPath.removePrefix("/mnt/stack/vector-dbs/")}"
-        else -> "/mnt/stack/rootless/volumes/$name"
-    }
-}
+fun rootlessHostPath(name: String, domain: PodmanDomain): String =
+    "${domain.volumeRoot ?: fail("rootless domain '${domain.name}' has no volume root")}/$name"
 
 fun resolvedVolumeSource(source: String, allVolumes: JsonNode, domain: PodmanDomain): String {
     val volume = allVolumes.path(source)
     val hostPath = volume.path("hostPath").textOrNull() ?: return runtimeBindPath(source, domain)
     if (domain.name == "rootful") return hostPath
-    return if (volume.path("rootlessStrategy").asText("copy") == "shared") hostPath else rootlessHostPath(source, hostPath)
+    return if (volume.path("rootlessStrategy").asText("copy") == "shared") hostPath else rootlessHostPath(source, domain)
 }
 
 fun rootlessCopyVolume(source: String, allVolumes: JsonNode, domain: PodmanDomain): Boolean {
@@ -1005,40 +1166,129 @@ fun renderEnvironmentTemplate(name: String, service: ObjectNode, output: Path) {
     output.resolve("runtime-env/$name.env.template").apply { parent.createDirectories(); writeText(lines + "\n") }
 }
 
+fun rewriteCrossDomainConfigs(ir: ObjectNode, output: Path) {
+    val configRoot = output.resolve("runtime/configs")
+    if (!configRoot.isDirectory()) return
+    val owners = mutableMapOf<String, MutableSet<String>>()
+    ir.path("services").fieldsMap().forEach { (_, service) ->
+        val domain = podmanDomainForService(service).name
+        service.path("volumes").forEach { mount ->
+            val source = if (mount.isTextual) mount.asText().substringBefore(':') else mount.path("source").asText()
+            if (source.startsWith("./configs/")) {
+                val relative = source.removePrefix("./configs/")
+                if (relative.isNotBlank()) owners.getOrPut(relative) { linkedSetOf() }.add(domain)
+            }
+        }
+    }
+    configRoot.toFile().walkTopDown().filter(File::isFile).forEach { file ->
+        val relative = configRoot.relativize(file.toPath())
+        val domains = owners.entries
+            .filter { (mount, _) -> relative.toString() == mount || (configRoot.resolve(mount).isDirectory() && relative.startsWith(mount)) }
+            .flatMapTo(linkedSetOf()) { it.value }
+        if (domains.isEmpty()) return@forEach
+        val original = runCatching { file.readText() }.getOrNull() ?: return@forEach
+        if ('\u0000' in original) return@forEach
+        var content = original
+        activePodmanPolicy.crossDomainEndpoints
+            .filter { endpoint -> domains.any { it in endpoint.consumers } }
+            .forEach { endpoint ->
+                content = rewriteEndpointConfigText(content, endpoint.service, endpoint.containerPort, endpoint.hostPort)
+            }
+        if (content != original) file.writeText(content)
+    }
+}
+
 fun loopbackEndpoints(ir: ObjectNode, output: Path): Map<String, List<LoopbackEndpoint>> {
+    rewriteCrossDomainConfigs(ir, output)
+    val endpoints = linkedMapOf<Triple<String, String, String>, LoopbackEndpoint>()
+    activePodmanPolicy.crossDomainEndpoints.forEach { endpoint ->
+        endpoints[Triple(endpoint.service, endpoint.containerPort.toString(), endpoint.protocol)] = LoopbackEndpoint(
+            endpoint.service,
+            endpoint.containerPort.toString(),
+            endpoint.hostPort,
+            endpoint.protocol,
+            endpoint.consumers
+        )
+    }
     val caddyFile = output.resolve("runtime/configs/caddy/Caddyfile")
-    if (!caddyFile.isRegularFile()) return emptyMap()
-    val knownServices = ir.path("services").fieldsMap().map { it.first }.toSet()
-    val endpointPattern = Regex("\\b([a-z0-9][a-z0-9-]*):(\\d{2,5})\\b")
-    val endpoints = linkedMapOf<Pair<String, String>, LoopbackEndpoint>()
-    endpointPattern.findAll(caddyFile.readText()).forEach { match ->
-        val service = match.groupValues[1]
-        val port = match.groupValues[2]
-        if (service in knownServices) {
-            endpoints.getOrPut(service to port) {
-                LoopbackEndpoint(service, port, 18080 + endpoints.size)
+    if (caddyFile.isRegularFile()) {
+        val knownServices = ir.path("services").fieldsMap().map { it.first }.toSet()
+        val endpointPattern = Regex("\\b([a-z0-9][a-z0-9-]*):(\\d{2,5})\\b")
+        var nextCaddyPort = 18080
+        endpointPattern.findAll(caddyFile.readText()).forEach { match ->
+            val service = match.groupValues[1]
+            val port = match.groupValues[2]
+            if (service in knownServices) {
+                val key = Triple(service, port, "tcp")
+                val existing = endpoints[key]
+                if (existing != null) {
+                    endpoints[key] = existing.copy(consumers = existing.consumers + "rootful")
+                } else {
+                    while (endpoints.values.any { it.hostPort == nextCaddyPort && it.protocol == "tcp" }) nextCaddyPort++
+                    endpoints[key] = LoopbackEndpoint(service, port, nextCaddyPort++)
+                }
+            }
+        }
+        var rewritten = caddyFile.readText()
+        endpoints.values.filter { "rootful" in it.consumers }.forEach { endpoint ->
+            rewritten = rewritten.replace(
+                Regex("\\b${Regex.escape(endpoint.service)}:${Regex.escape(endpoint.containerPort)}\\b"),
+                "127.0.0.1:${endpoint.hostPort}"
+            )
+        }
+        caddyFile.writeText(rewritten)
+    }
+    val testDomain = activePodmanPolicy.domains.firstOrNull { it.name == "test-runners" }
+    if (testDomain != null) {
+        endpoints.entries.toList().forEach { (key, endpoint) ->
+            val providerDomain = podmanDomainForService(ir.path("services").path(endpoint.service)).name
+            if (providerDomain == "rootful" || providerDomain in testDomain.allowDependencies) {
+                endpoints[key] = endpoint.copy(consumers = endpoint.consumers + testDomain.name)
             }
         }
     }
     if (endpoints.isEmpty()) return emptyMap()
-    var rewritten = caddyFile.readText()
-    endpoints.values.forEach { endpoint ->
-        rewritten = rewritten.replace(
-            Regex("\\b${Regex.escape(endpoint.service)}:${Regex.escape(endpoint.containerPort)}\\b"),
-            "127.0.0.1:${endpoint.hostPort}"
-        )
-    }
-    caddyFile.writeText(rewritten)
     val rows = arr()
-    endpoints.values.sortedWith(compareBy({ it.service }, { it.containerPort })).forEach { endpoint ->
-        rows.add(obj()
-            .put("service", endpoint.service)
-            .put("containerPort", endpoint.containerPort)
-            .put("hostPort", endpoint.hostPort)
-            .put("url", "http://127.0.0.1:${endpoint.hostPort}"))
+    endpoints.values.sortedWith(compareBy({ it.service }, { it.containerPort }, { it.protocol })).forEach { endpoint ->
+        rows.add(obj().also { row ->
+            row.put("service", endpoint.service)
+            row.put("containerPort", endpoint.containerPort)
+            row.put("hostPort", endpoint.hostPort)
+            row.put("protocol", endpoint.protocol)
+            row.set<ArrayNode>("consumers", arr().addAll(endpoint.consumers.sorted().map(nodes::textNode)))
+            row.put("url", "http://127.0.0.1:${endpoint.hostPort}")
+        })
     }
     writeJson(output.resolve("podman-loopback-endpoints.json"), obj().set<ArrayNode>("endpoints", rows))
+    renderEndpointNftables(ir, endpoints.values.toList(), output)
     return endpoints.values.groupBy { it.service }
+}
+
+fun renderEndpointNftables(ir: ObjectNode, endpoints: List<LoopbackEndpoint>, output: Path) {
+    val uidByDomain = activePodmanPolicy.domains.associate { domain ->
+        domain.name to (domain.uid ?: fail("nftables endpoint policy requires a fixed uid for domain '${domain.name}'"))
+    }
+    val portsByUidProtocol = linkedMapOf<Pair<Int, String>, MutableSet<Int>>()
+    endpoints.forEach { endpoint ->
+        val provider = ir.path("services").path(endpoint.service)
+        val providerDomain = podmanDomainForService(provider).name
+        val allowedDomains = endpoint.consumers + providerDomain
+        val uids = allowedDomains.map { if (it == "rootful") 0 else uidByDomain[it] ?: fail("unknown endpoint domain '$it'") } + 0
+        uids.forEach { uid -> portsByUidProtocol.getOrPut(uid to endpoint.protocol) { linkedSetOf() }.add(endpoint.hostPort) }
+    }
+    val allByProtocol = endpoints.groupBy { it.protocol }.mapValues { (_, values) -> values.map { it.hostPort }.toSortedSet() }
+    val lines = mutableListOf("table inet platform_zero {", "  chain output {", "    type filter hook output priority -10; policy accept;")
+    portsByUidProtocol.toSortedMap(compareBy<Pair<Int, String>>({ it.first }, { it.second })).forEach { (key, ports) ->
+        val (uid, protocol) = key
+        lines += "    meta skuid $uid $protocol dport { ${ports.sorted().joinToString(", ")} } accept"
+    }
+    allByProtocol.toSortedMap().forEach { (protocol, ports) ->
+        val values = ports.joinToString(", ")
+        lines += "    ip daddr 127.0.0.0/8 $protocol dport { $values } reject"
+        lines += "    ip6 daddr ::1 $protocol dport { $values } reject"
+    }
+    lines += listOf("  }", "}")
+    output.resolve("ops/platform-zero.nft").apply { parent.createDirectories(); writeText(lines.joinToString("\n", postfix = "\n")) }
 }
 
 fun stopTimeoutSeconds(node: JsonNode): Long? {
@@ -1062,6 +1312,24 @@ fun stopTimeoutSeconds(node: JsonNode): Long? {
         }
     }
     return kotlin.math.ceil(seconds).toLong().coerceAtLeast(1)
+}
+
+fun resourceLimit(node: JsonNode, kind: String): String? {
+    if (node.isMissingNode || node.isNull) return null
+    val raw = node.asText().trim()
+    if (raw.isEmpty()) return null
+    val defaultExpression = Regex("^\\$\\{[A-Z_][A-Z0-9_]*:-([^}]+)}$")
+    val resolved = defaultExpression.matchEntire(raw)?.groupValues?.get(1)?.trim() ?: raw
+    when (kind) {
+        "memory" -> if (!resolved.matches(Regex("^[1-9][0-9]*(?:\\.[0-9]+)?[KMGTPE]?[iI]?[bB]?$"))) {
+            fail("invalid resources.limits.memory '$raw'; use a concrete Podman size or ${'$'}{VAR:-default}")
+        }
+        "cpus" -> if (!resolved.matches(Regex("^(?:[1-9][0-9]*|0\\.[0-9]+|[1-9][0-9]*\\.[0-9]+)$")) || resolved.toDouble() <= 0.0) {
+            fail("invalid resources.limits.cpus '$raw'; use a positive number or ${'$'}{VAR:-default}")
+        }
+        else -> fail("unsupported resource limit '$kind'")
+    }
+    return resolved
 }
 
 fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, output: Path, domain: PodmanDomain, loopbacks: Map<String, List<LoopbackEndpoint>>) {
@@ -1097,9 +1365,16 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
                 config.path("aliases").forEach { lines += "NetworkAlias=${it.asText()}" }
             }
         }
+        if (domain.name != "rootful" && activePodmanPolicy.crossDomainEndpoints.any { domain.name in it.consumers }) {
+            lines += "Network=webservices-p0-egress.network"
+        }
     }
     service.path("volumes").forEach { lines += "Volume=${quadletLiteral(volumeLine(it, ir.path("volumes"), domain))}" }
-    lines += "PodmanArgs=--image-volume=ignore"
+    val limits = service.path("resources").path("limits")
+    val podmanArgs = mutableListOf("--image-volume=ignore")
+    resourceLimit(limits.path("memory"), "memory")?.let { podmanArgs += "--memory=$it" }
+    resourceLimit(limits.path("cpus"), "cpus")?.let { podmanArgs += "--cpus=$it" }
+    lines += "PodmanArgs=${podmanArgs.joinToString(" ")}"
     service.path("ephemeralImageVolumes").forEach { lines += "Tmpfs=${it.asText()}" }
     service.path("userns").textOrNull()?.let { lines += "UserNS=$it" }
     service.path("groupAdd").forEach { lines += "GroupAdd=${it.asText()}" }
@@ -1112,8 +1387,11 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
             lines += "PublishPort=$value"
         }
     }
-    loopbacks[name].orEmpty().forEach { endpoint ->
-        lines += "PublishPort=127.0.0.1:${endpoint.hostPort}:${endpoint.containerPort}"
+    if (!hostNetwork) {
+        loopbacks[name].orEmpty().forEach { endpoint ->
+            val suffix = if (endpoint.protocol == "tcp") "" else "/${endpoint.protocol}"
+            lines += "PublishPort=127.0.0.1:${endpoint.hostPort}:${endpoint.containerPort}$suffix"
+        }
     }
     service.path("extraHosts").forEach { lines += "AddHost=${it.asText().replace("host-gateway", "host-gateway")}" }
     service.path("dns").let { if (it.isArray) it.forEach { dns -> lines += "DNS=${dns.asText()}" } else if (it.isTextual) lines += "DNS=${it.asText()}" }
@@ -1176,10 +1454,23 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
 fun renderPodman(ir: ObjectNode, output: Path) {
     val loopbacks = loopbackEndpoints(ir, output)
     (listOf(rootfulDomain) + rootlessDomains).forEach { domain ->
-        ir.path("networks").fieldsMap().forEach { (name, value) ->
+        val usedNetworks = ir.path("services").fieldsMap()
+            .filter { (_, service) -> podmanDomainForService(service).name == domain.name }
+            .flatMap { (_, service) ->
+                val networks = service.path("networks")
+                if (networks.isArray) networks.map(JsonNode::asText) else networks.fieldsMap().map { it.first }
+            }
+            .toSet()
+        ir.path("networks").fieldsMap().filter { it.first in usedNetworks }.forEach { (name, value) ->
             val lines = mutableListOf("[Network]", "NetworkName=${podmanNetworkName(domain, name)}", "Driver=${value.path("driver").asText("bridge")}")
             if (value.path("internal").asBoolean(false)) lines += "Internal=true"
             output.resolve("${domain.quadletDir}/webservices-$name.network").apply { parent.createDirectories(); writeText(lines.joinToString("\n", postfix = "\n")) }
+        }
+        if (domain.name != "rootful" && activePodmanPolicy.crossDomainEndpoints.any { domain.name in it.consumers }) {
+            output.resolve("${domain.quadletDir}/webservices-p0-egress.network").apply {
+                parent.createDirectories()
+                writeText("[Network]\nNetworkName=${podmanNetworkName(domain, "p0-egress")}\nDriver=bridge\n")
+            }
         }
         ir.path("services").fieldsMap()
             .filter { (_, service) ->
@@ -1208,6 +1499,197 @@ fun renderPodman(ir: ObjectNode, output: Path) {
         followLinks = false,
         overwrite = false
     )
+    generatorRoot.resolve("ops/host-admin/provision-domain-accounts.sh")
+        .copyTo(output.resolve("ops/provision-domain-accounts.sh"), overwrite = true)
+    generatorRoot.resolve("ops/host-admin/retire-legacy-webservices-account.sh")
+        .copyTo(output.resolve("ops/retire-legacy-webservices-account.sh"), overwrite = true)
+    generatorRoot.resolve("ops/maintenance/materialize-workspaces.py")
+        .copyTo(output.resolve("ops/materialize-workspaces.py"), overwrite = true)
+    generatorRoot.resolve("ops/maintenance/start-worklane-containers.py")
+        .copyTo(output.resolve("ops/start-worklane-containers.py"), overwrite = true)
+    generatorRoot.resolve("ops/maintenance/platform-zero-worklanes.service")
+        .copyTo(output.resolve("ops/platform-zero-worklanes.service"), overwrite = true)
+    generatorRoot.resolve("ops/maintenance/reap-idle-worklanes.py")
+        .copyTo(output.resolve("ops/reap-idle-worklanes.py"), overwrite = true)
+    generatorRoot.resolve("ops/maintenance/platform-zero-worklane-idle-reaper.service")
+        .copyTo(output.resolve("ops/platform-zero-worklane-idle-reaper.service"), overwrite = true)
+    generatorRoot.resolve("ops/maintenance/platform-zero-worklane-idle-reaper.timer")
+        .copyTo(output.resolve("ops/platform-zero-worklane-idle-reaper.timer"), overwrite = true)
+}
+
+fun repositoryRow(name: String, remote: String, commit: String, writable: Boolean): ObjectNode =
+    obj().put("name", name).put("remote", remote).put("commit", commit).put("writable", writable)
+
+fun findGitRoot(path: Path): Path? {
+    var current = if (path.isDirectory()) path else path.parent
+    while (current != null) {
+        if (current.resolve(".git").isDirectory()) return current
+        current = current.parent
+    }
+    return null
+}
+
+fun localRepositoryRow(name: String, path: Path, writable: Boolean): ObjectNode {
+    val root = findGitRoot(path) ?: fail("maintenance repository '$name' is not inside a Git checkout: $path")
+    return repositoryRow(
+        name,
+        commandOutput(listOf("git", "remote", "get-url", "origin"), root),
+        commandOutput(listOf("git", "rev-parse", "HEAD"), root),
+        writable
+    )
+}
+
+fun writeDomainMetadata(ir: ObjectNode, modules: List<ModuleCheckout>, manifestPath: Path, output: Path) {
+    val moduleById = modules.associateBy { it.id }
+    val domainRows = arr()
+    activePodmanPolicy.domains.forEach { policy ->
+        val services = ir.path("services").fieldsMap()
+            .filter { (_, service) -> service.path("rootlessDomain").asText() == policy.name }
+            .map { it.first }
+            .sorted()
+        domainRows.add(obj().also { row ->
+            row.put("name", policy.name)
+            row.put("user", policy.user)
+            row.put("stateRoot", policy.stateRoot)
+            row.put("graphRoot", policy.graphRoot)
+            row.put("volumeRoot", policy.volumeRoot)
+            policy.uid?.let { row.put("uid", it) }
+            policy.subuidStart?.let { row.put("subuidStart", it) }
+            row.set<ArrayNode>("modules", arr().addAll(policy.modules.sorted().map(nodes::textNode)))
+            row.set<ArrayNode>("services", arr().addAll(services.map(nodes::textNode)))
+            row.set<ArrayNode>("allowDependencies", arr().addAll(policy.allowDependencies.sorted().map(nodes::textNode)))
+        })
+    }
+    writeJson(output.resolve("podman-domains.json"), obj().put("schemaVersion", 1).set<ArrayNode>("domains", domainRows))
+
+    val dependencyRows = arr()
+    ir.path("services").fieldsMap().forEach { (consumer, service) ->
+        val consumerDomain = podmanDomainForService(service).name
+        service.path("dependencies").fieldsMap().forEach dependency@{ (provider, condition) ->
+            val providerService = ir.path("services").path(provider)
+            if (providerService.isMissingNode) fail("service '$consumer' depends on unknown service '$provider'")
+            val providerDomain = podmanDomainForService(providerService).name
+            if (consumerDomain == providerDomain) return@dependency
+            if (consumerDomain != "rootful" && providerDomain != "rootful") {
+                val allowed = activePodmanPolicy.domains.first { it.name == consumerDomain }.allowDependencies
+                if (providerDomain !in allowed) {
+                    fail("undeclared cross-domain dependency: $consumerDomain/$consumer -> $providerDomain/$provider")
+                }
+            }
+            dependencyRows.add(obj()
+                .put("consumerDomain", consumerDomain)
+                .put("consumerService", consumer)
+                .put("providerDomain", providerDomain)
+                .put("providerService", provider)
+                .put("condition", condition.asText()))
+        }
+    }
+    writeJson(output.resolve("podman-domain-dependencies.json"), obj().put("schemaVersion", 1).set<ArrayNode>("dependencies", dependencyRows))
+
+    val generatorRoot = Path(System.getenv("STACK_GENERATOR_ROOT") ?: fail("STACK_GENERATOR_ROOT is not set"))
+    val siteMetadata = manifestPath.parent.resolve(".webservices-generator.json").takeIf(Path::isRegularFile)?.let(::readTree)
+    val siteRow = findGitRoot(manifestPath)?.let { localRepositoryRow("site-config", it, false) }
+        ?: siteMetadata?.let {
+            repositoryRow(
+                "site-config",
+                it.path("moduleManifestRemote").asText().ifBlank { fail("site generator metadata has no moduleManifestRemote") },
+                it.path("moduleManifestCommit").asText().ifBlank { fail("site generator metadata has no moduleManifestCommit") },
+                false
+            )
+        }
+        ?: repositoryRow("site-config", "unresolved:site-config", sha256(manifestPath), false)
+    val generatorRow = findGitRoot(generatorRoot)?.let { localRepositoryRow("sso-stack-generator", it, false) }
+        ?: siteMetadata?.let {
+            repositoryRow(
+                "sso-stack-generator",
+                it.path("generatorRemote").asText().ifBlank { fail("site generator metadata has no generatorRemote") },
+                it.path("generatorCommit").asText().ifBlank { fail("site generator metadata has no generatorCommit") },
+                false
+            )
+        }
+        ?: repositoryRow(
+            "sso-stack-generator",
+            "unresolved:sso-stack-generator",
+            sha256(generatorRoot.resolve("runtime-generator/stack-generator.main.kts")),
+            false
+        )
+    val baseline = listOf(
+        generatorRow,
+        siteRow
+    )
+    fun reposFor(moduleIds: Set<String>): ArrayNode = arr().also { repos ->
+        baseline.forEach { repos.add(it.deepCopy()) }
+        moduleIds.sorted().forEach { id ->
+            val module = moduleById[id] ?: fail("maintenance workspace references unknown module '$id'")
+            repos.add(repositoryRow(module.metadata.path("repo").asText(module.dir.fileName.toString()), module.remote, module.commit, true))
+        }
+    }
+    val workspaces = arr()
+    workspaces.add(obj().put("name", "control").put("role", "control").put("startAtBoot", false).set<ArrayNode>("repositories", arr().also { rows ->
+        baseline.forEach { rows.add(it.deepCopy().also { row -> row.put("writable", true) }) }
+    }))
+    workspaces.add(obj().put("name", "host").put("role", "host").put("startAtBoot", false).set<ArrayNode>("repositories", reposFor(activePodmanPolicy.rootfulModules)))
+    activePodmanPolicy.domains.forEach { domain ->
+        workspaces.add(obj().also { row ->
+            row.put("name", domain.name)
+            row.put("role", "domain")
+            row.put("startAtBoot", false)
+            row.put("serviceAccount", domain.user)
+            row.set<ArrayNode>("services", domainRows.first { it.path("name").asText() == domain.name }.path("services").deepCopy())
+            row.set<ArrayNode>("repositories", reposFor(domain.modules))
+        })
+    }
+    writeJson(output.resolve("maintenance-workspaces.json"), obj()
+        .put("schemaVersion", 1)
+        .put("owner", "stack_lab")
+        .put("root", activePodmanPolicy.maintenanceRoot)
+        .set<ArrayNode>("workspaces", workspaces))
+
+    val stackConfig = readTree(manifestPath).path("stackConfig").asText()
+    val software = readTree(manifestPath.parent.resolve(stackConfig).normalize()).path("podman").path("software_workspaces")
+    if (software.isMissingNode) return
+    if (!software.isObject) fail("podman.software_workspaces must be an object")
+    val softwareOwner = software.path("owner").asText().ifBlank { fail("podman.software_workspaces.owner is required") }
+    if (!softwareOwner.matches(Regex("[a-z_][a-z0-9_-]*"))) fail("invalid software workspace owner '$softwareOwner'")
+    val softwareRoot = Path(software.path("root").asText().ifBlank { fail("podman.software_workspaces.root is required") }).normalize()
+    if (!softwareRoot.isAbsolute || softwareRoot == Path("/")) fail("software workspace root must be an absolute non-root path")
+    val defaultProfile = software.path("profile").asText("software-gpu")
+    val devices = software.path("devices")
+    if (!devices.isArray || devices.isEmpty || devices.any { !it.isTextual || it.asText().isBlank() }) {
+        fail("podman.software_workspaces.devices must be a non-empty string array")
+    }
+    val lanes = software.path("lanes")
+    if (!lanes.isArray || lanes.isEmpty) fail("podman.software_workspaces.lanes must be a non-empty array")
+    val laneNames = mutableSetOf<String>()
+    val softwareRows = arr()
+    lanes.forEachIndexed { index, lane ->
+        val label = "podman.software_workspaces.lanes[$index]"
+        val name = lane.path("name").asText()
+        if (!name.matches(Regex("[a-z0-9][a-z0-9_-]*")) || !laneNames.add(name)) fail("$label has an invalid or duplicate name")
+        val projectPath = Path(lane.path("project_path").asText(softwareRoot.resolve(name).toString())).normalize()
+        if (!projectPath.isAbsolute || (projectPath != softwareRoot && !projectPath.startsWith(softwareRoot))) fail("$label project_path escapes the software root")
+        fun commandList(field: String): ArrayNode {
+            val value = lane.path(field)
+            if (value.isMissingNode) return arr()
+            if (!value.isArray || value.any { !it.isTextual || it.asText().isBlank() }) fail("$label.$field must be a string array")
+            return value.deepCopy<ArrayNode>()
+        }
+        val softwareRow = obj()
+            .put("name", name)
+            .put("role", "software")
+            .put("projectPath", projectPath.toString())
+            .put("profile", lane.path("profile").asText(defaultProfile))
+            .put("startAtBoot", false)
+        softwareRow.set<ArrayNode>("devices", devices.deepCopy<ArrayNode>())
+        softwareRow.set<ArrayNode>("bootstrap", commandList("bootstrap"))
+        softwareRow.set<ArrayNode>("smokeTest", commandList("smoke_test"))
+        softwareRows.add(softwareRow)
+    }
+    writeJson(output.resolve("software-workspaces.json"), obj()
+        .put("schemaVersion", 1)
+        .put("owner", softwareOwner)
+        .put("root", softwareRoot.toString())
+        .set<ArrayNode>("workspaces", softwareRows))
 }
 
 fun replaceDirectory(staging: Path, output: Path) {
@@ -1229,8 +1711,10 @@ fun commandGenerate(options: Map<String, String>) {
     if (staging.exists()) staging.toFile().deleteRecursively()
     staging.createDirectories()
     try {
+        activePodmanPolicy = readPodmanPolicy(manifest)
         val (ir, modules) = buildIr(manifest, modulesDir)
-        applyPodmanPlacementPolicy(ir)
+        applyPodmanPlacementPolicy(ir, activePodmanPolicy)
+        applyCrossDomainEndpointPolicy(ir, activePodmanPolicy)
         writeJson(staging.resolve("stack.ir.json"), ir)
         materializeSiteManifest(manifest, staging)
         materializeModules(modules, staging)
@@ -1241,6 +1725,7 @@ fun commandGenerate(options: Map<String, String>) {
         materializeComponentLock(manifest, staging, ir)
         renderRuntimeModel(ir, staging)
         if (backend == "podman") renderPodman(ir, staging)
+        writeDomainMetadata(ir, modules, manifest, staging)
         val metadata = obj()
         metadata.put("schemaVersion", 1)
         metadata.put("backend", backend)

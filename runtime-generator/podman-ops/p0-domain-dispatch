@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+domain="${1:-}"
+request="${SSH_ORIGINAL_COMMAND:-${2:-}}"
+manifest=/etc/platform-zero/podman-domains.json
+[ -f "$manifest" ] || { printf 'domain manifest unavailable\n' >&2; exit 1; }
+user="$(jq -r --arg domain "$domain" '.domains[] | select(.name == $domain) | .user' "$manifest")"
+[ -n "$user" ] && [ "$user" = "$(id -un)" ] || { printf 'domain identity mismatch\n' >&2; exit 1; }
+state_root="$(jq -r --arg domain "$domain" '.domains[] | select(.name == $domain) | .stateRoot' "$manifest")"
+ir="$state_root/current/stack.ir.json"
+[ -f "$ir" ] || { printf 'domain release unavailable\n' >&2; exit 1; }
+
+read -r verb service extra <<<"$request"
+[ -z "${extra:-}" ] || { printf 'too many arguments\n' >&2; exit 2; }
+case "$verb" in
+  status)
+    [ -z "${service:-}" ] || exit 2
+    exec systemctl --user --no-pager --full status webservices.target
+    ;;
+  verify)
+    [ -z "${service:-}" ] || exit 2
+    exec systemctl --user --quiet is-active webservices.target
+    ;;
+  logs|restart)
+    [ -n "${service:-}" ] || exit 2
+    jq -e --arg service "$service" '.services | has($service)' "$ir" >/dev/null || { printf 'service is not owned by this domain\n' >&2; exit 1; }
+    unit="webservices-$service.service"
+    if [ "$verb" = logs ]; then
+      exec journalctl --user -u "$unit" -n 200 --no-pager
+    fi
+    exec systemctl --user restart "$unit"
+    ;;
+  *)
+    printf 'allowed commands: status, verify, logs SERVICE, restart SERVICE\n' >&2
+    exit 2
+    ;;
+esac

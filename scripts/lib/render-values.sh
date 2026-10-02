@@ -155,6 +155,7 @@ load_site_values() {
   [ -n "$(render_get CADDY_TLS_MODE)" ] || render_set CADDY_TLS_MODE "local"
 
   render_set TRUSTED_PROXY_SOURCE_RANGES "$(yaml_get_scalar "$site_config_file" 'runtime.trusted_proxy_source_ranges')"
+  render_set LIVEKIT_NODE_IP "$(yaml_get_scalar "$site_config_file" 'runtime.livekit_node_ip')"
 
   local matrix_authentication_service_active
   matrix_authentication_service_active="$(yaml_get_scalar "$site_config_file" 'matrix_authentication_service.active')"
