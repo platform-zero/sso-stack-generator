@@ -1,0 +1,465 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+MODULES_DIR="${MODULES_DIR:-$ROOT_DIR/../modules}"
+# shellcheck source=scripts/lib/common.sh
+source "$ROOT_DIR/scripts/lib/common.sh"
+WORK_DIR="$(mktemp -d)"
+trap 'rm -rf "$WORK_DIR"' EXIT
+[ -d "$MODULES_DIR" ] || {
+  printf '[runtime-test] module workspace not found: %s\n' "$MODULES_DIR" >&2
+  exit 1
+}
+
+default_site="$ROOT_DIR/../site-config/sites/latium/manifest.json"
+synthetic_site=false
+if [ -n "${SITE_MANIFEST:-}" ]; then
+  SOURCE_SITE="$SITE_MANIFEST"
+elif [ "${RUNTIME_TEST_SYNTHETIC:-0}" != "1" ] && [ -f "$default_site" ]; then
+  SOURCE_SITE="$default_site"
+else
+  synthetic_site=true
+  fixture_site="$WORK_DIR/site-source"
+  mkdir -p "$fixture_site/global.settings"
+  mapfile -t fixture_modules < <(
+    find -L "$MODULES_DIR" -mindepth 2 -maxdepth 3 -name stack.module.json -type f -print \
+      | sort \
+      | xargs -r -n1 jq -r '.id'
+  )
+  [ "${#fixture_modules[@]}" -gt 0 ] || {
+    printf '[runtime-test] no module manifests found under %s\n' "$MODULES_DIR" >&2
+    exit 1
+  }
+  printf '%s\n' "${fixture_modules[@]}" \
+    | jq -R . \
+    | jq -s '{
+        schemaVersion: 2,
+        site: "ci-runtime",
+        stackConfig: "./global.settings/stack.config.yaml",
+        secretStore: "./global.settings/webservices.sops.json",
+        components: ["full", "searxng", "workload-spawner"],
+        modules: .
+      }' > "$fixture_site/manifest.json"
+  if [ -f "$default_site" ]; then
+    cp "$(dirname "$default_site")/global.settings/stack.config.yaml" "$fixture_site/global.settings/stack.config.yaml"
+  else
+    cat > "$fixture_site/global.settings/stack.config.yaml" <<'EOF_STACK_CONFIG'
+storage:
+  media_writer_uid: 1000
+  media_writer_gid: 1000
+  volume_root: "/mnt/stack/volumes"
+  vector_dbs: "/mnt/stack/vector-dbs"
+  pg_ssd_root: "/mnt/stack/pg-ssd"
+  custom:
+    qbittorrent_data: "/mnt/media/qbittorrent"
+    seafile_media: "/mnt/media/seafile-media"
+    jellyfin_media: "/mnt/media/jellyfin-media"
+runtime:
+  domain: "example.test"
+  admin_email: "admin@example.test"
+  admin_user: "admin"
+  trusted_proxy_source_ranges: "127.0.0.1/32 ::1/128"
+theme:
+  name: "ci"
+  brand_name: "ci"
+  mode: "dark"
+vaultwarden:
+  org_name: "ci"
+  org_identifier: "example.test"
+  org_id: "00000000-0000-0000-0000-000000000000"
+EOF_STACK_CONFIG
+  fi
+  mapfile -t fixture_secret_keys < <(
+    {
+      rg --follow -o --no-filename '\{\{[A-Z_][A-Z0-9_]*\}\}' "$MODULES_DIR" \
+        | tr -d '{}'
+      rg --follow -o --no-filename '\$\{[A-Z_][A-Z0-9_]*[^}]*\}' "$MODULES_DIR" \
+        | sed -E 's/^\$\{([A-Z_][A-Z0-9_]*).*/\1/'
+    } | sort -u
+  )
+  printf '%s\n' "${fixture_secret_keys[@]}" \
+    | jq -Rn '[inputs | select(length > 0) | {key: ., value: "test"}] | from_entries' \
+      > "$fixture_site/global.settings/webservices.sops.json"
+  chmod 0600 "$fixture_site/global.settings/webservices.sops.json"
+  SOURCE_SITE="$fixture_site/manifest.json"
+fi
+
+SITE="$WORK_DIR/manifest.json"
+SOURCE_SITE_DIR="$(cd "$(dirname "$SOURCE_SITE")" && pwd -P)"
+cp -a "$SOURCE_SITE_DIR/global.settings" "$WORK_DIR/global.settings"
+cp "$SOURCE_SITE" "$SITE"
+if [ -d "$MODULES_DIR/workload-spawner" ]; then
+  site_with_workload_spawner="$(mktemp)"
+  jq '
+    .components = ((.components + ["workload-spawner"]) | unique)
+    | .modules = ((.modules + ["workload-spawner"]) | unique)
+  ' "$SITE" > "$site_with_workload_spawner"
+  mv "$site_with_workload_spawner" "$SITE"
+fi
+
+generate() {
+  (
+    cd "$WORK_DIR"
+    "$ROOT_DIR/generate.sh" \
+      --site "$SITE" \
+      --modules-dir "$MODULES_DIR" \
+      --backend "$1" \
+      --output "$2"
+  )
+}
+
+generate podman "$WORK_DIR/podman-a"
+generate podman "$WORK_DIR/podman-b"
+
+diff -ru "$WORK_DIR/podman-a" "$WORK_DIR/podman-b"
+WEBSERVICES_OVERLAY_ROOT="$WORK_DIR/podman-a" "$ROOT_DIR/scripts/test-host-lifecycle-static.sh"
+
+jq -e '
+  (.schemaVersion == 1) and
+  (.domains | length == 7) and
+  (([.domains[].name] | unique | length) == 7) and
+  (([.domains[].user] | unique | length) == 7) and
+  all(.domains[]; (.stateRoot | startswith("/mnt/stack/")) and (.graphRoot | startswith("/mnt/stack/")) and (.volumeRoot | startswith("/mnt/stack/")))
+' "$WORK_DIR/podman-a/podman-domains.json" >/dev/null
+
+jq -e 'all(.endpoints[]; .consumers | index("test-runners"))' \
+  "$WORK_DIR/podman-a/podman-loopback-endpoints.json" >/dev/null
+
+jq -e --slurpfile domains "$WORK_DIR/podman-a/podman-domains.json" '
+  .services as $services |
+  all($services | to_entries[] | select(.value.placement == "rootless");
+    . as $entry |
+    ($domains[0].domains[] | select(.name == $entry.value.rootlessDomain) | .user) == $entry.value.rootlessUser)
+' "$WORK_DIR/podman-a/stack.ir.json" >/dev/null
+
+jq -e '(.schemaVersion == 1) and (.workspaces | length == 1) and ([.workspaces[].name] == ["stack"]) and all(.workspaces[]; .role == "stack" and .startAtBoot == true and .projectPath == "/mnt/lab_debian/stack_lab/stack_work") and all(.workspaces[].repositories[]; .writable == true)' \
+  "$WORK_DIR/podman-a/maintenance-workspaces.json" >/dev/null
+
+jq -e '
+  (.schemaVersion == 1) and (.owner == "software_lab") and
+  (.root == "/mnt/lab_debian/software_lab") and
+  (.workspaces | length == 10) and
+  ([.workspaces[].name] | sort == ["arbitrage_exploration", "auto_scad", "backup", "chatex", "crypto_trading", "hitl", "my_brand", "obelisks", "poe_intelligence", "worklane"]) and
+  all(.workspaces[];
+    .role == "software" and .profile == "software-gpu" and .startAtBoot == false and
+    .devices == ["nvidia.com/gpu=all"] and (.projectPath | startswith("/mnt/lab_debian/software_lab/")))
+' "$WORK_DIR/podman-a/software-workspaces.json" >/dev/null
+
+test -x "$WORK_DIR/podman-a/ops/start-worklane-containers.py"
+test -f "$WORK_DIR/podman-a/ops/platform-zero-worklanes.service"
+test -x "$WORK_DIR/podman-a/ops/reap-idle-worklanes.py"
+test -f "$WORK_DIR/podman-a/ops/platform-zero-worklane-idle-reaper.service"
+test -f "$WORK_DIR/podman-a/ops/platform-zero-worklane-idle-reaper.timer"
+grep -Fq 'SocketMode=0666' "$WORK_DIR/podman-a/ops/platform-zero-host-broker.socket"
+grep -Fq "fs.inotify.max_user_instances = 1024" "$WORK_DIR/podman-a/ops/provision-domain-accounts.sh"
+grep -Fq "/etc/sysctl.d/90-platform-zero-worklanes.conf" "$WORK_DIR/podman-a/ops/provision-domain-accounts.sh"
+grep -Fq 'usermod --shell /bin/bash "$user"' "$WORK_DIR/podman-a/ops/provision-domain-accounts.sh"
+
+grep -Eq '^PodmanArgs=.*--memory=2G.*--cpus=2\.0' "$WORK_DIR/podman-a/quadlet/rootless-platform/webservices-keycloak.container"
+grep -Eq '^PodmanArgs=.*--memory=3G.*--cpus=2\.0' "$WORK_DIR/podman-a/quadlet/rootless-platform/webservices-opensearch.container"
+grep -Eq '^PodmanArgs=.*--memory=2G.*--cpus=1\.0' "$WORK_DIR/podman-a/quadlet/rootless-apps/webservices-huly-redpanda.container"
+grep -Eq '^PodmanArgs=.*--memory=2G.*--cpus=1\.5' "$WORK_DIR/podman-a/quadlet/rootless-apps/webservices-huly-elastic.container"
+grep -Fxq 'AddDevice=/dev/kvm:/dev/kvm' "$WORK_DIR/podman-a/quadlet/rootless-test-runners/webservices-android-test-runner-api36.container"
+grep -Fxq 'GroupAdd=keep-groups' "$WORK_DIR/podman-a/quadlet/rootless-test-runners/webservices-android-test-runner-api36.container"
+grep -Fxq 'PidsLimit=4096' "$WORK_DIR/podman-a/quadlet/rootless-test-runners/webservices-android-test-runner-api36.container"
+
+python3 - "$WORK_DIR/podman-a/ops/materialize-workspaces.py" <<'PY'
+import importlib.util
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("materialize_workspaces", path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+assert module.LEGACY_PROFILES.endswith("\n")
+assert not module.LEGACY_PROFILES.endswith("\n\n")
+stack = {
+    "name": "stack",
+    "role": "stack",
+    "authorities": [],
+    "repositories": [],
+}
+guidance = module.agents_text(stack)
+assert "You are operating inside the `stack` Worklane" in guidance
+assert "stack_lab@192.168.0.11" in guidance
+assert "Runtime remains split across" in guidance
+assert "p0-hostctl status" in guidance
+assert "p0-hostctl plan" in guidance
+assert "RTX 3060" in guidance
+assert "Gerald passwordless sudo is intentionally retained" in guidance
+assert guidance in module.managed_agents_texts(stack)
+assert guidance + "user edit\n" not in module.managed_agents_texts(stack)
+assert "dispatcher_ed25519" not in guidance
+assert len(module.HOST_ACCESS_MOUNTS) == 3
+assert "/run/platform-zero" in module.PROFILES
+PY
+
+python3 "$WORK_DIR/podman-a/ops/materialize-workspaces.py" \
+  --manifest "$WORK_DIR/podman-a/maintenance-workspaces.json" \
+  --root "$WORK_DIR/workspace-plan" > "$WORK_DIR/workspace-plan.json"
+jq -e '(.apply == false) and (.blockers == []) and (.actions | length > 0)' "$WORK_DIR/workspace-plan.json" >/dev/null
+
+python3 "$WORK_DIR/podman-a/ops/materialize-workspaces.py" \
+  --manifest "$WORK_DIR/podman-a/software-workspaces.json" \
+  --root "$WORK_DIR/software-workspace-plan" > "$WORK_DIR/software-workspace-plan.json"
+jq -e '(.apply == false) and (.blockers == []) and (.actions == [])' "$WORK_DIR/software-workspace-plan.json" >/dev/null
+
+jq -e '
+  (.schemaVersion == 2) and
+  (.modules | type == "array" and length > 0) and
+  (.components | index("full")) and
+  ((.modules | index("workload-spawner") | not) or (.components | index("workload-spawner"))) and
+  (all(.modules[]; type == "string" or (type == "object" and (.id | type == "string"))))
+' "$SITE" >/dev/null
+
+jq -e '(.components | index("search")) and (.components | index("opensearch")) and (.components | index("grafana"))' \
+  "$WORK_DIR/podman-a/site/components.lock.json" >/dev/null
+
+if ! rg -Fq 'search.{$DOMAIN}' "$WORK_DIR/podman-a/runtime/configs/caddy/Caddyfile"; then
+  printf '[runtime-test] rendered runtime Caddyfile is missing the OpenSearch search route\n' >&2
+  exit 1
+fi
+
+jq -r '.services | keys[]' "$WORK_DIR/podman-a/stack.ir.json" | sort > "$WORK_DIR/ir-services"
+awk '
+  /^services:[[:space:]]*$/ { in_services = 1; next }
+  in_services && /^[^[:space:]]/ { in_services = 0 }
+  in_services && /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ {
+    name = $1
+    sub(/:$/, "", name)
+    print name
+  }
+' "$WORK_DIR/podman-a/runtime-model.yml" | sort > "$WORK_DIR/runtime-model-services"
+cmp "$WORK_DIR/ir-services" "$WORK_DIR/runtime-model-services"
+
+if jq -e '.services | has("valkey")' "$WORK_DIR/podman-a/stack.ir.json" >/dev/null; then
+  if ! rg -Fq '$$VALKEY_PASSWORD' "$WORK_DIR/podman-a/runtime-model.yml"; then
+    printf '[runtime-test] Compose output lost the escaped container-side Valkey variable\n' >&2
+    exit 1
+  fi
+  if ! rg -Fq '$$VALKEY_PASSWORD' "$WORK_DIR/podman-a/quadlet/rootless-platform/webservices-valkey.container"; then
+    printf '[runtime-test] Quadlet output does not preserve the container-side Valkey variable\n' >&2
+    exit 1
+  fi
+fi
+
+if rg -n 'container-socket|container-controller|container-health-exporter|cadvisor|watchtower|autoheal|dozzle' \
+  "$WORK_DIR/podman-a/quadlet/rootful" "$WORK_DIR"/podman-a/quadlet/rootless-*; then
+  printf '[runtime-test] Podman bundle contains a retired control-plane reference\n' >&2
+  exit 1
+fi
+
+if rg -n '^Volume=\$\{' "$WORK_DIR/podman-a/quadlet/rootful" "$WORK_DIR"/podman-a/quadlet/rootless-*; then
+  printf '[runtime-test] Quadlet volume source contains an unresolved host expression\n' >&2
+  exit 1
+fi
+
+jq -e '
+  .services as $services |
+  all(["alloy", "caddy", "crowdsec", "kopia", "mailserver", "node-exporter", "volume-init"][]; $services[.].placement == "rootful") and
+  ($services["test-runner"].rootlessDomain == "test-runners") and
+  ($services["test-runner-managed"].rootlessDomain == "test-runners") and
+  (($services | has("forgejo-runner") | not) or $services["forgejo-runner"].rootlessDomain == "ci-runner") and
+  ($services["jupyterhub"].rootlessDomain == "workloads") and
+  ($services["jupyter-notebook-build"].rootlessDomain == "workloads") and
+  (($services | has("workload-spawner-postgres") | not) or $services["workload-spawner-postgres"].rootlessDomain == "workloads") and
+  (($services | has("workload-spawner-api") | not) or $services["workload-spawner-api"].rootlessDomain == "workloads") and
+  (($services | has("workload-spawner-router") | not) or $services["workload-spawner-router"].rootlessDomain == "workloads") and
+  ($services["caddy"].networks | keys == ["caddy"])
+' "$WORK_DIR/podman-a/stack.ir.json" >/dev/null
+
+while IFS= read -r domain; do
+  test -d "$WORK_DIR/podman-a/quadlet/rootless-$domain"
+done < <(jq -r '.domains[].name' "$WORK_DIR/podman-a/podman-domains.json")
+
+if ! rg -Fxq 'StopTimeout=60' "$WORK_DIR/podman-a/quadlet/rootless-platform/webservices-mariadb.container"; then
+  printf '[runtime-test] MariaDB Quadlet is missing its graceful container stop timeout\n' >&2
+  exit 1
+fi
+
+if ! rg -Fxq 'Network=host' "$WORK_DIR/podman-a/quadlet/rootful/webservices-alloy.container" ||
+   rg -q '^Network=webservices-' "$WORK_DIR/podman-a/quadlet/rootful/webservices-alloy.container"; then
+  printf '[runtime-test] Alloy must use the host network to reach the loopback-only rootless Loki bridge\n' >&2
+  exit 1
+fi
+
+if ! rg -Fxq 'PublishPort=127.0.0.1:13100:3100' "$WORK_DIR/podman-a/quadlet/rootless-platform/webservices-loki.container" ||
+   ! rg -Fq 'url = "http://127.0.0.1:13100/loki/api/v1/push"' "$WORK_DIR/podman-a/runtime/configs/alloy/alloy.hcl"; then
+  printf '[runtime-test] Alloy/Loki cross-domain loopback bridge is incomplete\n' >&2
+  exit 1
+fi
+
+if yq -e '.podman.cross_domain_endpoints | length > 0' "$SOURCE_SITE_DIR/global.settings/stack.config.yaml" >/dev/null 2>&1; then
+  jq -e '
+    any(.endpoints[]; .service == "postgres" and .containerPort == "5432" and .hostPort == 25001 and (.consumers | index("apps"))) and
+    any(.endpoints[]; .service == "postgres-ssd" and .hostPort == 25002 and (.consumers | index("workloads")))
+  ' "$WORK_DIR/podman-a/podman-loopback-endpoints.json" >/dev/null
+  rg -Fxq 'PublishPort=127.0.0.1:25001:5432' "$WORK_DIR/podman-a/quadlet/rootless-platform/webservices-postgres.container"
+  rg -Fxq 'PublishPort=127.0.0.1:25002:5432' "$WORK_DIR/podman-a/quadlet/rootless-platform/webservices-postgres-ssd.container"
+  rg -Fxq 'KC_DB=postgres' "$WORK_DIR/podman-a/runtime-env/keycloak.env.template"
+  rg -Fq 'jdbc:postgresql://postgres:5432/keycloak' "$WORK_DIR/podman-a/runtime-env/keycloak.env.template"
+  rg -Fxq 'POSTGRES_PORT=25002' "$WORK_DIR/podman-a/runtime-env/jupyterhub.env.template"
+  test -f "$WORK_DIR/podman-a/quadlet/rootless-platform/webservices-p0-egress.network"
+  rg -Fq 'http://host.containers.internal:25007' "$WORK_DIR/podman-a/runtime/configs/matrix-authentication-service/config.yaml"
+  rg -q -e 'host:[[:space:]]+host\.containers\.internal' "$WORK_DIR/podman-a/runtime/configs/synapse/homeserver.yaml"
+  rg -q -e 'port:[[:space:]]+25001' "$WORK_DIR/podman-a/runtime/configs/synapse/homeserver.yaml"
+  jq -e '.services["mastodon-web"].environment.DB_HOST == "host.containers.internal"' "$WORK_DIR/podman-a/stack.ir.json" >/dev/null
+  jq -e '.services["mastodon-web"].command | tostring | contains("host.containers.internal.") | not' "$WORK_DIR/podman-a/stack.ir.json" >/dev/null
+  rg -Fq 'postgres-ssd:5432' "$WORK_DIR/podman-a/runtime/configs/grafana/provisioning/datasources/timescaledb.yml"
+  rg -Fq 'chown postgres:postgres' "$WORK_DIR/podman-a/runtime/configs/postgres/ssd-entrypoint.sh"
+  test -s "$WORK_DIR/podman-a/ops/platform-zero.nft"
+  rg -Fq 'meta skuid 988 tcp dport' "$WORK_DIR/podman-a/ops/platform-zero.nft"
+  rg -Fq 'ip daddr 127.0.0.0/8 tcp dport' "$WORK_DIR/podman-a/ops/platform-zero.nft"
+fi
+
+if ! jq -e '.panels[] | .targets[]? | select(.expr == "{source=\"journald\"}")' \
+  "$WORK_DIR/podman-a/runtime/configs/grafana/provisioning/dashboards/logs.json" >/dev/null; then
+  printf '[runtime-test] Grafana Logs dashboard does not query Alloy journal labels\n' >&2
+  exit 1
+fi
+
+if rg -n '/run/user/999/podman/podman.sock' \
+  "$WORK_DIR/podman-a/stack.ir.json" \
+  "$WORK_DIR/podman-a/runtime-model.yml" \
+  "$WORK_DIR/podman-a/quadlet"; then
+  printf '[runtime-test] Podman bundle still references the old shared rootless socket\n' >&2
+  exit 1
+fi
+
+if rg -n 'remote_ip private_ranges' "$WORK_DIR/podman-a/runtime/configs/caddy/Caddyfile"; then
+  printf '[runtime-test] Caddy trusted-proxy matcher still trusts private_ranges\n' >&2
+  exit 1
+fi
+
+if [ "$(stat -c '%a' "$SOURCE_SITE_DIR/global.settings/webservices.sops.json")" != "600" ]; then
+  printf '[runtime-test] Latium SOPS secret file must be mode 0600\n' >&2
+  exit 1
+fi
+
+if jq -e '.services[] | select(.lifecycle != "daemon" and .updatePolicy == "registry")' \
+  "$WORK_DIR/podman-a/stack.ir.json" >/dev/null; then
+  printf '[runtime-test] non-daemon service has registry auto-update enabled\n' >&2
+  exit 1
+fi
+
+if jq -e '
+  .services as $services |
+  $services[] | .dependencies // {} | to_entries[] |
+  select(.value == "completed" and $services[.key].lifecycle != "oneshot")
+' "$WORK_DIR/podman-a/stack.ir.json" >/dev/null; then
+  printf '[runtime-test] completed dependency target is not a one-shot service\n' >&2
+  exit 1
+fi
+
+generated_units="$WORK_DIR/generated-units"
+mkdir -p "$generated_units/rootful" "$generated_units/rootful-early" "$generated_units/rootful-late"
+QUADLET_UNIT_DIRS="$WORK_DIR/podman-a/quadlet/rootful" /usr/libexec/podman/quadlet \
+  "$generated_units/rootful" "$generated_units/rootful-early" "$generated_units/rootful-late"
+systemd-analyze verify "$generated_units/rootful"/*.service "$WORK_DIR/podman-a/quadlet/rootful"/*.target
+while IFS= read -r domain; do
+  mkdir -p "$generated_units/rootless-$domain" "$generated_units/rootless-$domain-early" "$generated_units/rootless-$domain-late"
+  QUADLET_UNIT_DIRS="$WORK_DIR/podman-a/quadlet/rootless-$domain" /usr/libexec/podman/quadlet \
+    "$generated_units/rootless-$domain" "$generated_units/rootless-$domain-early" "$generated_units/rootless-$domain-late"
+  units=("$WORK_DIR/podman-a/quadlet/rootless-$domain"/*.target)
+  if compgen -G "$generated_units/rootless-$domain/*.service" >/dev/null; then
+    units+=("$generated_units/rootless-$domain"/*.service)
+  fi
+  systemd-analyze verify "${units[@]}"
+done < <(jq -r '.domains[].name' "$WORK_DIR/podman-a/podman-domains.json")
+
+if [ "$synthetic_site" = true ]; then
+  fake_bin="$WORK_DIR/fake-bin"
+  mkdir -p "$fake_bin"
+  cat > "$fake_bin/sops" <<'EOF_FAKE_SOPS'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$#" -eq 2 ] && [ "$1" = "--decrypt" ] && [ -f "$2" ]
+cat "$2"
+EOF_FAKE_SOPS
+  chmod +x "$fake_bin/sops"
+  PATH="$fake_bin:$PATH" "$WORK_DIR/podman-a/ops/install-podman-bundle.sh" --bundle "$WORK_DIR/podman-a"
+else
+  "$WORK_DIR/podman-a/ops/install-podman-bundle.sh" --bundle "$WORK_DIR/podman-a"
+fi
+
+if rg -Fq 'chown -R "$domain_user:$domain_user" "$destination"' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-test] installer would overwrite persistent container-UID ownership on every deployment\n' >&2
+  exit 1
+fi
+if ! rg -Fq 'cp -a "$ENV_DIR/." "$env_input_snapshot/"' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-test] installer does not protect an in-place persistent environment source\n' >&2
+  exit 1
+fi
+if ! rg -Fq 'owners.setdefault(relative, set()).add(domain)' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-test] installer does not reapply generated cross-domain config rewrites after environment rendering\n' >&2
+  exit 1
+fi
+if ! rg -Fq 'pasta_options = ["--map-host-loopback", "169.254.1.2"]' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-test] installer does not enable UID-filterable host-loopback mapping for rootless networks\n' >&2
+  exit 1
+fi
+if ! rg -Fq 'wait_for_cross_domain_producers' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh" ||
+   ! rg -Fq 'retry_failed_rootless_services' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-test] installer does not sequence cross-domain producers before retrying consumers\n' >&2
+  exit 1
+fi
+if ! rg -Fq 'if [ "$state" = "failed" ] && [ -z "$job" ]; then' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-generator-test] producer readiness must not fail while a restart job is queued\n' >&2
+  exit 1
+fi
+if ! rg -Fq 'quiet_passes=$((quiet_passes + 1))' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-test] installer does not observe a post-producer quiet window for late consumer failures\n' >&2
+  exit 1
+fi
+if ! rg -Fq '"${ROOTLESS_RELEASES[$i]}/runtime/stack.env"' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-test] installer does not provide the isolated test-runner authority with its cross-stack test environment\n' >&2
+  exit 1
+fi
+
+if ! rg -Fq -- 'WorkingDirectory=/' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-generator-test] runtime environment restore must not inherit an inaccessible working directory\n' >&2
+  exit 1
+fi
+if ! rg -Fq -- 'for env_file in $source_dir/*.env' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-generator-test] runtime environment restore must use a systemd-safe copy loop\n' >&2
+  exit 1
+fi
+if [ "$(rg -Fc 'except FileNotFoundError:' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh")" -lt 2 ]; then
+  printf '[runtime-generator-test] mutable volume ownership translation must tolerate disappearing paths\n' >&2
+  exit 1
+fi
+if rg -Fq 'dispatcher_ed25519' "$WORK_DIR/podman-a/ops/install-platform-zero-control-plane.sh"; then
+  printf '[runtime-generator-test] control-plane install must not create per-domain dispatcher keys\n' >&2
+  exit 1
+fi
+if ! rg -Fq 'KERNEL=="kvm", OWNER="%s", GROUP="kvm", MODE="0660"' "$WORK_DIR/podman-a/ops/install-platform-zero-control-plane.sh"; then
+  printf '[runtime-generator-test] KVM ownership must persist for the isolated test authority\n' >&2
+  exit 1
+fi
+if ! rg -Fq 'chmod 0700 "$graph_root"' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-generator-test] rootless graph roots must strip inherited setgid mode\n' >&2
+  exit 1
+fi
+if ! rg -Fq '\( -name diff -o -name merged \) -exec chmod 0755 {} +' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-generator-test] existing overlay roots must be traversable by non-root container users\n' >&2
+  exit 1
+fi
+
+test -f "$WORK_DIR/podman-a/runtime/configs/vaultwarden/index.html"
+test -f "$WORK_DIR/podman-a/runtime/configs/vaultwarden/seed.sh"
+if find "$WORK_DIR/podman-a/runtime/configs" -type f -name '*.template' -print -quit | grep -q .; then
+  printf '[runtime-test] self-contained Podman runtime still contains template files\n' >&2
+  exit 1
+fi
+if rg -n '\{\{[A-Z_][A-Z0-9_]*\}\}' "$WORK_DIR/podman-a/runtime/configs" "$WORK_DIR/podman-a/runtime/stack.env"; then
+  printf '[runtime-test] self-contained Podman runtime contains unresolved templates\n' >&2
+  exit 1
+fi
+if rg -n '\$\{[A-Z_][A-Z0-9_]*:\?' "$WORK_DIR/podman-a/runtime/stack.env"; then
+  printf '[runtime-test] self-contained Podman env contains unresolved required expressions\n' >&2
+  exit 1
+fi
+
+printf '[runtime-test] dual-backend validation passed (%s services)\n' "$(wc -l < "$WORK_DIR/ir-services")"

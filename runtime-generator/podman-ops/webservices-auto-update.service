@@ -1,0 +1,9 @@
+[Unit]
+Description=Update Platform Zero container images with rollback
+Documentation=man:podman-auto-update(1)
+Wants=network-online.target
+After=network-online.target webservices.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/webservices-auto-update

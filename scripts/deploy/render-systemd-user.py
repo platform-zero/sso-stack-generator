@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Render systemd user units and Compose shards for a built webservices bundle.
+"""Render systemd user units and runtime-model shards for a built webservices bundle.
 
 Inputs:
-- a merged Docker Compose config
+- a merged compatibility runtime model config
 - stack.systemd/graph.json
 - the local deploy root and bundle root paths selected by the build
 
 Outputs:
 - systemd user service/target units
-- per-lifecycle-domain Compose JSON shards
-- shared Docker network/volume metadata for deploy-time reconciliation
+- per-lifecycle-domain runtime-model JSON shards
+- shared container network/volume metadata for deploy-time reconciliation
 
 The graph separates platform services into installable targets and lifecycle
-domains. A lifecycle domain is the smallest Compose shard that systemd starts
+domains. A lifecycle domain is the smallest runtime shard that systemd starts
 or waits on as one unit. Services not assigned to an explicit lifecycle domain
 are rendered as their own domain unless excluded or marked on-demand.
 
@@ -20,7 +20,7 @@ Security model:
 - unit names, service names, target references, and generated file names are
   validated before use
 - generated files are written only under the selected output directories
-- build-only Compose fields are stripped from deploy-time shards
+- build-only runtime model fields are stripped from deploy-time shards
 """
 
 import argparse
@@ -102,7 +102,7 @@ def load_vm_identity_dependent_sets(local_bundle_root: Path) -> Tuple[Set[str], 
     if not metadata_path.exists():
         return set(VM_IDENTITY_DEPENDENT_DOMAINS), set(VM_IDENTITY_DEPENDENT_SERVICES)
     metadata = load_json(metadata_path)
-    capability = (metadata.get("capabilities") or {}).get("isolatedDockerVm") or {}
+    capability = (metadata.get("capabilities") or {}).get("isolatedRuntimeVm") or {}
     domains = set(capability.get("domains") or [])
     services = set(capability.get("services") or [])
     if not domains and not services:
@@ -159,10 +159,10 @@ def validate_target_definition(raw_target: dict, label: str) -> None:
         validate_identifier(domain_name, f"{label}.domains[{index}]")
 
 
-def validate_graph_identifiers(graph: dict, compose_services: dict) -> None:
+def validate_graph_identifiers(graph: dict, runtime_services: dict) -> None:
     validate_identifier(graph["unitPrefix"], "graph.unitPrefix")
-    for service_name in compose_services.keys():
-        validate_identifier(service_name, f"compose.services[{service_name}]")
+    for service_name in runtime_services.keys():
+        validate_identifier(service_name, f"runtime.services[{service_name}]")
 
     validate_target_definition(graph["defaultTarget"], "graph.defaultTarget")
     for index, raw_target in enumerate(graph.get("auxiliaryTargets", [])):
@@ -302,10 +302,10 @@ def strongest_condition(existing: Optional[str], candidate: str) -> str:
     return candidate if rank.get(candidate, 1) > rank.get(existing, 1) else existing
 
 
-def domain_dependencies(domain: Domain, compose_services: dict, service_to_domain: dict, excluded_services: Set[str]) -> Dict[str, str]:
+def domain_dependencies(domain: Domain, runtime_services: dict, service_to_domain: dict, excluded_services: Set[str]) -> Dict[str, str]:
     dependencies: Dict[str, str] = {}
     for service_name in domain.services:
-        depends_on = compose_services[service_name].get("depends_on") or {}
+        depends_on = runtime_services[service_name].get("depends_on") or {}
         for dependency_name, dependency_config in depends_on.items():
             if dependency_name in excluded_services:
                 continue
@@ -420,10 +420,10 @@ def infer_path_kind(source_path: Path, local_deploy_root: Path, local_bundle_roo
     return "exists"
 
 
-def collect_path_contracts(domain: Domain, compose_config: dict, local_deploy_root: Path, local_bundle_root: Path, deploy_root_template: str, vm_identity_domains: Set[str], vm_identity_services: Set[str]) -> List[PathContract]:
+def collect_path_contracts(domain: Domain, runtime_config: dict, local_deploy_root: Path, local_bundle_root: Path, deploy_root_template: str, vm_identity_domains: Set[str], vm_identity_services: Set[str]) -> List[PathContract]:
     contracts: Dict[str, PathContract] = {}
     for service_name in domain.services:
-        for mount in compose_config["services"][service_name].get("volumes") or []:
+        for mount in runtime_config["services"][service_name].get("volumes") or []:
             if not isinstance(mount, dict) or mount.get("type") != "bind":
                 continue
             source = mount.get("source")
@@ -542,14 +542,14 @@ def normalize_volume_driver_opts(volume_config: dict, local_deploy_root: Path) -
     return normalized
 
 
-def compose_shard(domain: Domain, compose_config: dict, service_to_domain: dict, excluded_services: Set[str], unit_prefix: str, local_deploy_root: Path):
+def runtime_shard(domain: Domain, runtime_config: dict, service_to_domain: dict, excluded_services: Set[str], unit_prefix: str, local_deploy_root: Path):
     top_level = {"services": {}}
     referenced_networks: Set[str] = set()
     referenced_volumes: Set[str] = set()
-    declared_volume_names = set((compose_config.get("volumes") or {}).keys())
+    declared_volume_names = set((runtime_config.get("volumes") or {}).keys())
 
     for service_name in domain.services:
-        service_config = compose_config["services"][service_name]
+        service_config = runtime_config["services"][service_name]
         service_copy = {key: value for key, value in service_config.items() if key not in {"build", "profiles", "pull_policy"}}
         service_copy = normalize_service_mounts(service_copy, local_deploy_root, declared_volume_names)
         service_copy = normalize_service_env_files(service_copy, local_deploy_root)
@@ -573,7 +573,7 @@ def compose_shard(domain: Domain, compose_config: dict, service_to_domain: dict,
     if referenced_networks:
         top_level["networks"] = {}
         for network_name in sorted(referenced_networks):
-            network_config = dict((compose_config.get("networks") or {}).get(network_name, {}))
+            network_config = dict((runtime_config.get("networks") or {}).get(network_name, {}))
             top_level["networks"][network_name] = {
                 "external": True,
                 "name": stable_resource_name(unit_prefix, network_name, network_config),
@@ -582,7 +582,7 @@ def compose_shard(domain: Domain, compose_config: dict, service_to_domain: dict,
     if referenced_volumes:
         top_level["volumes"] = {}
         for volume_name in sorted(referenced_volumes):
-            volume_config = dict((compose_config.get("volumes") or {}).get(volume_name, {}))
+            volume_config = dict((runtime_config.get("volumes") or {}).get(volume_name, {}))
             top_level["volumes"][volume_name] = {
                 "external": True,
                 "name": stable_resource_name(unit_prefix, volume_name, volume_config),
@@ -643,10 +643,10 @@ def render_path_contract_condition(contract: PathContract, runtime_env_file: str
     return f"ExecCondition=/usr/bin/test {test_flag} {contract.path}"
 
 
-def render_preflight_lines(runtime_env_file: str, compose_file: str, project_directory: str, path_contracts: List[PathContract]) -> Tuple[List[str], List[str]]:
+def render_preflight_lines(runtime_env_file: str, runtime_model_file: str, project_directory: str, path_contracts: List[PathContract]) -> Tuple[List[str], List[str]]:
     unit_lines = [
         f"ConditionPathExists={runtime_env_file}",
-        f"ConditionPathExists={compose_file}",
+        f"ConditionPathExists={runtime_model_file}",
         f"ConditionPathExists={project_directory}",
         f"RequiresMountsFor={project_directory} {project_directory}/build {project_directory}/runtime",
     ]
@@ -656,7 +656,28 @@ def render_preflight_lines(runtime_env_file: str, compose_file: str, project_dir
     return unit_lines, service_lines
 
 
-def render_job_unit(description: str, exec_start: str, exec_stop: str, requires: List[str], after: List[str], part_of_targets: List[str], unit_preflight_lines: List[str], service_preflight_lines: List[str], on_failure_unit: str) -> str:
+def service_systemd_timeout_start_sec(service_config: dict, default: int) -> int:
+    value = None
+    extension = service_config.get("x-webservices-systemd")
+    if isinstance(extension, dict):
+        value = extension.get("timeoutStartSec")
+    labels = labels_as_list(service_config.get("labels") or [])
+    for label in labels:
+        key, separator, raw_value = label.partition("=")
+        if separator and key == "org.webservices.systemd.timeout-start-sec":
+            value = raw_value
+    if value is None:
+        return default
+    try:
+        timeout = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"systemd timeoutStartSec must be an integer: {value!r}") from exc
+    if timeout < 1 or timeout > 86400:
+        raise ValueError(f"systemd timeoutStartSec must be between 1 and 86400 seconds: {timeout}")
+    return timeout
+
+
+def render_job_unit(description: str, exec_start: str, exec_stop: str, requires: List[str], after: List[str], part_of_targets: List[str], unit_preflight_lines: List[str], service_preflight_lines: List[str], on_failure_unit: str, timeout_start_sec: int = 1800) -> str:
     lines = ["[Unit]", f"Description={description}", f"OnFailure={on_failure_unit}"]
     for line in unit_preflight_lines:
         lines.append(line)
@@ -672,7 +693,7 @@ def render_job_unit(description: str, exec_start: str, exec_stop: str, requires:
         "Type=oneshot",
         "NoNewPrivileges=yes",
         "RemainAfterExit=yes",
-        "TimeoutStartSec=1800",
+        f"TimeoutStartSec={timeout_start_sec}",
     ])
     for line in service_preflight_lines:
         lines.append(line)
@@ -719,13 +740,13 @@ def render_service_unit(description: str, exec_start: str, exec_stop: str, exec_
     return "\n".join(lines) + "\n"
 
 
-def render_healthy_unit(description: str, exec_start: str, primary_unit: str, runtime_env_file: str, compose_file: str, project_directory: str, service_preflight_lines: List[str], on_failure_unit: str) -> str:
+def render_healthy_unit(description: str, exec_start: str, primary_unit: str, runtime_env_file: str, runtime_model_file: str, project_directory: str, service_preflight_lines: List[str], on_failure_unit: str) -> str:
     lines = [
         "[Unit]",
         f"Description={description}",
         f"OnFailure={on_failure_unit}",
         f"ConditionPathExists={runtime_env_file}",
-        f"ConditionPathExists={compose_file}",
+        f"ConditionPathExists={runtime_model_file}",
         f"ConditionPathExists={project_directory}",
         f"RequiresMountsFor={project_directory} {project_directory}/build {project_directory}/runtime",
         f"Requires={primary_unit}",
@@ -760,6 +781,67 @@ def render_diagnostics_unit(diagnostics_helper: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_host_autoheal_unit(host_autoheal_helper: str) -> str:
+    lines = [
+        "[Unit]",
+        "Description=Web Services host-side autoheal",
+        "",
+        "[Service]",
+        "Type=oneshot",
+        "NoNewPrivileges=yes",
+        f"ExecStart={shell_join([host_autoheal_helper])}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def render_host_autoheal_timer() -> str:
+    lines = [
+        "[Unit]",
+        "Description=Run Web Services host-side autoheal every minute",
+        "",
+        "[Timer]",
+        "OnBootSec=1min",
+        "OnUnitActiveSec=1min",
+        "AccuracySec=15s",
+        "Unit=webservices-host-autoheal.service",
+        "",
+        "[Install]",
+        "WantedBy=timers.target",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def render_update_deploy_unit(update_deploy_helper: str) -> str:
+    lines = [
+        "[Unit]",
+        "Description=Web Services stable GitHub update deploy",
+        "",
+        "[Service]",
+        "Type=oneshot",
+        "NoNewPrivileges=yes",
+        "TimeoutStartSec=7200",
+        f"ExecStart={shell_join([update_deploy_helper])}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def render_update_deploy_timer() -> str:
+    lines = [
+        "[Unit]",
+        "Description=Run Web Services stable GitHub update deploy daily",
+        "",
+        "[Timer]",
+        "OnCalendar=04:00",
+        "RandomizedDelaySec=30min",
+        "Persistent=true",
+        "Unit=webservices-update-deploy.service",
+        "",
+        "[Install]",
+        "WantedBy=timers.target",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--local-bundle-root", required=True)
@@ -767,36 +849,38 @@ def main() -> int:
     parser.add_argument("--deploy-root-template", required=True)
     parser.add_argument("--unit-root-template", required=True)
     parser.add_argument("--runtime-env-file-template", required=True)
-    parser.add_argument("--compose-config-json", required=True)
+    parser.add_argument("--runtime-config-json", required=True)
     parser.add_argument("--graph-path", required=True)
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--compose-project-name", required=True)
+    parser.add_argument("--runtime-project-name", required=True)
     parser.add_argument("--systemd-notify-bin", required=True)
-    parser.add_argument("--compose-helper", required=True)
+    parser.add_argument("--runtime-helper", required=True)
     parser.add_argument("--infra-helper", required=True)
     parser.add_argument("--diagnostics-helper", required=True)
+    parser.add_argument("--host-autoheal-helper", required=True)
+    parser.add_argument("--update-deploy-helper", required=True)
     parser.add_argument("--base-networks-json", required=True)
     args = parser.parse_args()
 
     local_bundle_root = Path(args.local_bundle_root).resolve()
     local_deploy_root = Path(args.local_deploy_root).resolve()
     output_dir = Path(args.output_dir)
-    compose_dir = output_dir / "compose"
+    runtime_shard_dir = output_dir / "runtime-shards"
     infra_dir = output_dir / "infra"
 
-    compose_config = load_json(Path(args.compose_config_json))
+    runtime_config = load_json(Path(args.runtime_config_json))
     graph = load_json(Path(args.graph_path))
     base_networks = load_json(Path(args.base_networks_json))
     vm_identity_domains, vm_identity_services = load_vm_identity_dependent_sets(local_bundle_root)
-    compose_services = compose_config["services"]
-    validate_graph_identifiers(graph, compose_services)
+    runtime_services = runtime_config["services"]
+    validate_graph_identifiers(graph, runtime_services)
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    if compose_dir.exists():
-        for path in compose_dir.glob("*.compose.json"):
+    if runtime_shard_dir.exists():
+        for path in runtime_shard_dir.glob("*.runtime.json"):
             path.unlink()
     else:
-        compose_dir.mkdir(parents=True, exist_ok=True)
+        runtime_shard_dir.mkdir(parents=True, exist_ok=True)
     if infra_dir.exists():
         for path in infra_dir.glob("*.json"):
             path.unlink()
@@ -807,19 +891,21 @@ def main() -> int:
         path.unlink()
     for path in output_dir.glob("webservices*.target"):
         path.unlink()
+    for path in output_dir.glob("webservices*.timer"):
+        path.unlink()
 
     unit_prefix = graph["unitPrefix"]
     excluded_services = set(graph.get("excludedServices", []))
     default_target = build_target(graph["defaultTarget"], install_default=True, include_units_default=True)
     auxiliary_targets = [build_target(raw_target, install_default=False, include_units_default=False) for raw_target in graph.get("auxiliaryTargets", [])]
 
-    domains = build_domains(graph, compose_services, excluded_services)
+    domains = build_domains(graph, runtime_services, excluded_services)
     service_to_domain = {}
     for domain in domains:
         for service_name in domain.services:
             service_to_domain[service_name] = domain.name
     dependency_map = {
-        domain.name: domain_dependencies(domain, compose_services, service_to_domain, excluded_services)
+        domain.name: domain_dependencies(domain, runtime_services, service_to_domain, excluded_services)
         for domain in domains
     }
     ordered_domains = topo_sort_domains(domains, dependency_map)
@@ -827,7 +913,7 @@ def main() -> int:
 
     base_network_configs = (base_networks.get("networks") or {})
     shared_networks = []
-    for network_name, network_config in sorted((compose_config.get("networks") or {}).items()):
+    for network_name, network_config in sorted((runtime_config.get("networks") or {}).items()):
         merged = dict(network_config or {})
         if network_name in base_network_configs:
             merged = dict(base_network_configs[network_name])
@@ -842,14 +928,14 @@ def main() -> int:
             "labels": merge_label_lists(
                 labels_as_list(merged.get("labels")),
                 [
-                    f"com.docker.compose.project={args.compose_project_name}",
-                    f"com.docker.compose.network={network_name}",
+                    f"org.platform-zero.runtime.project={args.runtime_project_name}",
+                    f"org.platform-zero.runtime.network={network_name}",
                 ],
             ),
         })
 
     shared_volumes = []
-    for volume_name, volume_config in sorted((compose_config.get("volumes") or {}).items()):
+    for volume_name, volume_config in sorted((runtime_config.get("volumes") or {}).items()):
         volume_config = normalize_volume_driver_opts(dict(volume_config or {}), local_deploy_root)
         shared_volumes.append({
             "key": volume_name,
@@ -859,8 +945,8 @@ def main() -> int:
             "labels": merge_label_lists(
                 labels_as_list(volume_config.get("labels")),
                 [
-                    f"com.docker.compose.project={args.compose_project_name}",
-                    f"com.docker.compose.volume={volume_name}",
+                    f"org.platform-zero.runtime.project={args.runtime_project_name}",
+                    f"org.platform-zero.runtime.volume={volume_name}",
                 ],
             ),
         })
@@ -870,12 +956,20 @@ def main() -> int:
 
     default_target_name = default_target.name
     diagnostics_unit = f"{unit_prefix}-diagnostics@.service"
+    host_autoheal_unit = f"{unit_prefix}-host-autoheal.service"
+    host_autoheal_timer = f"{unit_prefix}-host-autoheal.timer"
+    update_deploy_unit = f"{unit_prefix}-update-deploy.service"
+    update_deploy_timer = f"{unit_prefix}-update-deploy.timer"
     networks_unit = infra_unit_name(unit_prefix, "networks")
     volumes_unit = infra_unit_name(unit_prefix, "volumes")
     infra_units = [networks_unit, volumes_unit]
     write_text_within(output_dir, diagnostics_unit, render_diagnostics_unit(args.diagnostics_helper))
+    write_text_within(output_dir, host_autoheal_unit, render_host_autoheal_unit(args.host_autoheal_helper))
+    write_text_within(output_dir, host_autoheal_timer, render_host_autoheal_timer())
+    write_text_within(output_dir, update_deploy_unit, render_update_deploy_unit(args.update_deploy_helper))
+    write_text_within(output_dir, update_deploy_timer, render_update_deploy_timer())
     write_text_within(output_dir, networks_unit, render_infra_unit(
-        "Web Services Docker networks",
+        "Web Services container networks",
         shell_join([
             args.infra_helper,
             "ensure-networks",
@@ -889,7 +983,7 @@ def main() -> int:
         diagnostics_unit.replace("@.service", "@%n.service"),
     ))
     write_text_within(output_dir, volumes_unit, render_infra_unit(
-        "Web Services Docker volumes",
+        "Web Services container volumes",
         shell_join([
             args.infra_helper,
             "ensure-volumes",
@@ -921,13 +1015,13 @@ def main() -> int:
             )
 
     for domain in domains:
-        shard = compose_shard(domain, compose_config, service_to_domain, excluded_services, unit_prefix, local_deploy_root)
-        write_text_within(compose_dir, f"{domain.name}.compose.json", json.dumps(shard, indent=2, sort_keys=True) + "\n")
+        shard = runtime_shard(domain, runtime_config, service_to_domain, excluded_services, unit_prefix, local_deploy_root)
+        write_text_within(runtime_shard_dir, f"{domain.name}.runtime.json", json.dumps(shard, indent=2, sort_keys=True) + "\n")
 
-        runtime_compose_path = f"{args.unit_root_template}/compose/{domain.name}.compose.json"
+        runtime_shard_path = f"{args.unit_root_template}/runtime-shards/{domain.name}.runtime.json"
         path_contracts = collect_path_contracts(
             domain,
-            compose_config,
+            runtime_config,
             local_deploy_root,
             local_bundle_root,
             args.deploy_root_template,
@@ -936,7 +1030,7 @@ def main() -> int:
         )
         unit_preflight_lines, service_preflight_lines = render_preflight_lines(
             args.runtime_env_file_template,
-            runtime_compose_path,
+            runtime_shard_path,
             args.deploy_root_template,
             path_contracts,
         )
@@ -957,7 +1051,7 @@ def main() -> int:
 
         primary_unit = service_unit_name(unit_prefix, domain.name)
         target_names = member_target_names(domain, default_target, auxiliary_targets)
-        has_domain_healthcheck = any(has_healthcheck(compose_services[service_name]) for service_name in domain.services)
+        has_domain_healthcheck = any(has_healthcheck(runtime_services[service_name]) for service_name in domain.services)
 
         if not domain.on_demand and default_target.include_units_from_non_on_demand_domains:
             target_units[default_target.name].append(primary_unit)
@@ -970,11 +1064,11 @@ def main() -> int:
                 if not domain.is_job and has_domain_healthcheck:
                     target_units[target.name].append(healthy_unit_name(unit_prefix, domain.name))
 
-        project = args.compose_project_name
+        project = args.runtime_project_name
         diagnostics_on_failure = diagnostics_unit.replace("@.service", "@%n.service")
         common_args = [
-            "--compose-file",
-            runtime_compose_path,
+            "--runtime-model-file",
+            runtime_shard_path,
             "--env-file",
             args.runtime_env_file_template,
             "--project-directory",
@@ -987,13 +1081,14 @@ def main() -> int:
 
         if domain.is_job:
             service_name = domain.services[0]
+            timeout_start_sec = service_systemd_timeout_start_sec(runtime_services[service_name], 1800)
             unit_text = render_job_unit(
                 f"Web Services job domain ({domain.name})",
                 shell_join([
-                    args.compose_helper,
+                    args.runtime_helper,
                     "job-run",
-                    "--compose-file",
-                    runtime_compose_path,
+                    "--runtime-model-file",
+                    runtime_shard_path,
                     "--env-file",
                     args.runtime_env_file_template,
                     "--project-directory",
@@ -1004,7 +1099,7 @@ def main() -> int:
                     project,
                 ]),
                 shell_join([
-                    args.compose_helper,
+                    args.runtime_helper,
                     "service-stop",
                     *common_args,
                 ]),
@@ -1014,6 +1109,7 @@ def main() -> int:
                 unit_preflight_lines,
                 service_preflight_lines,
                 diagnostics_on_failure,
+                timeout_start_sec,
             )
             write_text_within(output_dir, primary_unit, unit_text)
             continue
@@ -1021,19 +1117,19 @@ def main() -> int:
         unit_text = render_service_unit(
             f"Web Services lifecycle domain ({domain.name})",
             shell_join([
-                args.compose_helper,
+                args.runtime_helper,
                 "service-start",
                 *common_args,
                 "--notify-bin",
                 args.systemd_notify_bin,
             ]),
             shell_join([
-                args.compose_helper,
+                args.runtime_helper,
                 "service-stop",
                 *common_args,
             ]),
             shell_join([
-                args.compose_helper,
+                args.runtime_helper,
                 "service-reload",
                 *common_args,
             ]),
@@ -1049,13 +1145,13 @@ def main() -> int:
         healthy_text = render_healthy_unit(
             f"Web Services healthy gate ({domain.name})",
             shell_join([
-                args.compose_helper,
+                args.runtime_helper,
                 "service-wait-healthy",
                 *common_args,
             ]),
             primary_unit,
             args.runtime_env_file_template,
-            runtime_compose_path,
+            runtime_shard_path,
             args.deploy_root_template,
             service_preflight_lines,
             diagnostics_on_failure,
@@ -1075,7 +1171,7 @@ def main() -> int:
         ))
 
     print(f"[webservices-build] rendered {len(list(output_dir.glob('webservices*.service')))} units into {output_dir}", file=sys.stderr)
-    print(f"[webservices-build] rendered compose shards into {compose_dir}", file=sys.stderr)
+    print(f"[webservices-build] rendered runtime shards into {runtime_shard_dir}", file=sys.stderr)
     return 0
 
 

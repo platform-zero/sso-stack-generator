@@ -44,12 +44,15 @@ require_cmd tar
 cd "$SOURCE_ROOT"
 require_clean_git_tree "$SOURCE_ROOT"
 
-contract_test_seed="${WEBSERVICES_CONTRACT_ROOT:-$SOURCE_ROOT}"
+contract_test_seed="${WEBSERVICES_OVERLAY_ROOT:-$SOURCE_ROOT}"
 external_modules_ready=0
 if [ -d "$EXTERNAL_MODULES_MATERIALIZED_DIR" ] && find "$EXTERNAL_MODULES_MATERIALIZED_DIR" -type f -print -quit | grep -q .; then
   external_modules_ready=1
 fi
-if [ "$contract_test_seed" = "$SOURCE_ROOT" ] && [ "$external_modules_ready" = "0" ] && [ ! -f "$contract_test_seed/stack.config/components.json" ] && [ -f "$SOURCE_ROOT/dist/build/stack.config/components.json" ]; then
+if [ "$contract_test_seed" = "$SOURCE_ROOT" ] && [ ! -f "$contract_test_seed/stack.config/components.json" ] && [ -f "$SOURCE_ROOT/dist/build/build/stack.config/components.json" ]; then
+  log "using materialized dist/build/build tree for contract tests"
+  contract_test_seed="$SOURCE_ROOT/dist/build/build"
+elif [ "$contract_test_seed" = "$SOURCE_ROOT" ] && [ ! -f "$contract_test_seed/stack.config/components.json" ] && [ -f "$SOURCE_ROOT/dist/build/stack.config/components.json" ]; then
   log "using materialized dist/build tree for contract tests"
   contract_test_seed="$SOURCE_ROOT/dist/build"
 fi
@@ -71,7 +74,7 @@ if [ "$needs_contract_test_tmp" = "1" ]; then
   }
   trap cleanup_contract_test_root EXIT
 
-  for root in global.settings stack.compose stack.config stack.containers stack.kotlin stack.js stack.systemd; do
+  for root in global.settings runtime-generator runtime.overlays stack.config stack.containers stack.kotlin stack.js stack.systemd; do
     if [ -e "$contract_test_seed/$root" ]; then
       cp -a "$contract_test_seed/$root" "$contract_test_tmp/$root"
     elif [ -e "$SOURCE_ROOT/$root" ]; then
@@ -85,7 +88,12 @@ if [ "$needs_contract_test_tmp" = "1" ]; then
     fi
   done
 
-  for file in .bazelrc BUILD.bazel MODULE.bazel build.gradle.kts settings.gradle.kts gradlew gradlew.bat; do
+  rm -rf "$contract_test_tmp/stack.containers/test-runner/playwright-tests/node_modules"
+  rm -rf \
+    "$contract_test_tmp/stack.config/components.external" \
+    "$contract_test_tmp/stack.config/service-contracts.external"
+
+  for file in .bazelrc BUILD.bazel MODULE.bazel MODULE.bazel.lock WORKSPACE.bazel build.gradle.kts settings.gradle.kts gradlew gradlew.bat; do
     if [ -e "$SOURCE_ROOT/$file" ]; then
       cp -a "$SOURCE_ROOT/$file" "$contract_test_tmp/$file"
     fi
@@ -125,10 +133,10 @@ log "running external module checks"
 "$SCRIPT_DIR/test-external-modules.sh" >&2
 
 log "running service contract checks"
-WEBSERVICES_CONTRACT_ROOT="$contract_test_root" "$SCRIPT_DIR/test-service-contracts.sh" >&2
+WEBSERVICES_OVERLAY_ROOT="$contract_test_root" "$SCRIPT_DIR/test-service-contracts.sh" >&2
 
 log "running contract report checks"
-WEBSERVICES_CONTRACT_ROOT="$contract_test_root" "$SCRIPT_DIR/test-contract-reports.sh" >&2
+WEBSERVICES_OVERLAY_ROOT="$contract_test_root" "$SCRIPT_DIR/test-contract-reports.sh" >&2
 
 if [ "$external_modules_ready" = "1" ] && find "$EXTERNAL_MODULES_MATERIALIZED_DIR" -mindepth 2 -maxdepth 2 -name stack.module.json -print -quit | grep -q .; then
   log "running materialized module contract checks"
@@ -149,6 +157,9 @@ log "running env-file security checks"
 
 log "running deploy preflight checks"
 "$SCRIPT_DIR/test-deploy-preflight.sh" >&2
+
+log "running host broker policy checks"
+python3 "$SCRIPT_DIR/test-p0-host-broker.py" >&2
 
 log "running bundle installer checks"
 "$SCRIPT_DIR/test-install-bundle.sh" >&2

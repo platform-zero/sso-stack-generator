@@ -320,7 +320,7 @@ jq -n \
     checks: [
       \"component lock matches deployed bundle\",
       \"systemd graph matches generated graph\",
-      \"running containers match generated compose\",
+      \"running containers match generated runtime model\",
       \"running images match selected image refs\",
       \"Caddy routes match generated Caddyfile\",
       \"Keycloak clients/groups match generated desired state\",

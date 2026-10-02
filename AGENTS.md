@@ -19,7 +19,7 @@ It does not own downstream application-specific stacks, downstream-only deploy l
 Edit source, not generated output.
 
 Primary source directories:
-- `stack.compose/`
+- `runtime.overlays/`
 - `stack.config/`
 - `stack.containers/`
 - `stack.systemd/`
@@ -56,8 +56,8 @@ Internal helpers:
 - `./scripts/deploy/render-systemd-user.sh`
 - `./scripts/deploy/render-systemd-user.py`
 - `./scripts/deploy/install-systemd-user-units.sh`
-- `./scripts/lib/systemd-compose-unit.sh`
-- `./scripts/lib/systemd-docker-infra.sh`
+- `./scripts/lib/systemd-runtime-unit.sh`
+- `./scripts/lib/systemd-container-infra.sh`
 - `./scripts/lib/wait-ready.sh`
 
 Do not reintroduce removed top-level wrappers such as `sync.sh`, `test.sh`, `wait-ready.sh`, `render.sh`, or `sync-dist.sh`.
@@ -91,8 +91,8 @@ Deploy:
 - renders with SOPS on the host
 - writes decrypted runtime material only into `~/webservices/runtime`
 - links pre-rendered `systemd --user` units from `~/webservices/build/systemd-user`
-- uses pre-rendered per-domain compose shards from `~/webservices/build/systemd-user/compose`
-- uses `docker compose` as the per-service container backend, not as the host orchestrator
+- uses pre-rendered per-domain runtime shards from `~/webservices/build/systemd-user/runtime-shards`
+- uses Podman-managed units as the active container backend; do not reintroduce alternate orchestration paths
 
 Verify:
 - runs on the target host from `~/webservices/`
@@ -135,8 +135,8 @@ and use `smoke` metadata to distinguish local smoke from deployed-only
 verification.
 
 Important constraints:
-- Playwright and deep auth suites depend on deployed runtime env and compose DNS
-- the compose project name stays `webservices`
+- Playwright and deep auth suites depend on deployed runtime env and runtime DNS
+- the runtime project name stays `webservices`
 - remote deployment verification belongs to `./verify.sh`, not ad hoc wrappers
 
 ## Screenshot And Visual Evidence Standard

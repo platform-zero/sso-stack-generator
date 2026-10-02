@@ -11,6 +11,10 @@ if [ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/systemd-user.sh" ]; th
   # shellcheck source=scripts/lib/systemd-user.sh
   source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/systemd-user.sh"
 fi
+if [ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/common.sh" ]; then
+  # shellcheck source=scripts/lib/common.sh
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/common.sh"
+fi
 
 printf '[webservices-diagnostics] unit=%s\n' "$UNIT_NAME"
 printf '[webservices-diagnostics] target status begin\n'
@@ -23,5 +27,5 @@ printf '[webservices-diagnostics] recent logs begin\n'
 user_systemd_show_recent_logs "$UNIT_NAME" 200 || true
 printf '[webservices-diagnostics] recent logs end\n'
 printf '[webservices-diagnostics] container snapshot begin\n'
-docker ps -a --format '{{.Names}}\t{{.Status}}\t{{.Image}}' 2>&1 | sort || true
+container_runtime ps -a --format '{{.Names}}\t{{.Status}}\t{{.Image}}' 2>&1 | sort || true
 printf '[webservices-diagnostics] container snapshot end\n'

@@ -3,7 +3,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 BUNDLE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
-DEPLOY_ROOT="$(cd "$BUNDLE_ROOT/.." && pwd -P)"
+default_deploy_root() {
+  if [ -f "$BUNDLE_ROOT/runtime/stack.env" ]; then
+    printf '%s\n' "$BUNDLE_ROOT"
+  else
+    cd "$BUNDLE_ROOT/.." && pwd -P
+  fi
+}
+DEPLOY_ROOT="${DEPLOY_ROOT:-$(default_deploy_root)}"
 # shellcheck source=scripts/lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 # shellcheck source=scripts/lib/systemd-user.sh
@@ -53,11 +60,17 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-[ -f "$BUNDLE_ROOT/docker-compose.yml" ] || die "missing docker-compose.yml in $BUNDLE_ROOT"
 [ -f "$DEPLOY_ROOT/runtime/stack.env" ] || die "missing runtime/stack.env in $DEPLOY_ROOT/runtime"
-[ -f "$BUNDLE_ROOT/stack.systemd/graph.json" ] || die "missing stack.systemd/graph.json in $BUNDLE_ROOT"
-require_cmd docker
 require_cmd jq
+
+is_podman_bundle() {
+  [ -f "$BUNDLE_ROOT/bundle.json" ] && jq -e '.backend == "podman"' "$BUNDLE_ROOT/bundle.json" >/dev/null 2>&1
+}
+
+if ! is_podman_bundle; then
+  [ -f "$BUNDLE_ROOT/runtime-model.yml" ] || die "missing runtime model in $BUNDLE_ROOT"
+  [ -f "$BUNDLE_ROOT/stack.systemd/graph.json" ] || die "missing stack.systemd/graph.json in $BUNDLE_ROOT"
+fi
 
 verify_log() {
   printf '[webservices-verify] %s\n' "$*" >&2
@@ -94,8 +107,8 @@ dump_verify_diagnostics() {
     verify_log "no failed user units reported"
   fi
 
-  verify_log "docker container snapshot"
-  docker ps -a --format '{{.Names}}\t{{.Status}}\t{{.Image}}' 2>&1 | sort || true
+  verify_log "container snapshot"
+  container_runtime ps -a --format '{{.Names}}\t{{.Status}}\t{{.Image}}' 2>&1 | sort || true
   if [ -x "$BUNDLE_ROOT/scripts/mount-diagnostics.sh" ]; then
     verify_log "mount diagnostics summary"
     "$BUNDLE_ROOT/scripts/mount-diagnostics.sh" \
@@ -115,6 +128,44 @@ on_verify_error() {
 
 trap 'on_verify_error' ERR
 
+verify_podman_release_ready() {
+  local domains_file rootless_user rootless_uid rootless_home failed_rootful failed_rootless
+  domains_file="$BUNDLE_ROOT/podman-domains.json"
+  [ -f "$domains_file" ] || domains_file="$DEPLOY_ROOT/podman-domains.json"
+  [ -f "$domains_file" ] || die "Podman release is missing podman-domains.json"
+
+  set_phase "podman-readiness"
+  systemctl is-active --quiet webservices.target
+  failed_rootful="$(systemctl list-units --failed --no-legend 'webservices*' || true)"
+  if [ -n "$failed_rootful" ]; then
+    printf '%s\n' "$failed_rootful" >&2
+    die "one or more rootful webservices units are failed"
+  fi
+
+  while IFS= read -r rootless_user; do
+    id "$rootless_user" >/dev/null 2>&1 || die "missing Podman domain account: $rootless_user"
+    rootless_uid="$(id -u "$rootless_user")"
+    rootless_home="$(getent passwd "$rootless_user" | cut -d: -f6)"
+    /usr/sbin/runuser -u "$rootless_user" -- \
+      env HOME="$rootless_home" XDG_RUNTIME_DIR="/run/user/${rootless_uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${rootless_uid}/bus" \
+      systemctl --user is-active --quiet webservices.target
+    failed_rootless="$(/usr/sbin/runuser -u "$rootless_user" -- \
+      env HOME="$rootless_home" XDG_RUNTIME_DIR="/run/user/${rootless_uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${rootless_uid}/bus" \
+      systemctl --user list-units --failed --no-legend 'webservices*' || true)"
+    if [ -n "$failed_rootless" ]; then
+      printf '%s\n' "$failed_rootless" >&2
+      die "one or more rootless webservices units are failed for $rootless_user"
+    fi
+  done < <(jq -r '.domains[].user' "$domains_file")
+
+  if [ "$READY_ONLY" != "1" ]; then
+    die "installed Podman release verification supports --ready-only; run test suites from the source checkout"
+  fi
+  set_phase "ready-only-complete"
+  verify_log "Podman release readiness passed"
+  exit 0
+}
+
 default_test_results_host_dir() {
   local deploy_parent deploy_name
   deploy_parent="$(dirname "$DEPLOY_ROOT")"
@@ -123,6 +174,9 @@ default_test_results_host_dir() {
 }
 
 if [ "$RUN_DIRECT" != "1" ]; then
+  if is_podman_bundle; then
+    verify_podman_release_ready
+  fi
   require_cmd systemd-run
   ensure_user_systemd_env
   transient_unit="webservices-verify-$(date +%Y%m%d_%H%M%S)"

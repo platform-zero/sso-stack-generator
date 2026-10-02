@@ -2,7 +2,7 @@
 
 This is the public root generator for a modular, SSO-backed self-hosted service
 stack. It owns the generic build system, schema, resolver, catalog, generated
-runtime contract, and test runners.
+runtime model, and test runners.
 
 It does not own site secrets, production-specific values, downstream-only
 customizations, or deployable service overlays that have been extracted into
@@ -14,11 +14,11 @@ The stack is split across three ownership layers:
 
 | Layer | Owns | Does not own |
 | --- | --- | --- |
-| Generator | Resolver, schemas, base catalog, build/deploy bundle layout, shared runtime helpers, systemd/Compose rendering, and test runners. | Site pins, plaintext secrets, downstream choices, or module-specific service source. |
-| Modules | Deployable overlays for services or service groups: Compose shards, config templates, containers, tests, and component catalog entries. | Site-specific activation or secret values. |
+| Generator | Resolver, schemas, base catalog, build/deploy bundle layout, shared runtime helpers, systemd/Podman rendering, and test runners. | Site pins, plaintext secrets, downstream choices, or module-specific service source. |
+| Modules | Deployable overlays for services or service groups: runtime shards, config templates, containers, tests, and component catalog entries. | Site-specific activation or secret values. |
 | Site config | Site manifest, encrypted inputs, generator/module pins, and deployment target choices. | Generic generator behavior or reusable module implementation. |
 
-The generated runtime namespace is still `webservices` for Compose projects,
+The generated runtime namespace is still `webservices` for container projects,
 systemd units, paths, labels, and tests. That runtime name is separate from the
 repository identity.
 
@@ -37,7 +37,7 @@ secret-free dist/ bundle
 host deploy renders secrets and runtime config
         |
         v
-systemd --user supervises Docker Compose shards
+systemd and Quadlet supervise the Podman-managed stack
         |
         v
 verify.sh and run-tests.sh prove the deployed contract
@@ -58,10 +58,10 @@ state, and writes `bundle.tar`, `bundle.tar.sha256`, and `bundle.json`.
 ```bash
 ./site-build.sh --site-lock /path/to/site.lock.json --output /tmp/site-release
 ./scripts/site/deploy-site.sh --site-lock /path/to/site.lock.json --bundle-dir /tmp/site-release \
-  --readiness-command './verify.sh'
+  --readiness-command './verify.sh' --host user@example.org
 ```
 
-The deploy command uploads only the completed bundle to `gerald@192.168.0.11`.
+The deploy command uploads only the completed bundle to the specified host.
 The host verifies the checksum, artifact manifest, and lock hash, extracts a
 new release under `~/webservices/releases`, runs the configured readiness
 command, then atomically updates `~/webservices/current`. It never clones or
@@ -119,7 +119,7 @@ a deployment.
 | `scripts/` | Build, resolver, deploy rendering, module, and validation helpers. |
 | `modules/` | Public module catalog, group definitions, and module metadata schema. |
 | `stack.kotlin/` | Materialized Kotlin services in a built bundle. Source lives in modules. |
-| `stack.compose/` | Materialized Compose files in a built bundle. Deployable service overlays usually live in modules. |
+| `runtime.overlays/` | Materialized compatibility runtime fragments in a built bundle. Deployable service overlays usually live in modules. |
 | `stack.config/` | Base config, schemas, Caddy/Keycloak templates, and runtime helper inputs. |
 | `stack.containers/` | Materialized custom container contexts in a built bundle. |
 | `stack.systemd/` | Source graph for generated systemd user units. |

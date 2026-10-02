@@ -4,8 +4,12 @@ on:
   pull_request:
   push:
     branches:
+      - main
       - dev
       - stable
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -24,7 +28,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install shell tooling
         run: |
@@ -70,15 +74,33 @@ jobs:
       - name: Run documentation checks
         run: ./scripts/test-docs.sh
 
+      - name: Run deploy preflight checks
+        run: ./scripts/test-deploy-preflight.sh
+
+      - name: Run deploy scope checks
+        run: ./scripts/test-deploy-scope.sh
+
+      - name: Run install bundle checks
+        run: ./scripts/test-install-bundle.sh
+
+      - name: Run stable release gate checks
+        run: ./scripts/test-update-deploy-release-gate.sh
+
+      - name: Run stackctl user checks
+        run: ./scripts/test-stackctl-users.sh
+
   generator-tests:
     name: Generator script tests
     runs-on: ubuntu-24.04
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Run module runner checks
         run: ./scripts/test-module-runners.sh
+
+      - name: Run module security policy checks
+        run: ./scripts/test-security-policy.sh
 
       - name: Run external module checks
         run: ./scripts/test-external-modules.sh

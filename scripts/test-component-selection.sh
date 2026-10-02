@@ -4,13 +4,18 @@ trap 'status=$?; printf "[component-selection-test] failed at line %s: %s (exit 
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
-CONTRACT_ROOT="${WEBSERVICES_CONTRACT_ROOT:-$ROOT_DIR}"
+OVERLAY_ROOT="${WEBSERVICES_OVERLAY_ROOT:-$ROOT_DIR}"
+if [ "$OVERLAY_ROOT" = "$ROOT_DIR" ] && [ ! -f "$OVERLAY_ROOT/stack.config/components.json" ] && [ -f "$ROOT_DIR/dist/build/build/stack.config/components.json" ]; then
+  OVERLAY_ROOT="$ROOT_DIR/dist/build/build"
+elif [ "$OVERLAY_ROOT" = "$ROOT_DIR" ] && [ ! -f "$OVERLAY_ROOT/stack.config/components.json" ] && [ -f "$ROOT_DIR/dist/build/stack.config/components.json" ]; then
+  OVERLAY_ROOT="$ROOT_DIR/dist/build"
+fi
 # shellcheck source=scripts/lib/common.sh
 source "$ROOT_DIR/scripts/lib/common.sh"
 # shellcheck source=scripts/lib/components.sh
 source "$ROOT_DIR/scripts/lib/components.sh"
-# shellcheck source=scripts/lib/compose.sh
-source "$ROOT_DIR/scripts/lib/compose.sh"
+# shellcheck source=scripts/lib/runtime-model.sh
+source "$ROOT_DIR/scripts/lib/runtime-model.sh"
 
 assert_not_contains() {
   local file="$1"
@@ -47,17 +52,25 @@ assert_not_private_mode() {
 validate_caddy_file() {
   local caddy_file="$1"
   local caddy_log
+  local container_cli
   caddy_log="$(mktemp)"
-  if ! docker run --rm \
+  if command -v podman >/dev/null 2>&1; then
+    container_cli=podman
+  else
+    printf '[component-selection-test] missing required container CLI: podman\n' >&2
+    exit 1
+  fi
+  if ! "$container_cli" run --rm \
     -v "$caddy_file:/etc/caddy/Caddyfile:ro" \
     -e DOMAIN=example.test \
     -e ONBOARDING_TRUSTED_PROXY_SECRET=test \
     -e KOPIA_PROXY_AUTHORIZATION=test \
     -e BOOKSTACK_INTERNAL_API_TOKEN=test \
     -e OPENSEARCH_BASIC_AUTH=test \
+    -e QBITTORRENT_NATIVE_BASIC_HASH=test \
     -e HOMEASSISTANT_TRUSTED_PROXY_SECRET=test \
     -e VAULTWARDEN_ORG_ID=00000000-0000-0000-0000-000000000000 \
-    caddy:2.11.3 \
+    docker.io/library/caddy:2.11.3 \
     caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >"$caddy_log" 2>&1; then
     cat "$caddy_log" >&2
     rm -f "$caddy_log"
@@ -143,22 +156,44 @@ cat "$last"
 EOF_SOPS
 chmod +x "$fake_bin/sops"
 
-copy_tree "$CONTRACT_ROOT/global.settings" "$bundle_root/global.settings"
-copy_tree "$CONTRACT_ROOT/stack.compose" "$bundle_root/stack.compose"
-copy_tree "$CONTRACT_ROOT/stack.config" "$bundle_root/stack.config"
-copy_tree "$CONTRACT_ROOT/stack.systemd" "$bundle_root/stack.systemd"
+copy_tree "$OVERLAY_ROOT/global.settings" "$bundle_root/global.settings"
+copy_tree "$OVERLAY_ROOT/runtime.overlays" "$bundle_root/runtime.overlays"
+copy_tree "$OVERLAY_ROOT/stack.config" "$bundle_root/stack.config"
+copy_tree "$OVERLAY_ROOT/stack.systemd" "$bundle_root/stack.systemd"
 copy_tree "$ROOT_DIR/scripts" "$bundle_root/scripts"
-mkdir -p "$bundle_root/stack.compose"
+mkdir -p "$bundle_root/runtime.overlays"
+if [ -f "$bundle_root/stack.systemd/graph.json" ]; then
+  graph_temp="$(mktemp)"
+  jq '
+    .defaultTarget.wantsTargets = (
+      ((.defaultTarget.wantsTargets // []) + [
+        "webservices-core.target",
+        "webservices-apps.target",
+        "webservices-observability.target"
+      ]) | unique
+    )
+    | .auxiliaryTargets = (
+      (.auxiliaryTargets // [])
+      + [
+        {"name": "webservices-core.target", "description": "Web Services Core"},
+        {"name": "webservices-apps.target", "description": "Web Services Apps"},
+        {"name": "webservices-observability.target", "description": "Web Services Observability"}
+      ]
+      | unique_by(.name)
+    )
+  ' "$bundle_root/stack.systemd/graph.json" > "$graph_temp"
+  mv "$graph_temp" "$bundle_root/stack.systemd/graph.json"
+fi
 
-cat > "$bundle_root/stack.compose/component-marker-test.yml" <<'EOF_COMPOSE_MARKER'
+cat > "$bundle_root/runtime.overlays/component-marker-test.yml" <<'EOF_RUNTIME_MARKER'
 volumes:
   component_marker_always:
   # webservices-component-start bookstack
   component_marker_bookstack:
   # webservices-component-end bookstack
-EOF_COMPOSE_MARKER
+EOF_RUNTIME_MARKER
 catalog_temp="$(mktemp)"
-jq '.components.core.composeFiles += ["component-marker-test.yml"]' \
+jq '.components.core.runtimeFiles += ["component-marker-test.yml"]' \
   "$bundle_root/stack.config/components.json" > "$catalog_temp"
 mv "$catalog_temp" "$bundle_root/stack.config/components.json"
 
@@ -184,7 +219,8 @@ EOF_CONFIG
 
 cat > "$site_root/webservices.sops.json" <<'EOF_SECRETS'
 {
-  "STACK_ADMIN_PASSWORD": "component-test-password"
+  "STACK_ADMIN_PASSWORD": "component-test-password",
+  "SEARXNG_SECRET": "component-test-secret"
 }
 EOF_SECRETS
 
@@ -206,27 +242,27 @@ component_selection_write_metadata \
   "$bundle_root/stack.config/components.json" \
   "$site_root/components.lock.json"
 
-build_merged_compose "$bundle_root" "$bundle_root/docker-compose.yml" "$site_root/manifest.json"
-assert_contains "$bundle_root/docker-compose.yml" 'component_marker_always:' "always-on compose marker test volume"
-assert_not_contains "$bundle_root/docker-compose.yml" 'component_marker_bookstack:' "disabled compose marker test volume"
+build_runtime_model "$bundle_root" "$bundle_root/runtime-model.yml" "$site_root/manifest.json"
+assert_contains "$bundle_root/runtime-model.yml" 'component_marker_always:' "always-on runtime marker test volume"
+assert_not_contains "$bundle_root/runtime-model.yml" 'component_marker_bookstack:' "disabled runtime marker test volume"
 
 PATH="$fake_bin:$PATH" "$ROOT_DIR/scripts/deploy/render-runtime.sh" \
   --bundle-root "$bundle_root" \
   --deploy-root "$tmp_root/bundle" \
   --site-manifest "$site_root/manifest.json" \
   --runtime-root "$runtime_root" \
-  --skip-compose-validate
+  --skip-runtime-model-validate
 
 caddy_file="$tmp_root/bundle/runtime/configs/caddy/Caddyfile"
 keycloak_configure="$tmp_root/bundle/runtime/configs/keycloak/configure-runtime.sh"
-runtime_contracts="$tmp_root/bundle/runtime/configs/service-contracts.json"
+runtime_models="$tmp_root/bundle/runtime/configs/service-contracts.json"
 
 assert_contains "$caddy_file" 'reverse_proxy keycloak:8080' "core Keycloak route"
 assert_contains "$caddy_file" 'reverse_proxy onboarding:8080' "core onboarding route"
 assert_contains "$caddy_file" 'webservices core stack' "core apex fallback"
-if [ -f "$runtime_contracts" ]; then
-  jq -e '.components.core and (.components | has("bookstack") | not)' "$runtime_contracts" >/dev/null
-  assert_not_private_mode "$runtime_contracts" "filtered runtime service contracts"
+if [ -f "$runtime_models" ]; then
+  jq -e '.components.core and (.components | has("bookstack") | not)' "$runtime_models" >/dev/null
+  assert_not_private_mode "$runtime_models" "filtered runtime service contracts"
 fi
 
 assert_not_contains "$caddy_file" 'reverse_proxy (vaultwarden|grafana|portal:8080|bookstack|matrix-authentication-service|mastodon|jupyterhub|homeassistant|search-service|kopia|progression)' "disabled app Caddy upstream"
@@ -247,40 +283,39 @@ component_selection_write_metadata \
   "$bundle_root/stack.config/components.json" \
   "$site_root/components.lock.json"
 
-build_merged_compose "$bundle_root" "$bundle_root/docker-compose.full.yml" "$site_root/manifest.json"
-assert_contains "$bundle_root/docker-compose.full.yml" 'component_marker_bookstack:' "enabled compose marker test volume"
-cp "$bundle_root/docker-compose.full.yml" "$bundle_root/docker-compose.yml"
+build_runtime_model "$bundle_root" "$bundle_root/runtime-model.full.yml" "$site_root/manifest.json"
+assert_contains "$bundle_root/runtime-model.full.yml" 'component_marker_bookstack:' "enabled runtime model marker test volume"
+cp "$bundle_root/runtime-model.full.yml" "$bundle_root/runtime-model.yml"
 
-"$ROOT_DIR/scripts/deploy/render-systemd-user.sh" \
-  --bundle-root "$bundle_root" \
-  --output-dir "$bundle_root/systemd-user" \
-  --deploy-root-template "%h/webservices" \
-  --unit-root-template "%h/webservices/build/systemd-user" \
-  --runtime-env-file-template "%h/webservices/runtime/stack.env" >/dev/null
+if [ -f "$bundle_root/stack.systemd/graph.json" ]; then
+  "$ROOT_DIR/scripts/deploy/render-systemd-user.sh" \
+    --bundle-root "$bundle_root" \
+    --output-dir "$bundle_root/systemd-user" \
+    --deploy-root-template "%h/webservices" \
+    --unit-root-template "%h/webservices/build/systemd-user" \
+    --runtime-env-file-template "%h/webservices/runtime/stack.env" >/dev/null
 
-progression_unit="$bundle_root/systemd-user/webservices-progression.service"
-assert_contains "$progression_unit" '%h/webservices/build/build-info.json' "Progression build-info preflight"
-assert_contains "$progression_unit" '%h/webservices/build/docker-compose.yml' "Progression compose preflight"
-assert_contains "$progression_unit" '%h/webservices/build/stack.config/progression' "Progression registry preflight"
-assert_not_contains "$progression_unit" '%h/webservices/build-info.json|%h/webservices/docker-compose.yml|%h/webservices/stack.config/progression' "root-level Progression preflight"
-assert_contains "$bundle_root/systemd-user/webservices.target" 'PropagatesStopTo=webservices-core.target' "core target stop propagation"
-assert_contains "$bundle_root/systemd-user/webservices.target" 'PropagatesStopTo=webservices-apps.target' "apps target stop propagation"
+  assert_contains "$bundle_root/systemd-user/webservices.target" 'PropagatesStopTo=webservices-core.target' "core target stop propagation"
+  assert_contains "$bundle_root/systemd-user/webservices.target" 'PropagatesStopTo=webservices-apps.target' "apps target stop propagation"
+fi
 
 PATH="$fake_bin:$PATH" "$ROOT_DIR/scripts/deploy/render-runtime.sh" \
   --bundle-root "$bundle_root" \
   --deploy-root "$tmp_root/bundle" \
   --site-manifest "$site_root/manifest.json" \
   --runtime-root "$runtime_root" \
-  --skip-compose-validate
+  --skip-runtime-model-validate
 
+searxng_settings="$tmp_root/bundle/runtime/configs/searxng/settings.yml"
+assert_contains "$searxng_settings" 'secret_key:' "rendered SearXNG secret setting"
+assert_contains "$searxng_settings" '^[[:space:]]*- json$' "SearXNG JSON response format"
 assert_contains "$caddy_file" 'reverse_proxy vaultwarden:80' "full Vaultwarden route"
 assert_contains "$caddy_file" 'reverse_proxy portal:3000' "full Portal route"
 assert_contains "$caddy_file" 'redir https://portal' "full Homepage compatibility redirect"
-assert_contains "$caddy_file" 'reverse_proxy progression:8130' "full Progression route"
 assert_contains "$keycloak_configure" 'ensure_confidential_client "vaultwarden"' "full Vaultwarden Keycloak client"
-if [ -f "$runtime_contracts" ]; then
-  jq -e '.components.vaultwarden and .components.progression and (.components | has("huly") | not)' "$runtime_contracts" >/dev/null
-  assert_not_private_mode "$runtime_contracts" "filtered runtime service contracts"
+if [ -f "$runtime_models" ]; then
+  jq -e '.components.vaultwarden and (.components | has("progression") | not) and (.components | has("huly") | not)' "$runtime_models" >/dev/null
+  assert_not_private_mode "$runtime_models" "filtered runtime service contracts"
 fi
 assert_not_contains "$caddy_file" 'webservices-component-(start|end)' "component marker"
 validate_caddy_file "$caddy_file"

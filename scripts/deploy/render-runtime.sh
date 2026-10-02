@@ -12,8 +12,8 @@ source "$LIB_DIR/site-manifest.sh"
 source "$LIB_DIR/render-values.sh"
 # shellcheck source=scripts/lib/templates.sh
 source "$LIB_DIR/templates.sh"
-# shellcheck source=scripts/lib/compose.sh
-source "$LIB_DIR/compose.sh"
+# shellcheck source=scripts/lib/runtime-model.sh
+source "$LIB_DIR/runtime-model.sh"
 # shellcheck source=scripts/lib/runtime-state.sh
 source "$LIB_DIR/runtime-state.sh"
 # shellcheck source=scripts/lib/components.sh
@@ -24,7 +24,7 @@ DEPLOY_ROOT="$(cd "$BUNDLE_ROOT/.." && pwd -P)"
 SITE_MANIFEST_PATH=""
 RUNTIME_ROOT="$DEPLOY_ROOT/runtime"
 RUNTIME_ROOT_EXPLICIT=0
-SKIP_COMPOSE_VALIDATE=0
+SKIP_RUNTIME_MODEL_VALIDATE=0
 
 prepare_host_runtime_dirs() {
   local forgejo_runner_ssh_dir
@@ -54,8 +54,8 @@ while [ "$#" -gt 0 ]; do
       RUNTIME_ROOT_EXPLICIT=1
       shift
       ;;
-    --skip-compose-validate)
-      SKIP_COMPOSE_VALIDATE=1
+    --skip-runtime-model-validate)
+      SKIP_RUNTIME_MODEL_VALIDATE=1
       ;;
     -h|--help)
       cat <<'EOF_USAGE'
@@ -124,12 +124,15 @@ mapfile -t runtime_env_keys < <(
     "${extra_runtime_env_keys[@]}" \
     | sort -u
 )
-write_env_file "$runtime_env_file" "${runtime_env_keys[@]}"
+if [ "${RENDER_ALL_ENV:-0}" = "1" ]; then
+  write_env_file "$runtime_env_file"
+else
+  write_env_file "$runtime_env_file" "${runtime_env_keys[@]}"
+fi
 write_build_info "$BUNDLE_ROOT/build-info.json" "$runtime_root/build-info.json"
 
-if [ "$SKIP_COMPOSE_VALIDATE" = "0" ]; then
-  require_cmd docker
-  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-webservices}" run_compose_from_bundle \
+if [ "$SKIP_RUNTIME_MODEL_VALIDATE" = "0" ]; then
+  RUNTIME_PROJECT_NAME="${RUNTIME_PROJECT_NAME:-webservices}" run_contract_from_bundle \
     "$BUNDLE_ROOT" \
     "$runtime_env_file" \
     config --quiet >/dev/null

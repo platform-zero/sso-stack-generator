@@ -4,19 +4,21 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 BUNDLE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 DEPLOY_ROOT="$(cd "$BUNDLE_ROOT/.." && pwd -P)"
-COMPOSE_FILE="$BUNDLE_ROOT/docker-compose.yml"
-COMPOSE_JSON=""
+# shellcheck source=scripts/lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+RUNTIME_MODEL_FILE="$BUNDLE_ROOT/runtime-model.yml"
+RUNTIME_CONFIG_JSON=""
 RUNTIME_ENV_FILE="$DEPLOY_ROOT/runtime/stack.env"
 OUTPUT_FILE=""
 
 usage() {
   cat <<'EOF_USAGE'
 Usage:
-  ./scripts/mount-diagnostics.sh [--bundle-root <path>] [--compose-file <path>] [--compose-json <path>] [--runtime-env-file <path>] [--output <path>]
+  ./scripts/mount-diagnostics.sh [--bundle-root <path>] [--runtime-model-file <path>] [--runtime-config-json <path>] [--runtime-env-file <path>] [--output <path>]
 
-Writes a JSON report describing Docker volume/bind mount sources, targets,
+Writes a JSON report describing container volume/bind mount sources, targets,
 realpaths, devices, duplicate targets, and overlapping source/target paths.
-The report is diagnostic only; it does not mutate host paths or Docker state.
+The report is diagnostic only; it does not mutate host paths or container state.
 EOF_USAGE
 }
 
@@ -25,16 +27,16 @@ while [ "$#" -gt 0 ]; do
     --bundle-root)
       BUNDLE_ROOT="$2"
       DEPLOY_ROOT="$(cd "$BUNDLE_ROOT/.." && pwd -P)"
-      COMPOSE_FILE="$BUNDLE_ROOT/docker-compose.yml"
+      RUNTIME_MODEL_FILE="$BUNDLE_ROOT/runtime-model.yml"
       RUNTIME_ENV_FILE="$DEPLOY_ROOT/runtime/stack.env"
       shift
       ;;
-    --compose-file)
-      COMPOSE_FILE="$2"
+    --runtime-model-file)
+      RUNTIME_MODEL_FILE="$2"
       shift
       ;;
-    --compose-json)
-      COMPOSE_JSON="$2"
+    --runtime-config-json)
+      RUNTIME_CONFIG_JSON="$2"
       shift
       ;;
     --runtime-env-file)
@@ -58,13 +60,6 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-require_cmd() {
-  command -v "$1" >/dev/null 2>&1 || {
-    printf '[mount-diagnostics] ERROR: missing required command: %s\n' "$1" >&2
-    exit 1
-  }
-}
-
 require_cmd python3
 
 temp_json=""
@@ -76,35 +71,34 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [ -z "$COMPOSE_JSON" ]; then
-  require_cmd docker
+if [ -z "$RUNTIME_CONFIG_JSON" ]; then
   require_cmd jq
-  [ -f "$COMPOSE_FILE" ] || {
-    printf '[mount-diagnostics] ERROR: missing compose file: %s\n' "$COMPOSE_FILE" >&2
+  [ -f "$RUNTIME_MODEL_FILE" ] || {
+    printf '[mount-diagnostics] ERROR: missing runtime model file: %s\n' "$RUNTIME_MODEL_FILE" >&2
     exit 1
   }
   temp_json="$(mktemp)"
   if [ -f "$RUNTIME_ENV_FILE" ]; then
-    docker compose \
+    container_contract \
       --project-directory "$DEPLOY_ROOT" \
       --env-file "$RUNTIME_ENV_FILE" \
-      -f "$COMPOSE_FILE" \
+      -f "$RUNTIME_MODEL_FILE" \
       config --format json --no-interpolate > "$temp_json"
   else
-    docker compose \
+    container_contract \
       --project-directory "$DEPLOY_ROOT" \
-      -f "$COMPOSE_FILE" \
+      -f "$RUNTIME_MODEL_FILE" \
       config --format json --no-interpolate > "$temp_json"
   fi
-  COMPOSE_JSON="$temp_json"
+  RUNTIME_CONFIG_JSON="$temp_json"
 fi
 
-[ -f "$COMPOSE_JSON" ] || {
-  printf '[mount-diagnostics] ERROR: missing compose JSON: %s\n' "$COMPOSE_JSON" >&2
+[ -f "$RUNTIME_CONFIG_JSON" ] || {
+  printf '[mount-diagnostics] ERROR: missing runtime config JSON: %s\n' "$RUNTIME_CONFIG_JSON" >&2
   exit 1
 }
 
-python3 - "$COMPOSE_JSON" "$DEPLOY_ROOT" "$OUTPUT_FILE" <<'PY'
+python3 - "$RUNTIME_CONFIG_JSON" "$DEPLOY_ROOT" "$OUTPUT_FILE" <<'PY'
 import json
 import os
 import sys
@@ -112,11 +106,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-compose_json = Path(sys.argv[1])
+runtime_config_json = Path(sys.argv[1])
 deploy_root = Path(sys.argv[2]).resolve()
 output_file = sys.argv[3]
-compose = json.loads(compose_json.read_text(encoding="utf-8"))
-declared_volumes = set((compose.get("volumes") or {}).keys())
+runtime_config = json.loads(runtime_config_json.read_text(encoding="utf-8"))
+declared_volumes = set((runtime_config.get("volumes") or {}).keys())
 
 
 def parse_string_mount(value):
@@ -212,7 +206,7 @@ def finding(kind, severity, mounts, reason):
 
 
 mounts = []
-for service, config in sorted((compose.get("services") or {}).items()):
+for service, config in sorted((runtime_config.get("services") or {}).items()):
     for raw in config.get("volumes") or []:
         mount = normalize_mount(service, raw)
         if mount is not None:
@@ -249,7 +243,7 @@ report = {
     "generatedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
     "deployRoot": str(deploy_root),
     "summary": {
-        "services": len(compose.get("services") or {}),
+        "services": len(runtime_config.get("services") or {}),
         "mounts": len(mounts),
         "bindMounts": sum(1 for m in mounts if m.get("sourceKind") == "bind"),
         "namedVolumes": sum(1 for m in mounts if m.get("sourceKind") == "named-volume"),

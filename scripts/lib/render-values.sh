@@ -73,13 +73,17 @@ render_has() {
 
 load_secret_store() {
   local secret_store="$1"
+  local decrypted_secret_store
   [ -f "$secret_store" ] || die "secret store not found: $secret_store"
   require_cmd sops
   require_cmd jq
 
+  decrypted_secret_store="$(mktemp)"
+  trap 'rm -f "$decrypted_secret_store"' RETURN
+  sops --decrypt "$secret_store" > "$decrypted_secret_store"
   while IFS= read -r -d '' key && IFS= read -r -d '' value; do
     render_set "$key" "$value"
-  done < <(sops --decrypt "$secret_store" | jq -j 'to_entries[] | .key, "\u0000", ((.value // "") | tostring), "\u0000"')
+  done < <(jq -j 'to_entries[] | .key, "\u0000", ((.value // "") | tostring), "\u0000"' "$decrypted_secret_store")
 }
 
 render_envsubst() {
@@ -149,6 +153,9 @@ load_site_values() {
 
   render_set CADDY_TLS_MODE "$(yaml_get_scalar "$site_config_file" 'runtime.caddy_tls_mode')"
   [ -n "$(render_get CADDY_TLS_MODE)" ] || render_set CADDY_TLS_MODE "local"
+
+  render_set TRUSTED_PROXY_SOURCE_RANGES "$(yaml_get_scalar "$site_config_file" 'runtime.trusted_proxy_source_ranges')"
+  render_set LIVEKIT_NODE_IP "$(yaml_get_scalar "$site_config_file" 'runtime.livekit_node_ip')"
 
   local matrix_authentication_service_active
   matrix_authentication_service_active="$(yaml_get_scalar "$site_config_file" 'matrix_authentication_service.active')"
@@ -268,6 +275,8 @@ build_derived_render_values() {
   derive_if_missing POSTGRES_PIPELINE_PASSWORD postgres-pipeline 48
   derive_if_missing POSTGRES_AIRFLOW_PASSWORD postgres-airflow 48
   derive_if_missing POSTGRES_TEST_RUNNER_PASSWORD postgres-test-runner 48
+  derive_if_missing POSTGRES_LEGAL_RESEARCH_PASSWORD postgres-legal-research 48
+  derive_if_missing LEGAL_RESEARCH_INGESTION_TOKEN legal-research-ingestion-token 48
   derive_if_missing MARIADB_ADMIN_PASSWORD mariadb-admin 48
   derive_if_missing MARIADB_BOOKSTACK_PASSWORD mariadb-bookstack 48
   derive_if_missing MARIADB_SEAFILE_PASSWORD mariadb-seafile 48
@@ -279,6 +288,7 @@ build_derived_render_values() {
   derive_if_missing OAUTH2_PROXY_COOKIE_SECRET oauth2-proxy-cookie 32
   derive_laravel_app_key_if_missing BOOKSTACK_APP_KEY bookstack-app-key
   derive_if_missing BOOKSTACK_OAUTH_SECRET bookstack-oauth 48
+  derive_if_missing HULY_OPENID_CLIENT_SECRET huly-openid 48
   derive_if_missing FORGEJO_OAUTH_SECRET forgejo-oauth 48
   derive_if_missing MASTODON_OAUTH_SECRET mastodon-oauth 48
   derive_if_missing MASTODON_SECRET_KEY_BASE mastodon-secret-key-base 64
@@ -301,6 +311,11 @@ build_derived_render_values() {
   derive_if_missing SEAFILE_EMAIL_PASSWORD seafile-email 48
   derive_if_missing SEAFILE_SECRET_KEY seafile-secret 48
   derive_if_missing KOPIA_PASSWORD kopia-password 64
+  derive_if_missing NTFY_SSO_PASSWORD ntfy-sso 48
+  render_set NTFY_SSO_AUTHORIZATION "Basic $(printf 'ntfy-sso:%s' "$(render_get NTFY_SSO_PASSWORD)" | base64 | tr -d '\n')"
+  derive_if_missing NTFY_NATIVE_CLIENT_SECRET ntfy-native-client 48
+  derive_if_missing NTFY_NATIVE_GATEWAY_SECRET ntfy-native-gateway 48
+  render_set NTFY_PUBLISHER_AUTHORIZATION "Basic $(printf '%s:%s' "$(render_get NTFY_USERNAME)" "$(render_get NTFY_PASSWORD)" | base64 | tr -d '\n')"
   if ! render_has KOPIA_SERVER_USERNAME || [ -z "$(render_get KOPIA_SERVER_USERNAME)" ]; then
     render_set KOPIA_SERVER_USERNAME "kopia"
   fi
