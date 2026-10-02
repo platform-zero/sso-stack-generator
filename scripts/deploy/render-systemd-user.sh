@@ -5,6 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 LIB_DIR="$(cd "$SCRIPT_DIR/../lib" && pwd -P)"
 # shellcheck source=scripts/lib/common.sh
 source "$LIB_DIR/common.sh"
+# shellcheck source=scripts/lib/runtime-model.sh
+source "$LIB_DIR/runtime-model.sh"
 
 BUNDLE_ROOT=""
 OUTPUT_DIR=""
@@ -58,7 +60,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$BUNDLE_ROOT" ] || die "--bundle-root is required"
-[ -f "$BUNDLE_ROOT/docker-compose.yml" ] || die "missing docker-compose.yml in $BUNDLE_ROOT"
+[ -f "$BUNDLE_ROOT/runtime-model.yml" ] || die "missing runtime model in $BUNDLE_ROOT"
 
 LOCAL_BUNDLE_ROOT="$(cd "$BUNDLE_ROOT" && pwd -P)"
 LOCAL_DEPLOY_ROOT="$(cd "$LOCAL_BUNDLE_ROOT/.." && pwd -P)"
@@ -69,30 +71,30 @@ GRAPH_PATH="$LOCAL_BUNDLE_ROOT/stack.systemd/graph.json"
 [ -f "$GRAPH_PATH" ] || die "missing systemd graph source: $GRAPH_PATH"
 
 mkdir -p "$OUTPUT_DIR"
-rm -f "$OUTPUT_DIR"/*.service "$OUTPUT_DIR"/*.target
+rm -f "$OUTPUT_DIR"/*.service "$OUTPUT_DIR"/*.target "$OUTPUT_DIR"/*.timer
 printf '[webservices-build] rendering systemd user units from %s into %s\n' "$GRAPH_PATH" "$OUTPUT_DIR" >&2
 
-require_cmd docker
 require_cmd jq
 require_cmd python3
 SYSTEMD_NOTIFY_BIN="$(command -v systemd-notify)"
 [ -n "$SYSTEMD_NOTIFY_BIN" ] || die "systemd-notify is required to render user units"
 
-compose_config_json="$(mktemp)"
-base_networks_compose="$(mktemp)"
+runtime_config_json="$(mktemp)"
+base_networks_contract="$(mktemp)"
 base_networks_json="$(mktemp)"
+runtime_model_command="$(runtime_model_config_command)"
 cleanup() {
-  rm -f "$compose_config_json" "$base_networks_compose" "$base_networks_json"
+  rm -f "$runtime_config_json" "$base_networks_contract" "$base_networks_json"
 }
 trap cleanup EXIT
 
 (
   cd "$LOCAL_DEPLOY_ROOT"
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" docker compose \
+  RUNTIME_PROJECT_NAME="$PROJECT_NAME" $runtime_model_command \
     --project-directory "$LOCAL_DEPLOY_ROOT" \
-    -f "$LOCAL_BUNDLE_ROOT/docker-compose.yml" \
+    -f "$LOCAL_BUNDLE_ROOT/runtime-model.yml" \
     config --format json --no-interpolate
-) > "$compose_config_json"
+) > "$runtime_config_json"
 
 {
   printf 'services:\n'
@@ -100,13 +102,13 @@ trap cleanup EXIT
   printf '    image: alpine:3.20\n'
   printf '    command: ["true"]\n\n'
   cat "$LOCAL_BUNDLE_ROOT/global.settings/networks.yml"
-} > "$base_networks_compose"
+} > "$base_networks_contract"
 
 (
   cd "$LOCAL_DEPLOY_ROOT"
-  COMPOSE_PROJECT_NAME="$PROJECT_NAME" docker compose \
+  RUNTIME_PROJECT_NAME="$PROJECT_NAME" $runtime_model_command \
     --project-directory "$LOCAL_DEPLOY_ROOT" \
-    -f "$base_networks_compose" \
+    -f "$base_networks_contract" \
     config --format json --no-interpolate
 ) > "$base_networks_json"
 
@@ -116,12 +118,14 @@ python3 "$SCRIPT_DIR/render-systemd-user.py" \
   --deploy-root-template "$DEPLOY_ROOT_TEMPLATE" \
   --unit-root-template "$UNIT_ROOT_TEMPLATE" \
   --runtime-env-file-template "$RUNTIME_ENV_FILE_TEMPLATE" \
-  --compose-config-json "$compose_config_json" \
+  --runtime-config-json "$runtime_config_json" \
   --graph-path "$GRAPH_PATH" \
   --output-dir "$OUTPUT_DIR" \
-  --compose-project-name "$PROJECT_NAME" \
+  --runtime-project-name "$PROJECT_NAME" \
   --systemd-notify-bin "$SYSTEMD_NOTIFY_BIN" \
-  --compose-helper "$DEPLOY_ROOT_TEMPLATE/build/scripts/lib/systemd-compose-unit.sh" \
-  --infra-helper "$DEPLOY_ROOT_TEMPLATE/build/scripts/lib/systemd-docker-infra.sh" \
+  --runtime-helper "$DEPLOY_ROOT_TEMPLATE/build/scripts/lib/systemd-runtime-unit.sh" \
+  --infra-helper "$DEPLOY_ROOT_TEMPLATE/build/scripts/lib/systemd-container-infra.sh" \
   --diagnostics-helper "$DEPLOY_ROOT_TEMPLATE/build/scripts/lib/systemd-diagnostics.sh" \
+  --host-autoheal-helper "$DEPLOY_ROOT_TEMPLATE/build/scripts/host/host-autoheal.sh" \
+  --update-deploy-helper "$DEPLOY_ROOT_TEMPLATE/build/scripts/host/update-deploy.sh" \
   --base-networks-json "$base_networks_json"

@@ -2,7 +2,29 @@
 set -Eeuo pipefail
 trap 'status=$?; printf "[service-contract-test] failed at line %s: %s (exit %s)\n" "$LINENO" "$BASH_COMMAND" "$status" >&2' ERR
 
-ROOT_DIR="${WEBSERVICES_CONTRACT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)}"
+SOURCE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+ROOT_DIR="${WEBSERVICES_OVERLAY_ROOT:-$SOURCE_ROOT}"
+if [ "$ROOT_DIR" = "$SOURCE_ROOT" ] && [ ! -f "$ROOT_DIR/stack.config/components.json" ] && [ -f "$SOURCE_ROOT/dist/build/build/stack.config/components.json" ]; then
+  ROOT_DIR="$SOURCE_ROOT/dist/build/build"
+elif [ "$ROOT_DIR" = "$SOURCE_ROOT" ] && [ ! -f "$ROOT_DIR/stack.config/components.json" ] && [ -f "$SOURCE_ROOT/dist/build/stack.config/components.json" ]; then
+  ROOT_DIR="$SOURCE_ROOT/dist/build"
+fi
+if [ -d "$ROOT_DIR/stack.config/components.external" ] || [ -d "$ROOT_DIR/stack.config/service-contracts.external" ]; then
+  TEST_ROOT="$(mktemp -d)"
+  cleanup_test_root() {
+    rm -rf "$TEST_ROOT"
+  }
+  trap cleanup_test_root EXIT
+  cp -a "$ROOT_DIR/." "$TEST_ROOT/"
+  rm -rf \
+    "$TEST_ROOT/stack.containers/test-runner/playwright-tests/node_modules" \
+    "$TEST_ROOT/stack.containers/test-runner/playwright-tests/coverage"
+  ROOT_DIR="$TEST_ROOT"
+  # shellcheck source=scripts/lib/components.sh
+  source "$SOURCE_ROOT/scripts/lib/components.sh"
+  component_catalog_merge_external "$ROOT_DIR/stack.config/components.json"
+  service_contracts_merge_external "$ROOT_DIR/stack.config/service-contracts.json"
+fi
 catalog="$ROOT_DIR/stack.config/components.json"
 contracts="$ROOT_DIR/stack.config/service-contracts.json"
 keycloak_realm="$ROOT_DIR/stack.config/keycloak/realm/webservices-realm.json.template"
@@ -169,20 +191,26 @@ jq -e '
   exit 1
 }
 
-jq -e '.components.portal.composeFiles == ["portal.yml"]' "$catalog" >/dev/null
-jq -e '.components.homepage.composeFiles == [] and (.components.homepage.dependencies | index("portal"))' "$catalog" >/dev/null
+jq -e '.components.portal.runtimeFiles == ["portal.yml"]' "$catalog" >/dev/null
+jq -e '.components.homepage.runtimeFiles == [] and (.components.homepage.dependencies | index("portal"))' "$catalog" >/dev/null
 jq -e '.components.apps.dependencies | index("portal") and (index("homepage") | not)' "$catalog" >/dev/null
 jq -e '.components.onlyoffice.dependencies | index("seafile")' "$catalog" >/dev/null
 jq -e '.components.onlyoffice.capabilities | index("seafile-editor-backend")' "$contracts" >/dev/null
-grep -Fq 'ONLYOFFICE_DISABLE_PLUGIN_UPDATES: ${ONLYOFFICE_DISABLE_PLUGIN_UPDATES:-true}' "$ROOT_DIR/stack.compose/onlyoffice.yml"
-grep -Fq 'documentserver-pluginsmanager.sh.orig' "$ROOT_DIR/stack.compose/onlyoffice.yml"
+if [ -f "$ROOT_DIR/runtime.overlays/onlyoffice.yml" ]; then
+  grep -Eq 'ONLYOFFICE_DISABLE_PLUGIN_UPDATES:[[:space:]]*"?\$\{ONLYOFFICE_DISABLE_PLUGIN_UPDATES:-true\}"?' "$ROOT_DIR/runtime.overlays/onlyoffice.yml"
+  grep -Fq 'documentserver-pluginsmanager.sh.orig' "$ROOT_DIR/runtime.overlays/onlyoffice.yml"
+fi
 jq -e '.components.observability.dependencies | index("crowdsec")' "$catalog" >/dev/null
-jq -e '.components.crowdsec.composeFiles == ["crowdsec.yml"]' "$catalog" >/dev/null
+jq -e '.components.crowdsec.runtimeFiles == ["crowdsec.yml"]' "$catalog" >/dev/null
 jq -e '.components.crowdsec.evidence.expectations | index("crowdsec.simulated_decision")' "$contracts" >/dev/null
-grep -Fq './configs/homepage:/app/config' "$ROOT_DIR/stack.compose/portal.yml"
+if [ -f "$ROOT_DIR/runtime.overlays/portal.yml" ]; then
+  grep -Fq './configs/homepage:/app/config' "$ROOT_DIR/runtime.overlays/portal.yml"
+fi
 
-grep -Fq './configs/crowdsec/acquis.yaml:/etc/crowdsec/acquis.yaml:ro' "$ROOT_DIR/stack.compose/crowdsec.yml"
-grep -Fq './configs/crowdsec/simulate-alert.sh:/usr/local/bin/webservices-crowdsec-simulate-alert:ro' "$ROOT_DIR/stack.compose/crowdsec.yml"
+if [ -f "$ROOT_DIR/runtime.overlays/crowdsec.yml" ]; then
+  grep -Fq './configs/crowdsec/acquis.yaml:/etc/crowdsec/acquis.yaml:ro' "$ROOT_DIR/runtime.overlays/crowdsec.yml"
+  grep -Fq './configs/crowdsec/simulate-alert.sh:/usr/local/bin/webservices-crowdsec-simulate-alert:ro' "$ROOT_DIR/runtime.overlays/crowdsec.yml"
+fi
 grep -Fq 'cscli decisions add' "$ROOT_DIR/stack.config/crowdsec/simulate-alert.sh"
 grep -Fq 'webservices-simulated-alert' "$ROOT_DIR/stack.config/crowdsec/simulate-alert.sh"
 if grep -Fq 'request>uri delete' "$ROOT_DIR/stack.config/caddy/Caddyfile"; then

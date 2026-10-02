@@ -2,6 +2,8 @@
 """Deployment validation and reporting helpers for webservices bundles."""
 
 import argparse
+import base64
+import binascii
 import json
 import os
 import subprocess
@@ -18,6 +20,8 @@ REQUIRED_SECRET_KEYS = [
     "KOPIA_PROXY_AUTHORIZATION",
     "MASTODON_SECRET_KEY_BASE",
     "MASTODON_OTP_SECRET",
+    "MASTODON_VAPID_PRIVATE_KEY",
+    "MASTODON_VAPID_PUBLIC_KEY",
     "MASTODON_ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY",
     "MASTODON_ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT",
     "MASTODON_ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY",
@@ -37,11 +41,7 @@ ALLOWED_HOST_BINDS = {
     "/etc/timezone",
     "/proc",
     "/sys",
-    "/var/lib/docker",
-    "/var/lib/docker/",
-    "/var/run/docker.sock",
-    "/run/docker-labware",
-    "/run/docker-labware/docker.sock",
+    "/var/log/webservices/caddy",
 }
 
 DEFAULT_OPTIONAL_VM_SERVICES = [
@@ -55,7 +55,13 @@ def load_json(path: Path) -> dict:
 
 def load_env_file(path: Path) -> Dict[str, str]:
     values: Dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    content = path.read_text(encoding="utf-8")
+    stripped = content.lstrip()
+    if stripped.startswith("{"):
+        raise ValueError(
+            f"{path} looks like JSON/SOPS input; deploy audit requires the rendered runtime env file"
+        )
+    for line in content.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -64,19 +70,19 @@ def load_env_file(path: Path) -> Dict[str, str]:
     return values
 
 
-def compose_config(bundle_root: Path, env_file: Path, project_name: str) -> dict:
+def runtime_model_config(bundle_root: Path, env_file: Path, project_name: str) -> dict:
     env = os.environ.copy()
-    env["COMPOSE_PROJECT_NAME"] = project_name
+    env["RUNTIME_PROJECT_NAME"] = project_name
     output = subprocess.check_output(
         [
-            "docker",
+            "podman",
             "compose",
             "--project-directory",
             str(bundle_root.parent),
             "--env-file",
             str(env_file),
             "-f",
-            str(bundle_root / "docker-compose.yml"),
+            str(bundle_root / "runtime-model.yml"),
             "config",
             "--format",
             "json",
@@ -87,9 +93,9 @@ def compose_config(bundle_root: Path, env_file: Path, project_name: str) -> dict
     return json.loads(output)
 
 
-def docker_ps_all() -> Dict[str, str]:
+def podman_ps_all() -> Dict[str, str]:
     output = subprocess.check_output(
-        ["docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}"],
+        ["podman", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}"],
         text=True,
     )
     result: Dict[str, str] = {}
@@ -101,9 +107,9 @@ def docker_ps_all() -> Dict[str, str]:
     return result
 
 
-def docker_container_exists(name: str) -> bool:
+def podman_container_exists(name: str) -> bool:
     return subprocess.run(
-        ["docker", "container", "inspect", name],
+        ["podman", "container", "inspect", name],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         text=True,
@@ -126,9 +132,9 @@ def optional_runtime_configured(env_values: Dict[str, str]) -> bool:
     return bool(runner_ssh_dir and (Path(runner_ssh_dir) / "id_ed25519").is_file())
 
 
-def completion_job_services(compose: dict) -> List[str]:
+def completion_job_services(runtime_config: dict) -> List[str]:
     jobs = set()
-    services = compose.get("services") or {}
+    services = runtime_config.get("services") or {}
     for name, config in services.items():
         if config.get("restart") == "no":
             jobs.add(name)
@@ -149,7 +155,11 @@ def compose_service_names(bundle_root: Path, env_file: Path, project_name: str) 
 
 
 def validate_secrets(env_file: Path) -> int:
-    values = load_env_file(env_file)
+    try:
+        values = load_env_file(env_file)
+    except ValueError as exc:
+        print(f"[webservices-audit] {exc}", file=sys.stderr)
+        return 1
     missing = [key for key in REQUIRED_SECRET_KEYS if not values.get(key)]
     invalid = []
     app_key = values.get("BOOKSTACK_APP_KEY", "")
@@ -158,6 +168,12 @@ def validate_secrets(env_file: Path) -> int:
     kopia_auth = values.get("KOPIA_PROXY_AUTHORIZATION", "")
     if kopia_auth and not kopia_auth.startswith("Basic "):
         invalid.append("KOPIA_PROXY_AUTHORIZATION must be a Basic authorization header")
+    vapid_private = values.get("MASTODON_VAPID_PRIVATE_KEY", "")
+    vapid_public = values.get("MASTODON_VAPID_PUBLIC_KEY", "")
+    if vapid_private and not valid_base64url_bytes(vapid_private, 32):
+        invalid.append("MASTODON_VAPID_PRIVATE_KEY must be a 32-byte base64url P-256 private key")
+    if vapid_public and not valid_vapid_public_key(vapid_public):
+        invalid.append("MASTODON_VAPID_PUBLIC_KEY must be a 65-byte base64url uncompressed P-256 public key")
     if missing or invalid:
         for key in missing:
             print(f"[webservices-audit] missing required runtime value: {key}", file=sys.stderr)
@@ -168,6 +184,26 @@ def validate_secrets(env_file: Path) -> int:
     return 0
 
 
+def decode_base64url(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode((value + padding).encode("ascii"))
+
+
+def valid_base64url_bytes(value: str, expected_length: int) -> bool:
+    try:
+        return len(decode_base64url(value)) == expected_length
+    except (ValueError, UnicodeEncodeError, binascii.Error):
+        return False
+
+
+def valid_vapid_public_key(value: str) -> bool:
+    try:
+        decoded = decode_base64url(value)
+    except (ValueError, UnicodeEncodeError, binascii.Error):
+        return False
+    return len(decoded) == 65 and decoded.startswith(b"\x04")
+
+
 def expand_env_path(value: str, env_values: Dict[str, str]) -> str:
     result = value
     for key, env_value in env_values.items():
@@ -175,14 +211,22 @@ def expand_env_path(value: str, env_values: Dict[str, str]) -> str:
     return result
 
 
+def path_is_or_under(path: str, root: str) -> bool:
+    root = root.rstrip("/") if root != "/" else root
+    path = path.rstrip("/") if path != "/" else path
+    if root == "/":
+        return path.startswith("/")
+    return path == root or path.startswith(f"{root}/")
+
+
 def classify_bind(source: str, deploy_root: Path, env_values: Dict[str, str]) -> str:
     source = source.rstrip("/") if source != "/" else source
     deploy_root_str = deploy_root.as_posix()
-    if source.startswith(f"{deploy_root_str}/runtime"):
+    if path_is_or_under(source, f"{deploy_root_str}/runtime"):
         return "runtime-config"
-    if source.startswith(f"{deploy_root_str}/build"):
+    if path_is_or_under(source, f"{deploy_root_str}/build"):
         return "bundle"
-    if source.startswith(f"{deploy_root_str}/reports") or source.startswith(f"{deploy_root_str}/repos"):
+    if path_is_or_under(source, f"{deploy_root_str}/reports") or path_is_or_under(source, f"{deploy_root_str}/repos"):
         return "deploy-root-data"
     if source.startswith("/mnt/media/"):
         return "media"
@@ -199,7 +243,7 @@ def classify_bind(source: str, deploy_root: Path, env_values: Dict[str, str]) ->
 def storage_report(bundle_root: Path, env_file: Path, output: Path, project_name: str) -> int:
     env_values = load_env_file(env_file)
     deploy_root = bundle_root.parent.resolve()
-    config = compose_config(bundle_root, env_file, project_name)
+    config = runtime_model_config(bundle_root, env_file, project_name)
     volume_infra = load_json(bundle_root / "systemd-user" / "infra" / "volumes.json")
     binds = []
     findings = []
@@ -238,11 +282,11 @@ def storage_report(bundle_root: Path, env_file: Path, output: Path, project_name
     report = {
         "summary": {
             "bindMounts": len(binds),
-            "dockerVolumes": len(volumes),
+            "containerVolumes": len(volumes),
             "findings": len(findings),
         },
         "bindMounts": binds,
-        "dockerVolumes": volumes,
+        "containerVolumes": volumes,
         "findings": findings,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -256,13 +300,14 @@ def storage_report(bundle_root: Path, env_file: Path, output: Path, project_name
 
 def module_report(bundle_root: Path, env_file: Path, output: Path, project_name: str, strict: bool) -> int:
     env_values = load_env_file(env_file)
-    config = compose_config(bundle_root, env_file, project_name)
+    config = runtime_model_config(bundle_root, env_file, project_name)
     graph = load_json(bundle_root / "stack.systemd" / "graph.json")
     excluded = set(graph.get("excludedServices") or [])
+    on_demand = set(graph.get("onDemandServices") or [])
     optional = set(optional_services(bundle_root))
     optional_disabled = not optional_runtime_configured(env_values)
     jobs = set(completion_job_services(config))
-    statuses = docker_ps_all()
+    statuses = podman_ps_all()
     services = []
     problems = []
     for service, service_config in sorted((config.get("services") or {}).items()):
@@ -273,6 +318,9 @@ def module_report(bundle_root: Path, env_file: Path, output: Path, project_name:
         if service in excluded:
             classification = "excluded"
             ok = status is None
+        elif service in on_demand:
+            classification = "on-demand"
+            ok = status is None or not any(token in status.lower() for token in ("unhealthy", "restarting", "dead", "created"))
         elif optional_disabled and service in optional:
             classification = "skipped-optional"
             ok = status is None or status.startswith("Exited")
@@ -295,6 +343,7 @@ def module_report(bundle_root: Path, env_file: Path, output: Path, project_name:
         "services": len(services),
         "runtime": sum(1 for item in services if item["classification"] == "runtime"),
         "jobs": sum(1 for item in services if item["classification"] == "job"),
+        "onDemand": sum(1 for item in services if item["classification"] == "on-demand"),
         "skippedOptional": sum(1 for item in services if item["classification"] == "skipped-optional"),
         "excluded": sum(1 for item in services if item["classification"] == "excluded"),
         "problems": len(problems),
@@ -311,12 +360,12 @@ def cleanup_optional_orphans(bundle_root: Path, env_file: Path, project_name: st
     if optional_runtime_configured(env_values):
         print("[webservices-audit] optional runtime identity configured; no optional orphan cleanup needed", file=sys.stderr)
         return 0
-    config = compose_config(bundle_root, env_file, project_name)
+    config = runtime_model_config(bundle_root, env_file, project_name)
     removed = []
     for service in optional_services(bundle_root):
         container_name = container_name_for(service, config)
-        if docker_container_exists(container_name):
-            subprocess.run(["docker", "rm", "-f", container_name], check=False)
+        if podman_container_exists(container_name):
+            subprocess.run(["podman", "rm", "-f", container_name], check=False)
             removed.append(container_name)
     if removed:
         print(f"[webservices-audit] removed skipped optional container state: {' '.join(removed)}", file=sys.stderr)
@@ -325,9 +374,9 @@ def cleanup_optional_orphans(bundle_root: Path, env_file: Path, project_name: st
     return 0
 
 
-def docker_container_ip(name: str) -> str:
+def podman_container_ip(name: str) -> str:
     output = subprocess.check_output(
-        ["docker", "inspect", name, "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"],
+        ["podman", "inspect", name, "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"],
         text=True,
     ).strip()
     return output
@@ -361,11 +410,11 @@ def validate_qdrant_schema(bundle_root: Path, env_file: Path, project_name: str)
     if expected <= 0:
         print("[webservices-audit] VECTOR_EMBED_SIZE is missing or invalid", file=sys.stderr)
         return 1
-    if not docker_container_exists("qdrant"):
+    if not podman_container_exists("qdrant"):
         print("[webservices-audit] qdrant container is not present; skipping vector schema audit", file=sys.stderr)
         return 0
     try:
-        ip_address = docker_container_ip("qdrant")
+        ip_address = podman_container_ip("qdrant")
         if not ip_address:
             print("[webservices-audit] qdrant container has no IP address yet; skipping vector schema audit", file=sys.stderr)
             return 0

@@ -40,6 +40,20 @@ subprojects {
 
     tasks.withType<Test> {
         useJUnitPlatform()
+
+        // Development checkouts can materialize independently owned Kotlin
+        // projects under out/. Their source-contract tests still need the
+        // composed materialized tree and the sibling module workspace rather
+        // than this generator checkout as their implicit source roots.
+        val materializedRoot = rootProject.file("out/external-modules/materialized")
+        if (project.projectDir.toPath().startsWith(materializedRoot.toPath())) {
+            if (System.getenv("WEBSERVICES_GENERATOR_ROOT").isNullOrBlank()) {
+                environment("WEBSERVICES_GENERATOR_ROOT", materializedRoot.absolutePath)
+            }
+            if (System.getenv("WEBSERVICES_MODULES_ROOT").isNullOrBlank()) {
+                environment("WEBSERVICES_MODULES_ROOT", rootProject.file("../modules").absolutePath)
+            }
+        }
     }
 }
 

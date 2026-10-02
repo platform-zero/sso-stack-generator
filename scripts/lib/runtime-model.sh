@@ -51,7 +51,7 @@ extract_extension_blocks() {
   ' "$file"
 }
 
-compose_service_files() {
+runtime_model_service_files() {
   local stage_dir="$1"
   local manifest_path="${2:-}"
   local catalog selected_file
@@ -63,10 +63,10 @@ compose_service_files() {
     [ -f "$catalog" ] || die "missing component catalog: $catalog"
     while IFS= read -r selected_file; do
       selected_files["$selected_file"]=1
-    done < <(component_selection_compose_files "$manifest_path" "$catalog")
+    done < <(component_selection_runtime_files "$manifest_path" "$catalog")
   fi
 
-  for file in "$stage_dir"/stack.compose/*.yml; do
+  for file in "$stage_dir"/runtime.overlays/*.yml; do
     [ -f "$file" ] || continue
     [ "$(basename "$file")" = "test-runners.yml" ] && continue
     if [ -n "$manifest_path" ] && [ -z "${selected_files[$(basename "$file")]+x}" ]; then
@@ -76,7 +76,7 @@ compose_service_files() {
   done | sort
 }
 
-build_merged_compose() {
+build_runtime_model() {
   local stage_dir="$1"
   local output_file="$2"
   local manifest_path="${3:-}"
@@ -100,10 +100,10 @@ build_merged_compose() {
     else
       service_files+=( "$service_file" )
     fi
-  done < <(compose_service_files "$stage_dir" "$manifest_path")
+  done < <(runtime_model_service_files "$stage_dir" "$manifest_path")
 
   {
-    printf '# Auto-generated docker-compose.yml\n'
+    printf '# Auto-generated runtime-model.yml\n'
     printf '# Generated: %s\n\n' "$(iso_timestamp_utc)"
 
     for service_file in "${service_files[@]}"; do
@@ -137,7 +137,7 @@ build_merged_compose() {
   rm -rf "$temp_dir"
 }
 
-rewrite_compose_runtime_paths() {
+rewrite_runtime_model_paths() {
   local output_file="$1"
   local temp_file
   temp_file="$(mktemp)"
@@ -149,21 +149,24 @@ rewrite_compose_runtime_paths() {
   mv "$temp_file" "$output_file"
 }
 
-validate_generated_compose() {
+runtime_model_config_command() {
+  if container_contract version >/dev/null 2>&1; then
+    printf 'container_contract\n'
+    return 0
+  fi
+  die "missing required runtime model command for $(container_cli)"
+}
+
+validate_runtime_model() {
   local stage_dir="$1"
   local output_file="$2"
   local deploy_root
-
-  [ -d "$stage_dir" ] || die "missing stage directory for compose validation: $stage_dir"
-  [ -f "$output_file" ] || die "missing generated compose file: $output_file"
-
-  require_cmd docker
-  docker compose version >/dev/null 2>&1 || die "docker compose plugin is unavailable"
-  deploy_root="$(cd "$stage_dir/.." && pwd -P)"
-
-  (
-    cd "$deploy_root"
-    COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-webservices}" \
-      docker compose --project-directory "$deploy_root" -f "$output_file" config --quiet --no-interpolate >/dev/null
-  )
+  [ -d "$stage_dir" ] || die "missing stage directory for runtime model validation: $stage_dir"
+  [ -f "$output_file" ] || die "missing generated runtime model file: $output_file"
+  awk '
+    /^services:[[:space:]]*$/ { in_services = 1; next }
+    in_services && /^[^[:space:]]/ { in_services = 0 }
+    in_services && /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ { count++ }
+    END { exit(count > 0 ? 0 : 1) }
+  ' "$output_file" || die "runtime model contains no services: $output_file"
 }

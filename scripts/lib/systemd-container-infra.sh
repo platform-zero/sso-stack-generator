@@ -7,8 +7,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/common.sh"
 usage() {
   cat <<'EOF_USAGE'
 Usage:
-  systemd-docker-infra.sh ensure-networks --config-file <path> [--env-file <path>]
-  systemd-docker-infra.sh ensure-volumes --config-file <path> [--env-file <path>]
+  systemd-container-infra.sh ensure-networks --config-file <path> [--env-file <path>]
+  systemd-container-infra.sh ensure-volumes --config-file <path> [--env-file <path>]
 EOF_USAGE
 }
 
@@ -32,7 +32,7 @@ while [ "$#" -gt 0 ]; do
       exit 0
       ;;
     *)
-      die "unknown argument for systemd-docker-infra.sh: $1"
+      die "unknown argument for systemd-container-infra.sh: $1"
       ;;
   esac
   shift
@@ -41,7 +41,6 @@ done
 [ -n "$CONFIG_FILE" ] || die "--config-file is required"
 [ -f "$CONFIG_FILE" ] || die "missing config file: $CONFIG_FILE"
 [ -z "$ENV_FILE" ] || [ -f "$ENV_FILE" ] || die "missing env file: $ENV_FILE"
-require_cmd docker
 require_cmd jq
 require_cmd envsubst
 
@@ -90,7 +89,6 @@ fi
 
 expand_env_value() {
   local value="${1:-}"
-  # Expand environment variable references without evaluating shell code.
   (
     local key
     for key in "${ENV_FILE_KEYS[@]}"; do
@@ -98,6 +96,16 @@ expand_env_value() {
     done
     printf '%s' "$value" | envsubst
   )
+}
+
+container_network_inspect() {
+  local network_name="$1"
+  container_runtime network inspect "$network_name"
+}
+
+container_volume_inspect() {
+  local volume_name="$1"
+  container_runtime volume inspect "$volume_name"
 }
 
 ensure_networks() {
@@ -117,19 +125,19 @@ ensure_networks() {
         )
     ')"
 
-    if docker network inspect "$network_name" >/dev/null 2>&1; then
-      actual_driver="$(docker network inspect "$network_name" -f '{{.Driver}}')"
-      actual_internal="$(docker network inspect "$network_name" -f '{{.Internal}}')"
-      actual_enable_ipv6="$(docker network inspect "$network_name" -f '{{.EnableIPv6}}')"
-      actual_attachable="$(docker network inspect "$network_name" -f '{{.Attachable}}')"
-      actual_labels_json="$(docker network inspect "$network_name" | jq -cS '.[0].Labels // {}')"
+    if container_network_inspect "$network_name" >/dev/null 2>&1; then
+      actual_driver="$(container_runtime network inspect "$network_name" -f '{{.Driver}}')"
+      actual_internal="$(container_runtime network inspect "$network_name" -f '{{.Internal}}')"
+      actual_enable_ipv6="$(container_runtime network inspect "$network_name" -f '{{.EnableIPv6}}')"
+      actual_attachable="$(container_runtime network inspect "$network_name" -f '{{.Attachable}}')"
+      actual_labels_json="$(container_network_inspect "$network_name" | jq -cS '.[0].Labels // {}')"
       if [ "$actual_driver" != "$driver" ] || [ "$actual_internal" != "$internal" ] || [ "$actual_enable_ipv6" != "$enable_ipv6" ] || [ "$actual_attachable" != "$attachable" ]; then
         printf '[webservices-infra] ERROR: network drift for %s (driver=%s/%s internal=%s/%s ipv6=%s/%s attachable=%s/%s)\n' \
           "$network_name" "$actual_driver" "$driver" "$actual_internal" "$internal" "$actual_enable_ipv6" "$enable_ipv6" "$actual_attachable" "$attachable" >&2
         exit 1
       fi
       if [ "$actual_labels_json" != "$desired_labels_json" ]; then
-        attached_container_count="$(docker network inspect "$network_name" | jq -r '.[0].Containers | length')"
+        attached_container_count="$(container_network_inspect "$network_name" | jq -r '.[0].Containers | length')"
         if [ "$attached_container_count" != "0" ]; then
           printf '[webservices-infra] ERROR: network label drift for %s but it still has %s attached containers (actual=%s desired=%s)\n' \
             "$network_name" "$attached_container_count" "$actual_labels_json" "$desired_labels_json" >&2
@@ -137,14 +145,14 @@ ensure_networks() {
         fi
         printf '[webservices-infra] recreating network with corrected labels: %s (actual=%s desired=%s)\n' \
           "$network_name" "$actual_labels_json" "$desired_labels_json" >&2
-        docker network rm "$network_name" >/dev/null
+        container_runtime network rm "$network_name" >/dev/null
       else
         printf '[webservices-infra] network matches desired state: %s\n' "$network_name" >&2
         continue
       fi
     fi
 
-    cmd=(docker network create --driver "$driver")
+    cmd=("$(container_cli)" network create --driver "$driver")
     [ "$internal" = "true" ] && cmd+=(--internal)
     [ "$enable_ipv6" = "true" ] && cmd+=(--ipv6)
     [ "$attachable" = "true" ] && cmd+=(--attachable)
@@ -177,9 +185,9 @@ ensure_volumes() {
     )"
     desired_opts_json="$(printf '%s\n' "$desired_opts_json_raw" | jq -cS '.')"
 
-    if docker volume inspect "$volume_name" >/dev/null 2>&1; then
-      actual_driver="$(docker volume inspect "$volume_name" -f '{{.Driver}}')"
-      actual_opts_json="$(docker volume inspect "$volume_name" | jq -cS '.[0].Options // {}')"
+    if container_volume_inspect "$volume_name" >/dev/null 2>&1; then
+      actual_driver="$(container_runtime volume inspect "$volume_name" -f '{{.Driver}}')"
+      actual_opts_json="$(container_volume_inspect "$volume_name" | jq -cS '.[0].Options // {}')"
       if [ "$actual_driver" != "$driver" ] || [ "$actual_opts_json" != "$desired_opts_json" ]; then
         printf '[webservices-infra] ERROR: volume drift for %s (driver=%s/%s opts=%s/%s)\n' \
           "$volume_name" "$actual_driver" "$driver" "$actual_opts_json" "$desired_opts_json" >&2
@@ -195,7 +203,7 @@ ensure_volumes() {
       mkdir -p "$bind_device"
     fi
 
-    cmd=(docker volume create --driver "$driver")
+    cmd=("$(container_cli)" volume create --driver "$driver")
     while IFS= read -r label; do
       [ -n "$label" ] && cmd+=(--label "$label")
     done < <(printf '%s\n' "$row" | jq -r '.labels // [] | .[]')
@@ -220,6 +228,6 @@ case "$command_name" in
     ensure_volumes
     ;;
   *)
-    die "unknown command for systemd-docker-infra.sh: $command_name"
+    die "unknown command for systemd-container-infra.sh: $command_name"
     ;;
 esac

@@ -20,7 +20,7 @@ DOMAIN=example.test
 KEYCLOAK_ADMIN_PASSWORD=test-admin-password
 EOF_ENV
 
-cat > "$fake_bin/docker" <<'EOF_DOCKER'
+cat > "$fake_bin/podman" <<'EOF_PODMAN'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -62,7 +62,7 @@ parse_username_arg() {
 }
 
 if [ "$1" != "exec" ]; then
-  printf 'unsupported docker command: %s\n' "$*" >&2
+  printf 'unsupported podman command: %s\n' "$*" >&2
   exit 1
 fi
 shift
@@ -154,8 +154,8 @@ case "$subcommand" in
     exit 1
     ;;
 esac
-EOF_DOCKER
-chmod +x "$fake_bin/docker"
+EOF_PODMAN
+chmod +x "$fake_bin/podman"
 
 assert_contains() {
   local file="$1"
@@ -175,6 +175,7 @@ EOF_STATE
 
 run_stackctl() {
   PATH="$fake_bin:$PATH" \
+    STACK_CONTAINER_CLI=podman \
     STACKCTL_RUNTIME_ENV_FILE="$runtime_dir/stack.env" \
     STACKCTL_USERS_TEST_STATE="$state_file" \
     STACKCTL_USERS_MARKER_WAIT_ATTEMPTS=1 \
@@ -190,7 +191,7 @@ expect_failure() {
 }
 
 reset_state
-PATH="$fake_bin:$PATH" "$ROOT_DIR/scripts/stackctl.sh" users create --help >"$stdout_file"
+PATH="$fake_bin:$PATH" STACK_CONTAINER_CLI=podman "$ROOT_DIR/scripts/stackctl.sh" users create --help >"$stdout_file"
 assert_contains "$stdout_file" 'stackctl users create --username <u> --password <p>' "create help output"
 
 reset_state
@@ -198,16 +199,16 @@ expect_failure users create --password secret
 assert_contains "$stderr_file" 'missing required flag: --username' "missing username error"
 
 reset_state
-expect_failure users create --username gerald
+expect_failure users create --username testuser
 assert_contains "$stderr_file" 'missing required flag: --password' "missing password error"
 
 reset_state
-expect_failure users create --username gerald --password secret --active --password-only
+expect_failure users create --username testuser --password secret --active --password-only
 assert_contains "$stderr_file" '--active cannot be combined with --password-only' "invalid mode error"
 
 reset_state
-run_stackctl users create --username gerald --password secret --json >"$stdout_file"
-jq -e '.email == "gerald@example.test"' "$stdout_file" >/dev/null
+run_stackctl users create --username testuser --password secret --json >"$stdout_file"
+jq -e '.email == "testuser@example.test"' "$stdout_file" >/dev/null
 jq -e '.requiredActions == ["UPDATE_PASSWORD","CONFIGURE_TOTP"]' "$stdout_file" >/dev/null
 jq -e '.onboardingRequired == true' "$stdout_file" >/dev/null
 

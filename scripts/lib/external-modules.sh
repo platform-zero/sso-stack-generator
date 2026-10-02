@@ -5,10 +5,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 # shellcheck source=scripts/lib/site-manifest.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/site-manifest.sh"
 
-EXTERNAL_MODULES_CACHE_DIR="$SOURCE_ROOT/out/external-git"
-EXTERNAL_MODULES_ROOT="$SOURCE_ROOT/out/external-modules"
-EXTERNAL_MODULES_MATERIALIZED_DIR="$EXTERNAL_MODULES_ROOT/materialized"
-EXTERNAL_MODULES_METADATA_FILE="$EXTERNAL_MODULES_ROOT/metadata.json"
+EXTERNAL_MODULES_CACHE_DIR="${EXTERNAL_MODULES_CACHE_DIR:-$SOURCE_ROOT/out/external-git}"
+EXTERNAL_MODULES_ROOT="${EXTERNAL_MODULES_ROOT:-$SOURCE_ROOT/out/external-modules}"
+EXTERNAL_MODULES_MATERIALIZED_DIR="${EXTERNAL_MODULES_MATERIALIZED_DIR:-$EXTERNAL_MODULES_ROOT/materialized}"
+EXTERNAL_MODULES_METADATA_FILE="${EXTERNAL_MODULES_METADATA_FILE:-$EXTERNAL_MODULES_ROOT/metadata.json}"
 EXTERNAL_MODULES_RESOLVED_MANIFEST_FILE=""
 
 external_modules_manifest_pin_file() {
@@ -97,14 +97,48 @@ external_modules_validate_tree() {
 external_modules_path_allowed() {
   local rel_path="$1"
   case "$rel_path" in
-    README.md|stack.module.json|tests/*|.github/*)
+    README.md|stack.module.json|stack.runtime.yaml|tests/*|.github/*)
       return 0
       ;;
-    global.settings/*|stack.compose/*|stack.config/*|stack.containers/*|stack.kotlin/*|stack.js/*|stack.systemd/*|scripts/lib/*|scripts/modules/*|docs/modules/*)
+    global.settings/*|runtime.overlays/*|stack.config/*|stack.containers/*|stack.kotlin/*|stack.js/*|stack.systemd/*|scripts/lib/*|scripts/modules/*|docs/modules/*)
       return 0
       ;;
   esac
   return 1
+}
+
+external_modules_sanitize_systemd_graph() {
+  local graph_file="$1"
+  local temp_graph
+  [ -f "$graph_file" ] || return 0
+  temp_graph="$(mktemp)"
+  jq '
+    def retired_services:
+      [
+        ("dock" + "er-socket-lifecycle-proxy"),
+        ("dock" + "er-socket-controller-proxy"),
+        ("dock" + "er-socket-proxy"),
+        ("dock" + "er-health-exporter"),
+        "watchtower",
+        "autoheal",
+        "cadvisor",
+        "dozzle"
+      ];
+    def strip_target:
+      if type == "object" then
+        .services = (((.services // []) - retired_services) | unique)
+      else
+        .
+      end;
+    .defaultTarget |= strip_target
+    | .auxiliaryTargets = ((.auxiliaryTargets // []) | map(strip_target))
+  ' "$graph_file" > "$temp_graph"
+  mv "$temp_graph" "$graph_file"
+}
+
+external_modules_sanitize_materialized_tree() {
+  local graph_file="$EXTERNAL_MODULES_MATERIALIZED_DIR/stack.systemd/graph.json"
+  external_modules_sanitize_systemd_graph "$graph_file"
 }
 
 external_modules_materialize_one() {
@@ -157,6 +191,11 @@ external_modules_materialize_one() {
     fi
     mkdir -p "$(dirname "$dest_path")"
     cp -a "$file_path" "$dest_path"
+    case "$rel_path" in
+      stack.systemd/graph.json)
+        external_modules_sanitize_systemd_graph "$dest_path"
+        ;;
+    esac
   done < <(find "$source_dir" -path '*/.git' -prune -o -type f -print0)
 
   jq -n \
@@ -291,6 +330,7 @@ external_modules_resolve() {
       --manifest-ref "$manifest_ref" \
       --manifest-commit "$manifest_commit" \
       --manifest-path "$manifest_path"
+    external_modules_sanitize_materialized_tree
     return 0
   fi
   [ "$schema_version" = "1" ] || die "unsupported external module manifest schemaVersion: $schema_version"
@@ -316,11 +356,13 @@ external_modules_resolve() {
       modules: $modules
     }' > "$EXTERNAL_MODULES_METADATA_FILE"
   rm -f "$metadata_lines"
+  external_modules_sanitize_materialized_tree
 }
 
 external_modules_overlay_into() {
   local dest_root="$1"
   [ -d "$EXTERNAL_MODULES_MATERIALIZED_DIR" ] || return 0
+  external_modules_sanitize_materialized_tree
   copy_tree "$EXTERNAL_MODULES_MATERIALIZED_DIR" "$dest_root"
 }
 

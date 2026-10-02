@@ -7,6 +7,7 @@ kotlinx-serialization = "1.6.2"
 kotlinx-datetime = "0.6.0"
 ktor = "3.0.2"
 jackson = "2.17.1"
+jacksonYaml = "2.17.1"
 sshj = "0.39.0"
 postgres = "42.7.11"
 mariadb = "3.3.3"
@@ -38,6 +39,7 @@ kover = { id = "org.jetbrains.kotlinx.kover", version.ref = "kover" }
 # Jackson
 jackson-module-kotlin = { module = "com.fasterxml.jackson.module:jackson-module-kotlin", version.ref = "jackson" }
 jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
+jackson-dataformat-yaml = { module = "com.fasterxml.jackson.dataformat:jackson-dataformat-yaml", version.ref = "jacksonYaml" }
 
 # SSH
 sshj = { module = "com.hierynomus:sshj", version.ref = "sshj" }

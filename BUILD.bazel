@@ -5,11 +5,10 @@ filegroup(
             "global.settings/**",
             "gradle/**",
             "scripts/**",
-            "stack.compose/**",
+            "runtime.overlays/**",
             "stack.config/**",
             "stack.containers/**",
             "stack.js/**",
-            "stack.kotlin/progression/src/main/resources/static/**",
             "stack.systemd/**",
             ".bazelrc",
             "BUILD.bazel",
@@ -36,6 +35,7 @@ filegroup(
             "stack.containers/test-runner/**/.tmp-screenshot-review/**",
             "stack.containers/test-runner/**/.eslintcache",
         ],
+        allow_empty = True,
     ),
     visibility = ["//visibility:private"],
 )
@@ -44,7 +44,7 @@ filegroup(
     name = "release_built_jars",
     srcs = glob([
         "stack.kotlin/**/build/libs/*.jar",
-    ]),
+    ], allow_empty = True),
     visibility = ["//visibility:private"],
 )
 

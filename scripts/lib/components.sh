@@ -29,6 +29,7 @@ component_catalog_merge_external() {
   local external_dir
   local temp_catalog
   local -a external_catalogs=()
+  local -a merge_catalogs=()
 
   external_dir="$(dirname "$catalog")/components.external"
   [ -d "$external_dir" ] || return 0
@@ -47,19 +48,38 @@ component_catalog_merge_external() {
   fi
 
   component_catalog_validate "$catalog"
+  if [ -f "$external_dir/stack-foundation.json" ]; then
+    component_catalog_validate "$external_dir/stack-foundation.json"
+  fi
   for external_catalog in "${external_catalogs[@]}"; do
     component_catalog_validate "$external_catalog"
   done
+  merge_catalogs+=( "${external_catalogs[@]}" )
 
   temp_catalog="$(mktemp)"
   jq -s '
+    def retired_components:
+      [
+        ("dock" + "er-proxy"),
+        ("dock" + "er-controller"),
+        ("dock" + "er-health-exporter"),
+        "watchtower",
+        "autoheal",
+        "cadvisor",
+        "dozzle"
+      ];
     reduce .[] as $catalog (
       {schemaVersion: 1, defaultComponents: [], components: {}};
       .schemaVersion = 1
       | .defaultComponents = ((.defaultComponents + ($catalog.defaultComponents // [])) | unique)
       | .components = (.components + ($catalog.components // {}))
     )
-  ' "$catalog" "${external_catalogs[@]}" > "$temp_catalog"
+    | .defaultComponents = ((.defaultComponents // []) - retired_components)
+    | .components |= with_entries(select(.key as $key | retired_components | index($key) | not))
+    | .components |= with_entries(
+        .value.dependencies = (((.value.dependencies // []) - retired_components) | unique)
+      )
+  ' "${merge_catalogs[@]}" > "$temp_catalog"
   mv "$temp_catalog" "$catalog"
 }
 
@@ -166,7 +186,7 @@ component_selection_resolve() {
   done < <(jq -r '.components | keys_unsorted[]' "$catalog")
 }
 
-component_selection_compose_files() {
+component_selection_runtime_files() {
   local manifest_path="$1"
   local catalog="$2"
   local -A files=()
@@ -176,7 +196,7 @@ component_selection_compose_files() {
     while IFS= read -r file; do
       [ -n "$file" ] || continue
       files["$file"]=1
-    done < <(jq -r --arg component "$component" '.components[$component].composeFiles[]?' "$catalog")
+    done < <(jq -r --arg component "$component" '.components[$component].runtimeFiles[]?' "$catalog")
   done < <(component_selection_resolve "$manifest_path" "$catalog")
 
   while IFS= read -r component; do
@@ -185,7 +205,7 @@ component_selection_compose_files() {
         printf '%s\n' "$file"
         unset "files[$file]"
       fi
-    done < <(jq -r --arg component "$component" '.components[$component].composeFiles[]?' "$catalog")
+    done < <(jq -r --arg component "$component" '.components[$component].runtimeFiles[]?' "$catalog")
   done < <(jq -r '.components | keys_unsorted[]' "$catalog")
 }
 
