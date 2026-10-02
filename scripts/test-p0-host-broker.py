@@ -335,3 +335,22 @@ with tempfile.TemporaryDirectory() as temporary:
         assert report["drift"]["state"] == "drifted"
 
 print("[test-p0-host-broker-diagnostics] ok")
+
+assert BROKER.SAFE_TEST_SUITES == {"android-apps", "android-apps-matrix"}
+summary = BROKER.summarize_test_output(
+    "[android-native] app=seafile result=pass\n"
+    "[android-native] app=onlyoffice result=ui-evidence-missing detail=private-data\n"
+    "[android-native] total=2 failed=1\n"
+    "[android-app] api=36 route=onlyoffice-docs-editor result=pass\n"
+    "[android-app] api=36 total=1 failed=0\n"
+)
+assert summary["nativeTotal"] == {"total": 2, "failed": 1}
+assert summary["nativeApps"] == [
+    {"app": "seafile", "result": "pass"},
+    {"app": "onlyoffice", "result": "ui-evidence-missing"},
+]
+assert summary["browserChecks"] == [
+    {"api": 36, "route": "onlyoffice-docs-editor", "result": "pass"},
+]
+assert "private-data" not in json.dumps(summary)
+print("[test-p0-host-broker-android] ok")

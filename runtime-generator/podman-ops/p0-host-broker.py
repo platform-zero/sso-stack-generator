@@ -43,6 +43,12 @@ ROOTLESS_HOST_NETWORK_ALLOWLIST = {
 OPERATIONS = Path(os.environ.get("P0_OPERATIONS", "/var/lib/platform-zero/operations"))
 BREAK_GLASS = Path(os.environ.get("P0_BREAK_GLASS", "/var/lib/platform-zero/break-glass"))
 GERALD_APPROVAL = Path(os.environ.get("P0_GERALD_APPROVAL", "/run/platform-zero/gerald-approval.token"))
+TEST_RUNNER_CURRENT = Path(os.environ.get(
+    "P0_TEST_RUNNER_CURRENT", "/mnt/stack/podman/test-runners/state/current"
+))
+SAFE_TEST_SUITES = {"android-apps", "android-apps-matrix"}
+TEST_SUITE_TIMEOUT_SECONDS = {"android-apps": 2400, "android-apps-matrix": 4800}
+TEST_RUNNER_USER = "webservices-test-runners"
 
 
 class RequestError(Exception):
@@ -282,9 +288,30 @@ def candidate_scope(bundle: Path) -> dict[str, object]:
         elif relative.startswith("build/stack.containers/"):
             image_name = relative.removeprefix("build/stack.containers/").split("/", 1)[0]
             service = image_name.removesuffix("-managed")
-            if service in candidate_services or service in previous_services:
-                affected.add(service_authority(service, candidate_services.get(service, previous_services.get(service))))
+            owners = {
+                service_authority(name, details)
+                for services in (candidate_services, previous_services)
+                for name, details in services.items()
+                if name == service or (
+                    isinstance(details, dict) and
+                    str(details.get("build", {}).get("containerfile", "")).startswith(
+                        f"./stack.containers/{image_name}/"
+                    )
+                )
+            }
+            if owners:
+                affected.update(owners)
             else:
+                shared = True
+        elif relative.startswith("build/stack.config/"):
+            config_name = relative.removeprefix("build/stack.config/").split("/", 1)[0]
+            if config_name in candidate_services or config_name in previous_services:
+                affected.add(service_authority(
+                    config_name, candidate_services.get(config_name, previous_services.get(config_name))
+                ))
+            else:
+                # Global/shared configuration cannot be safely attributed to one
+                # authority from its path alone.
                 shared = True
         elif relative.startswith("ops/") and relative in {
             "ops/p0-host-broker.py", "ops/p0-hostctl.py", "ops/p0-domain-dispatch",
@@ -438,7 +465,187 @@ def run_operation(operation_id: str) -> dict[str, object]:
 
 
 def operation_status(request: dict[str, object]) -> dict[str, object]:
-    return read_record(str(request.get("operation_id", request.get("plan_id", ""))))
+    identifier = str(request.get("operation_id", request.get("plan_id", "")))
+    record = read_record(identifier)
+    if record.get("kind") == "test" and record.get("state") == "running":
+        worker = run("systemctl", "is-active", "--quiet",
+                     f"platform-zero-operation-{identifier}.service", check=False)
+        if worker.returncode:
+            with locked_record(identifier):
+                current = read_record(identifier)
+                if current.get("state") == "running":
+                    current.update({"state": "failed", "phase": "complete",
+                                    "finishedAt": int(time.time()), "exitCode": 125,
+                                    "failureStage": {"kind": "worker-interrupted"}})
+                    write_record(current)
+                record = current
+    return record
+
+
+def test_suite(request: dict[str, object]) -> dict[str, object]:
+    suite = str(request.get("suite", ""))
+    if suite not in SAFE_TEST_SUITES:
+        raise RequestError("suite is not in the synthetic-data test allowlist")
+    script = TEST_RUNNER_CURRENT / "build/stack.containers/test-runner/run-tests.sh"
+    if not script.is_file():
+        raise RequestError("deployed test runner is unavailable")
+    identifier = hashlib.sha256(f"test:{suite}:{time.time_ns()}".encode()).hexdigest()[:32]
+    operation = {"id": identifier, "kind": "test", "state": "queued", "phase": "queued",
+                 "suite": suite, "createdAt": int(time.time()), "evidencePolicy": "status-only"}
+    write_record(operation)
+    try:
+        unit = f"platform-zero-operation-{identifier}"
+        run("systemd-run", "--quiet", "--collect", "--no-block", "--unit", unit,
+            "/usr/local/libexec/p0-host-broker", "--test-worker", identifier)
+    except Exception as error:
+        operation.update({"state": "failed", "phase": "enqueue", "finishedAt": int(time.time()),
+                          "error": scrub(str(error))})
+        write_record(operation)
+        raise RequestError("could not queue durable test operation")
+    return operation
+
+
+def test_runner_account() -> tuple[str, str, int]:
+    domains = json.loads(DOMAINS_MANIFEST.read_text()).get("domains", [])
+    item = next((entry for entry in domains if entry.get("name") == "test-runners"), None)
+    if not item or item.get("user") != TEST_RUNNER_USER:
+        raise RequestError("test-runner authority mapping is invalid")
+    account = pwd.getpwnam(TEST_RUNNER_USER)
+    return TEST_RUNNER_USER, account.pw_dir, account.pw_uid
+
+
+def summarize_test_output(output: str) -> dict[str, object]:
+    """Expose fixed Android result labels while withholding raw app output."""
+    import re
+
+    app_ids = {
+        "element", "homeassistant", "jellyfin", "mastodon", "ntfy", "seafile",
+        "gitnex", "qbitcontroller", "davx5", "thunderbird", "donetick",
+        "bitwarden", "onlyoffice",
+    }
+    native = [
+        {"app": app, "result": result}
+        for app, result in re.findall(
+            r"(?m)^\[android-native\] app=([a-z0-9-]{1,32}) result=([a-z-]{1,48})(?: |$)",
+            output,
+        ) if app in app_ids
+    ]
+    native_totals = re.findall(
+        r"(?m)^\[android-native\] total=(\d{1,3}) failed=(\d{1,3})$", output,
+    )
+    browser = [
+        {"api": int(api), "route": route, "result": result}
+        for api, route, result in re.findall(
+            r"(?m)^\[android-app\] api=(34|36) route=([a-z0-9-]{1,32}) "
+            r"result=([a-z-]{1,48})$", output,
+        ) if route == "onlyoffice-docs-editor"
+    ]
+    browser_totals = re.findall(
+        r"(?m)^\[android-app\] api=(34|36) total=(\d{1,3}) failed=(\d{1,3})$",
+        output,
+    )
+    return {
+        "nativeApps": native,
+        "nativeTotal": {"total": int(native_totals[-1][0]), "failed": int(native_totals[-1][1])}
+        if native_totals else None,
+        "browserChecks": browser,
+        "browserTotals": [
+            {"api": int(api), "total": int(total), "failed": int(failed)}
+            for api, total, failed in browser_totals
+        ],
+    }
+
+
+def classify_test_failure(output: str) -> dict[str, object]:
+    """Return only fixed test-runner failure labels and source line numbers."""
+    import re
+
+    failure = re.search(r"\[test-runner\] command failed at line=(\d+) status=(\d+)", output)
+    if failure is None:
+        return {"kind": "suite-exit"}
+    normalized = output.lower()
+    for phrases, kind in (
+        (("managed podman socket is unavailable", "launch podman socket is unavailable"), "runner-runtime-unavailable"),
+        (("permission denied", "operation not permitted"), "runner-permission-denied"),
+        (("manifest unknown", "pull access denied", "image not known", "no such image"), "runner-image-unavailable"),
+        (("no generated rootless podman networks", "network not found", "network does not exist"), "runner-network-unavailable"),
+        (("connection refused", "cannot connect", "failed to connect"), "runner-runtime-connection-failed"),
+        (("no such file or directory", "command not found"), "runner-dependency-unavailable"),
+    ):
+        if any(phrase in normalized for phrase in phrases):
+            return {"kind": kind, "line": int(failure.group(1))}
+    return {"kind": "runner-command", "line": int(failure.group(1))}
+
+
+def run_test_operation(operation_id: str) -> dict[str, object]:
+    with locked_record(operation_id):
+        operation = read_record(operation_id)
+        if operation.get("kind") != "test" or operation.get("state") != "queued":
+            raise RequestError("test operation is not queued")
+        suite = str(operation.get("suite", ""))
+        if suite not in SAFE_TEST_SUITES:
+            raise RequestError("recorded suite is not allowed")
+        operation.update({"state": "running", "phase": "execution", "startedAt": int(time.time())})
+        write_record(operation)
+    script = TEST_RUNNER_CURRENT / "build/stack.containers/test-runner/run-tests.sh"
+    try:
+        user, home, uid = test_runner_account()
+    except (RequestError, ValueError, OSError, KeyError):
+        operation.update({"state": "failed", "phase": "complete", "exitCode": 126,
+                          "finishedAt": int(time.time()),
+                          "failureStage": {"kind": "authority-mapping"}})
+        write_record(operation)
+        return operation
+    runtime = f"/run/user/{uid}"
+    runner_env = {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "HOME": home,
+        "XDG_CONFIG_HOME": f"{home}/.config",
+        "XDG_RUNTIME_DIR": runtime,
+        "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime}/bus",
+        "WEBSERVICES_ROOTLESS_USER": user,
+        "WEBSERVICES_ROOTLESS_STATE_ROOT": "/mnt/stack/podman/test-runners/state",
+        "TEST_RUNNER_STATE_ROOT": "/mnt/stack/podman/test-runners/state/test-runner",
+        "TEST_RUNNER_NETWORK_MODE": "isolated",
+    }
+    command = ["/usr/sbin/runuser", "-u", user, "--", "env"]
+    command.extend(f"{key}={value}" for key, value in runner_env.items())
+    command.extend((str(script), suite))
+    worker_env = {"PATH": runner_env["PATH"], "HOME": "/root", "XDG_CONFIG_HOME": "/root/.config"}
+    try:
+        with (OPERATIONS / ".test-runner.lock").open("a+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            completed = subprocess.run(command, cwd=str(TEST_RUNNER_CURRENT), env=worker_env,
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT, text=True, check=False,
+                                       timeout=TEST_SUITE_TIMEOUT_SECONDS.get(suite, 900))
+        operation.update({"state": "succeeded" if completed.returncode == 0 else "failed",
+                          "phase": "complete", "exitCode": completed.returncode,
+                          "finishedAt": int(time.time())})
+        test_summary = summarize_test_output(completed.stdout or "")
+        if test_summary is not None:
+            operation["testSummary"] = test_summary
+        if completed.returncode:
+            output = completed.stdout or ""
+            if "could not locate the repository root" in output:
+                operation["failureStage"] = {"kind": "repository-root"}
+            else:
+                operation["failureStage"] = classify_test_failure(output)
+    except subprocess.TimeoutExpired as error:
+        partial_output = error.stdout or error.output or ""
+        if isinstance(partial_output, bytes):
+            partial_output = partial_output.decode("utf-8", errors="replace")
+        operation.update({"state": "failed", "phase": "complete", "exitCode": 124,
+                          "finishedAt": int(time.time()),
+                          "failureStage": {"kind": "execution-timeout"}})
+        test_summary = summarize_test_output(str(partial_output))
+        if test_summary is not None:
+            operation["testSummary"] = test_summary
+    except OSError:
+        operation.update({"state": "failed", "phase": "complete", "exitCode": 127,
+                          "finishedAt": int(time.time()), "error": "test runner could not start"})
+    write_record(operation)
+    return operation
 
 
 def diagnostics(request: dict[str, object]) -> dict[str, object]:
@@ -1012,6 +1219,7 @@ ACTIONS = {
     "plan": plan, "apply": apply_plan, "operation-status": operation_status,
     "diagnostics": diagnostics, "rollback": rollback, "break-glass-request": break_glass_request,
     "status": status, "verify": verify, "logs": logs,
+    "test": test_suite,
 }
 
 
@@ -1059,6 +1267,13 @@ def main() -> None:
             sys.exit(0 if record["state"] == "succeeded" else 1)
         except Exception as error:
             print("p0-host-broker worker failed: " + scrub(str(error)), file=sys.stderr)
+            sys.exit(1)
+    if len(sys.argv) == 3 and sys.argv[1] == "--test-worker":
+        try:
+            record = run_test_operation(sys.argv[2])
+            sys.exit(0 if record["state"] == "succeeded" else 1)
+        except Exception as error:
+            print("p0-host-broker test worker failed: " + scrub(str(error)), file=sys.stderr)
             sys.exit(1)
     expected_uid, subordinate_uids = authorized_uid_ranges("stack_lab")
     gerald_uid = pwd.getpwnam("gerald").pw_uid
