@@ -71,29 +71,119 @@ INTERMEDIATE_PROFILES = PROFILES.replace(
     'target = "/usr/local/bin/p0-hostctl"',
 )
 LEGACY_PROFILES = PREVIOUS_PROFILES.split("\n[profiles.software-gpu]", 1)[0].rstrip() + "\n"
+TRANSITIONAL_PROFILES = """[profiles.p0-control]
+image = "worklane:latest"
+network = "outbound"
+mount_codex_credentials = true
+mount_gh_credentials = true
+
+[[profiles.p0-control.mounts]]
+source = "/usr/local/bin/p0-hostctl"
+target = "/home/dev/.local/bin/p0-hostctl"
+read_only = true
+
+[[profiles.p0-control.mounts]]
+source = "/run/platform-zero"
+target = "/run/platform-zero"
+read_only = true
+
+[[profiles.p0-control.mounts]]
+source = "/home/stack_lab/.config/platform-zero"
+target = "/home/dev/.config/platform-zero"
+read_only = true
+
+[profiles.p0-host]
+image = "worklane:latest"
+network = "outbound"
+mount_codex_credentials = true
+mount_gh_credentials = true
+
+[[profiles.p0-host.mounts]]
+source = "/usr/local/bin/p0-hostctl"
+target = "/home/dev/.local/bin/p0-hostctl"
+read_only = true
+
+[[profiles.p0-host.mounts]]
+source = "/run/platform-zero"
+target = "/run/platform-zero"
+read_only = true
+
+[[profiles.p0-host.mounts]]
+source = "/home/stack_lab/.config/platform-zero"
+target = "/home/dev/.config/platform-zero"
+read_only = true
+
+[profiles.p0-domain]
+image = "worklane:latest"
+network = "outbound"
+mount_codex_credentials = true
+mount_gh_credentials = false
+
+[profiles.software-gpu]
+image = "worklane:latest"
+network = "outbound"
+mount_codex_credentials = true
+mount_gh_credentials = true
+devices = ["nvidia.com/gpu=all"]
+"""
+PREVIOUS_STACK_PROFILES = """[profiles.p0-stack]
+image = "worklane:latest"
+network = "outbound"
+mount_codex_credentials = true
+mount_gh_credentials = true
+
+[[profiles.p0-stack.mounts]]
+source = "/usr/local/bin/p0-hostctl"
+target = "/home/dev/.local/bin/p0-hostctl"
+read_only = true
+
+[[profiles.p0-stack.mounts]]
+source = "/run/platform-zero"
+target = "/run/platform-zero"
+read_only = true
+
+[[profiles.p0-stack.mounts]]
+source = "/home/stack_lab/.config/platform-zero"
+target = "/home/dev/.config/platform-zero"
+read_only = true
+
+[profiles.software-gpu]
+image = "worklane:latest"
+network = "outbound"
+mount_codex_credentials = true
+mount_gh_credentials = true
+devices = ["nvidia.com/gpu=all"]
+"""
+OBSOLETE_STACK_PROFILES = """[profiles.p0-stack]
+image = "worklane:latest"
+network = "outbound"
+mount_codex_credentials = true
+mount_gh_credentials = true
+
+[[profiles.p0-stack.mounts]]
+source = "/run/platform-zero"
+target = "/run/platform-zero"
+read_only = true
+
+[profiles.software-gpu]
+image = "worklane:latest"
+network = "outbound"
+mount_codex_credentials = true
+mount_gh_credentials = true
+devices = ["nvidia.com/gpu=all"]
+"""
 
 HOST_ACCESS_MOUNTS = [
     {
-        "source": "/usr/local/bin/p0-hostctl",
-        "target": "/home/dev/.local/bin/p0-hostctl",
-        "read_only": True,
-    },
-    {
-        "source": "/run/platform-zero",
-        "target": "/run/platform-zero",
-        "read_only": True,
-    },
-    {
-        "source": "/home/stack_lab/.config/platform-zero",
-        "target": "/home/dev/.config/platform-zero",
+        "source": "/run/platform-zero/host-broker.sock",
+        "target": "/run/platform-zero/host-broker.sock",
         "read_only": True,
     },
 ]
 PREVIOUS_HOST_ACCESS_MOUNTS = [
-    {**mount, "target": "/usr/local/bin/p0-hostctl"}
-    if mount["source"] == "/usr/local/bin/p0-hostctl"
-    else mount
-    for mount in HOST_ACCESS_MOUNTS
+    {"source": "/usr/local/bin/p0-hostctl", "target": "/home/dev/.local/bin/p0-hostctl", "read_only": True},
+    {"source": "/run/platform-zero", "target": "/run/platform-zero", "read_only": True},
+    {"source": "/home/stack_lab/.config/platform-zero", "target": "/home/dev/.config/platform-zero", "read_only": True},
 ]
 
 
@@ -253,25 +343,28 @@ def reconcile_host_access_profile(destination: Path, workspace: dict[str, object
     current = tomllib.loads(text).get("profile", {}).get("mounts", [])
     if current == HOST_ACCESS_MOUNTS:
         return False
-    if current and current != PREVIOUS_HOST_ACCESS_MOUNTS:
+    obsolete_client_config_mounts = [
+        {"source": "/usr/local/bin/p0-hostctl", "target": "/usr/local/bin/p0-hostctl", "read_only": True},
+        {"source": "/run/platform-zero", "target": "/run/platform-zero", "read_only": True},
+        {"source": "/home/stack_lab/.config/platform-zero", "target": "/etc/platform-zero", "read_only": True},
+    ]
+    previous_directory_mount = [
+        {"source": "/run/platform-zero", "target": "/run/platform-zero", "read_only": True},
+    ]
+    if current and current not in (
+        PREVIOUS_HOST_ACCESS_MOUNTS, obsolete_client_config_mounts, previous_directory_mount,
+    ):
         fail(f"refusing to replace locally changed profile mounts in {manifest}")
-    def render(mounts: list[dict[str, object]]) -> str:
-        return "mounts = [\n" + "".join(
-            f'  {{ source = "{mount["source"]}", target = "{mount["target"]}", read_only = true }},\n'
-            for mount in mounts
-        ) + "]"
-    rendered = render(HOST_ACCESS_MOUNTS)
-    needle = render(PREVIOUS_HOST_ACCESS_MOUNTS) if current else "mounts = []"
-    if current == PREVIOUS_HOST_ACCESS_MOUNTS and needle not in text:
-        old_target = 'target = "/usr/local/bin/p0-hostctl"'
-        if text.count(old_target) != 1:
-            fail(f"cannot safely update managed profile mounts in {manifest}")
-        manifest.write_text(text.replace(old_target, 'target = "/home/dev/.local/bin/p0-hostctl"', 1))
-        return True
-    updated, count = text.replace(needle, rendered, 1), text.count(needle)
-    if count != 1:
+    marker = "\n[[profile.mounts]]"
+    first_mount = text.find(marker)
+    if current and first_mount < 0:
         fail(f"cannot safely update managed profile mounts in {manifest}")
-    manifest.write_text(updated)
+    prefix = text[:first_mount] if first_mount >= 0 else text.rstrip()
+    rendered = "".join(
+        f'\n[[profile.mounts]]\nsource = "{mount["source"]}"\ntarget = "{mount["target"]}"\nread_only = true\n'
+        for mount in HOST_ACCESS_MOUNTS
+    )
+    manifest.write_text(prefix.rstrip() + rendered + "\n")
     return True
 
 
@@ -292,6 +385,39 @@ def legacy_agents_texts(workspace: dict[str, object]) -> set[str]:
     if role == "software":
         return {prior}
     previous = prior
+    if role == "stack":
+        previous = current.replace(
+            "- Query the live authority map with `python3 sso-stack-generator/runtime-generator/podman-ops/p0-hostctl.py diagnostics`.\n"
+            "- Use that repository's `p0-hostctl.py` for broker operations; do not copy a release ID from this document.\n"
+            "- Build and validate an immutable candidate bundle, then use `p0-hostctl.py plan` and",
+            "- Read `~/.config/platform-zero/workspaces.json` for current repository pins and domains.\n"
+            "- Query live state with `p0-hostctl status`; do not copy a release ID from this document.\n"
+            "- Build and validate an immutable candidate bundle, then use `p0-hostctl plan` and",
+        )
+        previous = previous.replace("p0-hostctl.py", "p0-hostctl")
+    previous_etc = previous.replace(
+        "~/.config/platform-zero/workspaces.json",
+        "/etc/platform-zero/workspaces.json",
+    )
+    old_boundary = (
+        "- Protected databases, volumes, media, service homes, rendered environments, raw logs, and\n"
+        "  service sockets are not mounted here. Use broker status, diagnostics, and scrubbed evidence."
+    )
+    previous_old_boundary = previous.replace(
+        "- Protected databases, volumes, media, service homes, rendered environments, raw logs, and\n"
+        "  service sockets are not mounted here; only the typed host-broker socket is exposed.",
+        old_boundary,
+    )
+    previous_etc_old_boundary = previous_etc.replace(
+        "- Protected databases, volumes, media, service homes, rendered environments, raw logs, and\n"
+        "  service sockets are not mounted here; only the typed host-broker socket is exposed.",
+        old_boundary,
+    )
+    current_old_boundary = current.replace(
+        "- Protected databases, volumes, media, service homes, rendered environments, raw logs, and\n"
+        "  service sockets are not mounted here; only the typed host-broker socket is exposed.",
+        old_boundary,
+    )
     if workspace.get("role") == "control":
         previous = previous.replace(
             "- Enter this maintenance environment as `stack_lab@192.168.0.11`; its workspace root is\n"
@@ -327,7 +453,10 @@ def legacy_agents_texts(workspace: dict[str, object]) -> set[str]:
         legacy = legacy.replace("- Use the domain dispatcher for remote status, logs, verification, restart, and deployment.\n", "")
     marker = "- Keep secrets encrypted; never commit private keys or rendered environment files.\n"
     legacy = legacy.replace(marker, marker + "- Use the domain dispatcher for remote status, logs, verification, restart, and deployment.\n")
-    return {prior, previous, legacy}
+    return {
+        prior, previous, previous_etc, previous_old_boundary, previous_etc_old_boundary,
+        current_old_boundary, legacy,
+    }
 
 
 def managed_agents_texts(workspace: dict[str, object]) -> set[str]:
@@ -399,7 +528,10 @@ def main() -> int:
     root.mkdir(parents=True, exist_ok=True)
     profiles = Path.home() / ".config" / "worklane" / "profiles.toml"
     profiles.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if profiles.exists() and profiles.read_text() not in {PROFILES, INTERMEDIATE_PROFILES, PREVIOUS_PROFILES, LEGACY_PROFILES}:
+    if profiles.exists() and profiles.read_text() not in {
+        PROFILES, INTERMEDIATE_PROFILES, PREVIOUS_PROFILES, LEGACY_PROFILES,
+        TRANSITIONAL_PROFILES, PREVIOUS_STACK_PROFILES, OBSOLETE_STACK_PROFILES,
+    }:
         fail(f"refusing to replace locally changed {profiles}")
     profiles.write_text(PROFILES)
     os.chmod(profiles, 0o600)

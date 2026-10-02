@@ -135,6 +135,25 @@ finally:
 
 print("[test-p0-host-broker-status] ok")
 
+with tempfile.TemporaryDirectory() as temporary:
+    original_operations = BROKER.OPERATIONS
+    try:
+        BROKER.OPERATIONS = Path(temporary)
+        interrupted_id = "a" * 32
+        BROKER.write_record({"id": interrupted_id, "kind": "test", "suite": "ts-unit",
+                             "state": "running", "phase": "execution"})
+        with patch.object(BROKER, "run", return_value=type(
+            "Inactive", (), {"returncode": 3, "stdout": "", "stderr": ""}
+        )()):
+            recovered = BROKER.operation_status({"operation_id": interrupted_id})
+        assert recovered["state"] == "failed"
+        assert recovered["failureStage"] == {"kind": "worker-interrupted"}
+        assert "stderr" not in recovered
+    finally:
+        BROKER.OPERATIONS = original_operations
+
+print("[test-p0-host-broker-test-worker-recovery] ok")
+
 calls = []
 try:
     def fake_oneshot(*args: str, check: bool = True) -> Result:
