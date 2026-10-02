@@ -18,9 +18,13 @@ Cross-domain `depends_on` edges must be allowed by the consumer domain's
 dependencies. Host loopback ingress remains separately recorded by
 `podman-loopback-endpoints.json`.
 
-## Maintenance workspaces
+## Maintenance workspace
 
-`maintenance-workspaces.json` maps the same domains to `stack_lab` Worklanes.
+`maintenance-workspaces.json` emits exactly one `stack` engineering lane rooted at
+`/mnt/lab_debian/stack_lab/stack_work`. It contains the generator, site configuration,
+all selected modules, and test infrastructure with source write access. This is a
+workspace consolidation only: every `webservices-*` account, Podman graphroot,
+volume root, service home, and runtime socket remains a separate authority.
 Plan materialization before applying it:
 
 ```sh
@@ -30,7 +34,9 @@ python3 ops/materialize-workspaces.py \
 
 After reviewing the JSON plan, run it as `stack_lab` with `--apply`. Existing
 dirty, remote-drifted, or commit-drifted repositories stop the operation rather
-than being reset.
+than being reset. The generated `AGENTS.md` documents the authority map and the
+protected-data boundary. Only source and encrypted inputs are mounted in the lane;
+host-side deployment performs decryption and runtime rendering.
 
 `software-workspaces.json` is the parallel `software_lab` contract. Its nine
 project paths, Worklane profile, CDI devices, boot policy, and reproducibility
@@ -46,6 +52,8 @@ declared owner. At login-manager startup it reads the owner's installed
 manifest and starts only explicitly opted-in containers whose immutable
 `io.worklane.id` and `io.worklane.name` labels match their lane manifest.
 Linger is enabled so recovery does not require an interactive login.
+Obsolete per-domain dispatcher keys are not created; routine operations use the
+peer-credentialed host broker.
 
 Gerald's passwordless sudo is intentionally retained. The guarded
 `finalize-access` broker action is not part of workspace installation or normal

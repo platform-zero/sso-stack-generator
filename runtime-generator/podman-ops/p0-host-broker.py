@@ -6,12 +6,16 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import fcntl
+import base64
 from pathlib import Path
 import pwd
 import shutil
 import socket
+import stat
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -36,14 +40,30 @@ ROOTLESS_HOST_NETWORK_ALLOWLIST = {
         "webservices-apps",
     ),
 }
+OPERATIONS = Path(os.environ.get("P0_OPERATIONS", "/var/lib/platform-zero/operations"))
+BREAK_GLASS = Path(os.environ.get("P0_BREAK_GLASS", "/var/lib/platform-zero/break-glass"))
+GERALD_APPROVAL = Path(os.environ.get("P0_GERALD_APPROVAL", "/run/platform-zero/gerald-approval.token"))
 
 
 class RequestError(Exception):
     pass
 
 
+def require_gerald_approval(request: dict[str, object], operation: str) -> None:
+    token = str(request.get("approval_token", ""))
+    if not token or not GERALD_APPROVAL.is_file():
+        raise RequestError(f"{operation} requires Gerald's separate approval")
+    expected = GERALD_APPROVAL.read_text().strip()
+    if not expected or token != expected:
+        raise RequestError(f"{operation} approval token is invalid")
+    GERALD_APPROVAL.unlink(missing_ok=True)
+
+
 def run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(args, text=True, capture_output=True, check=False)
+    env = os.environ.copy()
+    env.setdefault("HOME", "/root")
+    env.setdefault("XDG_CONFIG_HOME", "/root/.config")
+    result = subprocess.run(args, text=True, capture_output=True, check=False, env=env)
     if check and result.returncode:
         raise RequestError(f"command failed ({result.returncode}): {' '.join(args)}\n{result.stderr[-4000:]}")
     return result
@@ -145,6 +165,496 @@ def release_path(request: dict[str, object]) -> Path:
     return path
 
 
+def scrub(text: str) -> str:
+    """Remove common credentials and multiline payloads from broker evidence."""
+    import re
+    text = re.sub(r"(?im)^([^=\n]*(?:password|secret|token|cookie|authorization|private[_ -]?key)[^=\n]*)=[^\n]*$", r"\1=[REDACTED]", text)
+    text = re.sub(r"(?i)(bearer\s+|basic\s+)[A-Za-z0-9+/=._-]+", r"\1[REDACTED]", text)
+    return text[-16000:]
+
+
+def write_record(record: dict[str, object]) -> None:
+    OPERATIONS.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = OPERATIONS / f"{record['id']}.json"
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(record, sort_keys=True) + "\n")
+    temporary.chmod(0o600)
+    os.replace(temporary, path)
+
+
+def locked_record(identifier: str):
+    """Serialize state transitions for one durable operation or plan."""
+    if not identifier or "/" in identifier or ".." in identifier:
+        raise RequestError("invalid operation or plan identifier")
+    OPERATIONS.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock_path = OPERATIONS / f".{identifier}.lock"
+    lock = lock_path.open("a+")
+    fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+    return lock
+
+
+def read_record(identifier: str) -> dict[str, object]:
+    if not identifier or "/" in identifier or ".." in identifier:
+        raise RequestError("invalid operation or plan identifier")
+    path = OPERATIONS / f"{identifier}.json"
+    if not path.is_file():
+        raise RequestError("operation or plan not found")
+    record = json.loads(path.read_text())
+    if record.get("id") != identifier:
+        raise RequestError("operation record identity mismatch")
+    return record
+
+
+def candidate_scope(bundle: Path) -> dict[str, object]:
+    current = None
+    if ACTIVE_RELEASE.is_file():
+        try:
+            current = release_path({"release": json.loads(ACTIVE_RELEASE.read_text()).get("release")})
+        except (RequestError, TypeError, ValueError):
+            current = None
+    candidate_ir = json.loads((bundle / "stack.ir.json").read_text())
+    previous_ir = json.loads((current / "stack.ir.json").read_text()) if current and (current / "stack.ir.json").is_file() else {}
+    candidate_services = candidate_ir.get("services", {})
+    previous_services = previous_ir.get("services", {})
+    changed_services = {name for name in set(candidate_services) | set(previous_services)
+                        if candidate_services.get(name) != previous_services.get(name)}
+    candidate_domains = json.loads((bundle / "podman-domains.json").read_text()).get("domains", [])
+    previous_domains = json.loads((current / "podman-domains.json").read_text()).get("domains", []) if current and (current / "podman-domains.json").is_file() else []
+    authorities = {item["name"] for item in candidate_domains} | {item["name"] for item in previous_domains} | {"rootful"}
+
+    def service_authority(name: str, service: object) -> str:
+        if not isinstance(service, dict):
+            return "rootful"
+        if service.get("placement") == "rootless":
+            return str(service.get("rootlessDomain", "rootful"))
+        return "rootful"
+
+    affected = {service_authority(name, candidate_services.get(name, previous_services.get(name)))
+                for name in changed_services}
+    shared = not current
+
+    def file_map(root: Path) -> dict[str, str]:
+        return {path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in root.rglob("*") if path.is_file() and not path.is_symlink()}
+
+    old_files = file_map(current) if current else {}
+    new_files = file_map(bundle)
+    changed_files = {name for name in set(old_files) | set(new_files) if old_files.get(name) != new_files.get(name)}
+    config_owners: dict[str, set[str]] = {}
+    for services in (previous_services, candidate_services):
+        for service_name, service in services.items():
+            owner = service_authority(service_name, service)
+            for mount in service.get("volumes", []) if isinstance(service, dict) else []:
+                source = mount.split(":", 1)[0] if isinstance(mount, str) else mount.get("source", "")
+                if source.startswith("./configs/"):
+                    config_owners.setdefault(source.removeprefix("./"), set()).add(owner)
+
+    for relative in changed_files:
+        if relative in {"stack.ir.json", "bundle.json", "podman-domains.json", "podman-domain-dependencies.json"}:
+            continue
+        if relative.startswith("quadlet/rootless-"):
+            domain = relative.split("/", 2)[1].removeprefix("rootless-")
+            affected.add(domain)
+        elif relative.startswith("quadlet/rootful/") or relative.startswith("quadlet/"):
+            affected.add("rootful")
+        elif relative.startswith("runtime-env/"):
+            service = Path(relative).name.removesuffix(".env.template").removesuffix(".env")
+            if service in candidate_services or service in previous_services:
+                affected.add(service_authority(service, candidate_services.get(service, previous_services.get(service))))
+            else:
+                shared = True
+        elif relative.startswith("runtime/configs/"):
+            source = relative.removeprefix("runtime/")
+            owners = {owner for path, values in config_owners.items()
+                      if source == path or source.startswith(path.rstrip("/") + "/") for owner in values}
+            if owners:
+                affected.update(owners)
+            else:
+                shared = True
+        elif relative.startswith(("site/", "repos/", "docs/")) or relative in {
+            "runtime-model.yml", "compose.yml", "README.md", "maintenance-workspaces.json", "software-workspaces.json",
+        }:
+            continue
+        elif relative.startswith(("scripts/test-", "scripts/tests/", "scripts/deploy/__pycache__/", "scripts/__pycache__/")):
+            continue
+        elif relative.startswith("scripts/"):
+            shared = True
+        elif relative.startswith("build/stack.containers/"):
+            image_name = relative.removeprefix("build/stack.containers/").split("/", 1)[0]
+            service = image_name.removesuffix("-managed")
+            if service in candidate_services or service in previous_services:
+                affected.add(service_authority(service, candidate_services.get(service, previous_services.get(service))))
+            else:
+                shared = True
+        elif relative.startswith("ops/") and relative in {
+            "ops/p0-host-broker.py", "ops/p0-hostctl.py", "ops/p0-domain-dispatch",
+            "ops/install-platform-zero-control-plane.sh", "ops/install-podman-bundle.sh",
+            "ops/materialize-workspaces.py", "ops/start-worklane-containers.py",
+            "ops/reap-idle-worklanes.py",
+        }:
+            continue
+        elif relative.startswith("ops/__pycache__/"):
+            continue
+        else:
+            # Runtime behavior not attributable to one authority is shared.
+            shared = True
+
+    if candidate_domains != previous_domains and current:
+        shared = True
+    if current and (candidate_ir.get("networks") != previous_ir.get("networks") or
+                    candidate_ir.get("volumes") != previous_ir.get("volumes")):
+        shared = True
+    # The broker's active-release record can outlive a failed/partial runtime
+    # activation. Treat release-marker drift as a full reconciliation request
+    # even when the staged bundle itself is byte-identical to that record.
+    if current and diagnostics({}).get("drift", {}).get("state") != "clean":
+        shared = True
+    if changed_services and not affected:
+        shared = True
+    if shared:
+        affected = set(authorities)
+
+    edges_path = bundle / "podman-domain-dependencies.json"
+    old_edges_path = current / "podman-domain-dependencies.json" if current else None
+    edges = json.loads(edges_path.read_text()).get("dependencies", []) if edges_path.is_file() else []
+    old_edges = json.loads(old_edges_path.read_text()).get("dependencies", []) if old_edges_path and old_edges_path.is_file() else []
+    if edges != old_edges:
+        shared = True
+        affected = set(authorities)
+    expanded = set(affected)
+    changed_again = True
+    while changed_again:
+        changed_again = False
+        for edge in edges:
+            if edge.get("providerDomain") in expanded and edge.get("consumerDomain") not in expanded:
+                expanded.add(edge["consumerDomain"])
+                changed_again = True
+    return {"changedServices": sorted(changed_services), "changedFiles": sorted(changed_files),
+            "affectedAuthorities": sorted(expanded), "sharedChange": shared,
+            "previousRelease": current.name if current else None}
+
+
+def plan(request: dict[str, object]) -> dict[str, object]:
+    source = Path(str(request.get("bundle", ""))).resolve()
+    if not source.is_dir() or not source.is_relative_to(STACK_ROOT):
+        raise RequestError(f"bundle must be a directory below {STACK_ROOT}")
+    validate_bundle(source)
+    staged = stage(request)
+    candidate = INCOMING / staged["release"]
+    scope = candidate_scope(candidate)
+    identifier = hashlib.sha256(f"{staged['release']}:{time.time_ns()}".encode()).hexdigest()[:32]
+    record = {"id": identifier, "kind": "plan", "state": "planned", "release": staged["release"],
+              "createdAt": int(time.time()), "scope": scope, "evidence": {"bundle": staged["release"]}}
+    write_record(record)
+    return record
+
+
+def enqueue_operation(operation: dict[str, object]) -> dict[str, object]:
+    operation_id = str(operation["id"])
+    write_record(operation)
+    try:
+        unit = f"platform-zero-operation-{operation_id}"
+        run("systemd-run", "--quiet", "--collect", "--no-block", "--unit", unit,
+            "/usr/local/libexec/p0-host-broker", "--worker", operation_id)
+    except Exception as error:
+        with locked_record(operation_id):
+            operation = read_record(operation_id)
+            operation.update({"state": "failed", "phase": "enqueue", "finishedAt": int(time.time()),
+                              "error": scrub(str(error))})
+            write_record(operation)
+        raise RequestError("could not queue durable deployment operation")
+    return operation
+
+
+def apply_plan(request: dict[str, object]) -> dict[str, object]:
+    plan_id = str(request.get("plan_id", ""))
+    with locked_record(plan_id):
+        plan_record = read_record(plan_id)
+        if plan_record.get("kind") != "plan" or plan_record.get("state") != "planned":
+            raise RequestError("plan is not available for application")
+        authorities = plan_record.get("scope", {}).get("affectedAuthorities", [])
+        if not authorities:
+            plan_record.update({"state": "applied", "appliedAt": int(time.time()), "noOp": True})
+            write_record(plan_record)
+            return {"id": plan_id, "kind": "operation", "state": "succeeded", "phase": "no-op",
+                    "result": {"release": plan_record["release"], "scope": []}}
+        operation_id = hashlib.sha256(f"{plan_id}:{time.time_ns()}".encode()).hexdigest()[:32]
+        operation = {"id": operation_id, "kind": "operation", "state": "queued", "phase": "queued",
+                     "planId": plan_id, "release": plan_record["release"], "scope": plan_record["scope"],
+                     "createdAt": int(time.time()), "applicationDataRollback": False}
+        write_record(operation)
+        plan_record["state"] = "applying"
+        plan_record["operationId"] = operation_id
+        write_record(plan_record)
+    try:
+        return enqueue_operation(operation)
+    except Exception:
+        with locked_record(plan_id):
+            plan_record = read_record(plan_id)
+            plan_record.update({"state": "planned"})
+            plan_record.pop("operationId", None)
+            write_record(plan_record)
+        raise
+
+
+def run_operation(operation_id: str) -> dict[str, object]:
+    with locked_record(operation_id):
+        operation = read_record(operation_id)
+        if operation.get("kind") != "operation" or operation.get("state") != "queued":
+            raise RequestError("operation is not queued")
+        operation.update({"state": "running", "phase": "preflight", "startedAt": int(time.time())})
+        write_record(operation)
+    plan_id = str(operation["planId"])
+    plan_record = read_record(plan_id)
+    previous = plan_record.get("scope", {}).get("previousRelease")
+    try:
+        operation.update({"phase": "activation", "updatedAt": int(time.time())})
+        write_record(operation)
+        result = activate({"release": str(operation["release"]),
+                           "authorities": operation.get("scope", {}).get("affectedAuthorities", [])})
+        operation.update({"state": "succeeded", "phase": "complete", "finishedAt": int(time.time()),
+                          "result": {"release": result["release"], "scope": operation["scope"]}})
+        with locked_record(plan_id):
+            plan_record = read_record(plan_id)
+            plan_record["state"] = "applied"
+            write_record(plan_record)
+    except Exception as error:
+        operation.update({"state": "rolling-back", "phase": "rollback", "error": scrub(str(error))})
+        write_record(operation)
+        if previous:
+            try:
+                activate({"release": str(previous),
+                          "authorities": operation.get("scope", {}).get("affectedAuthorities", []),
+                          "installer_release": str(operation["release"])})
+                operation["rollback"] = {"state": "succeeded", "release": previous,
+                                          "applicationDataRestored": False}
+            except Exception as rollback_error:
+                operation["rollback"] = {"state": "failed", "error": scrub(str(rollback_error))}
+        else:
+            operation["rollback"] = {"state": "unavailable", "reason": "no previous release"}
+        operation.update({"state": "failed", "phase": "complete", "finishedAt": int(time.time())})
+    write_record(operation)
+    return operation
+
+
+def operation_status(request: dict[str, object]) -> dict[str, object]:
+    return read_record(str(request.get("operation_id", request.get("plan_id", ""))))
+
+
+def diagnostics(request: dict[str, object]) -> dict[str, object]:
+    result = status({})
+    active_record = json.loads(ACTIVE_RELEASE.read_text()) if ACTIVE_RELEASE.is_file() else {}
+    active = active_record.get("release")
+    result["activeRelease"] = active
+    result["operations"] = sorted((path.name.removesuffix(".json") for path in OPERATIONS.glob("*.json")), reverse=True)[:20] if OPERATIONS.is_dir() else []
+    result["evidencePolicy"] = {"secrets": "redacted", "applicationPayloads": "withheld", "logs": "scrubbed"}
+    podman = run("podman", "--version", check=False)
+    systemd = run("systemctl", "--version", check=False)
+    result["versions"] = {
+        "podman": podman.stdout.splitlines()[0] if podman.stdout else "unavailable",
+        "systemd": systemd.stdout.splitlines()[0] if systemd.stdout else "unavailable",
+        "kernel": os.uname().release,
+    }
+    disks = {}
+    for name, path in (("root", Path("/")), ("stackStorage", Path("/mnt/stack")), ("stackWorkspace", STACK_ROOT)):
+        try:
+            usage = shutil.disk_usage(path)
+            disks[name] = {"totalBytes": usage.total, "freeBytes": usage.free, "usedPercent": round((usage.used / usage.total) * 100, 1)}
+        except OSError:
+            disks[name] = {"state": "unavailable"}
+    try:
+        memory = {}
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            key, raw = line.split(":", 1)
+            if key in {"MemTotal", "MemAvailable"}:
+                memory[key] = int(raw.strip().split()[0]) * 1024
+    except (OSError, ValueError):
+        memory = {}
+    result["resources"] = {"disks": disks, "memoryBytes": memory}
+    drift = []
+    expected_releases = active_record.get("authorities", {})
+    if active and not expected_releases:
+        expected_releases = {"rootful": active}
+        if DOMAINS_MANIFEST.is_file():
+            expected_releases.update({item["name"]: active for item in json.loads(DOMAINS_MANIFEST.read_text()).get("domains", [])})
+    checks = [("rootful", ROOTFUL_RELEASES.parent / "current")]
+    if DOMAINS_MANIFEST.is_file():
+        for item in json.loads(DOMAINS_MANIFEST.read_text()).get("domains", []):
+            checks.append((item["name"], Path(item["stateRoot"]) / "current"))
+    for authority, current in checks:
+        marker = current.resolve() / ".platform-zero-release" if current.is_symlink() else None
+        deployed = marker.read_text().strip() if marker and marker.is_file() else None
+        expected = expected_releases.get(authority)
+        if expected is None or deployed != expected:
+            drift.append({"authority": authority, "expectedRelease": expected, "deployedRelease": deployed})
+    result["drift"] = {"state": "clean" if not drift else "drifted", "authorities": drift}
+    result["migrationStatus"] = {"state": "not-reported", "pending": []}
+    result["testResults"] = {"state": "reported-by-test-runner", "authority": "test-runners"}
+    return result
+
+
+def rollback(request: dict[str, object]) -> dict[str, object]:
+    record = read_record(str(request.get("operation_id", request.get("plan_id", ""))))
+    release = record.get("scope", {}).get("previousRelease")
+    if not release:
+        raise RequestError("no previous configuration release is recorded")
+    authorities = record.get("scope", {}).get("affectedAuthorities", [])
+    if not authorities:
+        raise RequestError("the recorded operation has no deployment scope")
+    active = json.loads(ACTIVE_RELEASE.read_text()).get("release") if ACTIVE_RELEASE.is_file() else None
+    operation_id = hashlib.sha256(f"rollback:{record['id']}:{time.time_ns()}".encode()).hexdigest()[:32]
+    operation = {"id": operation_id, "kind": "operation", "state": "queued", "phase": "queued",
+                 "planId": record.get("planId", record.get("id")), "release": release,
+                 "scope": {**record.get("scope", {}), "previousRelease": active},
+                 "rollbackOf": record["id"], "createdAt": int(time.time()),
+                 "applicationDataRollback": False}
+    return enqueue_operation(operation)
+
+
+def break_glass_request(request: dict[str, object]) -> dict[str, object]:
+    service = str(request.get("service", ""))
+    reason = str(request.get("reason", ""))
+    ttl = int(request.get("ttl_seconds", 900) or 900)
+    if not service or not reason or ttl < 60 or ttl > 3600:
+        raise RequestError("break-glass requires service, reason, and a TTL between 60 and 3600 seconds")
+    identifier = hashlib.sha256(f"{service}:{reason}:{time.time_ns()}".encode()).hexdigest()[:32]
+    record = {"id": identifier, "kind": "break-glass", "state": "pending-gerald-approval", "service": service,
+              "reason": scrub(reason), "requestedAt": int(time.time()), "expiresAt": int(time.time()) + ttl,
+              "access": "read-only", "approvedBy": None}
+    BREAK_GLASS.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = BREAK_GLASS / f"{identifier}.json"
+    path.write_text(json.dumps(record, sort_keys=True) + "\n")
+    path.chmod(0o600)
+    return record
+
+
+def approve_break_glass(request: dict[str, object], peer_uid: int) -> dict[str, object]:
+    gerald_uid = pwd.getpwnam("gerald").pw_uid
+    if peer_uid != gerald_uid:
+        raise RequestError("break-glass approval must be submitted directly by Gerald")
+    identifier = str(request.get("request_id", ""))
+    if not identifier or "/" in identifier or ".." in identifier:
+        raise RequestError("invalid break-glass request ID")
+    path = BREAK_GLASS / f"{identifier}.json"
+    if not path.is_file():
+        raise RequestError("break-glass request not found")
+    record = json.loads(path.read_text())
+    if record.get("state") != "pending-gerald-approval":
+        raise RequestError("break-glass request is not pending")
+    if int(record.get("expiresAt", 0)) <= int(time.time()):
+        record["state"] = "expired"
+        path.write_text(json.dumps(record, sort_keys=True) + "\n")
+        raise RequestError("break-glass request has expired")
+    record.update({"state": "approved", "approvedBy": "gerald", "approvedAt": int(time.time())})
+    path.write_text(json.dumps(record, sort_keys=True) + "\n")
+    return record
+
+
+def service_volume_roots(bundle: Path, service_name: str) -> list[Path]:
+    ir = json.loads((bundle / "stack.ir.json").read_text())
+    service = ir.get("services", {}).get(service_name)
+    if not isinstance(service, dict):
+        raise RequestError("unknown service in active release")
+    domains = {item["name"]: item for item in json.loads((bundle / "podman-domains.json").read_text()).get("domains", [])}
+    domain = str(service.get("rootlessDomain", "")) if service.get("placement") == "rootless" else ""
+    roots: set[Path] = set()
+    for mount in service.get("volumes", []):
+        name = mount.split(":", 1)[0] if isinstance(mount, str) else str(mount.get("source", ""))
+        if not name or name.startswith("./"):
+            continue
+        volume = ir.get("volumes", {}).get(name)
+        if not isinstance(volume, dict):
+            continue
+        host_path = str(volume.get("hostPath", ""))
+        if domain:
+            domain_record = domains.get(domain)
+            if not domain_record:
+                raise RequestError("service authority is absent from the active domain manifest")
+            root = (Path(host_path) if volume.get("rootlessStrategy") == "shared" and host_path
+                    else Path(str(domain_record["volumeRoot"])) / name)
+        elif host_path:
+            root = Path(host_path)
+        else:
+            continue
+        if root.is_absolute():
+            roots.add(root)
+    return sorted(roots)
+
+
+def read_break_glass(request: dict[str, object], peer_uid: int) -> dict[str, object]:
+    identifier = str(request.get("request_id", ""))
+    relative = str(request.get("path", ""))
+    if not identifier or "/" in identifier or ".." in identifier:
+        raise RequestError("invalid break-glass request ID")
+    relative_path = Path(relative)
+    if not relative or relative_path.is_absolute() or any(part in {"", ".", ".."} for part in relative_path.parts):
+        raise RequestError("break-glass read requires a normalized path relative to a service volume")
+    record_path = BREAK_GLASS / f"{identifier}.json"
+    if not record_path.is_file():
+        raise RequestError("break-glass request not found")
+    record = json.loads(record_path.read_text())
+    now = int(time.time())
+    if record.get("state") != "approved" or int(record.get("expiresAt", 0)) <= now:
+        raise RequestError("break-glass grant is not approved or has expired")
+    if ACTIVE_RELEASE.is_file():
+        try:
+            bundle = release_path({"release": json.loads(ACTIVE_RELEASE.read_text()).get("release")})
+        except (RequestError, TypeError, ValueError):
+            bundle = None
+    else:
+        bundle = None
+    if bundle is None:
+        raise RequestError("active release is unavailable")
+
+    components = list(relative_path.parts)
+    data = None
+    opened: list[int] = []
+    selected_path = None
+    try:
+        for root in service_volume_roots(bundle, str(record.get("service", ""))):
+            descriptor = os.open(root.resolve(strict=True), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            opened.append(descriptor)
+            try:
+                for component in components[:-1]:
+                    descriptor = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+                    opened.append(descriptor)
+                file_descriptor = os.open(components[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=descriptor)
+                opened.append(file_descriptor)
+                metadata = os.fstat(file_descriptor)
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise RequestError("break-glass reads are limited to regular files")
+                if metadata.st_size > 256 * 1024:
+                    raise RequestError("break-glass read exceeds the 256 KiB limit")
+                with os.fdopen(os.dup(file_descriptor), "rb") as stream:
+                    data = stream.read(256 * 1024 + 1)
+                if len(data) > 256 * 1024:
+                    raise RequestError("break-glass read exceeds the 256 KiB limit")
+                selected_path = str(root / relative_path)
+                break
+            except FileNotFoundError:
+                continue
+        if data is None or selected_path is None:
+            raise RequestError("path is not present in a volume owned by the approved service")
+    finally:
+        for descriptor in reversed(opened):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+    BREAK_GLASS.mkdir(mode=0o700, parents=True, exist_ok=True)
+    audit_path = BREAK_GLASS / "audit.jsonl"
+    audit_fd = os.open(audit_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    os.fchmod(audit_fd, 0o600)
+    with os.fdopen(audit_fd, "a", encoding="utf-8") as audit:
+        audit.write(json.dumps({"at": now, "requestId": identifier, "service": record["service"],
+                                "relativePath": relative, "bytes": len(data),
+                                "sha256": hashlib.sha256(data).hexdigest(), "peerUid": peer_uid}) + "\n")
+    return {"requestId": identifier, "service": record["service"], "path": relative,
+            "bytes": len(data), "encoding": "base64", "content": base64.b64encode(data).decode("ascii"),
+            "expiresAt": record["expiresAt"]}
+
+
 def user_systemctl(user: str, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     record = pwd.getpwnam(user)
     return run(
@@ -169,7 +679,17 @@ def preflight(request: dict[str, object]) -> dict[str, object]:
     with tempfile.TemporaryDirectory(prefix="p0-preflight-") as temporary:
         working = Path(temporary) / "bundle"
         shutil.copytree(path, working)
-        result = run(str(working / "ops/install-podman-bundle.sh"), "--bundle", str(working))
+        installer_release = str(request.get("installer_release", path.name))
+        installer_bundle = release_path({"release": installer_release})
+        installer = installer_bundle / "ops/install-podman-bundle.sh"
+        if not installer.is_file():
+            raise RequestError("compatible deployment installer is unavailable")
+        shutil.copy2(installer, working / "ops/install-podman-bundle.sh")
+        args = [str(working / "ops/install-podman-bundle.sh"), "--bundle", str(working)]
+        authorities = request.get("authorities")
+        if isinstance(authorities, list) and authorities:
+            args.extend(("--authorities", ",".join(str(item) for item in authorities)))
+        result = run(*args)
     return {"release": path.name, "output": result.stdout[-8000:]}
 
 
@@ -190,6 +710,7 @@ def apply_platform_zero_nftables(rules: Path) -> None:
 
 
 def snapshot(_: dict[str, object]) -> dict[str, object]:
+    require_gerald_approval(_, "snapshot")
     snapshot_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     destination = SNAPSHOTS / snapshot_id
     if destination.exists():
@@ -229,6 +750,7 @@ def snapshot_path(request: dict[str, object]) -> Path:
 
 
 def restore(request: dict[str, object]) -> dict[str, object]:
+    require_gerald_approval(request, "restore")
     if request.get("confirm") != "RESTORE_PLATFORM_ZERO":
         raise RequestError("restore requires --confirm RESTORE_PLATFORM_ZERO")
     source = snapshot_path(request)
@@ -255,6 +777,7 @@ def restore(request: dict[str, object]) -> dict[str, object]:
 
 
 def finalize_access(request: dict[str, object]) -> dict[str, object]:
+    require_gerald_approval(request, "finalize-access")
     if request.get("confirm") != "REMOVE_GERALD_NOPASSWD":
         raise RequestError("access finalization requires --confirm REMOVE_GERALD_NOPASSWD")
     changed = []
@@ -284,27 +807,63 @@ def finalize_access(request: dict[str, object]) -> dict[str, object]:
 
 def activate(request: dict[str, object]) -> dict[str, object]:
     path = release_path(request)
-    preflight(request)
+    installer_release = str(request.get("installer_release", path.name))
+    installer_bundle = release_path({"release": installer_release})
+    installer_source = installer_bundle / "ops/install-podman-bundle.sh"
+    if not installer_source.is_file():
+        raise RequestError("compatible deployment installer is unavailable")
+    preflight({**request, "installer_release": installer_release})
+    scope = request.get("authorities")
+    authorities = [str(item) for item in scope] if isinstance(scope, list) else []
+    if not authorities:
+        raise RequestError("activation requires a non-empty authority scope")
+    current_release = None
+    if ACTIVE_RELEASE.is_file():
+        try:
+            current_release = release_path({"release": json.loads(ACTIVE_RELEASE.read_text()).get("release")})
+        except (RequestError, TypeError, ValueError):
+            current_release = None
+    nft_changed = current_release is None or (current_release / "ops/platform-zero.nft").read_bytes() != (path / "ops/platform-zero.nft").read_bytes()
+    if nft_changed:
+        apply_platform_zero_nftables(path / "ops/platform-zero.nft")
     stop_legacy_runtime()
-    apply_platform_zero_nftables(path / "ops/platform-zero.nft")
     env = os.environ.copy()
+    env.setdefault("HOME", "/root")
+    env.setdefault("XDG_CONFIG_HOME", "/root/.config")
+    # The durable operation worker owns rollback. Avoid a second full restart
+    # from the installer's legacy in-process rollback handler.
     env["WEBSERVICES_ACTIVATION_ROLLBACK"] = "0"
     with tempfile.TemporaryDirectory(prefix="p0-activate-") as temporary:
         working = Path(temporary) / "bundle"
         shutil.copytree(path, working)
-        result = subprocess.run(
-            [str(working / "ops/install-podman-bundle.sh"), "--bundle", str(working), "--activate"],
-            text=True, capture_output=True, check=False, env=env,
-        )
+        shutil.copy2(installer_source, working / "ops/install-podman-bundle.sh")
+        command = [str(working / "ops/install-podman-bundle.sh"), "--bundle", str(working),
+                   "--authorities", ",".join(authorities), "--candidate-release", path.name, "--activate"]
+        result = subprocess.run(command, text=True, capture_output=True, check=False, env=env)
     if result.returncode:
-        details = (result.stdout + "\n" + result.stderr)[-16000:]
-        raise RequestError(f"activation failed ({result.returncode}); fix-forward required\n{details}")
+        if nft_changed and current_release is not None:
+            try:
+                apply_platform_zero_nftables(current_release / "ops/platform-zero.nft")
+            except Exception as nft_error:
+                raise RequestError("activation failed and nftables rollback failed: " + scrub(str(nft_error)))
+        details = scrub(result.stdout + "\n" + result.stderr)
+        raise RequestError(f"activation failed ({result.returncode}); durable broker rollback will be attempted\n{details}")
+    active_record = {}
+    if ACTIVE_RELEASE.is_file():
+        try:
+            active_record = json.loads(ACTIVE_RELEASE.read_text())
+        except (ValueError, OSError):
+            active_record = {}
+    authority_releases = dict(active_record.get("authorities", {}))
+    for authority in authorities:
+        authority_releases[authority] = path.name
     ACTIVE_RELEASE.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     temporary = ACTIVE_RELEASE.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"release": path.name, "activatedAt": int(time.time())}) + "\n")
+    temporary.write_text(json.dumps({"release": path.name, "authorities": authority_releases,
+                                     "activatedAt": int(time.time())}) + "\n")
     temporary.chmod(0o600)
     os.replace(temporary, ACTIVE_RELEASE)
-    return {"release": path.name, "output": result.stdout[-8000:]}
+    return {"release": path.name, "output": scrub(result.stdout[-8000:])}
 
 
 def scope_health(user: str | None, expected: list[str] | None = None) -> dict[str, object]:
@@ -356,6 +915,9 @@ def verify(request: dict[str, object]) -> dict[str, object]:
     inactive = [item["name"] for item in current["domains"] if item["state"] != "active"]
     if current["rootful"] != "active" or inactive:
         raise RequestError(f"inactive Platform Zero targets: rootful={current['rootful']} domains={inactive}")
+    release_drift = diagnostics({})["drift"]
+    if release_drift["state"] != "clean":
+        raise RequestError("runtime authority release drift: " + json.dumps(release_drift["authorities"], sort_keys=True))
     return current
 
 
@@ -413,10 +975,44 @@ def logs(request: dict[str, object]) -> dict[str, object]:
         if item is None:
             raise RequestError("unknown domain")
         result = user_systemctl(item["user"], "status", unit, "--no-pager", "-l", check=False)
-    return {"output": (result.stdout + result.stderr)[-16000:]}
+        # Rootless Quadlet container output is recorded by journald under the
+        # container name, not necessarily attached to the user unit's journal
+        # stream. Read only this user's matching container records; the common
+        # scrubber still gates everything returned to the caller.
+        container = unit.removeprefix("webservices-").removesuffix(".service")
+        uid = pwd.getpwnam(str(item["user"])).pw_uid
+        journal = run(
+            "journalctl", "--no-pager", "-n", "200",
+            f"_UID={uid}", f"CONTAINER_NAME={container}", check=False,
+        )
+        if journal.stdout.strip():
+            result.stdout += "\n" + journal.stdout
+            result.stderr += journal.stderr
+    return safe_log_evidence(result.stdout + result.stderr)
 
 
-ACTIONS = {"stage": stage, "preflight": preflight, "snapshot": snapshot, "activate": activate, "status": status, "verify": verify, "logs": logs, "restore": restore, "gc": garbage_collect, "finalize-access": finalize_access}
+def safe_log_evidence(value: str) -> dict[str, object]:
+    """Return only log lines with no apparent payload or credential material."""
+    import re
+    allowed = []
+    suspicious = re.compile(
+        r"(?i)(password|secret|token|cookie|authorization|private[_ -]?key|bearer\s|basic\s|"
+        r"set-cookie|request body|response body|payload|@[^ ]+\.[a-z]{2,}|\{.*\}|\[.*\])"
+    )
+    for line in value.splitlines():
+        if len(line) > 1200 or suspicious.search(line):
+            continue
+        allowed.append(line)
+    if value and not allowed:
+        return {"output": "", "scrubbed": True, "withheld": True}
+    return {"output": "\n".join(allowed)[-8000:], "scrubbed": True, "withheld": False}
+
+
+ACTIONS = {
+    "plan": plan, "apply": apply_plan, "operation-status": operation_status,
+    "diagnostics": diagnostics, "rollback": rollback, "break-glass-request": break_glass_request,
+    "status": status, "verify": verify, "logs": logs,
+}
 
 
 def authorized_uid_ranges(user: str, subuid_file: Path = Path("/etc/subuid")) -> tuple[int, list[tuple[int, int]]]:
@@ -435,36 +1031,60 @@ def authorized_peer(uid: int, direct: int, subordinate: list[tuple[int, int]]) -
     return uid == direct or any(start <= uid < end for start, end in subordinate)
 
 
-def handle(raw: bytes) -> dict[str, object]:
+def handle(raw: bytes, peer_uid: int | None = None) -> dict[str, object]:
     try:
         request = json.loads(raw)
         if not isinstance(request, dict) or request.get("version") != 1:
             raise RequestError("request version must be 1")
         action = str(request.get("action", ""))
+        if action == "break-glass-approve":
+            if peer_uid is None:
+                raise RequestError("break-glass approval requires an authenticated peer")
+            return {"ok": True, "result": approve_break_glass(request, peer_uid)}
+        if action == "break-glass-read":
+            if peer_uid is None:
+                raise RequestError("break-glass read requires an authenticated peer")
+            return {"ok": True, "result": read_break_glass(request, peer_uid)}
         if action not in ACTIONS:
             raise RequestError(f"unsupported action: {action}")
         return {"ok": True, "result": ACTIONS[action](request)}
     except (RequestError, ValueError, OSError, KeyError) as error:
-        return {"ok": False, "error": str(error)}
+        return {"ok": False, "error": scrub(str(error))}
 
 
 def main() -> None:
+    if len(sys.argv) == 3 and sys.argv[1] == "--worker":
+        try:
+            record = run_operation(sys.argv[2])
+            sys.exit(0 if record["state"] == "succeeded" else 1)
+        except Exception as error:
+            print("p0-host-broker worker failed: " + scrub(str(error)), file=sys.stderr)
+            sys.exit(1)
     expected_uid, subordinate_uids = authorized_uid_ranges("stack_lab")
+    gerald_uid = pwd.getpwnam("gerald").pw_uid
     listener = socket.socket(fileno=SOCKET_FD)
     while True:
         connection, _ = listener.accept()
         with connection:
             _, uid, _ = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-            if not authorized_peer(uid, expected_uid, subordinate_uids):
-                connection.sendall(json.dumps({"ok": False, "error": "unauthorized peer"}).encode() + b"\n")
-                continue
             raw = b""
             while b"\n" not in raw and len(raw) <= MAX_REQUEST:
                 chunk = connection.recv(4096)
                 if not chunk:
                     break
                 raw += chunk
-            response = handle(raw.split(b"\n", 1)[0]) if len(raw) <= MAX_REQUEST else {"ok": False, "error": "request too large"}
+            request_bytes = raw.split(b"\n", 1)[0]
+            try:
+                action = json.loads(request_bytes).get("action")
+            except (ValueError, AttributeError):
+                action = None
+            authorized = authorized_peer(uid, expected_uid, subordinate_uids)
+            if action == "break-glass-approve":
+                authorized = uid == gerald_uid
+            if not authorized:
+                connection.sendall(json.dumps({"ok": False, "error": "unauthorized peer"}).encode() + b"\n")
+                continue
+            response = handle(request_bytes, uid) if len(raw) <= MAX_REQUEST else {"ok": False, "error": "request too large"}
             connection.sendall(json.dumps(response, sort_keys=True).encode() + b"\n")
 
 

@@ -1664,27 +1664,32 @@ fun writeDomainMetadata(ir: ObjectNode, modules: List<ModuleCheckout>, manifestP
             repos.add(repositoryRow(module.metadata.path("repo").asText(module.dir.fileName.toString()), module.remote, module.commit, true))
         }
     }
-    val workspaces = arr()
-    workspaces.add(obj().put("name", "control").put("role", "control").put("startAtBoot", false).set<ArrayNode>("repositories", arr().also { rows ->
+    // Stack development is one engineering lane.  The runtime authorities below
+    // remain separate Linux users and Podman domains; this workspace merge must
+    // never be read as a service-ownership merge.
+    val stackRepositories = arr().also { rows ->
+        val moduleIds = activePodmanPolicy.domains.flatMap { it.modules }.toSet() + activePodmanPolicy.rootfulModules
         baseline.forEach { rows.add(it.deepCopy().also { row -> row.put("writable", true) }) }
-    }))
-    workspaces.add(obj().put("name", "host").put("role", "host").put("startAtBoot", false).set<ArrayNode>("repositories", reposFor(activePodmanPolicy.rootfulModules)))
-    activePodmanPolicy.domains.groupBy { it.maintenanceLane }.toSortedMap().forEach { (lane, domains) ->
-        workspaces.add(obj().also { row ->
-            row.put("name", lane)
-            row.put("role", "domain")
-            row.put("startAtBoot", false)
-            row.set<ArrayNode>("authorities", arr().also { authorities ->
-                domains.sortedBy { it.name }.forEach { domain ->
-                    authorities.add(obj().put("name", domain.name).put("serviceAccount", domain.user))
-                }
-            })
-            row.set<ArrayNode>("services", arr().addAll(domains.flatMap { domain ->
-                domainRows.first { it.path("name").asText() == domain.name }.path("services").map(JsonNode::asText)
-            }.distinct().sorted().map(nodes::textNode)))
-            row.set<ArrayNode>("repositories", reposFor(domains.flatMap { it.modules }.toSet()))
-        })
+        moduleIds.sorted().forEach { id ->
+            val module = moduleById[id] ?: fail("stack workspace references unknown module '$id'")
+            rows.add(repositoryRow(module.metadata.path("repo").asText(module.dir.fileName.toString()), module.remote, module.commit, true))
+        }
     }
+    val stackWorkspace = obj()
+    stackWorkspace.put("name", "stack")
+    stackWorkspace.put("role", "stack")
+    stackWorkspace.put("projectPath", activePodmanPolicy.maintenanceRoot)
+    stackWorkspace.put("startAtBoot", true)
+    stackWorkspace.set<ArrayNode>("authorities", arr().also { authorities ->
+            activePodmanPolicy.domains.sortedBy { it.name }.forEach { domain ->
+                authorities.add(obj().put("name", domain.name).put("serviceAccount", domain.user))
+            }
+        })
+    stackWorkspace.set<ArrayNode>("services", arr().also { services ->
+        domainRows.flatMap { it.path("services").map(JsonNode::asText) }.distinct().sorted().forEach { services.add(it) }
+    })
+    stackWorkspace.set<ArrayNode>("repositories", stackRepositories)
+    val workspaces = arr().also { it.add(stackWorkspace) }
     writeJson(output.resolve("maintenance-workspaces.json"), obj()
         .put("schemaVersion", 1)
         .put("owner", "stack_lab")
