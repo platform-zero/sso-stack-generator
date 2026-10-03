@@ -220,7 +220,8 @@ EOF_CONFIG
 cat > "$site_root/webservices.sops.json" <<'EOF_SECRETS'
 {
   "STACK_ADMIN_PASSWORD": "component-test-password",
-  "SEARXNG_SECRET": "component-test-secret"
+  "SEARXNG_SECRET": "component-test-secret",
+  "P0_MAIL_OAUTH_SECRET": "component-test-mail-secret"
 }
 EOF_SECRETS
 
