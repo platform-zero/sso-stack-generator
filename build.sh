@@ -54,6 +54,8 @@ case "$BUILD_PROFILE" in
   *) die "unsupported build profile: $BUILD_PROFILE" ;;
 esac
 site_manifest_path="$(resolve_site_manifest_file "$SITE_MANIFEST_PATH")"
+# A previous build must not seed contract checks or runtime overlays.
+rm -rf "$DIST_DIR"
 if [ -z "${WEBSERVICES_OVERLAY_ROOT:-}" ] && [ ! -f "$SCRIPT_DIR/stack.config/components.json" ]; then
   manifest_bundle_root="$(cd "$(dirname "$site_manifest_path")/.." && pwd -P)"
   if [ -f "$manifest_bundle_root/stack.config/components.json" ]; then
