@@ -65,6 +65,7 @@ validate_caddy_file() {
     -e DOMAIN=example.test \
     -e ONBOARDING_TRUSTED_PROXY_SECRET=test \
     -e KOPIA_PROXY_AUTHORIZATION=test \
+    -e QBITTORRENT_NATIVE_BASIC_HASH \
     -e BOOKSTACK_INTERNAL_API_TOKEN=test \
     -e OPENSEARCH_BASIC_AUTH=test \
     -e HOMEASSISTANT_TRUSTED_PROXY_SECRET=test \
@@ -112,6 +113,7 @@ export ERPNEXT_OAUTH_SECRET=component-test-secret
 export JELLYFIN_OIDC_SECRET=component-test-secret
 export KEYCLOAK_ADMIN_PASSWORD=component-test-secret
 export KOPIA_PROXY_AUTHORIZATION=component-test-secret
+export QBITTORRENT_NATIVE_BASIC_HASH='$2a$14$NreIJA2B81pu4k3sTGrEy.lrn.iMPU0ZrlwmGQteEG2n.RCgSnQ/a'
 export ONBOARDING_TRUSTED_PROXY_SECRET=component-test-secret
 export OPENSEARCH_ADMIN_PASSWORD='ComponentTestPassword123!'
 export OPENSEARCH_BASIC_AUTH=test
