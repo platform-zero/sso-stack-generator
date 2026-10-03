@@ -118,6 +118,7 @@ export QBITTORRENT_NATIVE_BASIC_HASH='$2a$14$NreIJA2B81pu4k3sTGrEy.lrn.iMPU0Zrlw
 export ONBOARDING_TRUSTED_PROXY_SECRET=component-test-secret
 export OPENSEARCH_ADMIN_PASSWORD='ComponentTestPassword123!'
 export OPENSEARCH_BASIC_AUTH=test
+export P0_MAIL_OAUTH_SECRET=component-test-secret
 export VALKEY_ADMIN_PASSWORD=component-test-secret
 export BOOKSTACK_INTERNAL_API_TOKEN=component-test-secret
 export BOOKSTACK_API_TOKEN_ID=component-test-token-id
@@ -222,7 +223,8 @@ EOF_CONFIG
 cat > "$site_root/webservices.sops.json" <<'EOF_SECRETS'
 {
   "STACK_ADMIN_PASSWORD": "component-test-password",
-  "SEARXNG_SECRET": "component-test-secret"
+  "SEARXNG_SECRET": "component-test-secret",
+  "P0_MAIL_OAUTH_SECRET": "component-test-secret"
 }
 EOF_SECRETS
 
