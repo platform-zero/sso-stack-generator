@@ -16,7 +16,7 @@ default_site="$ROOT_DIR/../site-config/sites/latium/manifest.json"
 synthetic_site=false
 if [ -n "${SITE_MANIFEST:-}" ]; then
   SOURCE_SITE="$SITE_MANIFEST"
-elif [ -f "$default_site" ]; then
+elif [ -f "$default_site" ] && [ -f "$(dirname "$default_site")/global.settings/webservices.sops.json" ]; then
   SOURCE_SITE="$default_site"
 else
   synthetic_site=true
@@ -31,17 +31,27 @@ else
     printf '[runtime-test] no module manifests found under %s\n' "$MODULES_DIR" >&2
     exit 1
   }
-  printf '%s\n' "${fixture_modules[@]}" \
-    | jq -R . \
-    | jq -s '{
-        schemaVersion: 2,
-        site: "ci-runtime",
-        stackConfig: "./global.settings/stack.config.yaml",
-        secretStore: "./global.settings/webservices.sops.json",
-        components: ["full", "searxng", "workload-spawner"],
-        modules: .
-      }' > "$fixture_site/manifest.json"
-  cat > "$fixture_site/global.settings/stack.config.yaml" <<'EOF_STACK_CONFIG'
+  if [ -f "$default_site" ]; then
+    # The site may omit its encrypted store in a source checkout. Keep its
+    # selected module set so the synthetic secret fixture matches its policy.
+    cp "$default_site" "$fixture_site/manifest.json"
+  else
+    printf '%s\n' "${fixture_modules[@]}" \
+      | jq -R . \
+      | jq -s '{
+          schemaVersion: 2,
+          site: "ci-runtime",
+          stackConfig: "./global.settings/stack.config.yaml",
+          secretStore: "./global.settings/webservices.sops.json",
+          components: ["full", "searxng", "workload-spawner"],
+          modules: .
+        }' > "$fixture_site/manifest.json"
+  fi
+  if [ -f "$default_site" ]; then
+    cp "$(dirname "$default_site")/global.settings/stack.config.yaml" \
+      "$fixture_site/global.settings/stack.config.yaml"
+  else
+    cat > "$fixture_site/global.settings/stack.config.yaml" <<'EOF_STACK_CONFIG'
 storage:
   media_writer_uid: 1000
   media_writer_gid: 1000
@@ -66,6 +76,7 @@ vaultwarden:
   org_identifier: "example.test"
   org_id: "00000000-0000-0000-0000-000000000000"
 EOF_STACK_CONFIG
+  fi
   mapfile -t fixture_secret_keys < <(
     {
       rg --follow -o --no-filename '\{\{[A-Z_][A-Z0-9_]*\}\}' "$MODULES_DIR" \
@@ -181,14 +192,15 @@ guidance = module.agents_text(stack)
 assert "You are operating inside the `stack` Worklane" in guidance
 assert "stack_lab@192.168.0.11" in guidance
 assert "Runtime remains split across" in guidance
-assert "p0-hostctl status" in guidance
-assert "p0-hostctl plan" in guidance
+assert "p0-hostctl.py diagnostics" in guidance
+assert "p0-hostctl apply" in guidance
 assert "RTX 3060" in guidance
 assert "Gerald passwordless sudo is intentionally retained" in guidance
 assert guidance in module.managed_agents_texts(stack)
 assert guidance + "user edit\n" not in module.managed_agents_texts(stack)
 assert "dispatcher_ed25519" not in guidance
-assert len(module.HOST_ACCESS_MOUNTS) == 3
+assert len(module.HOST_ACCESS_MOUNTS) == 1
+assert module.HOST_ACCESS_MOUNTS[0]["target"] == "/run/platform-zero/host-broker.sock"
 assert "/run/platform-zero" in module.PROFILES
 PY
 
