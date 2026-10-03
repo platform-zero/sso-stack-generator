@@ -271,6 +271,14 @@ def candidate_scope(bundle: Path) -> dict[str, object]:
                 affected.update(owners)
             else:
                 shared = True
+        elif relative in {
+            "site/components.lock.json", "site/manifest.json",
+            "site/global.settings/stack.config.yaml",
+            "site/global.settings/webservices.sops.json",
+        }:
+            # Site inputs can change route selection, rendered configuration,
+            # or secrets without changing a service definition in stack.ir.json.
+            shared = True
         elif relative.startswith(("site/", "repos/", "docs/")) or relative in {
             "runtime-model.yml", "compose.yml", "README.md", "maintenance-workspaces.json", "software-workspaces.json",
         }:

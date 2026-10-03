@@ -231,7 +231,8 @@ with tempfile.TemporaryDirectory() as temporary:
     scope_tree(candidate, "after\n")
     active_release.write_text(json.dumps({"release": "old-release"}))
     with patch.object(BROKER, "ACTIVE_RELEASE", active_release), \
-         patch.object(BROKER, "release_path", return_value=old):
+         patch.object(BROKER, "release_path", return_value=old), \
+         patch.object(BROKER, "diagnostics", return_value={"drift": {"state": "clean"}}):
         scope = BROKER.candidate_scope(candidate)
     assert scope["affectedAuthorities"] == ["apps", "other"]
     assert scope["sharedChange"] is False
@@ -241,14 +242,30 @@ with tempfile.TemporaryDirectory() as temporary:
     (candidate / "scripts").mkdir()
     (candidate / "scripts/test-broker.sh").write_text("test-only change\n")
     with patch.object(BROKER, "ACTIVE_RELEASE", active_release), \
-         patch.object(BROKER, "release_path", return_value=old):
+         patch.object(BROKER, "release_path", return_value=old), \
+         patch.object(BROKER, "diagnostics", return_value={"drift": {"state": "clean"}}):
         scope = BROKER.candidate_scope(candidate)
     assert scope["sharedChange"] is False
     assert scope["affectedAuthorities"] == ["apps", "other"]
 
+    # A component lock edit can remove or add routes during rendering even
+    # when the service definitions and source Caddyfile stay unchanged.
+    (old / "runtime/configs/apps/app.yml").write_text("after\n")
+    (old / "site").mkdir()
+    (candidate / "site").mkdir()
+    (old / "site/components.lock.json").write_text("old\n")
+    (candidate / "site/components.lock.json").write_text("new\n")
+    with patch.object(BROKER, "ACTIVE_RELEASE", active_release), \
+         patch.object(BROKER, "release_path", return_value=old), \
+         patch.object(BROKER, "diagnostics", return_value={"drift": {"state": "clean"}}):
+        scope = BROKER.candidate_scope(candidate)
+    assert scope["sharedChange"] is True
+    assert scope["affectedAuthorities"] == ["apps", "other", "rootful"]
+
     (candidate / "ops/shared-runtime.conf").write_text("changed\n")
     with patch.object(BROKER, "ACTIVE_RELEASE", active_release), \
-         patch.object(BROKER, "release_path", return_value=old):
+         patch.object(BROKER, "release_path", return_value=old), \
+         patch.object(BROKER, "diagnostics", return_value={"drift": {"state": "clean"}}):
         scope = BROKER.candidate_scope(candidate)
     assert scope["sharedChange"] is True
     assert scope["affectedAuthorities"] == ["apps", "other", "rootful"]
