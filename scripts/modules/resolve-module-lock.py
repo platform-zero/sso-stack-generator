@@ -216,6 +216,8 @@ def dest_for(module_id: str, rel_path: str) -> str | None:
         return f"stack.config/components.external/{module_id}.json"
     if rel_path == "stack.config/service-contracts.json":
         return f"stack.config/service-contracts.external/{module_id}.json"
+    if rel_path == "stack.runtime.yaml":
+        return f"stack.runtime.external/{module_id}.yaml"
     return rel_path
 
 
