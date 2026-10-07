@@ -115,6 +115,7 @@ export KOPIA_PROXY_AUTHORIZATION=component-test-secret
 export ONBOARDING_TRUSTED_PROXY_SECRET=component-test-secret
 export OPENSEARCH_ADMIN_PASSWORD='ComponentTestPassword123!'
 export OPENSEARCH_BASIC_AUTH=test
+export P0_MAIL_OAUTH_SECRET=component-test-secret
 export VALKEY_ADMIN_PASSWORD=component-test-secret
 export BOOKSTACK_INTERNAL_API_TOKEN=component-test-secret
 export BOOKSTACK_API_TOKEN_ID=component-test-token-id
