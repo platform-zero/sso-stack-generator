@@ -43,9 +43,28 @@ python3 scripts/verify-podman-source.py \
 
 The gate also checks bundle and runtime IR hashes against the site's generator
 pin, module lock, selection, and stack-config input. It deliberately rejects
-locally composed bundles that do not match committed site pins. The provenance
+locally composed bundles that do not match committed site pins. It also checks
+that the site checkout is still clean at the recorded commit and that the lock
+is byte-identical to the immutable `moduleManifestCommit` snapshot. The provenance
 describes build inputs, not an attestation of a live installation;
 compare it with the installed release and its approved site lock before cutover.
+
+For repeated **offline preflights only**, use clean pinned module checkouts and a
+new output directory on local NVMe. Each run clones the site at its exact commit,
+creates independent synthetic SOPS secrets, generates and gates a Podman bundle,
+and runs the installer **without** `--activate`:
+
+```bash
+./scripts/rehearse-podman-preflight.sh \
+  --site ../site-config/sites/latium \
+  --modules-dir ../pinned-modules-20261007 \
+  --output-root ../first-install-preflight-$(date +%s) --runs 2
+```
+
+The directory contains secret key material and rendered synthetic credentials:
+keep it private and remove it securely after reviewing the results. These
+preflights do **not** install into disposable VMs, start 95 services, exercise
+SSO/Worklanes, or authorize a production cutover; those are separate gates.
 
 `import-runtime-overlays --module DIR` converts the supported runtime overlay subset into a
 module runtime file. Unsupported behavior must be represented explicitly in the
