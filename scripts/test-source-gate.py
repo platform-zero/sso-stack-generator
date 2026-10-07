@@ -32,9 +32,12 @@ class SourceGateTest(unittest.TestCase):
         self.bundle = root / "bundle"
         self.site.mkdir()
         self.bundle.mkdir()
+        (self.bundle / "site").mkdir()
         self.module = {"id": "example", "remote": "https://example.invalid/example.git", "commit": "b" * 40, "dirty": False}
-        save(self.site / "manifest.json", {"stackConfig": "config.yaml", "modules": ["example"]})
+        save(self.site / "manifest.json", {"stackConfig": "config.yaml", "secretStore": "secrets.json", "modules": ["example"]})
         (self.site / "config.yaml").write_text("example: true\n")
+        (self.site / "secrets.json").write_text('{"synthetic":true}\n')
+        (self.bundle / "site" / "secrets.json").write_bytes((self.site / "secrets.json").read_bytes())
         save(self.site / ".webservices-generator.json", {"generatorCommit": "a" * 40})
         save(self.site / "modules.json", {"modules": [{"name": "example", "git": self.module["remote"], "commit": self.module["commit"]}]})
         save(self.site / "module-lock.v2.json", {"modules": [{"id": "example", "git": self.module["remote"], "commit": self.module["commit"]}]})
@@ -51,6 +54,7 @@ class SourceGateTest(unittest.TestCase):
             "schemaVersion": 1, "generatorCommit": "a" * 40, "generatorDirty": False,
             "siteCommit": self.head(), "siteDirty": False,
             "manifestSha256": digest(self.site / "manifest.json"), "stackConfigSha256": digest(self.site / "config.yaml"),
+            "secretStoreSha256": digest(self.site / "secrets.json"),
             "modules": [self.module.copy()],
         }
         self.store()
@@ -78,6 +82,16 @@ class SourceGateTest(unittest.TestCase):
         self.provenance["siteCommit"] = "c" * 40
         self.store()
         with self.assertRaisesRegex(ValueError, "site checkout does not match"):
+            gate.verify(self.bundle, self.site)
+
+    def test_secret_store_and_bundle_copy_must_match(self):
+        (self.bundle / "site" / "secrets.json").write_text("tampered\n")
+        with self.assertRaisesRegex(ValueError, "encrypted site secret store"):
+            gate.verify(self.bundle, self.site)
+        (self.bundle / "site" / "secrets.json").write_bytes((self.site / "secrets.json").read_bytes())
+        self.provenance["secretStoreSha256"] = "d" * 64
+        self.store()
+        with self.assertRaisesRegex(ValueError, "encrypted site secret store"):
             gate.verify(self.bundle, self.site)
 
     def test_lock_must_match_immutable_manifest_commit(self):

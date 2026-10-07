@@ -20,10 +20,14 @@ while [ "$#" -gt 0 ]; do
 done
 [[ "$runs" =~ ^[1-9][0-9]*$ ]] || { echo 'runs must be positive' >&2; exit 2; }
 [ "$(id -u)" -ne 0 ] || { echo 'refusing to run as root' >&2; exit 2; }
-[ -n "$site" ] && [ -n "$modules" ] && [ -n "$output" ] || { echo 'missing required argument' >&2; exit 2; }
+if ! { [ -n "$site" ] && [ -n "$modules" ] && [ -n "$output" ]; }; then
+  echo 'missing required argument' >&2; exit 2
+fi
 site="$(realpath -e "$site")"
 modules="$(realpath -e "$modules")"
-[ -f "$site/manifest.json" ] && [ -f "$site/.webservices-generator.json" ] || { echo 'invalid site' >&2; exit 2; }
+if ! { [ -f "$site/manifest.json" ] && [ -f "$site/.webservices-generator.json" ]; }; then
+  echo 'invalid site' >&2; exit 2
+fi
 parent="$(realpath -e "$(dirname "$output")")"
 case "$parent/$(basename "$output")" in
   /var/lib/*|/mnt/stack/*|/mnt/lab_debian/*) echo 'refusing production storage' >&2; exit 2 ;;
@@ -52,13 +56,17 @@ for ((run=1; run<=runs; run++)); do
   python3 "$root/scripts/verify-podman-source.py" --bundle "$dir/bundle" --site "$run_site" >"$dir/source-gate.log"
   SOPS_AGE_KEY_FILE="$key" "$root/runtime-generator/podman-ops/install-podman-bundle.sh" \
     --bundle "$dir/bundle" >"$dir/preflight.log"
-  sha256sum "$dir/bundle/stack.ir.json" "$dir/bundle/source-provenance.json" \
-    | awk '{print $1}' > "$dir/source-hashes.txt"
+  sha256sum "$dir/bundle/stack.ir.json" | awk '{print $1}' > "$dir/source-hashes.txt"
+  jq -S 'del(.secretStoreSha256)' "$dir/bundle/source-provenance.json" \
+    | sha256sum | awk '{print $1}' >> "$dir/source-hashes.txt"
   printf '[preflight-rehearsal] %s accepted (synthetic secrets, no activation)\n' "$dir"
 done
 if [ "$runs" -gt 1 ]; then
   for ((run=2; run<=runs; run++)); do
     cmp "$output/run-1/source-hashes.txt" "$output/run-$run/source-hashes.txt"
+    first_secret="$(jq -r .secretStoreSha256 "$output/run-1/bundle/source-provenance.json")"
+    next_secret="$(jq -r .secretStoreSha256 "$output/run-$run/bundle/source-provenance.json")"
+    [ "$first_secret" != "$next_secret" ] || { echo 'synthetic secret stores were reused' >&2; exit 1; }
   done
 fi
 printf '[preflight-rehearsal] %s independent clean NVMe preflights; NOT a VM install\n' "$runs"

@@ -33,8 +33,9 @@ jq -e --arg generator "$(git -C "$ROOT_DIR" rev-parse HEAD)" \
   --arg site "$(git -C "$work/site" rev-parse HEAD)" \
   --arg module "$(git -C "$work/modules/example" rev-parse HEAD)" \
   --arg manifest "$(sha256sum "$work/site/manifest.json" | cut -d' ' -f1)" \
+  --arg secret "$(sha256sum "$work/site/secrets.json" | cut -d' ' -f1)" \
   '.schemaVersion == 1 and .generatorCommit == $generator and .siteCommit == $site and
-   .manifestSha256 == $manifest and .siteDirty == false and
+   .manifestSha256 == $manifest and .secretStoreSha256 == $secret and .siteDirty == false and
    (.modules | length == 1) and .modules[0].commit == $module and .modules[0].dirty == false' \
   "$work/bundle/source-provenance.json" >/dev/null
 jq -e --arg hash "$(sha256sum "$work/bundle/source-provenance.json" | cut -d' ' -f1)" \

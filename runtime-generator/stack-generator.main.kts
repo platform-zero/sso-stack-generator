@@ -623,6 +623,12 @@ fun sourceProvenance(manifest: Path, modules: List<ModuleCheckout>): ObjectNode 
         if (!path.startsWith(manifest.parent) || !path.isRegularFile()) fail("invalid site stackConfig path: $stackConfig")
         provenance.put("stackConfigSha256", sha256(path))
     }
+    val secretStore = manifestTree.path("secretStore").textOrNull()
+    if (secretStore != null) {
+        val path = manifest.parent.resolve(secretStore).normalize()
+        if (!path.startsWith(manifest.parent) || !path.isRegularFile()) fail("invalid site secretStore path: $secretStore")
+        provenance.put("secretStoreSha256", sha256(path))
+    }
     provenance.put("generatorCommit", gitRevision(generatorRoot))
     provenance.put("generatorDirty", gitDirty(generatorRoot))
     provenance.put("siteCommit", gitRevision(manifest.parent))

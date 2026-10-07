@@ -78,6 +78,15 @@ def verify(bundle, site):
         fail("site manifest differs from built input")
     if provenance.get("stackConfigSha256") != hashlib.sha256(config.read_bytes()).hexdigest():
         fail("site stack config differs from built input")
+    secret = (site / manifest["secretStore"]).resolve()
+    copied_secret = (bundle / "site" / manifest["secretStore"]).resolve()
+    if not secret.is_relative_to(site.resolve()) or not secret.is_file():
+        fail("site secret store escapes site directory or is missing")
+    if not copied_secret.is_relative_to((bundle / "site").resolve()) or not copied_secret.is_file():
+        fail("bundled secret store escapes site directory or is missing")
+    digest = hashlib.sha256(secret.read_bytes()).hexdigest()
+    if provenance.get("secretStoreSha256") != digest or hashlib.sha256(copied_secret.read_bytes()).hexdigest() != digest:
+        fail("encrypted site secret store differs from built input")
     pins = load(site / ".webservices-generator.json")
     if provenance["generatorCommit"] != pins["generatorCommit"]:
         fail("generator checkout does not match the site pin")

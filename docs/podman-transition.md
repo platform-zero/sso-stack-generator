@@ -29,9 +29,9 @@ bundles or socket/controller modules.
 ./scripts/test-runtime-generator.sh
 ```
 
-Each generated Podman bundle includes `source-provenance.json` with the manifest
-and stack-config hashes, generator/site Git commits, and exact module remotes and
-commits. `bundle.json` includes its SHA-256. The `*Dirty` flags report uncommitted
+Each generated Podman bundle includes `source-provenance.json` with the manifest,
+stack-config, and encrypted secret-store hashes (never plaintext secrets),
+generator/site Git commits, and exact module remotes and commits. `bundle.json` includes its SHA-256. The `*Dirty` flags report uncommitted
 source at build time; a null site commit means the input was copied out of Git.
 Reject a release candidate if a revision is missing or any source is dirty:
 
@@ -52,7 +52,8 @@ compare it with the installed release and its approved site lock before cutover.
 For repeated **offline preflights only**, use clean pinned module checkouts and a
 new output directory on local NVMe. Each run clones the site at its exact commit,
 creates independent synthetic SOPS secrets, generates and gates a Podman bundle,
-and runs the installer **without** `--activate`:
+and runs the installer **without** `--activate`. It compares runtime IR and
+non-secret provenance across runs while requiring distinct secret-store hashes:
 
 ```bash
 ./scripts/rehearse-podman-preflight.sh \
