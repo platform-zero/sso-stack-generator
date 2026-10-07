@@ -7,10 +7,15 @@ trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/site" "$work/modules/example/stack.config/example"
 
 printf '%s\n' 'fixture' > "$work/modules/example/stack.config/example/value.txt"
-printf '%s\n' 'schemaVersion: 1' 'module: example' 'target: core' 'services:' '  caddy:' '    image: docker.io/library/caddy:2' '    lifecycle: daemon' '    networks:' '      caddy: {}' 'networks:' '  caddy:' '    driver: bridge' > "$work/modules/example/stack.runtime.yaml"
+printf '%s\n' 'schemaVersion: 1' 'module: example' 'target: core' 'services:' \
+  '  caddy:' '    image: docker.io/library/caddy:2' '    lifecycle: daemon' '    networks:' '      caddy: {}' \
+  '  worker:' '    image: docker.io/library/alpine:3' '    lifecycle: daemon' '    networks:' '      caddy: {}' \
+  'networks:' '  caddy:' '    driver: bridge' > "$work/modules/example/stack.runtime.yaml"
 printf '%s\n' '{"schemaVersion":1,"id":"example","dependencies":[],"overlays":["stack.config/example"]}' > "$work/modules/example/stack.module.json"
 printf '%s\n' '{"schemaVersion":2,"site":"test","stackConfig":"stack.config.yaml","secretStore":"secrets.json","modules":["example"]}' > "$work/site/manifest.json"
-printf '%s\n' 'storage:' '  volume_root: /tmp/provenance-test' > "$work/site/stack.config.yaml"
+printf '%s\n' 'storage:' '  volume_root: /tmp/provenance-test' \
+  'podman:' '  rootful_modules: []' '  rootful_services: [caddy]' '  domains:' '    test:' \
+  '      user: webservices-test' '      modules: [example]' > "$work/site/stack.config.yaml"
 printf '%s\n' '{}' > "$work/site/secrets.json"
 for dir in "$work/site" "$work/modules/example"; do
   git -C "$dir" init -q
@@ -18,6 +23,7 @@ for dir in "$work/site" "$work/modules/example"; do
   git -C "$dir" -c user.name=ProvenanceTest -c user.email=test@example.invalid commit -qm fixture
 done
 git -C "$work/modules/example" remote add origin https://example.invalid/example.git
+git -C "$work/site" remote add origin https://example.invalid/site.git
 
 STACK_GENERATOR_BUILD_LOCAL_ARTIFACTS=0 "$ROOT_DIR/generate.sh" \
   --site "$work/site/manifest.json" --modules-dir "$work/modules" \

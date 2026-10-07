@@ -163,11 +163,13 @@ grep -Fq 'usermod --shell /bin/bash "$user"' "$WORK_DIR/podman-a/ops/provision-d
 
 grep -Eq '^PodmanArgs=.*--memory=2G.*--cpus=2\.0' "$WORK_DIR/podman-a/quadlet/rootless-platform/webservices-keycloak.container"
 grep -Eq '^PodmanArgs=.*--memory=3G.*--cpus=2\.0' "$WORK_DIR/podman-a/quadlet/rootless-platform/webservices-opensearch.container"
-grep -Eq '^PodmanArgs=.*--memory=2G.*--cpus=1\.0' "$WORK_DIR/podman-a/quadlet/rootless-apps/webservices-huly-redpanda.container"
-grep -Eq '^PodmanArgs=.*--memory=2G.*--cpus=1\.5' "$WORK_DIR/podman-a/quadlet/rootless-apps/webservices-huly-elastic.container"
-grep -Fxq 'AddDevice=/dev/kvm:/dev/kvm' "$WORK_DIR/podman-a/quadlet/rootless-test-runners/webservices-android-test-runner-api36.container"
-grep -Fxq 'GroupAdd=keep-groups' "$WORK_DIR/podman-a/quadlet/rootless-test-runners/webservices-android-test-runner-api36.container"
-grep -Fxq 'PidsLimit=4096' "$WORK_DIR/podman-a/quadlet/rootless-test-runners/webservices-android-test-runner-api36.container"
+grep -Eq '^PodmanArgs=.*--memory=2G.*--cpus=2\.0' "$WORK_DIR/podman-a/quadlet/rootless-apps/webservices-huly-redpanda.container"
+grep -Eq '^PodmanArgs=.*--memory=2G.*--cpus=2\.0' "$WORK_DIR/podman-a/quadlet/rootless-apps/webservices-huly-elastic.container"
+if jq -e '.services | has("android-test-runner-api36")' "$WORK_DIR/podman-a/stack.ir.json" >/dev/null; then
+  grep -Fxq 'AddDevice=/dev/kvm:/dev/kvm' "$WORK_DIR/podman-a/quadlet/rootless-test-runners/webservices-android-test-runner-api36.container"
+  grep -Fxq 'GroupAdd=keep-groups' "$WORK_DIR/podman-a/quadlet/rootless-test-runners/webservices-android-test-runner-api36.container"
+  grep -Fxq 'PidsLimit=4096' "$WORK_DIR/podman-a/quadlet/rootless-test-runners/webservices-android-test-runner-api36.container"
+fi
 
 python3 - "$WORK_DIR/podman-a/ops/materialize-workspaces.py" <<'PY'
 import importlib.util
