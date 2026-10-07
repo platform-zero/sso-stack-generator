@@ -382,6 +382,45 @@ fun sha256(path: Path): String {
     return digest.joinToString("") { "%02x".format(it) }
 }
 
+fun gitRevision(dir: Path): String? {
+    val process = ProcessBuilder("git", "rev-parse", "--verify", "HEAD")
+        .directory(dir.toFile()).redirectErrorStream(true).start()
+    val output = process.inputStream.bufferedReader().readText().trim()
+    return if (process.waitFor() == 0 && output.matches(Regex("[0-9a-f]{40}"))) output else null
+}
+
+fun gitDirty(dir: Path): Boolean? {
+    val process = ProcessBuilder("git", "status", "--porcelain", "--untracked-files=normal")
+        .directory(dir.toFile()).redirectErrorStream(true).start()
+    val output = process.inputStream.bufferedReader().readText()
+    return if (process.waitFor() == 0) output.isNotBlank() else null
+}
+
+fun sourceProvenance(manifest: Path, modules: List<ModuleCheckout>): ObjectNode {
+    val generatorRoot = System.getenv("STACK_GENERATOR_ROOT")?.let(Path::of)?.toAbsolutePath()?.normalize()
+        ?: fail("STACK_GENERATOR_ROOT is not set")
+    val manifestTree = readTree(manifest)
+    val provenance = obj().put("schemaVersion", 1)
+    provenance.put("manifestSha256", sha256(manifest))
+    val stackConfig = manifestTree.path("stackConfig").textOrNull()
+    if (stackConfig != null) {
+        val path = manifest.parent.resolve(stackConfig).normalize()
+        if (!path.startsWith(manifest.parent) || !path.isRegularFile()) fail("invalid site stackConfig path: $stackConfig")
+        provenance.put("stackConfigSha256", sha256(path))
+    }
+    provenance.put("generatorCommit", gitRevision(generatorRoot))
+    provenance.put("generatorDirty", gitDirty(generatorRoot))
+    provenance.put("siteCommit", gitRevision(manifest.parent))
+    provenance.put("siteDirty", gitDirty(manifest.parent))
+    val moduleRows = arr()
+    modules.forEach { module ->
+        moduleRows.add(obj().put("id", module.id).put("remote", module.remote)
+            .put("commit", module.commit).put("dirty", gitDirty(module.dir)))
+    }
+    provenance.set<ArrayNode>("modules", moduleRows)
+    return provenance
+}
+
 fun buildIr(manifestPath: Path, modulesDir: Path): Pair<ObjectNode, List<ModuleCheckout>> {
     val manifest = readTree(manifestPath)
     if (manifest.path("schemaVersion").asInt() != 2) fail("site manifest schemaVersion must be 2")
@@ -1238,12 +1277,14 @@ fun commandGenerate(options: Map<String, String>) {
         materializeGeneratedBuildArtifacts(modules, staging)
         materializeRuntimeRendererInputs(staging)
         materializeComponentLock(manifest, staging, ir)
+        writeJson(staging.resolve("source-provenance.json"), sourceProvenance(manifest, modules))
         renderRuntimeModel(ir, staging)
         if (backend == "podman") renderPodman(ir, staging)
         val metadata = obj()
         metadata.put("schemaVersion", 1)
         metadata.put("backend", backend)
         metadata.put("irSha256", sha256(staging.resolve("stack.ir.json")))
+        metadata.put("sourceProvenanceSha256", sha256(staging.resolve("source-provenance.json")))
         metadata.set<ArrayNode>("deferredCapabilities", ir.path("deferredCapabilities").deepCopy())
         writeJson(staging.resolve("bundle.json"), metadata)
         replaceDirectory(staging, output)
