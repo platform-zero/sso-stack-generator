@@ -29,6 +29,24 @@ bundles or socket/controller modules.
 ./scripts/test-runtime-generator.sh
 ```
 
+Each generated Podman bundle includes `source-provenance.json` with the manifest
+and stack-config hashes, generator/site Git commits, and exact module remotes and
+commits. `bundle.json` includes its SHA-256. The `*Dirty` flags report uncommitted
+source at build time; a null site commit means the input was copied out of Git.
+Reject a release candidate if a revision is missing or any source is dirty:
+
+```sh
+python3 scripts/verify-podman-source.py \
+  --bundle /path/to/generated-podman-bundle \
+  --site /path/to/site-config/sites/latium
+```
+
+The gate also checks bundle and runtime IR hashes against the site's generator
+pin, module lock, selection, and stack-config input. It deliberately rejects
+locally composed bundles that do not match committed site pins. The provenance
+describes build inputs, not an attestation of a live installation;
+compare it with the installed release and its approved site lock before cutover.
+
 `import-runtime-overlays --module DIR` converts the supported runtime overlay subset into a
 module runtime file. Unsupported behavior must be represented explicitly in the
 runtime model rather than hidden in a renderer. The active deployment path is
