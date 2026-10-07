@@ -230,7 +230,7 @@ fun discoverModules(modulesDir: Path): Map<String, ModuleCheckout> {
         val metadata = readTree(metadataPath)
         val id = metadata.path("id").asText().ifBlank { fail("missing module id in $metadataPath") }
         if (result.containsKey(id)) fail("duplicate module id '$id' in ${result[id]!!.dir} and $dir")
-        if (!dir.resolve(".git").isDirectory()) fail("selected module workspace entry is not a Git checkout: $dir")
+        if (!dir.resolve(".git").exists()) fail("selected module workspace entry is not a Git checkout: $dir")
         result[id] = ModuleCheckout(
             id,
             dir,

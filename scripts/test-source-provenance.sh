@@ -40,6 +40,16 @@ jq -e --arg generator "$(git -C "$ROOT_DIR" rev-parse HEAD)" \
 jq -e --arg hash "$(sha256sum "$work/bundle/source-provenance.json" | cut -d' ' -f1)" \
   '.sourceProvenanceSha256 == $hash' "$work/bundle/bundle.json" >/dev/null
 
+# Exact pinned module sources can be separate Git worktrees (.git is a file).
+mkdir -p "$work/linked"
+git -C "$work/modules/example" worktree add --quiet --detach "$work/linked/example" HEAD
+STACK_GENERATOR_BUILD_LOCAL_ARTIFACTS=0 "$ROOT_DIR/generate.sh" \
+  --site "$work/site/manifest.json" --modules-dir "$work/linked" \
+  --backend podman --output "$work/linked-bundle" >/dev/null
+jq -e --arg module "$(git -C "$work/linked/example" rev-parse HEAD)" \
+  '.modules[0].commit == $module and .modules[0].dirty == false' \
+  "$work/linked-bundle/source-provenance.json" >/dev/null
+
 printf '%s\n' 'uncommitted fixture change' > "$work/modules/example/untracked.txt"
 STACK_GENERATOR_BUILD_LOCAL_ARTIFACTS=0 "$ROOT_DIR/generate.sh" \
   --site "$work/site/manifest.json" --modules-dir "$work/modules" \
