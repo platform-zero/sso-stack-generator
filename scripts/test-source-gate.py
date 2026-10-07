@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import hashlib
+import subprocess
 
 SCRIPT = Path(__file__).with_name("verify-podman-source.py")
 spec = importlib.util.spec_from_file_location("verify_podman_source", SCRIPT)
@@ -38,13 +39,28 @@ class SourceGateTest(unittest.TestCase):
         save(self.site / "modules.json", {"modules": [{"name": "example", "git": self.module["remote"], "commit": self.module["commit"]}]})
         save(self.site / "module-lock.v2.json", {"modules": [{"id": "example", "git": self.module["remote"], "commit": self.module["commit"]}]})
         save(self.bundle / "stack.ir.json", {"modules": [{key: value for key, value in self.module.items() if key != "dirty"}]})
+        subprocess.run(["git", "-C", str(self.site), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(self.site), "add", "."], check=True)
+        self.commit("lock snapshot")
+        pin = json.loads((self.site / ".webservices-generator.json").read_text())
+        pin["moduleManifestCommit"] = self.head()
+        save(self.site / ".webservices-generator.json", pin)
+        subprocess.run(["git", "-C", str(self.site), "add", "."], check=True)
+        self.commit("pin lock snapshot")
         self.provenance = {
             "schemaVersion": 1, "generatorCommit": "a" * 40, "generatorDirty": False,
-            "siteCommit": "c" * 40, "siteDirty": False,
+            "siteCommit": self.head(), "siteDirty": False,
             "manifestSha256": digest(self.site / "manifest.json"), "stackConfigSha256": digest(self.site / "config.yaml"),
             "modules": [self.module.copy()],
         }
         self.store()
+
+    def head(self):
+        return subprocess.check_output(["git", "-C", str(self.site), "rev-parse", "HEAD"], text=True).strip()
+
+    def commit(self, message):
+        subprocess.run(["git", "-C", str(self.site), "-c", "user.name=GateTest",
+                        "-c", "user.email=test@example.invalid", "commit", "-qm", message], check=True)
 
     def store(self):
         save(self.bundle / "source-provenance.json", self.provenance)
@@ -53,6 +69,26 @@ class SourceGateTest(unittest.TestCase):
 
     def test_clean_exact_pins_pass(self):
         self.assertEqual(gate.verify(self.bundle, self.site), 1)
+
+    def test_checkout_mutation_or_wrong_revision_fails(self):
+        (self.site / "untracked.txt").write_text("new source\n")
+        with self.assertRaisesRegex(ValueError, "site checkout is dirty"):
+            gate.verify(self.bundle, self.site)
+        (self.site / "untracked.txt").unlink()
+        self.provenance["siteCommit"] = "c" * 40
+        self.store()
+        with self.assertRaisesRegex(ValueError, "site checkout does not match"):
+            gate.verify(self.bundle, self.site)
+
+    def test_lock_must_match_immutable_manifest_commit(self):
+        lock = self.site / "module-lock.v2.json"
+        lock.write_text(lock.read_text() + "\n")
+        subprocess.run(["git", "-C", str(self.site), "add", "module-lock.v2.json"], check=True)
+        self.commit("change lock without updating pinned manifest")
+        self.provenance["siteCommit"] = self.head()
+        self.store()
+        with self.assertRaisesRegex(ValueError, "immutable pinned module manifest"):
+            gate.verify(self.bundle, self.site)
 
     def test_dirty_and_missing_revisions_fail(self):
         for field in ("generatorDirty", "siteDirty"):

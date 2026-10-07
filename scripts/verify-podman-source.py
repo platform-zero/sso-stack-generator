@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import subprocess
 import sys
 
 
@@ -18,6 +19,28 @@ def fail(message):
 
 def load(path):
     return json.loads(path.read_text())
+
+
+def git_output(site, *args):
+    result = subprocess.run(["git", "-C", str(site), *args], capture_output=True, check=False)
+    if result.returncode:
+        fail(f"site Git checkout cannot run {' '.join(args)}")
+    return result.stdout
+
+
+def verify_site_checkout(site, provenance, pins):
+    root = Path(git_output(site, "rev-parse", "--show-toplevel").decode().strip()).resolve()
+    relative_lock = (site / "module-lock.v2.json").resolve().relative_to(root)
+    if git_output(site, "rev-parse", "HEAD").decode().strip() != provenance["siteCommit"]:
+        fail("site checkout does not match recorded site commit")
+    if git_output(site, "status", "--porcelain", "--untracked-files=all").strip():
+        fail("site checkout is dirty after bundle generation")
+    commit = pins.get("moduleManifestCommit")
+    if not isinstance(commit, str) or not COMMIT.fullmatch(commit):
+        fail("site module manifest commit missing or invalid")
+    locked_blob = git_output(site, "show", f"{commit}:{relative_lock.as_posix()}")
+    if locked_blob != (site / "module-lock.v2.json").read_bytes():
+        fail("site lock is not the immutable pinned module manifest")
 
 
 def checked_rows(rows, key):
@@ -78,6 +101,7 @@ def verify(bundle, site):
             fail(f"module {name} does not match site locks")
         if ir[name].get("commit") != row["commit"] or ir[name].get("remote") != row["remote"]:
             fail(f"module {name} does not match runtime IR")
+    verify_site_checkout(site, provenance, pins)
     return len(requested)
 
 
