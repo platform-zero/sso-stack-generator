@@ -4,9 +4,14 @@
 set -Eeuo pipefail
 umask 077
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-if ! { [ "$#" -eq 2 ] && [ "$1" = --output-root ]; }; then
-  echo "usage: $0 --output-root NEW_NVME_DIR" >&2; exit 2
+if [ "$#" -lt 2 ] || [ "$#" -gt 3 ] || [ "$1" != --output-root ]; then
+  echo "usage: $0 --output-root NEW_NVME_DIR [--worker-exits]" >&2; exit 2
 fi
+if [ "$#" -eq 3 ] && [ "$3" != --worker-exits ]; then
+  echo "usage: $0 --output-root NEW_NVME_DIR [--worker-exits]" >&2; exit 2
+fi
+worker_exits=0
+[ "$#" -eq 2 ] || worker_exits=1
 output="$2"
 parent="$(realpath -e "$(dirname "$output")")"
 [ ! -e "$output" ] || { echo 'output must be new' >&2; exit 2; }
@@ -39,6 +44,16 @@ networks:
   caddy:
     driver: bridge
 EOF
+if [ "$worker_exits" -eq 1 ]; then
+  # This deliberately broken daemon is only for rollback *after* a known-good
+  # synthetic release has become active inside a throwaway guest.
+  python3 - "$output/modules/example/stack.runtime.yaml" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+p.write_text(p.read_text().replace('command: ["sleep", "infinity"]', 'command: ["sh", "-c", "exit 47"]'))
+PY
+fi
 cat > "$output/site/manifest.json" <<'EOF'
 {"schemaVersion":2,"site":"synthetic","stackConfig":"stack.config.yaml","secretStore":"secrets.json","modules":["example"]}
 EOF
@@ -92,5 +107,7 @@ python3 "$root/scripts/verify-podman-source.py" --bundle "$output/bundle" \
   --site "$output/site" >"$output/source-gate.log"
 "$root/runtime-generator/podman-ops/install-podman-bundle.sh" --bundle "$output/bundle" \
   --env-dir "$output/env" >"$output/preflight.log"
-jq -e '(.services | keys | sort) == ["caddy", "worker"]' "$output/bundle/stack.ir.json" >/dev/null
+jq -e --argjson exits "$worker_exits" '(.services | keys | sort) == ["caddy", "worker"] and
+  (.services.worker.command == (if $exits == 1 then ["sh", "-c", "exit 47"] else ["sleep", "infinity"] end))' \
+  "$output/bundle/stack.ir.json" >/dev/null
 printf '[synthetic-bundle] 2-service source gate and installer preflight accepted; no activation: %s\n' "$output"

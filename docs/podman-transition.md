@@ -77,8 +77,11 @@ For an *additional* disposable-VM installer activation check, build a
 
 The private control repo's guest harness accepts this directory through
 `--synthetic-activation`; it hard-rejects any other service set before allowing
-`--activate` in a **new test guest only**. Never use that switch with the
-95-service Latium candidate. This still does not test a full stack install.
+`--activate` in a **new test guest only**. To exercise rollback, build a second
+new fixture with `--worker-exits`, then supply it as `--synthetic-rollback`:
+the guest harness must observe a failed upgrade and restore both good releases.
+Never use either switch with the 95-service Latium candidate. This still does
+not test a full stack install.
 
 `import-runtime-overlays --module DIR` converts the supported runtime overlay subset into a
 module runtime file. Unsupported behavior must be represented explicitly in the
