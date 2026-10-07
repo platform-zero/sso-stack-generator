@@ -53,6 +53,7 @@ validate_caddy_file() {
   local caddy_file="$1"
   local caddy_log
   local container_cli
+  local basic_hash
   caddy_log="$(mktemp)"
   if command -v podman >/dev/null 2>&1; then
     container_cli=podman
@@ -60,6 +61,8 @@ validate_caddy_file() {
     printf '[component-selection-test] missing required container CLI: podman\n' >&2
     exit 1
   fi
+  basic_hash="$(printf '%s\n' 'component-test-secret' | "$container_cli" run --rm -i --network=none \
+    docker.io/library/caddy:2.11.3 caddy hash-password --algorithm bcrypt)"
   if ! "$container_cli" run --rm \
     -v "$caddy_file:/etc/caddy/Caddyfile:ro" \
     -e DOMAIN=example.test \
@@ -67,6 +70,7 @@ validate_caddy_file() {
     -e KOPIA_PROXY_AUTHORIZATION=test \
     -e BOOKSTACK_INTERNAL_API_TOKEN=test \
     -e OPENSEARCH_BASIC_AUTH=test \
+    -e QBITTORRENT_NATIVE_BASIC_HASH="$basic_hash" \
     -e HOMEASSISTANT_TRUSTED_PROXY_SECRET=test \
     -e VAULTWARDEN_ORG_ID=00000000-0000-0000-0000-000000000000 \
     docker.io/library/caddy:2.11.3 \
