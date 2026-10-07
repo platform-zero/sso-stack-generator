@@ -67,6 +67,19 @@ keep it private and remove it securely after reviewing the results. These
 preflights do **not** install into disposable VMs, start 95 services, exercise
 SSO/Worklanes, or authorize a production cutover; those are separate gates.
 
+For an *additional* disposable-VM installer activation check, build a
+**separate two-service synthetic fixture** (one rootful and one rootless):
+
+```bash
+./scripts/make-synthetic-activation-bundle.sh \
+  --output-root ../synthetic-activation-$(date +%s)
+```
+
+The private control repo's guest harness accepts this directory through
+`--synthetic-activation`; it hard-rejects any other service set before allowing
+`--activate` in a **new test guest only**. Never use that switch with the
+95-service Latium candidate. This still does not test a full stack install.
+
 `import-runtime-overlays --module DIR` converts the supported runtime overlay subset into a
 module runtime file. Unsupported behavior must be represented explicitly in the
 runtime model rather than hidden in a renderer. The active deployment path is
