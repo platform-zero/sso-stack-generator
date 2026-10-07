@@ -831,7 +831,7 @@ else
 fi
 
 wait_for_target_services() {
-  local mode="$1" index="$2" target_dir="$3" deadline unit state unit_type result job pending pending_unit
+  local mode="$1" index="$2" target_dir="$3" deadline unit state unit_type result job pending pending_unit stable_since=0
   local -a units=()
   while IFS= read -r unit; do
     [ -n "$unit" ] && units+=("$unit")
@@ -866,17 +866,27 @@ wait_for_target_services() {
       pending=$((pending + 1))
       [ -n "$pending_unit" ] || pending_unit="$unit"
     done
-    [ "$pending" -eq 0 ] && return 0
+    # A crashing Podman unit briefly reports active between container starts.
+    # Require a continuous window before accepting a new release as healthy.
+    if [ "$pending" -eq 0 ]; then
+      [ "$stable_since" -ne 0 ] || stable_since=$SECONDS
+      [ "$SECONDS" -lt $((stable_since + 15)) ] || return 0
+      pending_unit=stabilizing
+    else
+      stable_since=0
+    fi
     if [ "$SECONDS" -ge "$deadline" ]; then
       printf '[podman-install] service readiness timed out: pending=%s first=%s\n' "$pending" "$pending_unit" >&2
-      if [ "$mode" = "rootless" ]; then
-        user_systemctl "$index" status "$pending_unit" --no-pager -l >&2 || true
-      else
-        systemctl status "$pending_unit" --no-pager -l >&2 || true
+      if [ "$pending_unit" != stabilizing ]; then
+        if [ "$mode" = "rootless" ]; then
+          user_systemctl "$index" status "$pending_unit" --no-pager -l >&2 || true
+        else
+          systemctl status "$pending_unit" --no-pager -l >&2 || true
+        fi
       fi
       return 1
     fi
-    sleep 2
+    sleep 1
   done
 }
 

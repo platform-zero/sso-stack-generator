@@ -439,6 +439,10 @@ if ! rg -Fq 'user_systemctl "$i" list-units --failed' "$WORK_DIR/podman-a/ops/in
   printf '[runtime-test] first-install retry loop must query failed user units with an explicit systemctl verb\n' >&2
   exit 1
 fi
+if ! rg -Fq '[ "$SECONDS" -lt $((stable_since + 15)) ] || return 0' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
+  printf '[runtime-test] installer must not accept a restarting daemon during a transient active window\n' >&2
+  exit 1
+fi
 if ! rg -Fq '"${ROOTLESS_RELEASES[$i]}/runtime/stack.env"' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
   printf '[runtime-test] installer does not provide the isolated test-runner authority with its cross-stack test environment\n' >&2
   exit 1
