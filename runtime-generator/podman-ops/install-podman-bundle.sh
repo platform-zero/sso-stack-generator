@@ -557,7 +557,10 @@ for env_file in "$ENV_DIR"/*.env; do
   fi
 done
 
-forgejo_runner_ssh_dir="$(sed -n 's/^FORGEJO_RUNNER_SSH_DIR=//p' "$ENV_DIR/forgejo-runner.env" 2>/dev/null | tail -n 1)"
+forgejo_runner_ssh_dir=""
+if [ -f "$ENV_DIR/forgejo-runner.env" ]; then
+  forgejo_runner_ssh_dir="$(sed -n 's/^FORGEJO_RUNNER_SSH_DIR=//p' "$ENV_DIR/forgejo-runner.env" | tail -n 1)"
+fi
 if [ -n "$forgejo_runner_ssh_dir" ]; then
   forgejo_index="$(domain_index_by_name forgejo-runner)"
   forgejo_user="${ROOTLESS_DOMAIN_USERS[$forgejo_index]}"
