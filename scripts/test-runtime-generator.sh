@@ -109,6 +109,15 @@ generate podman "$WORK_DIR/podman-a"
 generate podman "$WORK_DIR/podman-b"
 
 diff -ru "$WORK_DIR/podman-a" "$WORK_DIR/podman-b"
+jq -e --arg commit "$(git -C "$ROOT_DIR" rev-parse HEAD)" '
+  .schemaVersion == 1 and .generatorCommit == $commit and
+  (.manifestSha256 | test("^[0-9a-f]{64}$")) and
+  (.stackConfigSha256 | test("^[0-9a-f]{64}$")) and
+  (.modules | length > 0) and
+  (all(.modules[]; (.id | type == "string") and (.commit | test("^[0-9a-f]{40}$"))))
+' "$WORK_DIR/podman-a/source-provenance.json" >/dev/null
+jq -e --arg hash "$(sha256sum "$WORK_DIR/podman-a/source-provenance.json" | cut -d' ' -f1)" \
+  '.sourceProvenanceSha256 == $hash' "$WORK_DIR/podman-a/bundle.json" >/dev/null
 WEBSERVICES_OVERLAY_ROOT="$WORK_DIR/podman-a" "$ROOT_DIR/scripts/test-host-lifecycle-static.sh"
 
 jq -e '
@@ -269,6 +278,7 @@ fi
 jq -e '
   .services as $services |
   all(["alloy", "caddy", "crowdsec", "kopia", "mailserver", "node-exporter", "volume-init"][]; $services[.].placement == "rootful") and
+  (($services | has("kopia-snapshotter") | not) or $services["kopia-snapshotter"].placement == "rootful") and
   ($services["test-runner"].rootlessDomain == "test-runners") and
   ($services["test-runner-managed"].rootlessDomain == "test-runners") and
   (($services | has("forgejo-runner") | not) or $services["forgejo-runner"].rootlessDomain == "ci-runner") and
