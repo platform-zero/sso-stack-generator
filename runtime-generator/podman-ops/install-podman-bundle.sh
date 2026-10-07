@@ -777,6 +777,9 @@ install -m 0644 "$release/ops/webservices-auto-update.service" "$release/ops/web
 
 rollback() {
   status=$?
+  # Do not inherit ERR into rollback or a failed cleanup command can recurse.
+  trap - ERR
+  set +e
   printf '[podman-install] activation failed; restoring previous release\n' >&2
   cancel_webservices_start_jobs rootful 0
   systemctl stop webservices.target || true
@@ -936,7 +939,7 @@ retry_failed_rootless_services() {
         user_systemctl "$i" reset-failed "$unit"
         user_systemctl "$i" --no-block restart "$unit"
         retried=1
-      done < <(user_systemctl "$i" --failed --no-legend --plain 'webservices-*' 2>/dev/null | awk '{print $1}')
+      done < <({ user_systemctl "$i" list-units --failed --no-legend --plain 'webservices-*' 2>/dev/null || true; } | awk '{print $1}')
     done
     if [ "$retried" -eq 1 ]; then
       quiet_passes=0
