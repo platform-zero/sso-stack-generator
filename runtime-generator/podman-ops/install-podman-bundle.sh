@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 BUNDLE=""
 ENV_DIR=""
+IMAGE_INPUTS=""
 ACTIVATE=false
 ACTIVATION_ROLLBACK="${WEBSERVICES_ACTIVATION_ROLLBACK:-1}"
 STATE_ROOT="${WEBSERVICES_STATE_ROOT:-/var/lib/webservices}"
@@ -18,13 +19,14 @@ declare -a ROOTLESS_DOMAIN_UIDS=()
 declare -a ROOTLESS_DOMAIN_SUBUID_STARTS=()
 
 usage() {
-  printf 'Usage: %s --bundle DIR [--env-dir DIR] [--activate]\n' "${0##*/}" >&2
+  printf 'Usage: %s --bundle DIR [--env-dir DIR] [--image-inputs FILE] [--activate]\n' "${0##*/}" >&2
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --bundle) BUNDLE="$2"; shift 2 ;;
     --env-dir) ENV_DIR="$2"; shift 2 ;;
+    --image-inputs) IMAGE_INPUTS="$2"; shift 2 ;;
     --activate) ACTIVATE=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage; exit 2 ;;
@@ -301,6 +303,12 @@ for domain in "${ROOTLESS_DOMAIN_NAMES[@]}"; do
   [ -d "$source" ] || { printf 'missing rootless Quadlet domain: %s\n' "$source" >&2; exit 1; }
   verify_quadlet_dir "rootless-$domain" "$source"
 done
+if [ -n "$IMAGE_INPUTS" ]; then
+  python3 "$BUNDLE/ops/install-pinned-images.py" --bundle "$BUNDLE" --inputs "$IMAGE_INPUTS" --validate-only
+elif jq -e '.services | any(.image | startswith("sha256:"))' "$BUNDLE/stack.ir.json" >/dev/null; then
+  printf '[podman-install] selected local image requires --image-inputs\n' >&2
+  exit 1
+fi
 printf '[podman-install] preflight passed\n'
 
 [ "$ACTIVATE" = true ] || {
@@ -423,6 +431,9 @@ chmod 0700 "$STATE_ROOT/runtime-env"
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   ensure_rootless_domain "$i"
 done
+if [ -n "$IMAGE_INPUTS" ]; then
+  python3 "$BUNDLE/ops/install-pinned-images.py" --bundle "$BUNDLE" --inputs "$IMAGE_INPUTS"
+fi
 
 # The persistent rootful store is also the natural input for an update. Snapshot
 # it before stale-file cleanup so an in-place update cannot erase its own source.

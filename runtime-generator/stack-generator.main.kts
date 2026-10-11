@@ -1124,6 +1124,10 @@ fun podmanNetworkName(domain: PodmanDomain, name: String): String =
     if (domain.name == "rootful") "webservices_$name" else "webservices_${domain.name}_$name"
 
 fun qualifiedImage(image: String, updatePolicy: String): String {
+    if (image.matches(Regex("sha256:[0-9a-f]{64}"))) {
+        if (updatePolicy != "pinned") fail("local image IDs require pinned update policy")
+        return image
+    }
     var ref = if (updatePolicy == "registry") image.substringBefore('@') else image
     val first = ref.substringBefore('/')
     if (!ref.contains('/')) ref = "docker.io/library/$ref"
