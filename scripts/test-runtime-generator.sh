@@ -12,6 +12,17 @@ trap 'rm -rf "$WORK_DIR"' EXIT
   exit 1
 }
 
+# Cached dist JARs must be seeded before compilation, never replace selected-source output.
+python3 - "$ROOT_DIR/runtime-generator/stack-generator.main.kts" <<'PY'
+import sys
+from pathlib import Path
+source = Path(sys.argv[1]).read_text()
+seed = source.index('        materializeGeneratedBuildArtifacts(modules, staging)')
+compile_selected = source.index('        buildLocalArtifacts(staging)')
+assert seed < compile_selected, 'cached artifacts overwrite freshly compiled selected source'
+print('[runtime-test] selected-source compilation wins over cached dist artifacts')
+PY
+
 default_site="$ROOT_DIR/../site-config/sites/latium/manifest.json"
 synthetic_site=false
 if [ -n "${SITE_MANIFEST:-}" ]; then

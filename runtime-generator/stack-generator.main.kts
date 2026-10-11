@@ -1817,8 +1817,9 @@ fun commandGenerate(options: Map<String, String>) {
         materializeSiteManifest(manifest, staging)
         materializeModules(modules, staging)
         materializeGradleBuildInputs(staging)
-        buildLocalArtifacts(staging)
+        // Optional cached inputs must never overwrite artifacts compiled from selected source.
         materializeGeneratedBuildArtifacts(modules, staging)
+        buildLocalArtifacts(staging)
         materializeRuntimeRendererInputs(staging)
         materializeComponentLock(manifest, staging, ir)
         writeJson(staging.resolve("source-provenance.json"), sourceProvenance(manifest, modules))
