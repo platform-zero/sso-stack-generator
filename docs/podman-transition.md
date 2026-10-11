@@ -110,7 +110,28 @@ Without `--activate`, the command validates the manifest, environments,
 Quadlets, and generated systemd units without changing the host. Activation
 installs a versioned release under `/var/lib/webservices/releases`, atomically
 changes `/var/lib/webservices/current`, installs rootful Quadlets, and starts
-`webservices.target`. A failed activation restores the previous release.
+`webservices.target`. When the selected Caddy mounts `/run/p0-control`, install,
+select, configure and start the site-pinned host control role **before** activation;
+a manually created socket directory does not satisfy this prerequisite. The host
+unit owns its private runtime directory and orders itself before Caddy at boot.
+
+Activation is serialized by a protected installation lock. Selected Quadlet source
+builds run serially before the complete service graph starts. This changes build
+concurrency, not the selected composition or service availability requirement.
+
+The root-only `--inspect` command reports the protected installation intent and
+its SHA256. A pending/failed attempt refuses blind retry: after inspecting actual
+service/data state, retry the **unchanged** bundle using
+`--activate --resume-intent EXACT_SHA256`. Input changes require a new reviewed
+installation, not replay of an old intent. Per-release private metadata receipts
+record preparing, selected units, builds, startup and activation; they contain no
+credentials and do not establish functional or owner acceptance.
+
+On failure the installer stops only the selected workload/build units and retains
+volumes and diagnostics. **It does not restart a previous release by default.**
+`WEBSERVICES_ACTIVATION_ROLLBACK=1` explicitly opts into release rollback only after
+the operator has established compatible data/recovery coverage; incomplete scoped
+stopping refuses that restart. Production data recovery is a separate gate.
 
 ## Updates and recovery
 

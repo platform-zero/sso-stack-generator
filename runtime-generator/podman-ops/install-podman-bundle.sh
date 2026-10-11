@@ -5,10 +5,11 @@ BUNDLE=""
 ENV_DIR=""
 IMAGE_INPUTS=""
 ACTIVATE=false
-ACTIVATION_ROLLBACK="${WEBSERVICES_ACTIVATION_ROLLBACK:-1}"
+INSPECT=false
+RESUME_INTENT=""
+JOURNAL_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/install-journal.py"
+ACTIVATION_ROLLBACK="${WEBSERVICES_ACTIVATION_ROLLBACK:-0}"
 STATE_ROOT="${WEBSERVICES_STATE_ROOT:-/var/lib/webservices}"
-ROOTLESS_STATE_ROOT="${WEBSERVICES_ROOTLESS_STATE_ROOT:-/var/lib/webservices-rootless}"
-ROOTLESS_USER="${WEBSERVICES_ROOTLESS_USER:-webservices}"
 QUADLET_DIR="${WEBSERVICES_QUADLET_DIR:-/etc/containers/systemd}"
 declare -a ROOTLESS_DOMAIN_NAMES=()
 declare -a ROOTLESS_DOMAIN_USERS=()
@@ -19,7 +20,7 @@ declare -a ROOTLESS_DOMAIN_UIDS=()
 declare -a ROOTLESS_DOMAIN_SUBUID_STARTS=()
 
 usage() {
-  printf 'Usage: %s --bundle DIR [--env-dir DIR] [--image-inputs FILE] [--activate]\n' "${0##*/}" >&2
+  printf 'Usage: %s --bundle DIR [--env-dir DIR] [--image-inputs FILE] [--activate] [--resume-intent EXACT_SHA256] | --inspect\n' "${0##*/}" >&2
 }
 
 while [ "$#" -gt 0 ]; do
@@ -28,11 +29,16 @@ while [ "$#" -gt 0 ]; do
     --env-dir) ENV_DIR="$2"; shift 2 ;;
     --image-inputs) IMAGE_INPUTS="$2"; shift 2 ;;
     --activate) ACTIVATE=true; shift ;;
+    --inspect) INSPECT=true; shift ;;
+    --resume-intent) RESUME_INTENT="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) usage; exit 2 ;;
   esac
 done
 
+if [ "$INSPECT" = true ]; then
+  exec python3 "$JOURNAL_TOOL" --root "$STATE_ROOT" --inspect
+fi
 [ -d "$BUNDLE/quadlet" ] || { printf 'invalid Podman bundle: %s\n' "$BUNDLE" >&2; exit 1; }
 ROOTFUL_QUADLET_SOURCE="$BUNDLE/quadlet/rootful"
 [ -d "$ROOTFUL_QUADLET_SOURCE" ] || ROOTFUL_QUADLET_SOURCE="$BUNDLE/quadlet"
@@ -309,6 +315,22 @@ elif jq -e '.services | any(.image | startswith("sha256:"))' "$BUNDLE/stack.ir.j
   printf '[podman-install] selected local image requires --image-inputs\n' >&2
   exit 1
 fi
+# The selected P0 Caddy route mounts the host's private Unix-socket directory.
+# Require the supported host role before touching releases, stores or accounts;
+# a hand-created directory cannot establish control-backend readiness.
+if [ "$ACTIVATE" = true ] && grep -l '^Volume=/run/p0-control:' "$ROOTFUL_QUADLET_SOURCE"/*.container >/dev/null 2>&1; then
+  systemctl --quiet is-active p0-web.service || {
+    printf '[podman-install] install/select/start the site-pinned host control role before activation\n' >&2
+    exit 1
+  }
+  python3 - <<'PY'
+import os
+import stat
+info = os.lstat('/run/p0-control')
+if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o700:
+    raise SystemExit('[podman-install] unsafe host control runtime directory')
+PY
+fi
 printf '[podman-install] preflight passed\n'
 
 [ "$ACTIVATE" = true ] || {
@@ -317,9 +339,35 @@ printf '[podman-install] preflight passed\n'
 }
 [ "$(id -u)" -eq 0 ] || { printf -- '--activate requires root\n' >&2; exit 1; }
 
+# Serialize the complete privileged install, not just individual image imports.
+python3 - "$STATE_ROOT" <<'PY'
+import os
+from pathlib import Path
+import stat
+import sys
+root = Path(sys.argv[1])
+root.mkdir(mode=0o755, parents=True, exist_ok=True)
+info = root.lstat()
+if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+    raise SystemExit('[podman-install] unsafe installation state root')
+fd = os.open(root / '.install.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+try:
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077 or info.st_nlink != 1:
+        raise SystemExit('[podman-install] unsafe installation lock')
+finally:
+    os.close(fd)
+PY
+exec 9<>"$STATE_ROOT/.install.lock"
+flock -n 9 || { printf '[podman-install] another selected-stack installation is active\n' >&2; exit 1; }
+
 release_id="$(date -u +%Y%m%dT%H%M%SZ)-$(jq -r '.irSha256[0:12]' "$BUNDLE/bundle.json")"
 release="$STATE_ROOT/releases/$release_id"
 previous="$(readlink -f "$STATE_ROOT/current" 2>/dev/null || true)"
+journal() {
+  python3 "$JOURNAL_TOOL" --root "$STATE_ROOT" --bundle "$BUNDLE" --release "$release" --phase "$1" --expected "$RESUME_INTENT"
+}
+journal preparing
 
 declare -a ROOTLESS_RELEASES=()
 declare -a ROOTLESS_PREVIOUS=()
@@ -408,6 +456,42 @@ user_systemctl() {
   home="${ROOTLESS_HOMES[$index]}"
   uid="${ROOTLESS_UIDS[$index]}"
   /usr/sbin/runuser -u "$user" -- env HOME="$home" XDG_RUNTIME_DIR="/run/user/${uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" systemctl --user "$@"
+}
+
+selected_container_units() {
+  local source="$1" file
+  while IFS= read -r file; do
+    case "$file" in
+      webservices-*.container) printf '%s.service\n' "${file%.container}" ;;
+      webservices-*.build) printf '%s-build.service\n' "${file%.build}" ;;
+      webservices-*.target|webservices.target) printf '%s\n' "$file" ;;
+    esac
+  done < <(find "$source" -maxdepth 1 -type f \( -name '*.container' -o -name '*.build' -o -name '*.target' \) -printf '%f\n' | sort)
+}
+
+stop_selected_services() {
+  local mode="$1" index="$2" source="$3"
+  local -a units=()
+  mapfile -t units < <(selected_container_units "$source")
+  [ "${#units[@]}" -gt 0 ] || return 0
+  if [ "$mode" = rootless ]; then
+    user_systemctl "$index" stop "${units[@]}"
+  else
+    systemctl stop "${units[@]}"
+  fi
+}
+
+build_selected_serially() {
+  local mode="$1" index="$2" source="$3" file unit
+  while IFS= read -r file; do
+    unit="${file%.build}-build.service"
+    printf '[podman-install] serial source build: %s %s\n' "$mode" "$unit"
+    if [ "$mode" = rootless ]; then
+      user_systemctl "$index" restart "$unit"
+    else
+      systemctl restart "$unit"
+    fi
+  done < <(find "$source" -maxdepth 1 -type f -name 'webservices-*.build' -printf '%f\n' | sort)
 }
 
 cancel_webservices_start_jobs() {
@@ -791,13 +875,26 @@ rollback() {
   # Do not inherit ERR into rollback or a failed cleanup command can recurse.
   trap - ERR
   set +e
-  printf '[podman-install] activation failed; restoring previous release\n' >&2
+  journal failed || printf '[podman-install] failure journal could not be committed; inspect before retry\n' >&2
+  printf '[podman-install] activation failed; stopping selected workloads/builds; preserving volumes\n' >&2
+  local cleanup_failed=0
   cancel_webservices_start_jobs rootful 0
   systemctl stop webservices.target || true
+  stop_selected_services rootful 0 "$ROOTFUL_QUADLET_SOURCE" || cleanup_failed=1
   for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
     cancel_webservices_start_jobs rootless "$i"
     user_systemctl "$i" stop webservices.target || true
+    stop_selected_services rootless "$i" "$BUNDLE/quadlet/rootless-${ROOTLESS_DOMAIN_NAMES[$i]}" || cleanup_failed=1
   done
+  if [ "$cleanup_failed" -ne 0 ]; then
+    printf '[podman-install] scoped stop incomplete; previous release not restarted; review required\n' >&2
+    exit "$status"
+  fi
+  if [ "$ACTIVATION_ROLLBACK" != 1 ]; then
+    printf '[podman-install] stopped; explicit reviewed recovery required; no automatic restart\n' >&2
+    exit "$status"
+  fi
+  printf '[podman-install] explicit release rollback requested\n' >&2
   for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
     previous_rootless="${ROOTLESS_PREVIOUS[$i]}"
     state_root="${ROOTLESS_DOMAIN_STATE_ROOTS[$i]}"
@@ -834,12 +931,8 @@ rollback() {
   fi
   exit "$status"
 }
-if [ "$ACTIVATION_ROLLBACK" = "1" ]; then
-  trap rollback ERR
-else
-  trap - ERR
-  printf '[podman-install] automatic rollback disabled; activation failures will remain in place for fix-forward repair\n' >&2
-fi
+trap rollback ERR
+journal units-selected
 
 wait_for_target_services() {
   local mode="$1" index="$2" target_dir="$3" deadline unit state unit_type result job pending pending_unit stable_since=0
@@ -1000,6 +1093,7 @@ grant_test_runner_managed_socket_access() {
   [ -S "$socket" ] && chgrp "$managed_user" "$socket" && chmod go+rw "$socket"
 }
 
+journal building
 systemctl daemon-reload
 restart_rootful_network_units
 if systemctl list-unit-files webservices-caddy.service --no-legend --no-pager | grep -q '^webservices-caddy\.service'; then
@@ -1014,6 +1108,13 @@ for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   restart_rootless_network_units "$i"
 done
 grant_test_runner_managed_socket_access
+# Build immutable selected source images before launching the service graph.
+# Cold parallel builds can contend on Podman stores and flood guest block I/O.
+build_selected_serially rootful 0 "$ROOTFUL_QUADLET_SOURCE"
+for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+  build_selected_serially rootless "$i" "$BUNDLE/quadlet/rootless-${ROOTLESS_DOMAIN_NAMES[$i]}"
+done
+journal starting
 systemctl enable --now webservices-auto-update.timer
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user_systemctl "$i" --no-block restart webservices.target
@@ -1029,6 +1130,7 @@ systemctl enable webservices.target
 systemctl restart webservices.target
 wait_for_target_services rootful 0 /etc/systemd/system
 systemctl --quiet is-active webservices.target
+journal active
 trap - ERR
 printf '[podman-install] active rootful release: %s\n' "$release"
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
