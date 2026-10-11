@@ -284,11 +284,11 @@ awk '
 cmp "$WORK_DIR/ir-services" "$WORK_DIR/runtime-model-services"
 
 if jq -e '.services | has("valkey")' "$WORK_DIR/podman-a/stack.ir.json" >/dev/null; then
-  if ! rg -Fq '$$VALKEY_PASSWORD' "$WORK_DIR/podman-a/runtime-model.yml"; then
+  if ! rg -Fq '$${VALKEY_PASSWORD}' "$WORK_DIR/podman-a/runtime-model.yml"; then
     printf '[runtime-test] Compose output lost the escaped container-side Valkey variable\n' >&2
     exit 1
   fi
-  if ! rg -Fq '$$VALKEY_PASSWORD' "$WORK_DIR/podman-a/quadlet/rootless-platform/webservices-valkey.container"; then
+  if ! rg -Fq '$${VALKEY_PASSWORD}' "$WORK_DIR/podman-a/quadlet/rootless-platform/webservices-valkey.container"; then
     printf '[runtime-test] Quadlet output does not preserve the container-side Valkey variable\n' >&2
     exit 1
   fi
