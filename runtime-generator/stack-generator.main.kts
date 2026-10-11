@@ -1128,7 +1128,9 @@ fun qualifiedImage(image: String, updatePolicy: String): String {
         if (updatePolicy != "pinned") fail("local image IDs require pinned update policy")
         return image
     }
-    var ref = if (updatePolicy == "registry") image.substringBefore('@') else image
+    // Installation must use the locked digest even when the module historically
+    // requested registry updates. Never resolve a digest-only reference as latest.
+    var ref = image
     val first = ref.substringBefore('/')
     if (!ref.contains('/')) ref = "docker.io/library/$ref"
     else if (!first.contains('.') && !first.contains(':') && first != "localhost") ref = "docker.io/$ref"
@@ -1427,7 +1429,7 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
     service.path("build").takeUnless(JsonNode::isMissingNode)?.let { lines += "Image=webservices-$name.build" }
         ?: lines.add("Image=${qualifiedImage(service.path("image").asText(), service.path("updatePolicy").asText("pinned"))}")
     lines += "ContainerName=$name"
-    if (service.path("lifecycle").asText() == "daemon" && service.path("updatePolicy").asText() == "registry") lines += "AutoUpdate=registry"
+    if (service.path("lifecycle").asText() == "daemon" && service.path("updatePolicy").asText() == "registry" && !service.path("image").asText().contains('@')) lines += "AutoUpdate=registry"
     if (service.path("environment").isObject && !service.path("environment").isEmpty) lines += "EnvironmentFile=${domain.envFilePrefix}/$name.env"
     val hostNetwork = name == "caddy" || service.path("hostNetwork").asBoolean(false)
     if (hostNetwork) {

@@ -141,6 +141,7 @@ jq -e --slurpfile domains "$WORK_DIR/podman-a/podman-domains.json" '
 jq -e '(.schemaVersion == 1) and (.workspaces | length == 6) and ([.workspaces[].name] | unique | length == 6) and all(.workspaces[]; .startAtBoot == false)' \
   "$WORK_DIR/podman-a/maintenance-workspaces.json" >/dev/null
 
+if [ -f "$WORK_DIR/podman-a/software-workspaces.json" ]; then
 jq -e '
   (.schemaVersion == 1) and (.owner == "software_lab") and
   (.root == "/mnt/lab_debian/software_lab") and
@@ -150,6 +151,20 @@ jq -e '
     .role == "software" and .profile == "software-gpu" and .startAtBoot == false and
     .devices == ["nvidia.com/gpu=all"] and (.projectPath | startswith("/mnt/lab_debian/software_lab/")))
 ' "$WORK_DIR/podman-a/software-workspaces.json" >/dev/null
+else
+  config_file="$(python3 - "$SITE" <<'PY_NO_SOFTWARE'
+import json, sys
+from pathlib import Path
+manifest = Path(sys.argv[1])
+print(manifest.parent / json.loads(manifest.read_text())['stackConfig'])
+PY_NO_SOFTWARE
+)"
+  if grep -Eq '^[[:space:]]*software_workspaces:' "$config_file"; then
+    printf '[runtime-test] selected software workspace manifest is missing\n' >&2
+    exit 1
+  fi
+  printf '[runtime-test] unselected software/GPU estate remains absent\n'
+fi
 
 test -x "$WORK_DIR/podman-a/ops/start-worklane-containers.py"
 test -f "$WORK_DIR/podman-a/ops/platform-zero-worklanes.service"
@@ -163,8 +178,8 @@ grep -Fq 'usermod --shell /bin/bash "$user"' "$WORK_DIR/podman-a/ops/provision-d
 
 grep -Eq '^PodmanArgs=.*--memory=2G.*--cpus=2\.0' "$WORK_DIR/podman-a/quadlet/rootless-platform/webservices-keycloak.container"
 grep -Eq '^PodmanArgs=.*--memory=3G.*--cpus=2\.0' "$WORK_DIR/podman-a/quadlet/rootless-platform/webservices-opensearch.container"
-grep -Eq '^PodmanArgs=.*--memory=2G.*--cpus=2\.0' "$WORK_DIR/podman-a/quadlet/rootless-apps/webservices-huly-redpanda.container"
-grep -Eq '^PodmanArgs=.*--memory=2G.*--cpus=2\.0' "$WORK_DIR/podman-a/quadlet/rootless-apps/webservices-huly-elastic.container"
+grep -Eq '^PodmanArgs=.*--memory=2G.*--cpus=1\.0' "$WORK_DIR/podman-a/quadlet/rootless-apps/webservices-huly-redpanda.container"
+grep -Eq '^PodmanArgs=.*--memory=2G.*--cpus=1\.5' "$WORK_DIR/podman-a/quadlet/rootless-apps/webservices-huly-elastic.container"
 if jq -e '.services | has("android-test-runner-api36")' "$WORK_DIR/podman-a/stack.ir.json" >/dev/null; then
   grep -Fxq 'AddDevice=/dev/kvm:/dev/kvm' "$WORK_DIR/podman-a/quadlet/rootless-test-runners/webservices-android-test-runner-api36.container"
   grep -Fxq 'GroupAdd=keep-groups' "$WORK_DIR/podman-a/quadlet/rootless-test-runners/webservices-android-test-runner-api36.container"
@@ -222,10 +237,12 @@ python3 "$WORK_DIR/podman-a/ops/materialize-workspaces.py" \
   --root "$WORK_DIR/workspace-plan" > "$WORK_DIR/workspace-plan.json"
 jq -e '(.apply == false) and (.blockers == []) and (.actions | length > 0)' "$WORK_DIR/workspace-plan.json" >/dev/null
 
-python3 "$WORK_DIR/podman-a/ops/materialize-workspaces.py" \
-  --manifest "$WORK_DIR/podman-a/software-workspaces.json" \
-  --root "$WORK_DIR/software-workspace-plan" > "$WORK_DIR/software-workspace-plan.json"
-jq -e '(.apply == false) and (.blockers == []) and (.actions == [])' "$WORK_DIR/software-workspace-plan.json" >/dev/null
+if [ -f "$WORK_DIR/podman-a/software-workspaces.json" ]; then
+  python3 "$WORK_DIR/podman-a/ops/materialize-workspaces.py" \
+    --manifest "$WORK_DIR/podman-a/software-workspaces.json" \
+    --root "$WORK_DIR/software-workspace-plan" > "$WORK_DIR/software-workspace-plan.json"
+  jq -e '(.apply == false) and (.blockers == []) and (.actions == [])' "$WORK_DIR/software-workspace-plan.json" >/dev/null
+fi
 
 jq -e '
   (.schemaVersion == 2) and
@@ -391,6 +408,10 @@ while IFS= read -r domain; do
   systemd-analyze verify "${units[@]}"
 done < <(jq -r '.domains[].name' "$WORK_DIR/podman-a/podman-domains.json")
 
+image_input_args=()
+if [ -n "${IMAGE_INPUTS:-}" ]; then
+  image_input_args=(--image-inputs "$IMAGE_INPUTS")
+fi
 if [ "$synthetic_site" = true ]; then
   fake_bin="$WORK_DIR/fake-bin"
   mkdir -p "$fake_bin"
@@ -401,9 +422,9 @@ set -euo pipefail
 cat "$2"
 EOF_FAKE_SOPS
   chmod +x "$fake_bin/sops"
-  PATH="$fake_bin:$PATH" "$WORK_DIR/podman-a/ops/install-podman-bundle.sh" --bundle "$WORK_DIR/podman-a"
+  PATH="$fake_bin:$PATH" "$WORK_DIR/podman-a/ops/install-podman-bundle.sh" --bundle "$WORK_DIR/podman-a" "${image_input_args[@]}"
 else
-  "$WORK_DIR/podman-a/ops/install-podman-bundle.sh" --bundle "$WORK_DIR/podman-a"
+  "$WORK_DIR/podman-a/ops/install-podman-bundle.sh" --bundle "$WORK_DIR/podman-a" "${image_input_args[@]}"
 fi
 
 if rg -Fq 'chown -R "$domain_user:$domain_user" "$destination"' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
@@ -476,6 +497,22 @@ if ! rg -Fq '\( -name diff -o -name merged \) -exec chmod 0755 {} +' "$WORK_DIR/
   printf '[runtime-generator-test] existing overlay roots must be traversable by non-root container users\n' >&2
   exit 1
 fi
+
+python3 - "$WORK_DIR/podman-a" <<'PY_IMAGE_PINS'
+import json, sys
+from pathlib import Path
+bundle = Path(sys.argv[1])
+for name, service in json.loads((bundle / 'stack.ir.json').read_text())['services'].items():
+    image = service.get('image', '')
+    if '@sha256:' not in image or service.get('build'):
+        continue
+    domain = 'rootless-' + service['rootlessDomain'] if service['placement'] == 'rootless' else 'rootful'
+    unit = (bundle / 'quadlet' / domain / ('webservices-' + name + '.container')).read_text()
+    selected = next(line[6:] for line in unit.splitlines() if line.startswith('Image='))
+    assert selected.endswith('@' + image.split('@', 1)[1]), (name, 'locked image digest was discarded')
+    assert 'AutoUpdate=registry' not in unit, (name, 'immutable image enables registry advancement')
+print('[runtime-test] immutable image digests retained without registry advancement')
+PY_IMAGE_PINS
 
 test -f "$WORK_DIR/podman-a/runtime/configs/vaultwarden/index.html"
 test -f "$WORK_DIR/podman-a/runtime/configs/vaultwarden/seed.sh"
