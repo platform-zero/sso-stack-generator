@@ -1003,7 +1003,7 @@ grant_test_runner_managed_socket_access() {
 systemctl daemon-reload
 restart_rootful_network_units
 if systemctl list-unit-files webservices-caddy.service --no-legend --no-pager | grep -q '^webservices-caddy\.service'; then
-  systemctl restart webservices-caddy.service || true
+  systemctl restart webservices-caddy.service
 fi
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user_systemctl "$i" daemon-reload
