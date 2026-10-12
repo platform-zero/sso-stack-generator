@@ -56,7 +56,10 @@ class RegistryPreparation(unittest.TestCase):
 
     def test_approved_version_tag_records_identity_and_refuses_drift(self):
         image='docker.io/library/alpine:3.22'
-        self.path.write_text('Image='+image+'\n');self.run_prepare()
+        def native_id(command,**kwargs):
+            if 'inspect' in command:return SimpleNamespace(returncode=0,stdout='c'*64+'\n')
+            return self.runner(command,**kwargs)
+        self.path.write_text('Image='+image+'\n');self.run_prepare(native_id)
         ledger=json.loads((self.bundle/'.registry-image-ids.json').read_text())
         self.assertEqual(ledger['actor|'+image],'sha256:'+'c'*64)
         def drift(command,**kwargs):

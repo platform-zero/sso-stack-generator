@@ -131,6 +131,10 @@ def prepare_registry(bundle, *, runner=subprocess.run):
                     raise ValueError('Selected registry image not present after preparation')
             inspected = runner(command + ['image', 'inspect', '--format', '{{.Id}}', image],
                                capture_output=True, text=True, check=True, timeout=30).stdout.strip()
+            # Native Podman .Id emits the same SHA256 configuration identity
+            # without its algorithm prefix on some supported versions.
+            if re.fullmatch(r'[0-9a-f]{64}', inspected):
+                inspected = 'sha256:' + inspected
             if not re.fullmatch(r'sha256:[0-9a-f]{64}', inspected):
                 raise ValueError('Invalid selected image configuration identity')
             key = user + '|' + image
