@@ -942,7 +942,8 @@ fun materializeSiteManifest(manifestPath: Path, output: Path) {
     val siteDir = output.resolve("site")
     siteDir.createDirectories()
     manifestPath.copyTo(siteDir.resolve("manifest.json"), overwrite = true)
-    listOf("stackConfig", "secretStore").forEach { key ->
+    (listOf("stackConfig", "secretStore") +
+        if (manifest.has("imageIdentityPinsPath")) listOf("imageIdentityPinsPath") else emptyList()).forEach { key ->
         val relative = manifest.path(key).textOrNull() ?: fail("site manifest missing $key")
         if (relative.startsWith("/")) fail("site manifest $key must be relative: $relative")
         val source = manifestPath.parent.resolve(relative).normalize()

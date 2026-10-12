@@ -91,6 +91,11 @@ def prepare_registry(bundle, *, runner=subprocess.run):
     ledger_path = bundle / '.registry-image-ids.json'
     expected_path = bundle / 'site/global.settings/registry-image-ids.json'
     expected_ids = {}
+    manifest = bundle / 'site/manifest.json'
+    if manifest.exists():
+        declared = json.loads(manifest.read_text()).get('imageIdentityPinsPath')
+        if declared is not None and (declared != 'global.settings/registry-image-ids.json' or not expected_path.is_file()):
+            raise ValueError('Declared frozen site identities missing or unsupported path')
     if expected_path.exists() or expected_path.is_symlink():
         info = expected_path.lstat()
         if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:

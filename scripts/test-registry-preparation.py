@@ -73,6 +73,8 @@ class RegistryPreparation(unittest.TestCase):
     def test_frozen_site_identity_refuses_first_install_substitution(self):
         image='docker.io/library/alpine:3.22';self.path.write_text('Image='+image+'\n')
         folder=self.bundle/'site/global.settings';folder.mkdir(parents=True)
+        (self.bundle/'site/manifest.json').write_text(json.dumps({'imageIdentityPinsPath':'global.settings/registry-image-ids.json'}))
+        with self.assertRaises(ValueError):self.run_prepare()
         (folder/'registry-image-ids.json').write_text(json.dumps({'actor|'+image:'sha256:'+'d'*64}))
         with self.assertRaises(ValueError):self.run_prepare()
         self.assertFalse((self.bundle/'.registry-image-ids.json').exists())
