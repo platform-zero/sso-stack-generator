@@ -122,7 +122,12 @@ approved version tags are preserved exactly; implicit/`latest` references are
 refused. Actual native configuration IDs are recorded in a protected per-bundle
 ledger; cache/pull identity drift refuses replay. Tags are not described as
 immutable digests, and cross-install/deployed image-ID comparison remains
-required. Registry inventory/pull failures refuse fallback;
+required. A site can freeze those reviewed IDs in
+`global.settings/registry-image-ids.json` (authority/reference to `sha256:…`);
+when present, every selected registry reference must match even on its first
+fresh preparation. Missing pin, mutable-tag drift or differing cache refuses
+activation rather than substituting another image. Registry inventory/pull
+failures refuse fallback;
 selected offline images still require their protected hash-bound release inputs.
 This changes build/pull concurrency, not the selected composition or service
 availability requirement. Native root oneshots declare the installed standard

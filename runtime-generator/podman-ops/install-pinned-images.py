@@ -89,6 +89,17 @@ def prepare_registry(bundle, *, runner=subprocess.run):
     domains = json.loads((bundle / 'podman-domains.json').read_text())['domains']
     authorities = [('rootful', 'root')] + [('rootless-' + d['name'], d['user']) for d in domains]
     ledger_path = bundle / '.registry-image-ids.json'
+    expected_path = bundle / 'site/global.settings/registry-image-ids.json'
+    expected_ids = {}
+    if expected_path.exists() or expected_path.is_symlink():
+        info = expected_path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise ValueError('Unsafe site image identity pins')
+        expected_ids = json.loads(expected_path.read_text())
+        if (not isinstance(expected_ids, dict) or not expected_ids
+                or any(not isinstance(k, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', v)
+                       for k, v in expected_ids.items())):
+            raise ValueError('Invalid site image identity pins')
     if ledger_path.exists() or ledger_path.is_symlink():
         protected(ledger_path)
         ledger = json.loads(ledger_path.read_text())
@@ -138,6 +149,8 @@ def prepare_registry(bundle, *, runner=subprocess.run):
             if not re.fullmatch(r'sha256:[0-9a-f]{64}', inspected):
                 raise ValueError('Invalid selected image configuration identity')
             key = user + '|' + image
+            if expected_ids and (key not in expected_ids or expected_ids[key] != inspected):
+                raise ValueError('Selected image differs from frozen site identity; no substitution')
             if key in ledger and ledger[key] != inspected:
                 raise ValueError('Selected image configuration identity changed; reviewed input required')
             ledger[key] = inspected

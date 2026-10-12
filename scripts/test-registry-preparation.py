@@ -70,6 +70,16 @@ class RegistryPreparation(unittest.TestCase):
         self.path.write_text('Image=docker.io/library/alpine\n')
         with self.assertRaises(ValueError):self.run_prepare()
 
+    def test_frozen_site_identity_refuses_first_install_substitution(self):
+        image='docker.io/library/alpine:3.22';self.path.write_text('Image='+image+'\n')
+        folder=self.bundle/'site/global.settings';folder.mkdir(parents=True)
+        (folder/'registry-image-ids.json').write_text(json.dumps({'actor|'+image:'sha256:'+'d'*64}))
+        with self.assertRaises(ValueError):self.run_prepare()
+        self.assertFalse((self.bundle/'.registry-image-ids.json').exists())
+        (folder/'registry-image-ids.json').write_text(json.dumps({'actor|'+image:'sha256:'+'c'*64}))
+        self.run_prepare()
+        self.assertEqual(json.loads((self.bundle/'.registry-image-ids.json').read_text())['actor|'+image],'sha256:'+'c'*64)
+
     def test_inventory_and_pull_failure_do_not_fallback(self):
         with self.assertRaises(ValueError):self.run_prepare(lambda *a,**k:SimpleNamespace(returncode=125))
         def fail(command,**kwargs):
