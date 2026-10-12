@@ -116,8 +116,13 @@ a manually created socket directory does not satisfy this prerequisite. The host
 unit owns its private runtime directory and orders itself before Caddy at boot.
 
 Activation is serialized by a protected installation lock. Selected Quadlet source
-builds and direct digest-pinned registry-image preparation run serially before
-the complete service graph starts. Registry inventory/pull failures refuse fallback;
+builds and direct selected registry-image preparation run serially before
+the complete service graph starts. Digest references and the site's explicitly
+approved version tags are preserved exactly; implicit/`latest` references are
+refused. Actual native configuration IDs are recorded in a protected per-bundle
+ledger; cache/pull identity drift refuses replay. Tags are not described as
+immutable digests, and cross-install/deployed image-ID comparison remains
+required. Registry inventory/pull failures refuse fallback;
 selected offline images still require their protected hash-bound release inputs.
 This changes build/pull concurrency, not the selected composition or service
 availability requirement. Native root oneshots declare the installed standard
@@ -131,6 +136,16 @@ service/data state, retry the **unchanged** bundle using
 installation, not replay of an old intent. Per-release private metadata receipts
 record preparing, selected units, builds, startup and activation; they contain no
 credentials and do not establish functional or owner acceptance.
+
+When a **source correction** changes inputs after terminal failure, unchanged-input
+resume is deliberately insufficient. After reviewing actual data/recovery state,
+use `--retire-failed-intent EXACT_SHA256 --reviewed-data-state`. This is serialized,
+CAS-bound and refuses non-failed attempts, changed release fingerprints, active
+selected units, queued jobs or enabled selected boot triggers. It retains volumes
+and the old per-release receipt, does not restart anything, and **does not prove
+data compatibility** or bypass separately gated production protection/cutover.
+A new reviewed installation can then consume corrected inputs. Do not retire a
+pending/unknown attempt or assert review merely to make a retry run.
 
 On failure or cancellation the installer stops only the selected workload/build
 units and retains volumes and diagnostics. If reviewed rollback is not performed,

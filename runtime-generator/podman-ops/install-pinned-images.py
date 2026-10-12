@@ -88,6 +88,14 @@ def prepare_registry(bundle, *, runner=subprocess.run):
     os.chdir('/')
     domains = json.loads((bundle / 'podman-domains.json').read_text())['domains']
     authorities = [('rootful', 'root')] + [('rootless-' + d['name'], d['user']) for d in domains]
+    ledger_path = bundle / '.registry-image-ids.json'
+    if ledger_path.exists() or ledger_path.is_symlink():
+        protected(ledger_path)
+        ledger = json.loads(ledger_path.read_text())
+        if not isinstance(ledger, dict):
+            raise ValueError('Invalid installed image identity ledger')
+    else:
+        ledger = {}
     for label, user in authorities:
         images = set()
         for path in (bundle / 'quadlet' / label).glob('*.container'):
@@ -97,8 +105,11 @@ def prepare_registry(bundle, *, runner=subprocess.run):
             image = lines[0]
             if image.endswith('.build'):
                 continue
-            if not re.fullmatch(r'(?:sha256:[0-9a-f]{64}|[a-z0-9][a-z0-9.:-]*/[a-z0-9][a-z0-9._/-]*(?::[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64})', image):
-                raise ValueError('Registry preparation refuses unpinned images')
+            # Respect the site's exact approved version references as well as
+            # digests. Do not silently replace them or resolve implicit/latest.
+            if (not re.fullmatch(r'(?:sha256:[0-9a-f]{64}|[a-z0-9][a-z0-9.:-]*/[a-z0-9][a-z0-9._/-]*(?::[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}|[a-z0-9][a-z0-9.:-]*/[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9._-]+)', image)
+                    or image.rsplit(':', 1)[-1].lower() == 'latest'):
+                raise ValueError('Registry preparation refuses implicit/latest or invalid references')
             images.add(image)
         if user == 'root':
             command = ['podman']
@@ -118,7 +129,24 @@ def prepare_registry(bundle, *, runner=subprocess.run):
                 result = runner(command + ['image', 'exists', image], capture_output=True, text=True, timeout=30)
                 if result.returncode:
                     raise ValueError('Selected registry image not present after preparation')
-            print(json.dumps({'image': image, 'authority': user, 'prepared': True}))
+            inspected = runner(command + ['image', 'inspect', '--format', '{{.Id}}', image],
+                               capture_output=True, text=True, check=True, timeout=30).stdout.strip()
+            if not re.fullmatch(r'sha256:[0-9a-f]{64}', inspected):
+                raise ValueError('Invalid selected image configuration identity')
+            key = user + '|' + image
+            if key in ledger and ledger[key] != inspected:
+                raise ValueError('Selected image configuration identity changed; reviewed input required')
+            ledger[key] = inspected
+            temporary = ledger_path.with_name('.registry-image-ids.tmp')
+            fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+            try:
+                with os.fdopen(fd, 'w') as stream:
+                    json.dump(ledger, stream, sort_keys=True); stream.write('\n'); stream.flush(); os.fsync(stream.fileno())
+                os.replace(temporary, ledger_path)
+                directory = os.open(bundle, os.O_DIRECTORY); os.fsync(directory); os.close(directory)
+            finally:
+                temporary.unlink(missing_ok=True)
+            print(json.dumps({'image': image, 'imageId': inspected, 'authority': user, 'prepared': True}))
 
 
 def main():

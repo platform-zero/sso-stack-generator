@@ -7,6 +7,8 @@ IMAGE_INPUTS=""
 ACTIVATE=false
 INSPECT=false
 RESUME_INTENT=""
+RETIRE_FAILED=""
+REVIEWED_DATA_STATE=false
 JOURNAL_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/install-journal.py"
 ACTIVATION_ROLLBACK="${WEBSERVICES_ACTIVATION_ROLLBACK:-0}"
 STATE_ROOT="${WEBSERVICES_STATE_ROOT:-/var/lib/webservices}"
@@ -20,7 +22,7 @@ declare -a ROOTLESS_DOMAIN_UIDS=()
 declare -a ROOTLESS_DOMAIN_SUBUID_STARTS=()
 
 usage() {
-  printf 'Usage: %s --bundle DIR [--env-dir DIR] [--image-inputs FILE] [--activate] [--resume-intent EXACT_SHA256] | --inspect\n' "${0##*/}" >&2
+  printf 'Usage: %s --bundle DIR [--env-dir DIR] [--image-inputs FILE] [--activate] [--resume-intent EXACT_SHA256] | --inspect | --retire-failed-intent EXACT_SHA256 --reviewed-data-state\n' "${0##*/}" >&2
 }
 
 while [ "$#" -gt 0 ]; do
@@ -31,11 +33,17 @@ while [ "$#" -gt 0 ]; do
     --activate) ACTIVATE=true; shift ;;
     --inspect) INSPECT=true; shift ;;
     --resume-intent) RESUME_INTENT="$2"; shift 2 ;;
+    --retire-failed-intent) RETIRE_FAILED="$2"; shift 2 ;;
+    --reviewed-data-state) REVIEWED_DATA_STATE=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage; exit 2 ;;
   esac
 done
 
+if [ -n "$RETIRE_FAILED" ]; then
+  [ "$REVIEWED_DATA_STATE" = true ] && [ "$ACTIVATE" = false ] && [ "$INSPECT" = false ] && [ -z "$RESUME_INTENT" ] || { usage; exit 2; }
+  exec python3 "$JOURNAL_TOOL" --root "$STATE_ROOT" --retire-failed "$RETIRE_FAILED" --reviewed-data-state
+fi
 if [ "$INSPECT" = true ]; then
   exec python3 "$JOURNAL_TOOL" --root "$STATE_ROOT" --inspect
 fi

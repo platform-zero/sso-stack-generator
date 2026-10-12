@@ -27,6 +27,7 @@ class RegistryPreparation(unittest.TestCase):
         def runner(command,**kwargs):
             self.calls.append(command)
             image=command[-1]
+            if 'inspect' in command:return SimpleNamespace(returncode=0,stdout='sha256:'+'c'*64+'\n')
             if command[-3:-1]==['image','exists']:return SimpleNamespace(returncode=0 if image in self.present else 1)
             if command[-2]=='pull':self.present.add(image);return SimpleNamespace(returncode=0)
             raise AssertionError(command)
@@ -52,6 +53,19 @@ class RegistryPreparation(unittest.TestCase):
             self.path.write_text('Image='+image+'\n')
             with self.assertRaises(ValueError):self.run_prepare()
             self.assertFalse(any(c[-2]=='pull' for c in self.calls))
+
+    def test_approved_version_tag_records_identity_and_refuses_drift(self):
+        image='docker.io/library/alpine:3.22'
+        self.path.write_text('Image='+image+'\n');self.run_prepare()
+        ledger=json.loads((self.bundle/'.registry-image-ids.json').read_text())
+        self.assertEqual(ledger['actor|'+image],'sha256:'+'c'*64)
+        def drift(command,**kwargs):
+            if 'inspect' in command:return SimpleNamespace(returncode=0,stdout='sha256:'+'d'*64)
+            return self.runner(command,**kwargs)
+        with self.assertRaises(ValueError):self.run_prepare(drift)
+        self.assertEqual(json.loads((self.bundle/'.registry-image-ids.json').read_text()),ledger)
+        self.path.write_text('Image=docker.io/library/alpine\n')
+        with self.assertRaises(ValueError):self.run_prepare()
 
     def test_inventory_and_pull_failure_do_not_fallback(self):
         with self.assertRaises(ValueError):self.run_prepare(lambda *a,**k:SimpleNamespace(returncode=125))
