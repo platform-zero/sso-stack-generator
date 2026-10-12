@@ -74,7 +74,7 @@ class HostRolePreflight(unittest.TestCase):
         function=source[source.index('quarantine_selections()'):].split('\n}\n',1)[0]+'\n}\n'
         with tempfile.TemporaryDirectory() as d:
             record=Path(d)/'calls'
-            script=('ROOTLESS_USERS=(alpha beta)\n'
+            script=('ROOTLESS_DOMAIN_USERS=(alpha beta)\n'
                     'systemctl() { printf "root %s\\n" "$*" >> "$RECORD"; }\n'
                     'user_systemctl() { printf "user %s\\n" "$*" >> "$RECORD"; [ "$1" != 0 ]; }\n'
                     +function+'\nquarantine_selections\n')

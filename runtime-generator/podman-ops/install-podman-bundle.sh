@@ -891,7 +891,7 @@ quarantine_selections() {
   local i result=0
   # Failed/cancelled selections must not automatically restart on next boot.
   systemctl disable webservices.target webservices-auto-update.timer >/dev/null 2>&1 || result=1
-  for i in "${!ROOTLESS_USERS[@]}"; do
+  for i in "${!ROOTLESS_DOMAIN_USERS[@]}"; do
     user_systemctl "$i" disable webservices.target >/dev/null 2>&1 || result=1
   done
   return "$result"
