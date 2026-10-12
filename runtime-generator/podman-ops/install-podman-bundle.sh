@@ -110,11 +110,20 @@ contains_unresolved_env() {
 
 root_has_sops_key_material() {
   [ -n "${SOPS_AGE_KEY:-}" ] && return 0
-  [ -n "${SOPS_AGE_KEY_FILE:-}" ] && [ -f "$SOPS_AGE_KEY_FILE" ] && return 0
+  if [ -n "${SOPS_AGE_KEY_FILE:-}" ]; then
+    [ -f "$SOPS_AGE_KEY_FILE" ]; return $?
+  fi
   [ -n "${SOPS_AGE_KEY_CMD:-}" ] && return 0
-  [ -n "${SOPS_AGE_SSH_PRIVATE_KEY_FILE:-}" ] && [ -f "$SOPS_AGE_SSH_PRIVATE_KEY_FILE" ] && return 0
+  if [ -n "${SOPS_AGE_SSH_PRIVATE_KEY_FILE:-}" ]; then
+    [ -f "$SOPS_AGE_SSH_PRIVATE_KEY_FILE" ]; return $?
+  fi
   [ -n "${SOPS_AGE_SSH_PRIVATE_KEY_CMD:-}" ] && return 0
-  [ -f /root/.config/sops/age/keys.txt ] && return 0
+  if [ -f /root/.config/sops/age/keys.txt ]; then
+    # A native root oneshot may have no HOME/XDG_CONFIG_HOME. Declare the
+    # protected standard identity explicitly rather than merely detecting it.
+    export SOPS_AGE_KEY_FILE=/root/.config/sops/age/keys.txt
+    return 0
+  fi
   return 1
 }
 
@@ -871,9 +880,9 @@ install -m 0755 "$release/ops/webservices-auto-update" /usr/local/sbin/webservic
 install -m 0644 "$release/ops/webservices-auto-update.service" "$release/ops/webservices-auto-update.timer" /etc/systemd/system/
 
 rollback() {
-  status=$?
-  # Do not inherit ERR into rollback or a failed cleanup command can recurse.
-  trap - ERR
+  status=${1:-$?}
+  # Do not inherit traps into rollback or a failed cleanup command can recurse.
+  trap - ERR TERM INT
   set +e
   journal failed || printf '[podman-install] failure journal could not be committed; inspect before retry\n' >&2
   printf '[podman-install] activation failed; stopping selected workloads/builds; preserving volumes\n' >&2
@@ -932,6 +941,8 @@ rollback() {
   exit "$status"
 }
 trap rollback ERR
+trap 'ACTIVATION_ROLLBACK=0; rollback 143' TERM
+trap 'ACTIVATION_ROLLBACK=0; rollback 130' INT
 journal units-selected
 
 wait_for_target_services() {
@@ -1114,6 +1125,9 @@ build_selected_serially rootful 0 "$ROOTFUL_QUADLET_SOURCE"
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   build_selected_serially rootless "$i" "$BUNDLE/quadlet/rootless-${ROOTLESS_DOMAIN_NAMES[$i]}"
 done
+# Direct registry-backed images also need serial preparation: otherwise the
+# full graph still launches concurrent cold pulls after the source builds.
+python3 "$BUNDLE/ops/install-pinned-images.py" --bundle "$BUNDLE" --prepare-registry
 journal starting
 systemctl enable --now webservices-auto-update.timer
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
@@ -1131,7 +1145,7 @@ systemctl restart webservices.target
 wait_for_target_services rootful 0 /etc/systemd/system
 systemctl --quiet is-active webservices.target
 journal active
-trap - ERR
+trap - ERR TERM INT
 printf '[podman-install] active rootful release: %s\n' "$release"
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   printf '[podman-install] active rootless %s release: %s\n' "${ROOTLESS_DOMAIN_NAMES[$i]}" "${ROOTLESS_RELEASES[$i]}"

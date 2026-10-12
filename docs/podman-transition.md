@@ -116,8 +116,13 @@ a manually created socket directory does not satisfy this prerequisite. The host
 unit owns its private runtime directory and orders itself before Caddy at boot.
 
 Activation is serialized by a protected installation lock. Selected Quadlet source
-builds run serially before the complete service graph starts. This changes build
-concurrency, not the selected composition or service availability requirement.
+builds and direct digest-pinned registry-image preparation run serially before
+the complete service graph starts. Registry inventory/pull failures refuse fallback;
+selected offline images still require their protected hash-bound release inputs.
+This changes build/pull concurrency, not the selected composition or service
+availability requirement. Native root oneshots declare the installed standard
+SOPS identity path when HOME is unset; intentional key-file selection is preserved
+and a missing explicit identity does not silently fall back.
 
 The root-only `--inspect` command reports the protected installation intent and
 its SHA256. A pending/failed attempt refuses blind retry: after inspecting actual

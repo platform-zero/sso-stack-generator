@@ -51,6 +51,24 @@ class HostRolePreflight(unittest.TestCase):
         self.assertLess(rollback.index('scoped stop incomplete'), rollback.index('explicit release rollback requested'))
         self.assertIn('no automatic restart', rollback)
 
+    def test_root_oneshot_declares_default_identity_without_overriding_explicit_file(self):
+        source = SOURCE.read_text()
+        function = source[source.index('root_has_sops_key_material()'):].split('\n}\n', 1)[0] + '\n}\n'
+        with tempfile.TemporaryDirectory() as d:
+            default = Path(d) / 'default.key'; default.touch()
+            explicit = Path(d) / 'explicit.key'; explicit.touch()
+            function = function.replace('/root/.config/sops/age/keys.txt', str(default))
+            env = {k:v for k,v in os.environ.items() if not k.startswith('SOPS_AGE_') and k not in ('HOME', 'XDG_CONFIG_HOME')}
+            script = function + '\nroot_has_sops_key_material && printf "%s" "$SOPS_AGE_KEY_FILE"'
+            r = subprocess.run(['bash', '-c', script], env=env, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0); self.assertEqual(r.stdout, str(default))
+            env['SOPS_AGE_KEY_FILE'] = str(explicit)
+            r = subprocess.run(['bash', '-c', script], env=env, capture_output=True, text=True)
+            self.assertEqual(r.stdout, str(explicit))
+            env['SOPS_AGE_KEY_FILE'] = str(Path(d) / 'missing.key')
+            r = subprocess.run(['bash', '-c', script], env=env, capture_output=True, text=True)
+            self.assertNotEqual(r.returncode, 0); self.assertEqual(r.stdout, '')
+
     def test_missing_host_refuses_activation(self):
         r = self.run_guard(active=False)
         self.assertNotEqual(r.returncode, 0)

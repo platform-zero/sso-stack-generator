@@ -83,18 +83,61 @@ def install(rows):
             print(json.dumps({'image': image, 'authority': user, 'verified': True}))
 
 
+def prepare_registry(bundle, *, runner=subprocess.run):
+    """Populate exact selected registry references serially before service startup."""
+    os.chdir('/')
+    domains = json.loads((bundle / 'podman-domains.json').read_text())['domains']
+    authorities = [('rootful', 'root')] + [('rootless-' + d['name'], d['user']) for d in domains]
+    for label, user in authorities:
+        images = set()
+        for path in (bundle / 'quadlet' / label).glob('*.container'):
+            lines = [line[6:] for line in path.read_text().splitlines() if line.startswith('Image=')]
+            if len(lines) != 1:
+                raise ValueError('Ambiguous selected container image')
+            image = lines[0]
+            if image.endswith('.build'):
+                continue
+            if not re.fullmatch(r'(?:sha256:[0-9a-f]{64}|[a-z0-9][a-z0-9.:-]*/[a-z0-9][a-z0-9._/-]*(?::[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64})', image):
+                raise ValueError('Registry preparation refuses unpinned images')
+            images.add(image)
+        if user == 'root':
+            command = ['podman']
+        else:
+            account = pwd.getpwnam(user)
+            command = ['runuser', '-u', user, '--', 'env', f'HOME={account.pw_dir}',
+                       f'XDG_RUNTIME_DIR=/run/user/{account.pw_uid}',
+                       f'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{account.pw_uid}/bus', 'podman']
+        for image in sorted(images):
+            result = runner(command + ['image', 'exists', image], capture_output=True, text=True, timeout=30)
+            if result.returncode not in (0, 1):
+                raise ValueError('Selected image inventory failed')
+            if result.returncode == 1:
+                if image.startswith('sha256:'):
+                    raise ValueError('Offline selected image missing; no registry fallback')
+                runner(command + ['pull', image], capture_output=True, text=True, check=True, timeout=1800)
+                result = runner(command + ['image', 'exists', image], capture_output=True, text=True, timeout=30)
+                if result.returncode:
+                    raise ValueError('Selected registry image not present after preparation')
+            print(json.dumps({'image': image, 'authority': user, 'prepared': True}))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bundle', type=Path, required=True)
-    parser.add_argument('--inputs', type=Path, required=True)
+    parser.add_argument('--inputs', type=Path)
     parser.add_argument('--validate-only', action='store_true')
+    parser.add_argument('--prepare-registry', action='store_true')
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error('Root required for protected release image inputs')
     try:
-        rows = validate(args.bundle, args.inputs)
+        if args.inputs is None and not args.prepare_registry:
+            raise ValueError('Protected release image inputs required')
+        rows = validate(args.bundle, args.inputs) if args.inputs else []
         if not args.validate_only:
             install(rows)
+            if args.prepare_registry:
+                prepare_registry(args.bundle)
     except (ValueError, KeyError, OSError, subprocess.SubprocessError) as exc:
         parser.exit(1, f'[pinned-images] rejected: {type(exc).__name__}; no image fallback\n')
 
