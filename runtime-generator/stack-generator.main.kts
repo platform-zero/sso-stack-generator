@@ -13,6 +13,7 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.nio.file.attribute.PosixFilePermission
 import java.security.MessageDigest
 import kotlin.io.path.*
 
@@ -1802,6 +1803,27 @@ fun replaceDirectory(staging: Path, output: Path) {
     }
 }
 
+fun normalizeArtifactPermissions(output: Path) {
+    // Build output is secret-free except the explicitly declared encrypted store.
+    // Do not inherit a root/operator umask into COPY inputs for non-root images.
+    val store = readTree(output.resolve("site/manifest.json")).path("secretStore").asText()
+    val encryptedStore = output.resolve("site").resolve(store).normalize()
+    val readable = setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+        PosixFilePermission.GROUP_READ, PosixFilePermission.OTHERS_READ)
+    val executable = setOf(PosixFilePermission.OWNER_EXECUTE, PosixFilePermission.GROUP_EXECUTE,
+        PosixFilePermission.OTHERS_EXECUTE)
+    output.walk(PathWalkOption.INCLUDE_DIRECTORIES).forEach { path ->
+        if (Files.isSymbolicLink(path)) fail("artifact contains symlink: ${output.relativize(path)}")
+        val mode = when {
+            path == encryptedStore -> setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE)
+            path.isDirectory() -> readable + executable
+            Files.getPosixFilePermissions(path).any { it in executable } -> readable + executable
+            else -> readable
+        }
+        Files.setPosixFilePermissions(path, mode)
+    }
+}
+
 fun commandGenerate(options: Map<String, String>) {
     val manifest = Path(required(options, "site")).toAbsolutePath().normalize()
     val modulesDir = Path(required(options, "modules-dir")).toAbsolutePath().normalize()
@@ -1837,6 +1859,7 @@ fun commandGenerate(options: Map<String, String>) {
         metadata.put("sourceProvenanceSha256", sha256(staging.resolve("source-provenance.json")))
         metadata.set<ArrayNode>("deferredCapabilities", ir.path("deferredCapabilities").deepCopy())
         writeJson(staging.resolve("bundle.json"), metadata)
+        normalizeArtifactPermissions(staging)
         replaceDirectory(staging, output)
         println("[stack-generator] generated $backend bundle at $output (${ir.path("services").size()} services)")
     } catch (error: Throwable) {

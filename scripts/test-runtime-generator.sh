@@ -118,10 +118,25 @@ generate() {
   )
 }
 
-generate podman "$WORK_DIR/podman-a"
+(umask 077; generate podman "$WORK_DIR/podman-a")
 generate podman "$WORK_DIR/podman-b"
 
 diff -ru "$WORK_DIR/podman-a" "$WORK_DIR/podman-b"
+python3 - "$WORK_DIR/podman-a" <<'PY_PUBLIC_MODES'
+import json, stat, sys
+from pathlib import Path
+b = Path(sys.argv[1])
+store = b / 'site' / json.loads((b / 'site/manifest.json').read_text())['secretStore']
+assert stat.S_IMODE(store.stat().st_mode) == 0o600
+assert not (b / 'runtime/stack.env').exists(), 'build emitted a decrypted runtime environment'
+for path in b.rglob('*'):
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if path.is_dir():
+        assert mode == 0o755, (path, 'public directory inherits private umask')
+    elif path != store:
+        assert mode & 0o444 == 0o444 and mode & 0o022 == 0, (path, 'public asset unreadable/unsafe')
+print('[runtime-test] private umask preserves readable public build inputs and encrypted-store privacy')
+PY_PUBLIC_MODES
 jq -e --arg commit "$(git -C "$ROOT_DIR" rev-parse HEAD)" '
   .schemaVersion == 1 and .generatorCommit == $commit and
   (.manifestSha256 | test("^[0-9a-f]{64}$")) and
