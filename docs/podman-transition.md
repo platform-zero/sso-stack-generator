@@ -132,8 +132,11 @@ installation, not replay of an old intent. Per-release private metadata receipts
 record preparing, selected units, builds, startup and activation; they contain no
 credentials and do not establish functional or owner acceptance.
 
-On failure the installer stops only the selected workload/build units and retains
-volumes and diagnostics. **It does not restart a previous release by default.**
+On failure or cancellation the installer stops only the selected workload/build
+units and retains volumes and diagnostics. If reviewed rollback is not performed,
+it also disables the selected root/rootless boot targets and generated root timer,
+so a later boot cannot implicitly replay the failed activation. An incomplete
+quarantine is reported as requiring operator action, not success. **It does not restart a previous release by default.**
 `WEBSERVICES_ACTIVATION_ROLLBACK=1` explicitly opts into release rollback only after
 the operator has established compatible data/recovery coverage; incomplete scoped
 stopping refuses that restart. Production data recovery is a separate gate.

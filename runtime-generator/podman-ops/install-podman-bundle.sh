@@ -879,6 +879,16 @@ done
 install -m 0755 "$release/ops/webservices-auto-update" /usr/local/sbin/webservices-auto-update
 install -m 0644 "$release/ops/webservices-auto-update.service" "$release/ops/webservices-auto-update.timer" /etc/systemd/system/
 
+quarantine_selections() {
+  local i result=0
+  # Failed/cancelled selections must not automatically restart on next boot.
+  systemctl disable webservices.target webservices-auto-update.timer >/dev/null 2>&1 || result=1
+  for i in "${!ROOTLESS_USERS[@]}"; do
+    user_systemctl "$i" disable webservices.target >/dev/null 2>&1 || result=1
+  done
+  return "$result"
+}
+
 rollback() {
   status=${1:-$?}
   # Do not inherit traps into rollback or a failed cleanup command can recurse.
@@ -896,10 +906,12 @@ rollback() {
     stop_selected_services rootless "$i" "$BUNDLE/quadlet/rootless-${ROOTLESS_DOMAIN_NAMES[$i]}" || cleanup_failed=1
   done
   if [ "$cleanup_failed" -ne 0 ]; then
+    quarantine_selections || printf '[podman-install] selected boot quarantine incomplete; operator action required\n' >&2
     printf '[podman-install] scoped stop incomplete; previous release not restarted; review required\n' >&2
     exit "$status"
   fi
   if [ "$ACTIVATION_ROLLBACK" != 1 ]; then
+    quarantine_selections || printf '[podman-install] selected boot quarantine incomplete; operator action required\n' >&2
     printf '[podman-install] stopped; explicit reviewed recovery required; no automatic restart\n' >&2
     exit "$status"
   fi

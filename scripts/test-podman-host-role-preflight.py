@@ -69,6 +69,21 @@ class HostRolePreflight(unittest.TestCase):
             r = subprocess.run(['bash', '-c', script], env=env, capture_output=True, text=True)
             self.assertNotEqual(r.returncode, 0); self.assertEqual(r.stdout, '')
 
+    def test_failed_selection_quarantines_every_boot_trigger(self):
+        source=SOURCE.read_text()
+        function=source[source.index('quarantine_selections()'):].split('\n}\n',1)[0]+'\n}\n'
+        with tempfile.TemporaryDirectory() as d:
+            record=Path(d)/'calls'
+            script=('ROOTLESS_USERS=(alpha beta)\n'
+                    'systemctl() { printf "root %s\\n" "$*" >> "$RECORD"; }\n'
+                    'user_systemctl() { printf "user %s\\n" "$*" >> "$RECORD"; [ "$1" != 0 ]; }\n'
+                    +function+'\nquarantine_selections\n')
+            r=subprocess.run(['bash','-c',script],env={**os.environ,'RECORD':str(record)},capture_output=True,text=True)
+            self.assertNotEqual(r.returncode,0)
+            self.assertEqual(record.read_text().splitlines(),['root disable webservices.target webservices-auto-update.timer','user 0 disable webservices.target','user 1 disable webservices.target'])
+        self.assertIn("trap 'ACTIVATION_ROLLBACK=0; rollback 143' TERM",source)
+        self.assertIn("trap 'ACTIVATION_ROLLBACK=0; rollback 130' INT",source)
+
     def test_missing_host_refuses_activation(self):
         r = self.run_guard(active=False)
         self.assertNotEqual(r.returncode, 0)
