@@ -12,6 +12,8 @@ trap 'rm -rf "$WORK_DIR"' EXIT
   exit 1
 }
 
+bash "$ROOT_DIR/scripts/test-runtime-input-duplicates.sh"
+
 # Cached dist JARs must be seeded before compilation, never replace selected-source output.
 python3 - "$ROOT_DIR/runtime-generator/stack-generator.main.kts" <<'PY'
 import sys
@@ -509,11 +511,25 @@ if ! rg -Fq '\( -name diff -o -name merged \) -exec chmod 0755 {} +' "$WORK_DIR/
   exit 1
 fi
 
-python3 - "$WORK_DIR/podman-a" <<'PY_IMAGE_PINS'
+python3 - "$WORK_DIR/podman-a" "$MODULES_DIR" <<'PY_IMAGE_PINS'
 import json, sys
 from pathlib import Path
 bundle = Path(sys.argv[1])
-for name, service in json.loads((bundle / 'stack.ir.json').read_text())['services'].items():
+ir = json.loads((bundle / 'stack.ir.json').read_text())
+caddy_source = Path(sys.argv[2]) / 'caddy' / 'stack.runtime.yaml'
+if 'caddy' in ir['services'] and caddy_source.is_file() and 'rootlessStrategy: "shared"' in caddy_source.read_text():
+    anchor = ir['volumes']['caddy_ca']
+    assert anchor['rootlessStrategy'] == 'shared', 'declared public CA policy lost during materialization'
+    consumers = 0
+    for unit in (bundle / 'quadlet').glob('rootless-*/*.container'):
+        for line in unit.read_text().splitlines():
+            if '/caddy_ca:' in line:
+                assert line.startswith('Volume=' + anchor['hostPath'] + ':'), (unit, 'domain-local CA shadow')
+                assert ':ro' in line and ':U' not in line, (unit, 'shared public anchor is writable/remapped')
+                consumers += 1
+    assert consumers > 0, 'no readonly public anchor consumers verified'
+    print('[runtime-test] declared shared public CA retained in readonly authority mounts')
+for name, service in ir['services'].items():
     image = service.get('image', '')
     if '@sha256:' not in image or service.get('build'):
         continue

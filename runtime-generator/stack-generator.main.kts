@@ -1,6 +1,7 @@
 @file:OptIn(kotlin.io.path.ExperimentalPathApi::class)
 
 import com.fasterxml.jackson.core.JsonGenerator
+import com.fasterxml.jackson.core.JsonParser
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.SerializationFeature
@@ -16,8 +17,10 @@ import java.security.MessageDigest
 import kotlin.io.path.*
 
 val json = ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT)
+    .enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
 val yaml = ObjectMapper(YAMLFactory().disable(JsonGenerator.Feature.AUTO_CLOSE_TARGET))
     .enable(SerializationFeature.INDENT_OUTPUT)
+    .enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
 val nodes = JsonNodeFactory.instance
 
 fun fail(message: String): Nothing = error("stack generator: $message")
