@@ -1150,6 +1150,13 @@ done
 python3 "$BUNDLE/ops/install-pinned-images.py" --bundle "$BUNDLE" --prepare-registry
 journal starting
 systemctl enable --now webservices-auto-update.timer
+# Launch both sides before readiness waits: selected rootless producers can
+# require rootful databases/mail, and rootful consumers require rootless peers.
+# Preparation remains serial; starting only one authority graph deadlocks a
+# genuinely empty installation (for example ERPNext waiting for MariaDB).
+systemctl reset-failed 'webservices-*' || true
+systemctl enable webservices.target
+systemctl --no-block restart webservices.target
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user_systemctl "$i" --no-block restart webservices.target
 done
@@ -1159,9 +1166,6 @@ for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   wait_for_target_services rootless "$i" "${ROOTLESS_SYSTEMD_DIRS[$i]}"
   user_systemctl "$i" --quiet is-active webservices.target
 done
-systemctl reset-failed 'webservices-*' || true
-systemctl enable webservices.target
-systemctl restart webservices.target
 wait_for_target_services rootful 0 /etc/systemd/system
 systemctl --quiet is-active webservices.target
 journal active

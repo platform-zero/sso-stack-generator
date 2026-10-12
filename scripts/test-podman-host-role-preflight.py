@@ -69,6 +69,15 @@ class HostRolePreflight(unittest.TestCase):
             r = subprocess.run(['bash', '-c', script], env=env, capture_output=True, text=True)
             self.assertNotEqual(r.returncode, 0); self.assertEqual(r.stdout, '')
 
+    def test_both_authority_graphs_launch_before_cross_domain_readiness(self):
+        TEXT=SOURCE.read_text()
+        start=TEXT.index('journal starting\n')
+        root=TEXT.index('systemctl --no-block restart webservices.target',start)
+        rootless=TEXT.index('user_systemctl "$i" --no-block restart webservices.target',start)
+        wait=TEXT.index('\nwait_for_cross_domain_producers\n',start)
+        self.assertLess(root,wait);self.assertLess(rootless,wait)
+        self.assertNotIn('systemctl restart webservices.target',TEXT[wait:])
+
     def test_failed_selection_quarantines_every_boot_trigger(self):
         source=SOURCE.read_text()
         function=source[source.index('quarantine_selections()'):].split('\n}\n',1)[0]+'\n}\n'
