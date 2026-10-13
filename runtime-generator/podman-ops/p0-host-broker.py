@@ -42,6 +42,25 @@ class RequestError(Exception):
     pass
 
 
+def unique_json_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise RequestError("JSON authority rejected")
+        result[key] = value
+    return result
+
+
+def decode_json(raw):
+    try:
+        result = json.loads(raw, object_pairs_hook=unique_json_pairs)
+    except (ValueError, UnicodeError):
+        raise RequestError("JSON authority rejected") from None
+    if not isinstance(result, dict):
+        raise RequestError("JSON authority rejected")
+    return result
+
+
 def run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(args, text=True, capture_output=True, check=False)
     if check and result.returncode:
@@ -76,10 +95,12 @@ def validate_bundle(bundle: Path) -> None:
     for relative in required:
         if not (bundle / relative).is_file():
             raise RequestError(f"bundle is missing {relative}")
-    metadata = json.loads((bundle / "bundle.json").read_text())
+    metadata = decode_json((bundle / "bundle.json").read_text())
+    decode_json((bundle / "stack.ir.json").read_text())
+    decode_json((bundle / "podman-loopback-endpoints.json").read_text())
     if metadata.get("backend") != "podman":
         raise RequestError("bundle backend is not podman")
-    domains = json.loads((bundle / "podman-domains.json").read_text()).get("domains", [])
+    domains = decode_json((bundle / "podman-domains.json").read_text()).get("domains", [])
     if not domains or len({item["user"] for item in domains}) != len(domains):
         raise RequestError("invalid or duplicate Podman domains")
     domain_users = {item["name"]: item["user"] for item in domains}
@@ -232,10 +253,10 @@ def restore(request: dict[str, object]) -> dict[str, object]:
     if request.get("confirm") != "RESTORE_PLATFORM_ZERO":
         raise RequestError("restore requires --confirm RESTORE_PLATFORM_ZERO")
     source = snapshot_path(request)
+    domains = decode_json(DOMAINS_MANIFEST.read_text()).get("domains", []) if DOMAINS_MANIFEST.is_file() else []
     run("systemctl", "stop", "webservices.target", check=False)
-    if DOMAINS_MANIFEST.is_file():
-        for item in json.loads(DOMAINS_MANIFEST.read_text()).get("domains", []):
-            user_systemctl(item["user"], "stop", "webservices.target", check=False)
+    for item in domains:
+        user_systemctl(item["user"], "stop", "webservices.target", check=False)
     for destination in (
         Path("/mnt/stack/rootless"),
         Path("/mnt/stack/volumes"),
@@ -342,7 +363,7 @@ def status(_: dict[str, object]) -> dict[str, object]:
         domains_file = next((path / "podman-domains.json" for path in sorted(INCOMING.iterdir(), reverse=True) if len(path.name) == 64 and path.is_dir()), None)
     domains = []
     if domains_file and domains_file.is_file():
-        for item in json.loads(domains_file.read_text()).get("domains", []):
+        for item in decode_json(domains_file.read_text()).get("domains", []):
             health = scope_health(item["user"], item.get("persistentServices", []))
             domains.append({"name": item["name"], "user": item["user"], **health})
     result["domains"] = domains
@@ -363,8 +384,9 @@ def garbage_collect(request: dict[str, object]) -> dict[str, object]:
     dry_run = bool(request.get("dry_run", False))
     active = None
     if ACTIVE_RELEASE.is_file():
-        active = json.loads(ACTIVE_RELEASE.read_text()).get("release")
+        active = decode_json(ACTIVE_RELEASE.read_text()).get("release")
     removals: list[str] = []
+    domains = decode_json(DOMAINS_MANIFEST.read_text()).get("domains", []) if DOMAINS_MANIFEST.is_file() else []
 
     def prune_directories(root: Path, keep: int, protected: set[Path] | None = None) -> None:
         protected = protected or set()
@@ -380,9 +402,8 @@ def garbage_collect(request: dict[str, object]) -> dict[str, object]:
 
     prune_directories(SNAPSHOTS, SNAPSHOT_RETENTION)
     release_roots = [ROOTFUL_RELEASES]
-    if DOMAINS_MANIFEST.is_file():
-        for item in json.loads(DOMAINS_MANIFEST.read_text()).get("domains", []):
-            release_roots.append(Path(item["stateRoot"]) / "releases")
+    for item in domains:
+        release_roots.append(Path(item["stateRoot"]) / "releases")
     for root in release_roots:
         protected = set()
         current = root.parent / "current"
@@ -408,7 +429,7 @@ def logs(request: dict[str, object]) -> dict[str, object]:
         result = run("journalctl", "-u", unit, "-n", "200", "--no-pager", check=False)
     else:
         path = release_path(request)
-        entries = json.loads((path / "podman-domains.json").read_text()).get("domains", [])
+        entries = decode_json((path / "podman-domains.json").read_text()).get("domains", [])
         item = next((entry for entry in entries if entry["name"] == domain), None)
         if item is None:
             raise RequestError("unknown domain")
@@ -437,8 +458,8 @@ def authorized_peer(uid: int, direct: int, subordinate: list[tuple[int, int]]) -
 
 def handle(raw: bytes) -> dict[str, object]:
     try:
-        request = json.loads(raw)
-        if not isinstance(request, dict) or request.get("version") != 1:
+        request = decode_json(raw)
+        if type(request.get("version")) is not int or request.get("version") != 1:
             raise RequestError("request version must be 1")
         action = str(request.get("action", ""))
         if action not in ACTIONS:

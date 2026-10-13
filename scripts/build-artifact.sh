@@ -160,6 +160,7 @@ log "running deploy preflight checks"
 
 log "running host broker policy checks"
 python3 "$SCRIPT_DIR/test-p0-host-broker.py" >&2
+python3 "$SCRIPT_DIR/test-p0-host-json-authority.py" >&2
 
 log "running bundle installer checks"
 "$SCRIPT_DIR/test-install-bundle.sh" >&2

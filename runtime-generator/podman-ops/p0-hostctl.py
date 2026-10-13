@@ -7,6 +7,15 @@ import socket
 import sys
 
 
+def unique_json_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("invalid broker response")
+        result[key] = value
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=["stage", "preflight", "snapshot", "activate", "status", "verify", "logs", "restore", "gc", "finalize-access"])
@@ -26,7 +35,8 @@ def main() -> int:
         client.connect(args.socket)
         client.sendall(json.dumps(request).encode() + b"\n")
         response = b""
-        while b"\n" not in response:
+        client.settimeout(120)
+        while b"\n" not in response and len(response) <= 1024 * 1024:
             chunk = client.recv(4096)
             if not chunk:
                 break
@@ -35,9 +45,13 @@ def main() -> int:
         print("p0-hostctl: host broker closed the connection without a response", file=sys.stderr)
         return 1
     try:
-        decoded = json.loads(response)
-    except json.JSONDecodeError as error:
-        print(f"p0-hostctl: invalid host broker response: {error}", file=sys.stderr)
+        if len(response) > 1024 * 1024 or not response.endswith(b"\n"):
+            raise ValueError("invalid broker response")
+        decoded = json.loads(response, object_pairs_hook=unique_json_pairs)
+        if not isinstance(decoded, dict) or type(decoded.get("ok")) is not bool:
+            raise ValueError("invalid broker response")
+    except (ValueError, UnicodeError):
+        print("p0-hostctl: invalid host broker response", file=sys.stderr)
         return 1
     print(json.dumps(decoded, indent=2, sort_keys=True))
     return 0 if decoded.get("ok") else 1
