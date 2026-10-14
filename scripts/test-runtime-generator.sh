@@ -98,6 +98,11 @@ SITE="$WORK_DIR/manifest.json"
 SOURCE_SITE_DIR="$(cd "$(dirname "$SOURCE_SITE")" && pwd -P)"
 cp -a "$SOURCE_SITE_DIR/global.settings" "$WORK_DIR/global.settings"
 cp "$SOURCE_SITE" "$SITE"
+if jq -e 'has("agentVmSpec")' "$SITE" >/dev/null; then
+  vm_source="$(jq -r '.agentVmSpec' "$SITE")"
+  [ "$vm_source" = agent-vm.json ] || { printf '[runtime-test] unexpected VM spec path\n' >&2; exit 1; }
+  cp "$SOURCE_SITE_DIR/$vm_source" "$WORK_DIR/$vm_source"
+fi
 if [ -d "$MODULES_DIR/workload-spawner" ]; then
   site_with_workload_spawner="$(mktemp)"
   jq '
@@ -122,6 +127,13 @@ generate() {
 generate podman "$WORK_DIR/podman-b"
 
 diff -ru "$WORK_DIR/podman-a" "$WORK_DIR/podman-b"
+python3 "$ROOT_DIR/scripts/test-agent-vm-bundle.py"
+python3 "$WORK_DIR/podman-a/ops/verify-agent-vm-bundle.py" --bundle "$WORK_DIR/podman-a" >/dev/null
+if jq -e 'has("agentVmSpec")' "$SITE" >/dev/null; then
+  jq -e --arg digest "$(sha256sum "$WORK_DIR/agent-vm.json" | cut -d' ' -f1)" \
+    '.schemaVersion == 1 and .path == "agent-vm.json" and .sha256 == $digest' \
+    "$WORK_DIR/podman-a/site/agent-vm.provenance.json" >/dev/null
+fi
 python3 - "$WORK_DIR/podman-a" <<'PY_PUBLIC_MODES'
 import json, stat, sys
 from pathlib import Path

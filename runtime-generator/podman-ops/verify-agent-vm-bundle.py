@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Fail-closed, read-only binding of a generated Latium bundle to its site VM pin.
+
+The selected control/guest installers remain the only source-role mutation paths.
+This check does not pretend that a stack activation has installed either role.
+"""
+import argparse
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import re
+import subprocess
+
+
+def strict(path):
+    def pairs(rows):
+        value = {}
+        for key, item in rows:
+            if key in value:
+                raise ValueError('Duplicate agent VM authority key')
+            value[key] = item
+        return value
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 65536:
+        raise ValueError('Missing, linked or oversized agent VM input')
+    return json.loads(path.read_bytes(), object_pairs_hook=pairs)
+
+
+def verify(bundle, control=None):
+    site = bundle / 'site'
+    manifest = strict(site / 'manifest.json')
+    if manifest.get('site') != 'latium':
+        return {'site': manifest.get('site'), 'agentVm': 'not-applicable'}
+    if manifest.get('agentVmSpec') != 'agent-vm.json':
+        raise ValueError('Latium requires exact site-owned agent-vm.json')
+    vm_path = site / 'agent-vm.json'
+    metadata = strict(site / 'agent-vm.provenance.json')
+    body = vm_path.read_bytes() if vm_path.is_file() and not vm_path.is_symlink() else b''
+    digest = hashlib.sha256(body).hexdigest()
+    vm = strict(vm_path)
+    pins = vm.get('runtime')
+    if (set(metadata) != {'schemaVersion', 'path', 'sha256', 'controlCommit'}
+            or type(metadata['schemaVersion']) is not int or metadata['schemaVersion'] != 1
+            or metadata['path'] != 'agent-vm.json' or metadata['sha256'] != digest
+            or not isinstance(pins, dict) or metadata['controlCommit'] != pins.get('controlCommit')):
+        raise ValueError('Agent VM bundle provenance mismatch')
+    if (set(vm) != {'schemaVersion', 'name', 'network', 'networkConfig', 'vcpus', 'memoryMiB',
+                    'osGiB', 'workGiB', 'swapGiB', 'cloudImage', 'debianSnapshot', 'packages',
+                    'runtime', 'projectLanes', 'gpuDevices', 'reserves'}
+            or type(vm['schemaVersion']) is not int or vm['schemaVersion'] != 1
+            or vm['name'] != 'p0-agents' or vm['projectLanes'] != [] or vm['gpuDevices'] != []
+            or any(type(vm[k]) is not int or vm[k] != v for k, v in
+                   {'vcpus': 8, 'memoryMiB': 12288, 'osGiB': 80, 'workGiB': 100, 'swapGiB': 4}.items())
+            or set(pins) != {'controlCommit', 'worklaneCommit', 'manifestSha256', 'image',
+                             'archiveFilename', 'archiveSha256', 'importBudgetBytes'}
+            or not all(isinstance(pins.get(k), str) and re.fullmatch('[a-f0-9]{40}', pins[k])
+                       for k in ('controlCommit', 'worklaneCommit'))):
+        raise ValueError('Invalid empty CPU agent VM pins')
+    if control is not None:
+        control = control.resolve(strict=True)
+        git = ['git', '-c', 'safe.directory=' + str(control), '-C', str(control)]
+        head = subprocess.check_output([*git, 'rev-parse', 'HEAD'], text=True).strip()
+        if head != pins['controlCommit'] or subprocess.check_output(
+                [*git, 'status', '--porcelain'], text=True).strip():
+            raise ValueError('Reviewed control checkout differs from site pin')
+        source = control / 'ops/agent_vm_spec.py'
+        if source.is_symlink() or not source.is_file():
+            raise ValueError('Pinned control VM validator unavailable')
+        module_spec = importlib.util.spec_from_file_location('p0_site_vm_validator', source)
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+        module.load(vm_path)
+    return {'site': 'latium', 'agentVmSha256': digest, 'controlCommit': pins['controlCommit'],
+            'controlSourceValidated': control is not None, 'rolesActivated': False}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--bundle', type=Path, required=True)
+    parser.add_argument('--control-checkout', type=Path)
+    args = parser.parse_args()
+    try:
+        print(json.dumps(verify(args.bundle, args.control_checkout), sort_keys=True))
+    except (ValueError, KeyError, TypeError, OSError, subprocess.CalledProcessError) as error:
+        parser.exit(1, 'agent VM bundle preflight refused: ' + type(error).__name__ + '\n')
+
+
+if __name__ == '__main__':
+    main()

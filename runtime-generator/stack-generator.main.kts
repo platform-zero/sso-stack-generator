@@ -946,16 +946,38 @@ fun materializeSiteManifest(manifestPath: Path, output: Path) {
     val siteDir = output.resolve("site")
     siteDir.createDirectories()
     manifestPath.copyTo(siteDir.resolve("manifest.json"), overwrite = true)
-    (listOf("stackConfig", "secretStore") +
-        if (manifest.has("imageIdentityPinsPath")) listOf("imageIdentityPinsPath") else emptyList()).forEach { key ->
+    if (manifest.path("site").asText() == "latium" && manifest.path("agentVmSpec").asText() != "agent-vm.json")
+        fail("Latium requires exact site-owned agent-vm.json")
+    (listOf("stackConfig", "secretStore") + listOfNotNull(
+        "imageIdentityPinsPath".takeIf { manifest.has(it) },
+        "agentVmSpec".takeIf { manifest.has(it) })).forEach { key ->
         val relative = manifest.path(key).textOrNull() ?: fail("site manifest missing $key")
         if (relative.startsWith("/")) fail("site manifest $key must be relative: $relative")
         val source = manifestPath.parent.resolve(relative).normalize()
-        if (!source.isRegularFile()) fail("site manifest $key points to missing file: $source")
+        if (!source.isRegularFile() || source.isSymbolicLink() || !source.toRealPath().startsWith(manifestPath.parent.toRealPath()))
+            fail("site manifest $key points to missing or linked file: $source")
+        if (key == "agentVmSpec") {
+            val vm = readTree(source)
+            val pins = vm.path("runtime")
+            if (vm.path("schemaVersion").asInt() != 1 || vm.path("name").asText() != "p0-agents"
+                || vm.path("projectLanes") !is ArrayNode || vm.path("projectLanes").size() != 0
+                || vm.path("gpuDevices") !is ArrayNode || vm.path("gpuDevices").size() != 0
+                || !Regex("[a-f0-9]{40}").matches(pins.path("controlCommit").asText())
+                || !Regex("[a-f0-9]{40}").matches(pins.path("worklaneCommit").asText())
+                || vm.path("vcpus").asInt() != 8 || vm.path("memoryMiB").asInt() != 12288
+                || vm.path("osGiB").asInt() != 80 || vm.path("workGiB").asInt() != 100
+                || vm.path("swapGiB").asInt() != 4)
+                fail("invalid site-owned empty CPU agent VM pins")
+        }
         val destination = siteDir.resolve(relative).normalize()
         if (!destination.startsWith(siteDir)) fail("site manifest $key escapes site dir: $relative")
         destination.parent.createDirectories()
         source.copyTo(destination, overwrite = true)
+        if (key == "agentVmSpec") {
+            writeJson(siteDir.resolve("agent-vm.provenance.json"), obj().put("schemaVersion", 1)
+                .put("path", relative).put("sha256", sha256(source))
+                .put("controlCommit", readTree(source).path("runtime").path("controlCommit").asText()))
+        }
     }
 }
 

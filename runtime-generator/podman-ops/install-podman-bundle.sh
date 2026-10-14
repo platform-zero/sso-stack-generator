@@ -4,6 +4,7 @@ set -Eeuo pipefail
 BUNDLE=""
 ENV_DIR=""
 IMAGE_INPUTS=""
+CONTROL_CHECKOUT=""
 ACTIVATE=false
 INSPECT=false
 RESUME_INTENT=""
@@ -30,6 +31,7 @@ while [ "$#" -gt 0 ]; do
     --bundle) BUNDLE="$2"; shift 2 ;;
     --env-dir) ENV_DIR="$2"; shift 2 ;;
     --image-inputs) IMAGE_INPUTS="$2"; shift 2 ;;
+    --control-checkout) CONTROL_CHECKOUT="$2"; shift 2 ;;
     --activate) ACTIVATE=true; shift ;;
     --inspect) INSPECT=true; shift ;;
     --resume-intent) RESUME_INTENT="$2"; shift 2 ;;
@@ -48,6 +50,15 @@ if [ "$INSPECT" = true ]; then
   exec python3 "$JOURNAL_TOOL" --root "$STATE_ROOT" --inspect
 fi
 [ -d "$BUNDLE/quadlet" ] || { printf 'invalid Podman bundle: %s\n' "$BUNDLE" >&2; exit 1; }
+# Read-only pin check before any activation preparation. This binds the stack
+# release to the site VM contract; host/guest roles still need their own CAS
+# selection and configuration via the reviewed control installer.
+if [ "$ACTIVATE" = true ] && [ "$(jq -r '.site' "$BUNDLE/site/manifest.json")" = latium ]; then
+  [ -n "$CONTROL_CHECKOUT" ] || { printf 'Latium activation requires reviewed --control-checkout\n' >&2; exit 1; }
+fi
+agent_vm_check=(python3 "$BUNDLE/ops/verify-agent-vm-bundle.py" --bundle "$BUNDLE")
+[ -z "$CONTROL_CHECKOUT" ] || agent_vm_check+=(--control-checkout "$CONTROL_CHECKOUT")
+"${agent_vm_check[@]}" >/dev/null
 ROOTFUL_QUADLET_SOURCE="$BUNDLE/quadlet/rootful"
 [ -d "$ROOTFUL_QUADLET_SOURCE" ] || ROOTFUL_QUADLET_SOURCE="$BUNDLE/quadlet"
 jq -e '.backend == "podman"' "$BUNDLE/bundle.json" >/dev/null
