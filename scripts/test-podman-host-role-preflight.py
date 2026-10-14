@@ -2,6 +2,7 @@
 """Focused source shell regression: host role failure precedes activation."""
 import os
 from pathlib import Path
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -40,6 +41,26 @@ class HostRolePreflight(unittest.TestCase):
             selected = subprocess.check_output(['bash', '-c', functions + '\nselected_container_units ' + str(root)], text=True)
             self.assertIn('webservices-core.target', selected)
             self.assertNotIn('foreign', selected)
+
+    def test_private_bootstrap_worktree_publishes_only_traversable_release_root(self):
+        source = SOURCE.read_text()
+        start = source.index('cp -a "$BUNDLE/." "$release/"')
+        block = source[start:source.index('for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do', start)]
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); bundle = root / 'private-installer'; bundle.mkdir(mode=0o700)
+            runtime = bundle / 'runtime'; runtime.mkdir(mode=0o700)
+            secret = runtime / 'stack.env'; secret.write_text('fixture-secret-not-for-publication\n'); secret.chmod(0o600)
+            runner = bundle / 'build/stack.containers/test-runner/run-tests.sh'
+            runner.parent.mkdir(parents=True); runner.write_text('#!/bin/sh\nexit 0\n'); runner.chmod(0o755)
+            release = root / 'releases/selected'; release.mkdir(parents=True)
+            script = 'set -eu\nBUNDLE=' + str(bundle) + '\nrelease=' + str(release) + '\n' + block
+            result = subprocess.run(['bash', '-c', script], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(stat.S_IMODE(release.stat().st_mode), 0o755)
+            self.assertEqual(stat.S_IMODE((release / 'runtime').stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE((release / 'runtime/stack.env').stat().st_mode), 0o600)
+            self.assertEqual((release / runner.relative_to(bundle)).read_bytes(), runner.read_bytes())
+            self.assertEqual(stat.S_IMODE(bundle.stat().st_mode), 0o700)
 
     def test_failure_cleanup_is_always_armed_before_startup(self):
         source = SOURCE.read_text()

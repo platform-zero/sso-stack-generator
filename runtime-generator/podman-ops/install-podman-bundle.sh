@@ -584,6 +584,10 @@ for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
 done
 systemctl reset-failed 'webservices-*' || true
 cp -a "$BUNDLE/." "$release/"
+# cp -a inherits the installer worktree's root0700 mode. The root-owned
+# selected test entrypoint must be traversable by its dedicated rootless
+# runner; decrypted runtime/ remains root0700 and stack.env root0600.
+install -d -m 0755 "$release"
 install -d -m 0755 "$release/repos"
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user="${ROOTLESS_DOMAIN_USERS[$i]}"
