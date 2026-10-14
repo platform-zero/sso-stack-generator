@@ -550,8 +550,10 @@ if ! rg -Fq '"$STACK_LAB_ROOT/stack_work/$maintenance_lane/.p0"' "$WORK_DIR/podm
   printf '[runtime-generator-test] control-plane install must assign role-lane parents to stack_lab\n' >&2
   exit 1
 fi
-if ! rg -Fq 'KERNEL=="kvm", OWNER="%s", GROUP="kvm", MODE="0660"' "$WORK_DIR/podman-a/ops/install-platform-zero-control-plane.sh"; then
-  printf '[runtime-generator-test] KVM ownership must persist for the isolated test authority\n' >&2
+if ! rg -Fq 'id -nG "$kvm_user"' "$WORK_DIR/podman-a/ops/install-platform-zero-control-plane.sh" ||
+   ! rg -Fq 'usermod -aG kvm "$kvm_user"' "$WORK_DIR/podman-a/ops/install-platform-zero-control-plane.sh" ||
+   rg -Fq 'KERNEL=="kvm", OWNER=' "$WORK_DIR/podman-a/ops/install-platform-zero-control-plane.sh"; then
+  printf '[runtime-generator-test] only scoped existing KVM group access may be added; device ownership must remain unchanged\n' >&2
   exit 1
 fi
 if ! rg -Fq 'chmod 0700 "$graph_root"' "$WORK_DIR/podman-a/ops/install-podman-bundle.sh"; then
