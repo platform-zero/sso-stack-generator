@@ -191,6 +191,18 @@ separately reviewed operation runner, final inputs, installed socket boundary
 and isolated destructive-test proofs are complete. Do not report a consumed
 receipt as an apply, or a Worklane confirmation as independent root approval.
 
+The root-only `ops/p0-host-install-inputs.py` prepares a separate **synthetic
+isolated-only** activation-input receipt from a reviewed, root-controlled staged
+bundle, a clean exact-commit control checkout, and immutable local image-input
+bytes. It verifies the actual DMI UUID and private synthetic marker, uses only
+the *installed trusted* host broker/guest validator code (never code from a
+lane-proposed bundle), binds the site guest/control spec and image-input hash,
+and refuses changed pre-existing root0600 configuration. A user-writable ancestor
+such as `/mnt/lab_debian` is not acceptable: stage these authority inputs below
+a root-controlled parent such as `/var/lib/platform-zero`. This preparation does
+not activate a stack, constitute independent approval, or authorize production
+mutation. The typed worker and installed denial proof remain separately gated.
+
 ## Updates and recovery
 
 `webservices-auto-update.timer` runs `podman auto-update --rollback` daily.
