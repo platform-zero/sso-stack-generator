@@ -11,10 +11,17 @@ assert 'useradd --user-group --create-home' in body
 assert 'one valid subordinate range' in body
 assert 'install-domain-dispatch-key.py' in body
 assert 'usermod -aG kvm' in body
+assert body.index('kvm_user="$(jq') < body.index('  useradd --user-group --create-home')
 assert 'existing KVM ownership rule requires separate review' in body
 assert 'chown "$kvm_user:kvm" /dev/kvm' not in body
 assert 'udevadm control' not in body
 assert 'sed -i "/ p0-${domain}$/d"' not in body
+# systemd-run observed root:kvm 0660 yet a shell-test decimal `-eq 060`
+# rejected octal bitmask value 48. Exercise the actual source expression.
+mask=next(line.strip().split(' || {',1)[0]for line in body.splitlines()if '8#$kvm_mode & 060' in line)
+for mode,allowed in (('660',True),('600',False),('620',False),('666',False)):
+    tested=subprocess.run(['bash','-c','kvm_mode="$1"; '+mask,'--',mode],capture_output=True)
+    assert (tested.returncode==0)is allowed,(mode,mask)
 preflight=body[body.index('refuse_unmanaged_target() {'):body.index('while read -r member target; do')]
 with tempfile.TemporaryDirectory() as d:
     a=Path(d)/'reviewed';b=Path(d)/'installed'

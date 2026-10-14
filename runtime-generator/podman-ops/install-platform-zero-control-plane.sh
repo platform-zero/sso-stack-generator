@@ -23,6 +23,24 @@ for command in install jq ssh-keygen systemctl useradd usermod getent; do comman
 [[ "$STACK_LAB_ROOT" == /* && "$STACK_LAB_ROOT" != / && ! -L "$STACK_LAB_ROOT" ]] || {
   printf 'unsafe maintenance account home\n' >&2; exit 1;
 }
+# Inspect site-specific KVM and SOPS gates before creating any host account.
+# A refusal must not leave a half-adopted maintenance identity behind.
+[ -z "$SOPS_AGE_KEY_FILE" ] || [ -f "$SOPS_AGE_KEY_FILE" ] || { printf 'SOPS age key file does not exist\n' >&2; exit 1; }
+[ -z "$SOPS_BINARY" ] || [ -x "$SOPS_BINARY" ] || { printf 'SOPS binary is not executable\n' >&2; exit 1; }
+kvm_user="$(jq -r '.domains[] | select(any(.hostCapabilities[]?; . == "kvm")) | .user' "$BUNDLE/podman-domains.json" | head -n 1)"
+if [ -n "$kvm_user" ]; then
+  [ ! -e /etc/udev/rules.d/70-platform-zero-kvm.rules ] &&
+    [ ! -L /etc/udev/rules.d/70-platform-zero-kvm.rules ] || {
+      printf 'existing KVM ownership rule requires separate review; install refused\n' >&2; exit 1;
+    }
+  id "$kvm_user" >/dev/null 2>&1 || { printf 'missing KVM domain account: %s\n' "$kvm_user" >&2; exit 1; }
+  kvm_mode="$(stat -c %a /dev/kvm 2>/dev/null)" || { printf 'KVM device unavailable\n' >&2; exit 1; }
+  [ -c /dev/kvm ] && [ "$(stat -c %G /dev/kvm)" = kvm ] &&
+    [ $(( 8#$kvm_mode & 060 )) -eq $(( 060 )) ] && [ $(( 8#$kvm_mode & 007 )) -eq 0 ] || {
+      printf 'existing KVM group/device permissions must be preserved; install refused\n' >&2; exit 1;
+    }
+fi
+
 if ! id stack_lab >/dev/null 2>&1; then
   [ ! -e "$STACK_LAB_ROOT" ] || { printf 'unowned maintenance account home cannot be adopted\n' >&2; exit 1; }
   useradd --user-group --create-home --home-dir "$STACK_LAB_ROOT" --shell /usr/sbin/nologin stack_lab
@@ -37,21 +55,6 @@ for range_file in /etc/subuid /etc/subgid; do
     printf 'maintenance account requires one valid subordinate range\n' >&2; exit 1;
   }
 done
-[ -z "$SOPS_AGE_KEY_FILE" ] || [ -f "$SOPS_AGE_KEY_FILE" ] || { printf 'SOPS age key file does not exist\n' >&2; exit 1; }
-[ -z "$SOPS_BINARY" ] || [ -x "$SOPS_BINARY" ] || { printf 'SOPS binary is not executable\n' >&2; exit 1; }
-kvm_user="$(jq -r '.domains[] | select(any(.hostCapabilities[]?; . == "kvm")) | .user' "$BUNDLE/podman-domains.json" | head -n 1)"
-if [ -n "$kvm_user" ]; then
-  [ ! -e /etc/udev/rules.d/70-platform-zero-kvm.rules ] &&
-    [ ! -L /etc/udev/rules.d/70-platform-zero-kvm.rules ] || {
-      printf 'existing KVM ownership rule requires separate review; install refused\n' >&2; exit 1;
-    }
-  id "$kvm_user" >/dev/null 2>&1 || { printf 'missing KVM domain account: %s\n' "$kvm_user" >&2; exit 1; }
-  kvm_mode="$(stat -c %a /dev/kvm 2>/dev/null)" || { printf 'KVM device unavailable\n' >&2; exit 1; }
-  [ -c /dev/kvm ] && [ "$(stat -c %G /dev/kvm)" = kvm ] &&
-    [ $(( 8#$kvm_mode & 060 )) -eq 060 ] && [ $(( 8#$kvm_mode & 007 )) -eq 0 ] || {
-      printf 'existing KVM group/device permissions must be preserved; install refused\n' >&2; exit 1;
-    }
-fi
 
 # First adoption must not overwrite pre-existing authored units, executables,
 # keys or recovery directories. An upgrade needs a separate exact-CAS review.
