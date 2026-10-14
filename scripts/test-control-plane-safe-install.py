@@ -13,6 +13,10 @@ assert 'install-domain-dispatch-key.py' in body
 assert 'usermod -aG kvm' in body
 assert body.index('kvm_user="$(jq') < body.index('  useradd --user-group --create-home')
 assert 'existing KVM ownership rule requires separate review' in body
+assert 'systemctl is-active --quiet "user@$uid.service"' in body
+assert '[ -S "/run/user/$uid/bus" ]' in body
+assert 'for attempt in {1..60}; do' in body
+assert 'mkdir -p /run/user' not in body
 assert 'chown "$kvm_user:kvm" /dev/kvm' not in body
 assert 'udevadm control' not in body
 assert 'sed -i "/ p0-${domain}$/d"' not in body

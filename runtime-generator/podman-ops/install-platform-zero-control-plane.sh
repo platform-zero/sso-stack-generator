@@ -179,6 +179,17 @@ install_workspace_lifecycle() {
   chown -h "$owner:$owner" "$timer_wants/platform-zero-worklane-idle-reaper.timer"
   loginctl enable-linger "$owner"
   uid="$(id -u "$owner")"
+  # Linger is asynchronous on a first-created account. Wait for the actual
+  # logind-owned user manager and bus; never fabricate /run/user/UID.
+  manager_ready=false
+  for attempt in {1..60}; do
+    if systemctl is-active --quiet "user@$uid.service" && [ -S "/run/user/$uid/bus" ]; then
+      manager_ready=true
+      break
+    fi
+    sleep 1
+  done
+  [ "$manager_ready" = true ] || { printf 'maintenance user manager did not become ready\n' >&2; exit 1; }
   runuser -u "$owner" -- env HOME="$home" XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
     systemctl --user daemon-reload
   runuser -u "$owner" -- env HOME="$home" XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
