@@ -129,6 +129,22 @@ generate podman "$WORK_DIR/podman-b"
 diff -ru "$WORK_DIR/podman-a" "$WORK_DIR/podman-b"
 python3 "$ROOT_DIR/scripts/test-agent-vm-bundle.py"
 python3 "$WORK_DIR/podman-a/ops/verify-agent-vm-bundle.py" --bundle "$WORK_DIR/podman-a" >/dev/null
+if jq -e '.site == "latium"' "$SITE" >/dev/null; then
+  cp "$WORK_DIR/agent-vm.json" "$WORK_DIR/agent-vm.original"
+  original_bundle_hash="$(sha256sum "$WORK_DIR/podman-a/site/agent-vm.json" | cut -d' ' -f1)"
+  python3 - "$WORK_DIR/agent-vm.json" <<'PY_DUPLICATE_VM'
+from pathlib import Path
+import sys
+p=Path(sys.argv[1]);s=p.read_text();p.write_text(s.replace('"controlCommit":', '"controlCommit":"' + '0'*40 + '", "controlCommit":'))
+PY_DUPLICATE_VM
+  if generate podman "$WORK_DIR/podman-a" > "$WORK_DIR/invalid-vm-generate.log" 2>&1; then
+    printf '[runtime-test] duplicate VM authority unexpectedly replaced the bundle\n' >&2; exit 1
+  fi
+  cmp "$WORK_DIR/agent-vm.original" "$WORK_DIR/podman-a/site/agent-vm.json"
+  [ "$(sha256sum "$WORK_DIR/podman-a/site/agent-vm.json" | cut -d' ' -f1)" = "$original_bundle_hash" ]
+  mv "$WORK_DIR/agent-vm.original" "$WORK_DIR/agent-vm.json"
+  printf '[runtime-test] duplicate VM authority refused before atomic bundle replacement\n'
+fi
 if jq -e 'has("agentVmSpec")' "$SITE" >/dev/null; then
   jq -e --arg digest "$(sha256sum "$WORK_DIR/agent-vm.json" | cut -d' ' -f1)" \
     '.schemaVersion == 1 and .path == "agent-vm.json" and .sha256 == $digest' \
