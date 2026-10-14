@@ -23,6 +23,12 @@ class InstallationJournal(unittest.TestCase):
         self.release = self.root / 'releases/20261012T010000Z-111111111111'
         self.path = self.root / '.install-intent.json'
 
+    def copy_pins_to_release(self):
+        for name, sha in journal.fingerprint(self.bundle).items():
+            if sha is None: continue
+            target=self.release/name;target.parent.mkdir(parents=True,exist_ok=True)
+            target.write_bytes((self.bundle/name).read_bytes())
+
     def test_ordered_phases_and_private_receipt(self):
         for phase in journal.PHASES[:5]:
             journal.update(self.root, self.bundle, self.release, phase)
@@ -58,7 +64,7 @@ class InstallationJournal(unittest.TestCase):
         journal.update(self.root,self.bundle,self.release,'preparing')
         with self.assertRaises(ValueError):journal.retire_failed(self.root,journal.digest(self.path),True,lambda p:None)
         journal.update(self.root,self.bundle,self.release,'failed')
-        for name in journal.fingerprint(self.bundle):(self.release/name).write_bytes((self.bundle/name).read_bytes())
+        self.copy_pins_to_release()
         expected=journal.digest(self.path);original=self.path.read_bytes()
         with self.assertRaises(ValueError):journal.retire_failed(self.root,expected,False,lambda p:None)
         with self.assertRaises(ValueError):journal.retire_failed(self.root,'0'*64,True,lambda p:None)
@@ -75,13 +81,38 @@ class InstallationJournal(unittest.TestCase):
 
     def selected_fixture(self):
         self.release.mkdir(parents=True, exist_ok=True)
-        (self.release/'podman-domains.json').write_text(json.dumps({'domains':[
-            {'name':'platform','user':'webservices-platform','uid':992}]}))
+        manifest=json.dumps({'domains':[{'name':'platform','user':'webservices-platform','uid':992}]})
+        (self.release/'podman-domains.json').write_text(manifest)
+        (self.bundle/'podman-domains.json').write_text(manifest)
         rootful=self.release/'quadlet/rootful';rootful.mkdir(parents=True)
         (rootful/'webservices-caddy.container').write_text('[Container]\n')
         rootless=self.release/'quadlet/rootless-platform';rootless.mkdir(parents=True)
         (rootless/'webservices-postgres.container').write_text('[Container]\n')
         return SimpleNamespace(pw_uid=992,pw_dir='/home/webservices-platform')
+
+    def test_site_vm_and_domain_pins_are_cas_bound_and_absence_is_pinned(self):
+        site=self.bundle/'site';site.mkdir()
+        vm=site/'agent-vm.json';vm.write_text('{"controlCommit":"a"}')
+        journal.update(self.root,self.bundle,self.release,'preparing')
+        receipt=journal.read(self.path)
+        self.assertEqual(receipt['inputs']['site/agent-vm.json'],journal.digest(vm))
+        self.assertIsNone(receipt['inputs']['site/components.lock.json'])
+        vm.write_text('{"controlCommit":"b"}')
+        with self.assertRaises(ValueError):journal.update(self.root,self.bundle,self.release,'units-selected')
+        vm.write_text('{"controlCommit":"a"}')
+        (site/'components.lock.json').write_text('{}')
+        with self.assertRaises(ValueError):journal.update(self.root,self.bundle,self.release,'units-selected')
+        (site/'components.lock.json').unlink()
+        journal.update(self.root,self.bundle,self.release,'units-selected')
+
+    def test_historical_three_pin_failed_receipt_remains_read_only_verifiable(self):
+        journal.update(self.root,self.bundle,self.release,'preparing')
+        journal.update(self.root,self.bundle,self.release,'failed')
+        self.copy_pins_to_release()
+        old=journal.read(self.path);old['inputs']={k:old['inputs'][k]for k in journal.CORE_INPUTS}
+        journal.write(self.path,old)
+        self.assertEqual(journal.fingerprint(self.release,old['inputs'].keys()),old['inputs'])
+        self.assertEqual(journal.retire_failed(self.root,journal.digest(self.path),True,lambda p:None)['phase'],'retired-failed')
 
     def test_native_quarantine_verifier_denies_active_units_enabled_targets_and_jobs(self):
         account=self.selected_fixture()
@@ -105,8 +136,7 @@ class InstallationJournal(unittest.TestCase):
         account=self.selected_fixture()
         journal.update(self.root,self.bundle,self.release,'preparing')
         journal.update(self.root,self.bundle,self.release,'failed')
-        for name in journal.fingerprint(self.bundle):
-            (self.release/name).write_bytes((self.bundle/name).read_bytes())
+        self.copy_pins_to_release()
         (self.root/'current').symlink_to(self.release)
         expected=journal.digest(self.path);original=self.path.read_bytes()
         commands=[]
@@ -131,8 +161,7 @@ class InstallationJournal(unittest.TestCase):
         account=self.selected_fixture()
         journal.update(self.root,self.bundle,self.release,'preparing')
         journal.update(self.root,self.bundle,self.release,'failed')
-        for name in journal.fingerprint(self.bundle):
-            (self.release/name).write_bytes((self.bundle/name).read_bytes())
+        self.copy_pins_to_release()
         (self.root/'current').symlink_to(self.release)
         expected=journal.digest(self.path);original=self.path.read_bytes()
         commands=[]
@@ -157,8 +186,7 @@ class InstallationJournal(unittest.TestCase):
         account=self.selected_fixture()
         journal.update(self.root,self.bundle,self.release,'preparing')
         journal.update(self.root,self.bundle,self.release,'failed')
-        for name in journal.fingerprint(self.bundle):
-            (self.release/name).write_bytes((self.bundle/name).read_bytes())
+        self.copy_pins_to_release()
         expected=journal.digest(self.path)
         with patch.object(journal.pwd,'getpwnam',return_value=account),patch.object(journal.subprocess,'run')as stop:
             with self.assertRaises(ValueError):journal.quarantine_failed(self.root,expected,True,lambda p:None)

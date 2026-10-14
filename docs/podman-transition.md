@@ -135,7 +135,14 @@ SOPS identity path when HOME is unset; intentional key-file selection is preserv
 and a missing explicit identity does not silently fall back.
 
 The root-only `--inspect` command reports the protected installation intent and
-its SHA256. A pending/failed attempt refuses blind retry: after inspecting actual
+its SHA256. Newly created journals pin the core composition/provenance **and**
+the domain manifest, site manifest/component lock, nested guest/control spec and
+provenance, and registry image identity inventory (including absence when a
+site-specific input is not present). These checks bind a retry on one fresh
+machine; comparing two clean installs still requires review of the identical
+final generator/site/control/image **pin tuple**, not machine-specific VM UUIDs.
+Historical three-key receipts remain verifiable for guarded retirement, but do
+not gain retroactive site/guest pin proof. A pending/failed attempt refuses blind retry: after inspecting actual
 service/data state, retry the **unchanged** bundle using
 `--activate --resume-intent EXACT_SHA256`. Input changes require a new reviewed
 installation, not replay of an old intent. Per-release private metadata receipts

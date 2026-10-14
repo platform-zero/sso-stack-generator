@@ -18,6 +18,10 @@ import time
 import re
 
 PHASES = ('preparing', 'units-selected', 'building', 'starting', 'active', 'failed', 'retired-failed')
+CORE_INPUTS = ('bundle.json', 'stack.ir.json', 'source-provenance.json')
+PINNED_INPUTS = ('podman-domains.json', 'site/agent-vm.json',
+                 'site/agent-vm.provenance.json', 'site/manifest.json',
+                 'site/components.lock.json', 'site/global.settings/registry-image-ids.json')
 
 
 def digest(path):
@@ -58,8 +62,25 @@ def write(path, value):
         Path(name).unlink(missing_ok=True)
 
 
-def fingerprint(bundle):
-    return {name: digest(bundle / name) for name in ('bundle.json', 'stack.ir.json', 'source-provenance.json')}
+def fingerprint(bundle, names=None):
+    # Missing optional site inputs are pinned as absent, not silently skipped.
+    # Historical three-key receipts remain verifiable for narrowly guarded
+    # retirement; only NEW installations may record the expanded pin set.
+    names = tuple(names) if names is not None else CORE_INPUTS + PINNED_INPUTS
+    if (len(set(names)) != len(names) or not set(CORE_INPUTS).issubset(names)
+            or not set(names).issubset(CORE_INPUTS + PINNED_INPUTS)):
+        raise ValueError('Unknown installation pin authority')
+    result = {}
+    for name in names:
+        path = bundle / name
+        if name in CORE_INPUTS or path.exists() or path.is_symlink():
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError('Installation pin must be a regular file')
+            result[name] = digest(path)
+        else:
+            result[name] = None
+    return result
 
 
 def update(root, bundle, release, phase, expected=''):
@@ -177,7 +198,7 @@ def quarantine_failed(root, expected, reviewed, verifier=verify_quarantined, wai
     if release.parent != root / 'releases' or (root / 'current').resolve() != release:
         raise ValueError('Failed selection is not the current immutable release')
     directory(release)
-    if fingerprint(release) != value['inputs']:
+    if fingerprint(release, value['inputs'].keys()) != value['inputs']:
         raise ValueError('Failed release input binding changed')
     plans = selected_quarantine_plans(release)
     os.chdir('/')
@@ -221,7 +242,7 @@ def retire_failed(root, expected, reviewed, verifier=verify_quarantined):
     release = Path(value['release'])
     if release.parent != root / 'releases': raise ValueError('Failed receipt escaped release root')
     directory(release)
-    if fingerprint(release) != value['inputs']: raise ValueError('Failed release input binding changed')
+    if fingerprint(release, value['inputs'].keys()) != value['inputs']: raise ValueError('Failed release input binding changed')
     verifier(release)
     retired = dict(value, phase='retired-failed', steps=value['steps'] + ['retired-failed'],
                    dataPreserved=True, dataCompatibilityProved=False, retiredIntentSha256=expected)
