@@ -180,6 +180,17 @@ quarantine is reported as requiring operator action, not success. **It does not 
 the operator has established compatible data/recovery coverage; incomplete scoped
 stopping refuses that restart. Production data recovery is a separate gate.
 
+Typed maintenance proposals are **not** activation authority. The independent
+root approver now has a source-only read/claim API that checks the plan,
+release, exact DMI UUID, synthetic marker or all three distinct current
+production proof receipts, proof-byte hashes and ten-minute expiry before
+atomically consuming one approval under a root-only lock. Claimed receipts
+cannot be reissued for the same plan. This primitive does **not** launch an
+installer; socket `apply`, `test` and `rollback` remain closed until the
+separately reviewed operation runner, final inputs, installed socket boundary
+and isolated destructive-test proofs are complete. Do not report a consumed
+receipt as an apply, or a Worklane confirmation as independent root approval.
+
 ## Updates and recovery
 
 `webservices-auto-update.timer` runs `podman auto-update --rollback` daily.
