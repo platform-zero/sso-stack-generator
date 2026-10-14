@@ -35,7 +35,8 @@ with patch.object(broker, 'run', return_value=Result()):
     output = json.dumps(response)
     assert 'private-production-value' not in output and 'private-auth-value' not in output
     assert 'also-private' not in output and 'MESSAGE' not in output
-    assert all(len(item['messageSha256']) == 64 for item in response['result']['records'])
+    assert response['result']['records'] == [{'priority': '3'}, {'priority': '3'}]
+    assert 'messageSha256' not in output
 
 class Failure:
     returncode = 7

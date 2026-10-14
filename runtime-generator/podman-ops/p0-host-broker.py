@@ -449,15 +449,10 @@ def logs(request: dict[str, object]) -> dict[str, object]:
             row = decode_json(line)
         except RequestError:
             continue
-        # Do not return MESSAGE, argv, stderr, environment, paths or identity
-        # values from native journals. The digest identifies a record for
-        # private operator review without publishing its contents to a lane.
-        message = row.get("MESSAGE", "")
-        if not isinstance(message, str):
-            continue
+        # Do not return MESSAGE, its digest, argv, stderr, environment, paths
+        # or identity values. A digest can fingerprint a low-entropy secret.
         priority = row.get("PRIORITY", "")
-        records.append({"priority": priority if priority in tuple(str(n) for n in range(8)) else "unknown",
-                        "messageSha256": hashlib.sha256(message.encode()).hexdigest()})
+        records.append({"priority": priority if priority in tuple(str(n) for n in range(8)) else "unknown"})
     return {"unit": unit, "domain": domain, "recordCount": len(records), "records": records}
 
 
