@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Root fixture: preserve authored SSH/KVM while provisioning typed host transport."""
-import importlib.util,os,pwd,stat,tempfile
+import importlib.util,os,pwd,stat,subprocess,tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,6 +15,17 @@ assert 'existing KVM ownership rule requires separate review' in body
 assert 'chown "$kvm_user:kvm" /dev/kvm' not in body
 assert 'udevadm control' not in body
 assert 'sed -i "/ p0-${domain}$/d"' not in body
+preflight=body[body.index('refuse_unmanaged_target() {'):body.index('while read -r member target; do')]
+with tempfile.TemporaryDirectory() as d:
+    a=Path(d)/'reviewed';b=Path(d)/'installed'
+    a.write_bytes(b'reviewed control');b.write_bytes(a.read_bytes());b.chmod(0o644)
+    script='set -euo pipefail\n'+preflight+'\nrefuse_unmanaged_target "$1" "$2"\n'
+    assert subprocess.run(['bash','-c',script,'--',str(a),str(b)],capture_output=True).returncode==0
+    b.write_bytes(b'owner-authored control')
+    assert subprocess.run(['bash','-c',script,'--',str(a),str(b)],capture_output=True).returncode!=0
+    assert b.read_bytes()==b'owner-authored control'
+    b.unlink();b.symlink_to(a)
+    assert subprocess.run(['bash','-c',script,'--',str(a),str(b)],capture_output=True).returncode!=0
 
 spec=importlib.util.spec_from_file_location('domain_key_install',root/'runtime-generator/podman-ops/install-domain-dispatch-key.py')
 assert spec and spec.loader

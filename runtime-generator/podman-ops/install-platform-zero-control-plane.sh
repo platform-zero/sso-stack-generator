@@ -53,6 +53,52 @@ if [ -n "$kvm_user" ]; then
     }
 fi
 
+# First adoption must not overwrite pre-existing authored units, executables,
+# keys or recovery directories. An upgrade needs a separate exact-CAS review.
+refuse_unmanaged_target() {
+  local source="$1" target="$2"
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    [ -f "$target" ] && [ ! -L "$target" ] &&
+      [ "$(stat -c %u "$target")" = 0 ] &&
+      [ $(( 8#$(stat -c %a "$target") & 022 )) -eq 0 ] &&
+      cmp -s "$source" "$target" || {
+        printf 'existing control target differs; exact-CAS upgrade required\n' >&2; exit 1;
+      }
+  fi
+}
+while read -r member target; do
+  refuse_unmanaged_target "$BUNDLE/$member" "$target"
+done <<'TARGETS'
+ops/p0-host-broker.py /usr/local/libexec/p0-host-broker
+ops/p0-hostctl.py /usr/local/bin/p0-hostctl
+ops/p0-domain-dispatch /usr/local/libexec/p0-domain-dispatch
+ops/install-domain-dispatch-key.py /usr/local/libexec/p0-install-domain-dispatch-key
+ops/start-worklane-containers.py /usr/local/libexec/p0-start-worklanes
+ops/reap-idle-worklanes.py /usr/local/libexec/p0-reap-idle-worklanes
+ops/platform-zero-worklanes.service /etc/systemd/user/platform-zero-worklanes.service
+ops/platform-zero-worklane-idle-reaper.service /etc/systemd/user/platform-zero-worklane-idle-reaper.service
+ops/platform-zero-worklane-idle-reaper.timer /etc/systemd/user/platform-zero-worklane-idle-reaper.timer
+ops/platform-zero-host-broker.service /etc/systemd/system/platform-zero-host-broker.service
+ops/platform-zero-host-broker.socket /etc/systemd/system/platform-zero-host-broker.socket
+podman-domains.json /etc/platform-zero/podman-domains.json
+TARGETS
+for managed in /var/lib/platform-zero/incoming /mnt/stack/platform-zero-snapshots; do
+  if [ -e "$managed" ] || [ -L "$managed" ]; then
+    [ -d "$managed" ] && [ ! -L "$managed" ] &&
+      [ "$(stat -c %u:%g:%a "$managed")" = 0:0:700 ] || {
+        printf 'existing recovery directory requires separate review\n' >&2; exit 1;
+      }
+  fi
+done
+if [ -e /run/platform-zero ] || [ -L /run/platform-zero ]; then
+  [ -d /run/platform-zero ] && [ ! -L /run/platform-zero ] &&
+    [ "$(stat -c %u:%g:%a /run/platform-zero)" = "0:$(getent group stack_lab | cut -d: -f3):750" ] || {
+      printf 'existing broker socket directory requires separate review\n' >&2; exit 1;
+    }
+fi
+[ -z "$SOPS_AGE_KEY_FILE" ] || refuse_unmanaged_target "$SOPS_AGE_KEY_FILE" /root/.config/sops/age/keys.txt
+[ -z "$SOPS_BINARY" ] || refuse_unmanaged_target "$SOPS_BINARY" /usr/local/bin/sops
+
 install -d -m 0755 /usr/local/libexec /etc/platform-zero /etc/systemd/user
 install -d -m 0750 -o root -g stack_lab /run/platform-zero
 install -d -m 0700 -o root -g root /var/lib/platform-zero/incoming /mnt/stack/platform-zero-snapshots
