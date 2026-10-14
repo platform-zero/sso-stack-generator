@@ -167,6 +167,8 @@ store = b / 'site' / json.loads((b / 'site/manifest.json').read_text())['secretS
 assert stat.S_IMODE(store.stat().st_mode) == 0o600
 assert not (b / 'runtime/stack.env').exists(), 'build emitted a decrypted runtime environment'
 for path in b.rglob('*'):
+    assert path.name != '__pycache__' and path.suffix not in ('.pyc', '.pyo'), (
+        path, 'transient interpreter cache entered immutable bundle')
     mode = stat.S_IMODE(path.stat().st_mode)
     if path.is_dir():
         assert mode == 0o755, (path, 'public directory inherits private umask')

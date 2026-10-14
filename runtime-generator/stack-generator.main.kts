@@ -11,6 +11,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory
 import java.io.File
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.PosixFilePermission
@@ -1849,6 +1850,28 @@ fun normalizeArtifactPermissions(output: Path) {
     }
 }
 
+fun dropTransientPythonBytecode(staging: Path) {
+    // Source checkouts may contain interpreter-generated caches, including
+    // tracked historical .pyc files. They are never selected runtime source:
+    // keep the original checkouts untouched, and exclude only bytecode from
+    // this newly staged output before sealing bundle identity/provenance.
+    val paths = Files.walk(staging).use { it.toList() }
+        .sortedByDescending { it.nameCount }
+    for (path in paths) {
+        if (Files.isSymbolicLink(path)) fail("linked generated artifact cannot be normalized")
+        if (Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)
+                && (path.fileName.toString().endsWith(".pyc") || path.fileName.toString().endsWith(".pyo"))) {
+            Files.delete(path)
+        } else if (path != staging && Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)
+                && path.fileName.toString() == "__pycache__") {
+            Files.list(path).use { children ->
+                if (children.findAny().isPresent) fail("unreviewed Python cache directory content")
+            }
+            Files.delete(path)
+        }
+    }
+}
+
 fun commandGenerate(options: Map<String, String>) {
     val manifest = Path(required(options, "site")).toAbsolutePath().normalize()
     val modulesDir = Path(required(options, "modules-dir")).toAbsolutePath().normalize()
@@ -1877,6 +1900,7 @@ fun commandGenerate(options: Map<String, String>) {
         renderRuntimeModel(ir, staging)
         if (backend == "podman") renderPodman(ir, staging)
         writeDomainMetadata(ir, modules, manifest, staging)
+        dropTransientPythonBytecode(staging)
         val metadata = obj()
         metadata.put("schemaVersion", 1)
         metadata.put("backend", backend)
