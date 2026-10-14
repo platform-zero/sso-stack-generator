@@ -71,6 +71,7 @@ while read -r member target; do
 done <<'TARGETS'
 ops/p0-host-broker.py /usr/local/libexec/p0-host-broker
 ops/p0-hostctl.py /usr/local/bin/p0-hostctl
+ops/p0-host-approve.py /usr/local/sbin/p0-host-approve
 ops/p0-domain-dispatch /usr/local/libexec/p0-domain-dispatch
 ops/install-domain-dispatch-key.py /usr/local/libexec/p0-install-domain-dispatch-key
 ops/start-worklane-containers.py /usr/local/libexec/p0-start-worklanes
@@ -104,6 +105,7 @@ install -d -m 0750 -o root -g stack_lab /run/platform-zero
 install -d -m 0700 -o root -g root /var/lib/platform-zero/incoming /mnt/stack/platform-zero-snapshots
 install -m 0755 "$BUNDLE/ops/p0-host-broker.py" /usr/local/libexec/p0-host-broker
 install -m 0755 "$BUNDLE/ops/p0-hostctl.py" /usr/local/bin/p0-hostctl
+install -m 0750 "$BUNDLE/ops/p0-host-approve.py" /usr/local/sbin/p0-host-approve
 install -m 0755 "$BUNDLE/ops/p0-domain-dispatch" /usr/local/libexec/p0-domain-dispatch
 install -m 0755 "$BUNDLE/ops/install-domain-dispatch-key.py" /usr/local/libexec/p0-install-domain-dispatch-key
 install -m 0755 "$BUNDLE/ops/start-worklane-containers.py" /usr/local/libexec/p0-start-worklanes

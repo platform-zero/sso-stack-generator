@@ -162,6 +162,7 @@ log "running host broker policy checks"
 python3 "$SCRIPT_DIR/test-p0-host-broker.py" >&2
 python3 "$SCRIPT_DIR/test-p0-host-broker-typed-boundary.py" >&2
 python3 "$SCRIPT_DIR/test-control-plane-safe-install.py" >&2
+python3 "$SCRIPT_DIR/test-p0-host-approval.py" >&2
 python3 "$SCRIPT_DIR/test-p0-host-json-authority.py" >&2
 
 log "running bundle installer checks"
