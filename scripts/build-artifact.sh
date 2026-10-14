@@ -160,11 +160,18 @@ log "running deploy preflight checks"
 
 log "running host broker policy checks"
 python3 "$SCRIPT_DIR/test-p0-host-broker.py" >&2
-python3 "$SCRIPT_DIR/test-p0-host-broker-typed-boundary.py" >&2
-python3 "$SCRIPT_DIR/test-control-plane-safe-install.py" >&2
-python3 "$SCRIPT_DIR/test-rootless-volume-parent-traverse.py" >&2
-python3 "$SCRIPT_DIR/test-p0-host-approval.py" >&2
 python3 "$SCRIPT_DIR/test-p0-host-json-authority.py" >&2
+# Root-owned file/ACL fixtures must run as root, but an ordinary source build
+# must never gain host authority through sudo. The independent root regression
+# runs all four before choosing a production pin; do not count a skip as proof.
+if [ "$(id -u)" -eq 0 ]; then
+  python3 "$SCRIPT_DIR/test-p0-host-broker-typed-boundary.py" >&2
+  python3 "$SCRIPT_DIR/test-control-plane-safe-install.py" >&2
+  python3 "$SCRIPT_DIR/test-rootless-volume-parent-traverse.py" >&2
+  python3 "$SCRIPT_DIR/test-p0-host-approval.py" >&2
+else
+  log "root-owned broker, approval and ACL fixtures require independent root regression"
+fi
 
 log "running bundle installer checks"
 "$SCRIPT_DIR/test-install-bundle.sh" >&2
