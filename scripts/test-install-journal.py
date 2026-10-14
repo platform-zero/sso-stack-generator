@@ -37,6 +37,26 @@ class InstallationJournal(unittest.TestCase):
         self.assertEqual(journal.read(self.release / 'installation-receipt.json'), journal.read(self.path))
         with self.assertRaises(ValueError): journal.update(self.root, self.bundle, self.release, 'failed')
 
+    def test_active_predecessor_must_be_selected_and_retains_exact_pins_on_resume(self):
+        for phase in journal.PHASES[:5]:
+            journal.update(self.root,self.bundle,self.release,phase)
+        self.copy_pins_to_release()
+        next_release=self.root/'releases/20261012T020000Z-111111111111'
+        with self.assertRaises(ValueError):
+            journal.update(self.root,self.bundle,next_release,'preparing')
+        (self.root/'current').symlink_to(self.release)
+        (self.release/'bundle.json').write_text('{"tampered":true}')
+        with self.assertRaises(ValueError):
+            journal.update(self.root,self.bundle,next_release,'preparing')
+        self.copy_pins_to_release()
+        value=journal.update(self.root,self.bundle,next_release,'preparing')
+        self.assertEqual(value['previousRelease'],str(self.release))
+        journal.update(self.root,self.bundle,next_release,'failed')
+        expected=journal.digest(self.path)
+        resumed=journal.update(self.root,self.bundle,next_release,'preparing',expected)
+        self.assertEqual(resumed['previousRelease'],str(self.release))
+        self.assertEqual(resumed['resumedFrom'],str(next_release))
+
     def test_pending_cas_and_unchanged_inputs(self):
         journal.update(self.root, self.bundle, self.release, 'preparing')
         original = self.path.read_bytes()

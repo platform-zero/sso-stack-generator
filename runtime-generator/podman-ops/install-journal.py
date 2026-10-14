@@ -93,13 +93,34 @@ def update(root, bundle, release, phase, expected=''):
     old = read(path)
     inputs = fingerprint(bundle)
     if phase == 'preparing':
+        previous = None
         if old and old['phase'] not in ('active', 'retired-failed'):
             if expected != digest(path) or old.get('inputs') != inputs:
                 raise ValueError('Pending installation needs exact CAS and unchanged inputs')
+            # Retain only a previous-release claim made at the original,
+            # active-to-preparing transition; do not infer it from a failure.
+            previous = old.get('previousRelease')
+            if previous is not None and (not isinstance(previous, str)
+                    or Path(previous).parent != root / 'releases'):
+                raise ValueError('Untrusted previous native release claim')
         elif expected:
             raise ValueError('Stale installation recovery CAS')
+        elif old and old['phase'] == 'active':
+            old_release = Path(old['release'])
+            if (old_release.parent != root / 'releases' or not old_release.is_dir()
+                    or (root / 'current').resolve() != old_release):
+                raise ValueError('Current active release does not match prior journal')
+            directory(old_release)
+            prior_receipt = read(old_release / 'installation-receipt.json')
+            if (not prior_receipt or prior_receipt['phase'] != 'active'
+                    or prior_receipt['release'] != str(old_release)
+                    or prior_receipt['inputs'] != old['inputs']
+                    or fingerprint(old_release, old['inputs'].keys()) != old['inputs']):
+                raise ValueError('Prior selected release input pins changed')
+            previous = str(old_release)
         value = {'schemaVersion': 1, 'release': str(release), 'inputs': inputs, 'phase': phase,
-                 'steps': [phase], 'resumedFrom': old.get('release') if old and old['phase'] not in ('active', 'retired-failed') else None}
+                 'previousRelease': previous,'steps': [phase],
+                 'resumedFrom': old.get('release') if old and old['phase'] not in ('active', 'retired-failed') else None}
     else:
         if not old or old.get('release') != str(release) or old.get('inputs') != inputs:
             raise ValueError('Installation journal binding mismatch')
