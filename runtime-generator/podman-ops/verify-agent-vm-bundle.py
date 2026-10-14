@@ -13,7 +13,7 @@ import re
 import subprocess
 
 
-def strict(path):
+def strict(path, *, include_bytes=False):
     def pairs(rows):
         value = {}
         for key, item in rows:
@@ -23,7 +23,11 @@ def strict(path):
         return value
     if path.is_symlink() or not path.is_file() or path.stat().st_size > 65536:
         raise ValueError('Missing, linked or oversized agent VM input')
-    return json.loads(path.read_bytes(), object_pairs_hook=pairs)
+    body = path.read_bytes()
+    if len(body) > 65536:
+        raise ValueError('Oversized agent VM input')
+    decoded = json.loads(body, object_pairs_hook=pairs)
+    return (decoded, body) if include_bytes else decoded
 
 
 def verify(bundle, control=None):
@@ -35,9 +39,8 @@ def verify(bundle, control=None):
         raise ValueError('Latium requires exact site-owned agent-vm.json')
     vm_path = site / 'agent-vm.json'
     metadata = strict(site / 'agent-vm.provenance.json')
-    body = vm_path.read_bytes() if vm_path.is_file() and not vm_path.is_symlink() else b''
+    vm, body = strict(vm_path, include_bytes=True)
     digest = hashlib.sha256(body).hexdigest()
-    vm = strict(vm_path)
     pins = vm.get('runtime')
     if (set(metadata) != {'schemaVersion', 'path', 'sha256', 'controlCommit'}
             or type(metadata['schemaVersion']) is not int or metadata['schemaVersion'] != 1

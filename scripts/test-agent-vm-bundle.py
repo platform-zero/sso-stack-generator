@@ -53,6 +53,10 @@ class BundlePins(unittest.TestCase):
         self.vm.write_bytes(self.data.replace(b'"controlCommit":', b'"controlCommit":"' + b'0' * 40 + b'", "controlCommit":'))
         with self.assertRaisesRegex(ValueError, 'Duplicate'): module.verify(self.root)
 
+    def test_oversized_vm_input_refused_before_digest(self):
+        self.vm.write_bytes(self.data + b' ' * 65536)
+        with self.assertRaisesRegex(ValueError, 'oversized'): module.verify(self.root)
+
     def test_invalid_cpu_and_symlink(self):
         vm = json.loads(self.data); vm['projectLanes'] = ['unexpected']
         self.vm.write_text(json.dumps(vm))
