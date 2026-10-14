@@ -142,6 +142,18 @@ installation, not replay of an old intent. Per-release private metadata receipts
 record preparing, selected units, builds, startup and activation; they contain no
 credentials and do not establish functional or owner acceptance.
 
+A stopped transient systemd installer can receive TERM in its whole cgroup while
+its trap is still stopping selected units. A `failed` journal alone is **not**
+quarantine proof. If the selected failed release remains `/var/lib/webservices/current`,
+first review data and the exact intent SHA256 and run
+`--quarantine-failed-intent EXACT_SHA256 --reviewed-data-state` as root from the
+same reviewed bundle. This takes the native install lock, disables only selected
+boot/auto-update triggers, gracefully stops only that release's rootful/rootless
+units, and waits for the independent native unit/job/trigger verifier. It retains
+data and leaves the failed intent in place; refusal means stop and inspect, never
+force or silently restart. Do not invoke it for an active release, a previous
+release now selected, or before the responsible installer has exited.
+
 When a **source correction** changes inputs after terminal failure, unchanged-input
 resume is deliberately insufficient. After reviewing actual data/recovery state,
 use `--retire-failed-intent EXACT_SHA256 --reviewed-data-state`. This is serialized,

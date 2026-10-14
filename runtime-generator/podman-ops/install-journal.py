@@ -14,6 +14,8 @@ import os
 from pathlib import Path
 import stat
 import tempfile
+import time
+import re
 
 PHASES = ('preparing', 'units-selected', 'building', 'starting', 'active', 'failed', 'retired-failed')
 
@@ -93,23 +95,52 @@ def update(root, bundle, release, phase, expected=''):
     return value
 
 
+def selected_quarantine_plans(release):
+    """Bind stop/read plans to root-owned files in only the failed release."""
+    directory(release)
+    manifest = release / 'podman-domains.json'
+    info = manifest.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        raise ValueError('Unmanaged failed release domain authority')
+    domains = json.loads(manifest.read_text())['domains']
+    if not isinstance(domains, list) or not domains:
+        raise ValueError('Missing failed release domains')
+    commands = [('rootful', ['systemctl'])]
+    seen = set()
+    for domain in domains:
+        name, user, uid = domain['name'], domain['user'], domain['uid']
+        if (not isinstance(name, str) or not re.fullmatch(r'[a-z][a-z0-9-]{0,63}', name)
+                or user != 'webservices-' + name or type(uid) is not int or name in seen):
+            raise ValueError('Invalid failed release domain authority')
+        seen.add(name)
+        account = pwd.getpwnam(user)
+        if account.pw_uid != uid:
+            raise ValueError('Failed release authority identity drift')
+        commands.append(('rootless-' + name, ['runuser', '-u', user, '--', 'env',
+                         'HOME=' + account.pw_dir, 'XDG_RUNTIME_DIR=/run/user/' + str(uid),
+                         'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/' + str(uid) + '/bus', 'systemctl', '--user']))
+    plans = []
+    for label, command in commands:
+        quadlet = release / 'quadlet' / label
+        directory(quadlet)
+        units = ['webservices.target']
+        for path in quadlet.iterdir():
+            if path.suffix not in ('.container', '.build'):
+                continue
+            info = path.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022
+                    or not re.fullmatch(r'webservices-[a-zA-Z0-9_.@-]+', path.stem)):
+                raise ValueError('Unmanaged failed release service authority')
+            units.append(path.stem + ('-build.service' if path.suffix == '.build' else '.service'))
+        plans.append((label, command, sorted(set(units))))
+    return plans
+
+
 def verify_quarantined(release):
     """Read actual selected managers; no service/volume mutation or trigger replay."""
-    domains = json.loads((release / 'podman-domains.json').read_text())['domains']
-    plans = [('rootful', ['systemctl'])]
-    for domain in domains:
-        account = pwd.getpwnam(domain['user'])
-        if account.pw_uid != domain['uid']:
-            raise ValueError('Failed release authority identity drift')
-        plans.append(('rootless-' + domain['name'], ['runuser', '-u', domain['user'], '--', 'env',
-                      'HOME=' + account.pw_dir, 'XDG_RUNTIME_DIR=/run/user/' + str(account.pw_uid),
-                      'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/' + str(account.pw_uid) + '/bus', 'systemctl', '--user']))
+    plans = selected_quarantine_plans(release)
     os.chdir('/')
-    for label, command in plans:
-        units = ['webservices.target']
-        for path in (release / 'quadlet' / label).iterdir():
-            if path.suffix == '.container': units.append(path.stem + '.service')
-            elif path.suffix == '.build': units.append(path.stem + '-build.service')
+    for label, command, units in plans:
         result = subprocess.run(command + ['show', *units, '-p', 'ActiveState', '--value'],
                                 capture_output=True, text=True, timeout=30)
         states = [s for s in result.stdout.splitlines() if s]
@@ -127,6 +158,56 @@ def verify_quarantined(release):
                            capture_output=True, text=True, timeout=10)
     if timer.stdout.strip() not in ('disabled', 'masked'):
         raise ValueError('Failed selection timer not quarantined')
+
+
+def quarantine_failed(root, expected, reviewed, verifier=verify_quarantined, wait_seconds=120):
+    """Exact-CAS, selected-unit-only graceful stop after an interrupted failure.
+
+    This does not retire an intent, touch data, restart a previous release, or
+    force-kill a unit. A failed check leaves the intent failed for root review.
+    """
+    directory(root)
+    if not reviewed or not re.fullmatch(r'[a-f0-9]{64}', expected):
+        raise ValueError('Explicit exact failed-intent/data review required')
+    path = root / '.install-intent.json'
+    value = read(path)
+    if not value or value['phase'] != 'failed' or expected != digest(path):
+        raise ValueError('Only exact-CAS terminal failure may be quarantined')
+    release = Path(value['release'])
+    if release.parent != root / 'releases' or (root / 'current').resolve() != release:
+        raise ValueError('Failed selection is not the current immutable release')
+    directory(release)
+    if fingerprint(release) != value['inputs']:
+        raise ValueError('Failed release input binding changed')
+    plans = selected_quarantine_plans(release)
+    os.chdir('/')
+    # Disable boot/upgrade triggers before stopping. Never touch a unit that is
+    # not named by this root-owned selected release (or its own target/timer).
+    timer = subprocess.run(['systemctl', 'disable', '--now', 'webservices-auto-update.timer'],
+                           capture_output=True, text=True, timeout=30)
+    failures = [] if timer.returncode == 0 else ['timer']
+    for label, command, units in plans:
+        disabled = subprocess.run(command + ['disable', 'webservices.target'],
+                                  capture_output=True, text=True, timeout=30)
+        stopped = subprocess.run(command + ['--no-block', 'stop', *units],
+                                 capture_output=True, text=True, timeout=60)
+        if disabled.returncode or stopped.returncode:
+            failures.append(label)
+    if failures:
+        raise ValueError('Failed selected-unit quarantine incomplete; no automatic restart')
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            verifier(release)
+            break
+        except ValueError:
+            if time.monotonic() >= deadline:
+                raise ValueError('Selected release has running units/jobs or boot triggers') from None
+            time.sleep(2)
+    if digest(path) != expected or (root / 'current').resolve() != release:
+        raise ValueError('Failed selection changed during quarantine')
+    return {'release': release.name, 'quarantined': True, 'dataPreserved': True,
+            'intentRetired': False, 'forceUsed': False}
 
 
 def retire_failed(root, expected, reviewed, verifier=verify_quarantined):
@@ -154,6 +235,7 @@ def main():
     parser.add_argument('--root', type=Path, required=True)
     parser.add_argument('--inspect', action='store_true')
     parser.add_argument('--retire-failed', default='')
+    parser.add_argument('--quarantine-failed', default='')
     parser.add_argument('--reviewed-data-state', action='store_true')
     parser.add_argument('--bundle', type=Path)
     parser.add_argument('--release', type=Path)
@@ -162,7 +244,9 @@ def main():
     args = parser.parse_args()
     if os.geteuid() != 0: parser.error('Root-owned installation journal required')
     try:
-        if args.retire_failed:
+        if args.retire_failed or args.quarantine_failed:
+            if args.retire_failed and args.quarantine_failed:
+                raise ValueError('One exact recovery operation at a time')
             directory(args.root)
             lock = args.root / '.install.lock'
             fd = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -171,7 +255,11 @@ def main():
                 if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
                     raise ValueError('Unsafe installation lock')
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                print(json.dumps(retire_failed(args.root, args.retire_failed, args.reviewed_data_state), sort_keys=True))
+                if args.quarantine_failed:
+                    result = quarantine_failed(args.root, args.quarantine_failed, args.reviewed_data_state)
+                else:
+                    result = retire_failed(args.root, args.retire_failed, args.reviewed_data_state)
+                print(json.dumps(result, sort_keys=True))
             finally: os.close(fd)
         elif args.inspect:
             directory(args.root)
@@ -182,7 +270,7 @@ def main():
             if args.bundle is None or args.release is None or args.phase is None:
                 raise ValueError('Journal inputs required')
             update(args.root, args.bundle, args.release, args.phase, args.expected)
-    except (ValueError, OSError, KeyError, TypeError):
+    except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError):
         raise SystemExit('Installation journal refused; inspect before retry') from None
 
 if __name__ == '__main__': main()

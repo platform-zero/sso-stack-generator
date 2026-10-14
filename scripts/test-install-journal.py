@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -72,23 +73,106 @@ class InstallationJournal(unittest.TestCase):
         journal.update(self.root,self.bundle,next_release,'preparing')
         self.assertEqual(journal.read(self.release/'installation-receipt.json')['phase'],'retired-failed')
 
+    def selected_fixture(self):
+        self.release.mkdir(parents=True, exist_ok=True)
+        (self.release/'podman-domains.json').write_text(json.dumps({'domains':[
+            {'name':'platform','user':'webservices-platform','uid':992}]}))
+        rootful=self.release/'quadlet/rootful';rootful.mkdir(parents=True)
+        (rootful/'webservices-caddy.container').write_text('[Container]\n')
+        rootless=self.release/'quadlet/rootless-platform';rootless.mkdir(parents=True)
+        (rootless/'webservices-postgres.container').write_text('[Container]\n')
+        return SimpleNamespace(pw_uid=992,pw_dir='/home/webservices-platform')
+
     def test_native_quarantine_verifier_denies_active_units_enabled_targets_and_jobs(self):
-        self.release.mkdir(parents=True)
-        (self.release/'podman-domains.json').write_text('{"domains":[]}')
-        units=self.release/'quadlet/rootful';units.mkdir(parents=True)
-        (units/'webservices-caddy.container').write_text('[Container]\n')
+        account=self.selected_fixture()
         def result(command,**kwargs):
-            if 'show' in command:return SimpleNamespace(returncode=0,stdout='inactive\n\ninactive\n')
+            if 'show' in command:
+                count=command.index('-p')-command.index('show')-1
+                return SimpleNamespace(returncode=0,stdout='\n'.join(['inactive']*count)+'\n')
             if 'is-enabled' in command:return SimpleNamespace(returncode=1,stdout='disabled\n')
             return SimpleNamespace(returncode=0,stdout='')
-        with patch.object(journal.subprocess,'run',side_effect=result):journal.verify_quarantined(self.release)
-        for kind in ('show','is-enabled','list-jobs'):
-            def unsafe(command,**kwargs):
-                if kind in command:
-                    return SimpleNamespace(returncode=0,stdout={'show':'inactive\nactive\n','is-enabled':'enabled\n','list-jobs':'9 webservices-caddy.service start running\n'}[kind])
-                return result(command,**kwargs)
-            with patch.object(journal.subprocess,'run',side_effect=unsafe):
-                with self.assertRaises(ValueError):journal.verify_quarantined(self.release)
+        with patch.object(journal.pwd,'getpwnam',return_value=account),patch.object(journal.subprocess,'run',side_effect=result):
+            journal.verify_quarantined(self.release)
+            for kind in ('show','is-enabled','list-jobs'):
+                def unsafe(command,**kwargs):
+                    if kind in command:
+                        return SimpleNamespace(returncode=0,stdout={'show':'inactive\nactive\n','is-enabled':'enabled\n','list-jobs':'9 webservices-caddy.service start running\n'}[kind])
+                    return result(command,**kwargs)
+                with patch.object(journal.subprocess,'run',side_effect=unsafe):
+                    with self.assertRaises(ValueError):journal.verify_quarantined(self.release)
+
+    def test_exact_failed_quarantine_only_stops_selected_units_and_keeps_intent(self):
+        account=self.selected_fixture()
+        journal.update(self.root,self.bundle,self.release,'preparing')
+        journal.update(self.root,self.bundle,self.release,'failed')
+        for name in journal.fingerprint(self.bundle):
+            (self.release/name).write_bytes((self.bundle/name).read_bytes())
+        (self.root/'current').symlink_to(self.release)
+        expected=journal.digest(self.path);original=self.path.read_bytes()
+        commands=[]
+        def succeed(command,**kwargs):
+            commands.append(command)
+            return SimpleNamespace(returncode=0,stdout='')
+        with patch.object(journal.pwd,'getpwnam',return_value=account),patch.object(journal.subprocess,'run',side_effect=succeed):
+            proof=journal.quarantine_failed(self.root,expected,True,lambda p:self.assertEqual(p,self.release))
+        self.assertTrue(proof['quarantined']);self.assertFalse(proof['intentRetired'])
+        self.assertEqual(self.path.read_bytes(),original)
+        self.assertEqual(len([c for c in commands if '--no-block' in c]),2)
+        for command in commands:
+            self.assertNotIn('rm',command)
+            self.assertNotIn('--force',command)
+            self.assertFalse(any('obelisks' in v for v in command))
+        self.assertTrue(any(c[-2:]==['disable','webservices.target']for c in commands))
+        with patch.object(journal.subprocess,'run',side_effect=succeed):
+            with self.assertRaises(ValueError):journal.quarantine_failed(self.root,'f'*64,True,lambda p:None)
+        self.assertEqual(self.path.read_bytes(),original)
+
+    def test_partial_stop_never_retires_or_restarts_and_requires_native_proof(self):
+        account=self.selected_fixture()
+        journal.update(self.root,self.bundle,self.release,'preparing')
+        journal.update(self.root,self.bundle,self.release,'failed')
+        for name in journal.fingerprint(self.bundle):
+            (self.release/name).write_bytes((self.bundle/name).read_bytes())
+        (self.root/'current').symlink_to(self.release)
+        expected=journal.digest(self.path);original=self.path.read_bytes()
+        commands=[]
+        def partial(command,**kwargs):
+            commands.append(command)
+            return SimpleNamespace(returncode=1 if '--no-block' in command and 'runuser' in command else 0,stdout='')
+        with patch.object(journal.pwd,'getpwnam',return_value=account),patch.object(journal.subprocess,'run',side_effect=partial):
+            with self.assertRaises(ValueError):journal.quarantine_failed(self.root,expected,True,lambda p:None)
+        self.assertEqual(self.path.read_bytes(),original)
+        self.assertEqual(len([c for c in commands if '--no-block' in c]),2)
+        self.assertFalse(any('start' in c or '--force' in c for c in commands))
+        commands.clear()
+        def succeeds(command,**kwargs):
+            commands.append(command);return SimpleNamespace(returncode=0,stdout='')
+        with patch.object(journal.pwd,'getpwnam',return_value=account),patch.object(journal.subprocess,'run',side_effect=succeeds):
+            with self.assertRaises(ValueError):
+                journal.quarantine_failed(self.root,expected,True,
+                    lambda p:(_ for _ in ()).throw(ValueError('still running')),wait_seconds=0)
+        self.assertEqual(self.path.read_bytes(),original)
+
+    def test_quarantine_refuses_active_or_unbound_selection_before_stop(self):
+        account=self.selected_fixture()
+        journal.update(self.root,self.bundle,self.release,'preparing')
+        journal.update(self.root,self.bundle,self.release,'failed')
+        for name in journal.fingerprint(self.bundle):
+            (self.release/name).write_bytes((self.bundle/name).read_bytes())
+        expected=journal.digest(self.path)
+        with patch.object(journal.pwd,'getpwnam',return_value=account),patch.object(journal.subprocess,'run')as stop:
+            with self.assertRaises(ValueError):journal.quarantine_failed(self.root,expected,True,lambda p:None)
+            stop.assert_not_called()
+            (self.root/'current').symlink_to(self.release)
+            (self.release/'quadlet/rootful/webservices-caddy.container').unlink()
+            (self.release/'quadlet/rootful/webservices-caddy.container').symlink_to(self.path)
+            with self.assertRaises(ValueError):journal.quarantine_failed(self.root,expected,True,lambda p:None)
+            stop.assert_not_called()
+            (self.release/'quadlet/rootful/webservices-caddy.container').unlink()
+            (self.release/'quadlet/rootful/webservices-caddy.container').write_text('[Container]\n')
+            journal.write(self.path,dict(journal.read(self.path),phase='retired-failed'))
+            with self.assertRaises(ValueError):journal.quarantine_failed(self.root,journal.digest(self.path),True,lambda p:None)
+            stop.assert_not_called()
 
     def test_links_permissions_and_escaped_receipts_refused(self):
         journal.update(self.root, self.bundle, self.release, 'preparing')
