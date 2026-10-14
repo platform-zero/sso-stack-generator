@@ -142,8 +142,17 @@ PY_DUPLICATE_VM
   fi
   cmp "$WORK_DIR/agent-vm.original" "$WORK_DIR/podman-a/site/agent-vm.json"
   [ "$(sha256sum "$WORK_DIR/podman-a/site/agent-vm.json" | cut -d' ' -f1)" = "$original_bundle_hash" ]
+  python3 - "$WORK_DIR/agent-vm.original" "$WORK_DIR/agent-vm.json" <<'PY_BOOLEAN_VM'
+import json,sys
+from pathlib import Path
+source=Path(sys.argv[1]);target=Path(sys.argv[2]);vm=json.loads(source.read_text());vm['schemaVersion']=True;target.write_text(json.dumps(vm))
+PY_BOOLEAN_VM
+  if generate podman "$WORK_DIR/podman-a" > "$WORK_DIR/boolean-vm-generate.log" 2>&1; then
+    printf '[runtime-test] boolean VM schema unexpectedly replaced the bundle\n' >&2; exit 1
+  fi
+  cmp "$WORK_DIR/agent-vm.original" "$WORK_DIR/podman-a/site/agent-vm.json"
   mv "$WORK_DIR/agent-vm.original" "$WORK_DIR/agent-vm.json"
-  printf '[runtime-test] duplicate VM authority refused before atomic bundle replacement\n'
+  printf '[runtime-test] duplicate and boolean VM authority refused before atomic bundle replacement\n'
 fi
 if jq -e 'has("agentVmSpec")' "$SITE" >/dev/null; then
   jq -e --arg digest "$(sha256sum "$WORK_DIR/agent-vm.json" | cut -d' ' -f1)" \

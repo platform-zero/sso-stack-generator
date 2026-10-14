@@ -959,14 +959,17 @@ fun materializeSiteManifest(manifestPath: Path, output: Path) {
         if (key == "agentVmSpec") {
             val vm = readTree(source)
             val pins = vm.path("runtime")
-            if (vm.path("schemaVersion").asInt() != 1 || vm.path("name").asText() != "p0-agents"
+            if (!vm.path("schemaVersion").isIntegralNumber || vm.path("schemaVersion").asInt() != 1
+                || vm.path("name").asText() != "p0-agents"
                 || vm.path("projectLanes") !is ArrayNode || vm.path("projectLanes").size() != 0
                 || vm.path("gpuDevices") !is ArrayNode || vm.path("gpuDevices").size() != 0
                 || !Regex("[a-f0-9]{40}").matches(pins.path("controlCommit").asText())
                 || !Regex("[a-f0-9]{40}").matches(pins.path("worklaneCommit").asText())
-                || vm.path("vcpus").asInt() != 8 || vm.path("memoryMiB").asInt() != 12288
-                || vm.path("osGiB").asInt() != 80 || vm.path("workGiB").asInt() != 100
-                || vm.path("swapGiB").asInt() != 4)
+                || !vm.path("vcpus").isIntegralNumber || vm.path("vcpus").asInt() != 8
+                || !vm.path("memoryMiB").isIntegralNumber || vm.path("memoryMiB").asInt() != 12288
+                || !vm.path("osGiB").isIntegralNumber || vm.path("osGiB").asInt() != 80
+                || !vm.path("workGiB").isIntegralNumber || vm.path("workGiB").asInt() != 100
+                || !vm.path("swapGiB").isIntegralNumber || vm.path("swapGiB").asInt() != 4)
                 fail("invalid site-owned empty CPU agent VM pins")
         }
         val destination = siteDir.resolve(relative).normalize()
