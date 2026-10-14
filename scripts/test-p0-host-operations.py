@@ -48,7 +48,9 @@ with tempfile.TemporaryDirectory(prefix='p0-typed-operations-test-',dir='/var/li
         return original_load(path,name)
     def native_run(command,**kwargs):
         commands.append(command)
-        if command[0]=='systemd-run':return SimpleNamespace(returncode=0,stdout='',stderr='')
+        if command[0]=='systemd-run':
+            assert '--no-block' in command and '--property=Type=oneshot' in command
+            return SimpleNamespace(returncode=0,stdout='',stderr='')
         staged=base/'maintenance-install-worktrees'/active_plan[0]
         assert command==[str(staged/'ops/install-podman-bundle.sh'),'--bundle',str(staged),
                          '--control-checkout',data['controlCheckout'],'--image-inputs',data['imageInputs'],'--activate']

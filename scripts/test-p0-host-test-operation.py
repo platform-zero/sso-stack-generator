@@ -28,7 +28,9 @@ with tempfile.TemporaryDirectory(prefix='p0-test-worker-fixture-',dir='/var/lib/
         return bound,runner,approver
     def run(command,**kwargs):
         commands.append(command)
-        if command[0]=='systemd-run':return SimpleNamespace(returncode=0,stdout='',stderr='')
+        if command[0]=='systemd-run':
+            assert '--no-block' in command and '--property=Type=oneshot' in command
+            return SimpleNamespace(returncode=0,stdout='',stderr='')
         assert command==['runuser','-u','webservices-test-runners','--','env',
                          'HOME=/home/webservices-test-runners','XDG_RUNTIME_DIR=/run/user/1997',
                          'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1997/bus',

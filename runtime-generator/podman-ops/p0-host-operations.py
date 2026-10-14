@@ -196,7 +196,7 @@ def queue_apply(plan_id):
              'state':'queued','startedAt':int(time.time()),'finishedAt':None}
         atomic_private(receipt,row)
         atomic_private(marker,{'schemaVersion':1,'operationId':plan_id})
-        command=['systemd-run','--collect','--unit=p0-typed-apply-'+plan_id,
+        command=['systemd-run','--collect','--no-block','--unit=p0-typed-apply-'+plan_id,
                  '--property=Type=oneshot','--property=TimeoutStartSec=3h',
                  '/usr/bin/python3',str(Path(__file__).resolve()),
                  '--execute-apply',plan_id]
@@ -229,7 +229,7 @@ def queue_test(suite):
              'release':bound['journalSha256'],'state':'queued','startedAt':int(time.time()),'finishedAt':None}
         atomic_private(receipt,row)
         atomic_private(marker,{'schemaVersion':1,'operationId':operation_id})
-        command=['systemd-run','--collect','--unit=p0-typed-test-'+operation_id,
+        command=['systemd-run','--collect','--no-block','--unit=p0-typed-test-'+operation_id,
                  '--property=Type=oneshot','--property=TimeoutStartSec=2h',
                  '/usr/bin/python3',str(Path(__file__).resolve()),'--execute-test',operation_id]
         started=subprocess.run(command,capture_output=True,text=True,timeout=30,cwd='/')
@@ -373,7 +373,7 @@ def queue_rollback(apply_id):
              'state':'queued','startedAt':int(time.time()),'finishedAt':None}
         atomic_private(receipt,row)
         atomic_private(marker,{'schemaVersion':1,'operationId':operation_id})
-        command=['systemd-run','--collect','--unit=p0-typed-rollback-'+operation_id,
+        command=['systemd-run','--collect','--no-block','--unit=p0-typed-rollback-'+operation_id,
                  '--property=Type=oneshot','--property=TimeoutStartSec=3h',
                  '/usr/bin/python3',str(Path(__file__).resolve()),'--execute-rollback',operation_id]
         started=subprocess.run(command,capture_output=True,text=True,timeout=30,cwd='/')

@@ -33,7 +33,9 @@ with tempfile.TemporaryDirectory(prefix='p0-rollback-worker-',dir='/var/lib/plat
   return bound,data,approver
  def run(argv,**kwargs):
   commands.append(argv)
-  if argv[0]=='systemd-run':return SimpleNamespace(returncode=0,stdout='',stderr='')
+  if argv[0]=='systemd-run':
+   assert '--no-block' in argv and '--property=Type=oneshot' in argv
+   return SimpleNamespace(returncode=0,stdout='',stderr='')
   assert argv==[str(installer),'--bundle',str(prior),'--control-checkout',data['controlCheckout'],
                 '--image-inputs',data['imageInputs'],'--activate']
   assert kwargs['env']['WEBSERVICES_ACTIVATION_ROLLBACK']=='0'
