@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import pwd
 import re
+import secrets
 import shutil
 import socket
 import struct
@@ -20,6 +21,7 @@ import time
 SOCKET_FD = 3
 MAX_REQUEST = 64 * 1024
 INCOMING = Path(os.environ.get("P0_INCOMING", "/var/lib/platform-zero/incoming"))
+PLANS = Path(os.environ.get("P0_PLANS", "/var/lib/platform-zero/maintenance-plans"))
 SNAPSHOTS = Path(os.environ.get("P0_SNAPSHOTS", "/mnt/stack/platform-zero-snapshots"))
 STACK_ROOT = Path(os.environ.get("P0_STACK_ROOT", "/mnt/lab_debian/stack_lab"))
 LEGACY_USER = os.environ.get("P0_LEGACY_USER", "webservices")
@@ -130,32 +132,65 @@ def validate_bundle(bundle: Path) -> None:
 
 
 def stage(request: dict[str, object]) -> dict[str, object]:
-    source = Path(str(request.get("bundle", ""))).resolve()
+    requested = Path(str(request.get("bundle", "")))
+    if requested.is_symlink():
+        raise RequestError("linked candidate bundle refused")
+    source = requested.resolve()
+    expected = request.get("sha256")
+    if not isinstance(expected, str) or not re.fullmatch(r'[a-f0-9]{64}', expected):
+        raise RequestError("exact bundle SHA-256 required")
     if not source.is_dir() or not source.is_relative_to(STACK_ROOT):
-        raise RequestError(f"bundle must be a directory below {STACK_ROOT}")
+        raise RequestError("bundle outside authorized maintenance workspace")
+    # Symlinks may lead to private host paths; preserve links during copy and
+    # reject them before reading *any* staged bundle member.
+    if tree_sha256(source) != expected:
+        raise RequestError("candidate source digest mismatch")
     validate_bundle(source)
-    INCOMING.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if INCOMING.exists() or INCOMING.is_symlink():
+        info = INCOMING.lstat()
+        if not INCOMING.is_dir() or INCOMING.is_symlink() or info.st_uid != 0 or info.st_mode & 0o077:
+            raise RequestError("unsafe root-owned incoming directory")
+    else:
+        INCOMING.mkdir(mode=0o700, parents=True)
     temporary = Path(tempfile.mkdtemp(prefix=".stage-", dir=INCOMING))
     try:
-        shutil.copytree(source, temporary / "bundle", symlinks=False, dirs_exist_ok=True)
+        shutil.copytree(source, temporary / "bundle", symlinks=True, dirs_exist_ok=True)
         copied = temporary / "bundle"
-        validate_bundle(copied)
         digest = tree_sha256(copied)
-        expected = str(request.get("sha256", ""))
-        if expected and digest != expected:
-            raise RequestError(f"bundle digest mismatch: expected {expected}, got {digest}")
+        if digest != expected:
+            raise RequestError("candidate changed during staging")
+        validate_bundle(copied)
         destination = INCOMING / digest
-        if destination.exists():
-            if tree_sha256(destination) == digest:
-                shutil.rmtree(temporary)
+        if destination.exists() or destination.is_symlink():
+            if not destination.is_symlink() and destination.is_dir() and tree_sha256(destination) == digest:
                 return {"release": digest, "path": str(destination)}
-            shutil.rmtree(destination)
+            raise RequestError("existing release changed; no deletion or replacement")
         os.replace(copied, destination)
-        temporary.rmdir()
         return {"release": digest, "path": str(destination)}
-    except Exception:
-        shutil.rmtree(temporary, ignore_errors=True)
-        raise
+    finally:
+        shutil.rmtree(temporary)
+
+
+def plan(request: dict[str, object]) -> dict[str, object]:
+    staged = stage(request)
+    if PLANS.exists() or PLANS.is_symlink():
+        info = PLANS.lstat()
+        if not PLANS.is_dir() or PLANS.is_symlink() or info.st_uid != 0 or info.st_mode & 0o077:
+            raise RequestError('unsafe plan directory')
+    else:
+        PLANS.mkdir(mode=0o700, parents=True)
+    plan_id = secrets.token_hex(16)
+    data = {'schemaVersion': 1, 'planId': plan_id, 'release': staged['release'],
+            'createdAt': int(time.time()), 'state': 'awaiting-independent-root-approval'}
+    target = PLANS / (plan_id + '.json')
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as output:
+        json.dump(data, output, sort_keys=True); output.write('\n'); output.flush(); os.fsync(output.fileno())
+    directory = os.open(PLANS, os.O_RDONLY | os.O_DIRECTORY)
+    try:os.fsync(directory)
+    finally:os.close(directory)
+    return {'plan_id': plan_id, 'release': staged['release'], 'state': data['state'],
+            'approved': False, 'applied': False}
 
 
 def release_path(request: dict[str, object]) -> Path:
@@ -479,7 +514,7 @@ def operation_status(request: dict[str, object]) -> dict[str, object]:
 # Mutations stay closed until a separately reviewed plan/approval/apply/rollback
 # implementation exists; do not map a typed request to legacy broad operations.
 ACTIONS = {"status": status, "diagnostics": diagnostics, "operation-status": operation_status,
-           "verify": verify, "logs": logs}
+           "verify": verify, "logs": logs, "plan": plan}
 
 
 def authorized_uid_ranges(user: str, subuid_file: Path = Path("/etc/subuid")) -> tuple[int, list[tuple[int, int]]]:
