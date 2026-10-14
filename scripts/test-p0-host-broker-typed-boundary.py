@@ -15,14 +15,14 @@ assert spec and spec.loader
 broker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(broker)
 client = source.with_name('p0-hostctl.py')
-for action in ('stage', 'snapshot', 'activate', 'restore', 'gc', 'finalize-access', 'apply', 'rollback', 'test'):
+for action in ('stage', 'snapshot', 'activate', 'restore', 'gc', 'finalize-access', 'rollback', 'test'):
     result = subprocess.run([sys.executable, str(client), action], capture_output=True, text=True, timeout=8)
     assert result.returncode == 2 and 'invalid choice' in result.stderr
 help_text = subprocess.run([sys.executable, str(client), '--help'], capture_output=True, text=True, check=True, timeout=8).stdout
 assert 'operation-status' in help_text and 'plan' in help_text
 
 for action in ('stage', 'preflight', 'snapshot', 'activate', 'restore', 'gc', 'finalize-access',
-               'apply', 'rollback', 'test'):
+               'rollback', 'test'):
     response = broker.handle(json.dumps({'version': 1, 'action': action}).encode())
     assert response['ok'] is False and response['error'] == 'unsupported action: ' + action
     assert action not in broker.ACTIONS
@@ -31,6 +31,9 @@ assert broker.handle(b'{"version": true, "action": "status"}')['ok'] is False
 assert broker.handle(json.dumps({'version': 1, 'action': 'operation-status', 'operation_id': 'a'*32}).encode()) == {
     'ok': False, 'error': 'no approved operation with this identifier'}
 assert broker.handle(json.dumps({'version': 1, 'action': 'operation-status', 'operation_id': '../'}).encode())['ok'] is False
+assert 'apply' in broker.ACTIONS
+assert broker.handle(json.dumps({'version': 1, 'action': 'apply', 'plan_id': '../'}).encode())['ok'] is False
+assert broker.handle(json.dumps({'version': 1, 'action': 'apply', 'plan_id': 'a'*32}).encode())['ok'] is False
 
 with tempfile.TemporaryDirectory() as d:
     root = Path(d)

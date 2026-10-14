@@ -185,10 +185,13 @@ root approver now has a source-only read/claim API that checks the plan,
 release, exact DMI UUID, synthetic marker or all three distinct current
 production proof receipts, proof-byte hashes and ten-minute expiry before
 atomically consuming one approval under a root-only lock. Claimed receipts
-cannot be reissued for the same plan. This primitive does **not** launch an
-installer; socket `apply`, `test` and `rollback` remain closed until the
-separately reviewed operation runner, final inputs, installed socket boundary
-and isolated destructive-test proofs are complete. Do not report a consumed
+cannot be reissued for the same plan. A claim alone does **not** launch an installer. The separate typed `apply`
+source queues a root worker **only on a marked synthetic isolated host**, after
+rechecking the protected selected inputs and root approval. Its worker consumes
+one receipt before using the native installer, records private operation status
+and never restarts or rolls back on failure. This is source/fixture proof until
+installed socket and real isolated application checks pass; `test` and
+`rollback` remain closed, production `apply` remains refused. Do not report a consumed
 receipt as an apply, or a Worklane confirmation as independent root approval.
 
 The root-only `ops/p0-host-install-inputs.py` prepares a separate **synthetic
@@ -201,7 +204,8 @@ and refuses changed pre-existing root0600 configuration. A user-writable ancesto
 such as `/mnt/lab_debian` is not acceptable: stage these authority inputs below
 a root-controlled parent such as `/var/lib/platform-zero`. This preparation does
 not activate a stack, constitute independent approval, or authorize production
-mutation. The typed worker and installed denial proof remain separately gated.
+mutation. Native end-to-end worker execution and installed denial proof remain
+separately gated.
 
 ## Updates and recovery
 

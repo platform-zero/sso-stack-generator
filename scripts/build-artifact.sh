@@ -171,6 +171,8 @@ if [ "$(id -u)" -eq 0 ]; then
   python3 "$SCRIPT_DIR/test-install-journal.py" >&2
   python3 "$SCRIPT_DIR/test-p0-host-approval.py" >&2
   python3 "$SCRIPT_DIR/test-p0-host-install-inputs.py" >&2
+  python3 "$SCRIPT_DIR/test-p0-host-operations.py" >&2
+  python3 "$SCRIPT_DIR/test-p0-host-operation-authority.py" >&2
 else
   log "root-owned broker, approval and ACL fixtures require independent root regression"
 fi

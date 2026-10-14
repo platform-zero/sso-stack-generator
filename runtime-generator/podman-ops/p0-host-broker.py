@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
+from importlib.machinery import SourceFileLoader
 import json
 import os
 from pathlib import Path
@@ -503,18 +505,43 @@ def diagnostics(_: dict[str, object]) -> dict[str, object]:
             "backingFreeBytes": backing.free, "scopedStatus": status({})}
 
 
+OPERATION_SOURCE = Path('/usr/local/libexec/p0-host-operations.py')
+
+
+def operation_module():
+    loader = SourceFileLoader('p0_host_operations', str(OPERATION_SOURCE))
+    spec = importlib.util.spec_from_loader('p0_host_operations', loader)
+    if not spec or not spec.loader:
+        raise RequestError('typed operation source unavailable')
+    module = importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    return module
+
+
 def operation_status(request: dict[str, object]) -> dict[str, object]:
-    if not re.fullmatch(r'[a-f0-9]{32}', str(request.get('operation_id', ''))):
+    operation_id = request.get('operation_id')
+    if set(request) != {'version', 'action', 'operation_id'} or not isinstance(operation_id, str) or not re.fullmatch(r'[a-f0-9]{32}', operation_id):
         raise RequestError('exact operation identifier required')
-    raise RequestError('no approved operation with this identifier')
+    try:
+        return operation_module().status(operation_id)
+    except (ValueError, FileNotFoundError):
+        raise RequestError('no approved operation with this identifier') from None
 
 
-# Historical host-admin snapshot/restore/prune/sudo operations are deliberately
-# unreachable from the lane socket. They are not a compatible approval API.
-# Mutations stay closed until a separately reviewed plan/approval/apply/rollback
-# implementation exists; do not map a typed request to legacy broad operations.
+def apply(request: dict[str, object]) -> dict[str, object]:
+    plan_id = request.get('plan_id')
+    if set(request) != {'version', 'action', 'plan_id'} or not isinstance(plan_id, str) or not re.fullmatch(r'[a-f0-9]{32}', plan_id):
+        raise RequestError('exact approved plan identifier required')
+    try:
+        return operation_module().queue_apply(plan_id)
+    except (ValueError, FileNotFoundError, subprocess.SubprocessError):
+        raise RequestError('typed apply refused; inspect root approval, inputs and lease') from None
+
+
+# Historical host-admin snapshot/restore/prune/sudo operations remain
+# unreachable. New typed apply is isolated-marker-only and independently root
+# approved; rollback/test are still closed, never mapped to legacy mutations.
 ACTIONS = {"status": status, "diagnostics": diagnostics, "operation-status": operation_status,
-           "verify": verify, "logs": logs, "plan": plan}
+           "verify": verify, "logs": logs, "plan": plan, "apply": apply}
 
 
 def authorized_uid_ranges(user: str, subuid_file: Path = Path("/etc/subuid")) -> tuple[int, list[tuple[int, int]]]:
@@ -542,7 +569,7 @@ def handle(raw: bytes) -> dict[str, object]:
         if action not in ACTIONS:
             raise RequestError(f"unsupported action: {action}")
         return {"ok": True, "result": ACTIONS[action](request)}
-    except (RequestError, ValueError, OSError, KeyError) as error:
+    except (RequestError, ValueError, OSError, KeyError, TypeError) as error:
         # No native argv/stderr/absolute private paths in socket errors.
         return {"ok": False, "error": str(error) if isinstance(error, RequestError) else "host operation refused"}
 
