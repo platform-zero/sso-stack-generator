@@ -37,6 +37,13 @@ class InstallationJournal(unittest.TestCase):
         self.assertEqual(journal.read(self.release / 'installation-receipt.json'), journal.read(self.path))
         with self.assertRaises(ValueError): journal.update(self.root, self.bundle, self.release, 'failed')
 
+    def test_native_release_identity_collision_refuses_before_selected_stop(self):
+        script=(source.parent/'install-podman-bundle.sh').read_text()
+        guard='[ -z "$RESUME_INTENT" ] && { [ -e "$release" ] || [ -L "$release" ]; }'
+        self.assertIn(guard,script)
+        self.assertLess(script.index(guard),script.index('journal preparing'))
+        self.assertLess(script.index(guard),script.index('systemctl stop webservices.target'))
+
     def test_active_predecessor_must_be_selected_and_retains_exact_pins_on_resume(self):
         for phase in journal.PHASES[:5]:
             journal.update(self.root,self.bundle,self.release,phase)

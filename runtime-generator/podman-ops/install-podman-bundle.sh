@@ -399,6 +399,10 @@ flock -n 9 || { printf '[podman-install] another selected-stack installation is 
 
 release_id="$(date -u +%Y%m%dT%H%M%SZ)-$(jq -r '.irSha256[0:12]' "$BUNDLE/bundle.json")"
 release="$STATE_ROOT/releases/$release_id"
+if [ -z "$RESUME_INTENT" ] && { [ -e "$release" ] || [ -L "$release" ]; }; then
+  printf '[podman-install] generated release identity already exists; retry later or exact-CAS resume\n' >&2
+  exit 1
+fi
 previous="$(readlink -f "$STATE_ROOT/current" 2>/dev/null || true)"
 journal() {
   python3 "$JOURNAL_TOOL" --root "$STATE_ROOT" --bundle "$BUNDLE" --release "$release" --phase "$1" --expected "$RESUME_INTENT"

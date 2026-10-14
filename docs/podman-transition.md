@@ -197,10 +197,12 @@ non-unit/Android suites, changed selection or physical reserve loss, consumes
 one receipt and retains only root0600 logs. This is source/fixture behavior,
 not installed test proof or all nine suite coverage. A separate root-only
 `--apply-operation-id ID --reviewed-data-state` approval can authorize
-single-use typed **isolated-only**, same-60/95-composition predecessor
-reinstallation with identical site, secret, image and domain pins. It binds
+single-use typed **isolated-only** `rollback {operation_id: APPLIED_ID}`,
+same-60/95-composition predecessor reinstallation with identical site,
+secret, image and domain pins. It binds
 the successfully applied selected native journal, previous active immutable
-receipt, current native installer bytes and the actual synthetic machine.
+receipt, current native installer bytes, selected installed broker/worker
+parity and the actual synthetic machine.
 The transient worker rechecks root installer inputs and physical reserve,
 uses the supported current native installer with implicit activation rollback
 **disabled**, and fails closed with private logs/no automatic restart. This is

@@ -35,6 +35,10 @@ with tempfile.TemporaryDirectory(prefix='p0-rollback-authority-',dir='/var/lib/p
   test.write_text('#!/bin/sh\nexit 0\n');test.chmod(0o755)
  installer=current/'ops/install-podman-bundle.sh';installer.parent.mkdir()
  installer.write_text('#!/bin/sh\nexit 0\n');installer.chmod(0o755)
+ installed=base/'installed';installed.mkdir();controls={}
+ for name in rollback.INSTALLED_CONTROL:
+  native_source=current/'ops'/name;native_source.write_text('trusted '+name+'\n')
+  target=installed/name;target.write_bytes(native_source.read_bytes());controls[name]=target
  def pins(root):return {name:hashlib.sha256((root/name).read_bytes()).hexdigest()for name in rollback.PINNED}
  old_receipt={'schemaVersion':1,'phase':'active','release':str(old),'inputs':pins(old)}
  current_receipt={'schemaVersion':1,'phase':'active','release':str(current),
@@ -53,7 +57,8 @@ with tempfile.TemporaryDirectory(prefix='p0-rollback-authority-',dir='/var/lib/p
  marker=base/'marker';private(marker,{'schemaVersion':1,'scope':'isolated-synthetic','machineUuid':machine})
  approvals=base/'approvals'
  with patch.multiple(identity,NATIVE=native,MARKER=marker,DMI=dmi),\
-      patch.multiple(rollback,ROOT=native,OPERATIONS=operations,APPROVALS=approvals),\
+      patch.multiple(rollback,ROOT=native,OPERATIONS=operations,APPROVALS=approvals,
+                     INSTALLED_CONTROL=controls),\
       patch.object(rollback,'trust',return_value=identity):
   try:rollback.approve(apply_id,False,now=100)
   except ValueError:pass
@@ -67,6 +72,11 @@ with tempfile.TemporaryDirectory(prefix='p0-rollback-authority-',dir='/var/lib/p
   except ValueError:pass
   else:raise AssertionError('Mutated predecessor pin passed rollback')
   changed.write_bytes(prior)
+  typed=controls['p0-host-operations.py'];saved=typed.read_bytes();typed.write_text('stale installed controller\n')
+  try:rollback.review(apply_id,now=101)
+  except ValueError:pass
+  else:raise AssertionError('Stale installed controller approved predecessor rollback')
+  typed.write_bytes(saved)
   assert rollback.consume(apply_id,'c'*32,now=101)==bound
   assert rollback.review(apply_id,now=101,claimed_operation='c'*32)==bound
   try:rollback.consume(apply_id,'d'*32,now=102)

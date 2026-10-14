@@ -20,6 +20,12 @@ ROOT=Path('/var/lib/webservices')
 OPERATIONS=Path('/var/lib/platform-zero/maintenance-operations')
 APPROVALS=Path('/var/lib/platform-zero/maintenance-rollback-approvals')
 TEST_APPROVER=Path('/usr/local/sbin/p0-host-test-approve')
+INSTALLED_CONTROL={
+    'p0-host-test-approve.py':Path('/usr/local/sbin/p0-host-test-approve'),
+    'p0-host-rollback-approve.py':Path('/usr/local/sbin/p0-host-rollback-approve'),
+    'p0-host-operations.py':Path('/usr/local/libexec/p0-host-operations.py'),
+    'p0-host-broker.py':Path('/usr/local/libexec/p0-host-broker'),
+}
 PINNED=('bundle.json','stack.ir.json','source-provenance.json','podman-domains.json',
         'site/agent-vm.json','site/agent-vm.provenance.json','site/manifest.json',
         'site/components.lock.json','site/global.settings/registry-image-ids.json')
@@ -100,6 +106,12 @@ def review_selection(apply_id):
     manifest=json.loads((current_release/'site/manifest.json').read_text())
     if len(service_ir.get('services',{}))!=95 or len(manifest.get('modules',[]))!=60:
         raise ValueError('Only same 60/95 native composition rollback reviewed')
+    # A stack-source upgrade is not a controller upgrade by implication. Do
+    # not let a stale installed broker/worker silently authorize rollback of
+    # a newer selected source; it must be adopted via the reviewed installer.
+    for source,target in INSTALLED_CONTROL.items():
+        if file_sha(current_release/'ops'/source)!=file_sha(target):
+            raise ValueError('Installed typed control is not the selected release')
     installer=current_release/'ops/install-podman-bundle.sh'
     installer_hash=file_sha(installer)
     if not(installer.stat().st_mode&stat.S_IXUSR):raise ValueError('Native rollback installer is not executable')
