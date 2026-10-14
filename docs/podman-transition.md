@@ -194,7 +194,12 @@ installed socket and real isolated application checks pass. An independent
 root-selected synthetic `ts-unit` receipt also binds the current native
 journal, DMI marker and exact test-runner bytes; the typed test worker refuses
 non-unit/Android suites, changed selection or physical reserve loss, consumes
-one receipt and retains only root0600 logs. This is source/fixture behavior,
+one receipt and retains only root0600 logs. Its installed test-runner executes
+as the rootless `test-runners` domain user (with a live user bus), never root:
+the worker binds that account/UID to the selected native journal's hashed
+`podman-domains.json` and starts the runner from `/`. Each one-use operation
+receives its own results directory beneath the attested rootless-owned state
+root; it never tries to recursively chown a pre-existing root-owned result tree. This is source/fixture behavior,
 not installed test proof or all nine suite coverage. A separate root-only
 `--apply-operation-id ID --reviewed-data-state` approval can authorize
 single-use typed **isolated-only** `rollback {operation_id: APPLIED_ID}`,

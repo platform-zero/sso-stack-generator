@@ -20,16 +20,25 @@ with tempfile.TemporaryDirectory(prefix='p0-test-worker-fixture-',dir='/var/lib/
     bound={'suite':'ts-unit','release':str(release),'journalSha256':'b'*64,'machineUuid':'92da4d08-6104-4054-b3e5-ef70a2a5fcb4'}
     claimed=[];commands=[]
     approver=SimpleNamespace(consume=lambda suite,opid:claimed.append((suite,opid)))
+    runner_owner=SimpleNamespace(pw_name='webservices-test-runners',pw_uid=1997,
+                                 pw_dir='/home/webservices-test-runners')
+    runner_state=base/'runner-state';runner_state.mkdir()
     def approved(suite,claimed_operation=None):
         assert suite=='ts-unit'
         return bound,runner,approver
     def run(command,**kwargs):
         commands.append(command)
         if command[0]=='systemd-run':return SimpleNamespace(returncode=0,stdout='',stderr='')
-        assert command==[str(runner),'ts-unit']
+        assert command==['runuser','-u','webservices-test-runners','--','env',
+                         'HOME=/home/webservices-test-runners','XDG_RUNTIME_DIR=/run/user/1997',
+                         'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1997/bus',
+                         'TEST_RESULTS_HOST_DIR='+str(runner_state/('typed-ts-unit-'+operation)),
+                         str(runner),'ts-unit']
+        assert kwargs['cwd']=='/'
         kwargs['stdout'].write(b'private synthetic test log marker\n')
         return SimpleNamespace(returncode=0)
     with patch.multiple(ops,OPERATIONS=store),patch.object(ops,'approved_test',side_effect=approved),\
+         patch.object(ops,'selected_test_runner_account',return_value=(runner_owner,runner_state)),\
          patch.object(ops,'guard_test_capacity',return_value=None),patch.object(ops.subprocess,'run',side_effect=run):
         queued=ops.queue_test('ts-unit');operation=queued['operation_id']
         assert queued['state']=='queued'and not queued['testPassed']and len(operation)==32
@@ -37,6 +46,7 @@ with tempfile.TemporaryDirectory(prefix='p0-test-worker-fixture-',dir='/var/lib/
         assert ops.status(operation)['release']=='b'*64 and str(release)not in json.dumps(ops.status(operation))
         assert ops.execute_test(operation) is True
         assert claimed==[('ts-unit',operation)]and ops.status(operation)['state']=='synthetic-test-passed'
+        assert any(command[0]=='runuser' for command in commands)
         assert not(store/'.active.json').exists()
         assert stat.S_IMODE((store/(operation+'.log')).stat().st_mode)==0o600
         assert 'private synthetic test' not in json.dumps(ops.status(operation))

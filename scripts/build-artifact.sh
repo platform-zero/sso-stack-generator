@@ -175,6 +175,7 @@ if [ "$(id -u)" -eq 0 ]; then
   python3 "$SCRIPT_DIR/test-p0-host-operation-authority.py" >&2
   python3 "$SCRIPT_DIR/test-p0-host-test-approval.py" >&2
   python3 "$SCRIPT_DIR/test-p0-host-test-operation.py" >&2
+  python3 "$SCRIPT_DIR/test-p0-host-test-runner-identity.py" >&2
   python3 "$SCRIPT_DIR/test-p0-host-rollback-approval.py" >&2
   python3 "$SCRIPT_DIR/test-p0-host-rollback-operation.py" >&2
 else

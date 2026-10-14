@@ -12,6 +12,7 @@ import importlib.util
 from importlib.machinery import SourceFileLoader
 import json
 import os
+import pwd
 from pathlib import Path
 import re
 import secrets
@@ -246,6 +247,44 @@ def guard_test_capacity():
         raise ValueError('Insufficient measured memory/disk reserve for synthetic suite')
 
 
+def selected_test_runner_account(release):
+    # The installed test entrypoint refuses root. Use only the exact native
+    # release's signed domain owner, not a lane-provided user or environment.
+    journal=read_private(NATIVE_ROOT/'.install-intent.json')
+    manifest=release/'podman-domains.json'
+    expected=journal.get('inputs',{}).get('podman-domains.json')
+    if (journal.get('phase')!='active' or journal.get('release')!=str(release)
+            or not isinstance(expected,str) or not re.fullmatch('[a-f0-9]{64}',expected)
+            or manifest.is_symlink() or manifest.stat().st_uid!=0
+            or manifest.stat().st_mode&0o022):
+        raise ValueError('Selected test-runner identity differs from native journal')
+    source=manifest.read_bytes()
+    if hashlib.sha256(source).hexdigest()!=expected:
+        raise ValueError('Selected test-runner identity differs from native journal')
+    selected=json.loads(source)
+    if not isinstance(selected,dict) or not isinstance(selected.get('domains'),list):
+        raise ValueError('Invalid selected domain manifest')
+    owners=[row for row in selected['domains'] if isinstance(row,dict) and row.get('name')=='test-runners']
+    if len(owners)!=1 or owners[0].get('user')!='webservices-test-runners':
+        raise ValueError('Selected test-runner domain is missing or changed')
+    account=pwd.getpwnam('webservices-test-runners')
+    if (account.pw_uid!=owners[0].get('uid') or account.pw_dir!='/home/webservices-test-runners'
+            or not Path('/run/user/'+str(account.pw_uid)+'/bus').is_socket()):
+        raise ValueError('Selected rootless test-runner account is unavailable')
+    state_root=Path(owners[0].get('stateRoot',''))
+    graph_root=Path(owners[0].get('graphRoot',''))
+    if (not state_root.is_absolute() or state_root.name!='state'
+            or state_root.parent.name!='test-runners'
+            or state_root.parent!=graph_root.parent
+            or state_root.parent.is_symlink() or state_root.parent.stat().st_uid!=0
+            or state_root.parent.stat().st_mode&0o022
+            or state_root.is_symlink() or not state_root.is_dir()
+            or state_root.stat().st_uid!=account.pw_uid
+            or state_root.stat().st_mode&0o022):
+        raise ValueError('Selected rootless test results parent is not owned')
+    return account,state_root
+
+
 def execute_test(operation_id):
     with operation_lock():
         row=read_private(OPERATIONS/(operation_id+'.json'))
@@ -268,7 +307,16 @@ def execute_test(operation_id):
         log=OPERATIONS/(operation_id+'.log')
         fd=os.open(log,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
         with os.fdopen(fd,'wb')as output:
-            rc=subprocess.run([str(runner),'ts-unit'],stdout=output,stderr=subprocess.STDOUT,
+            account,state_root=selected_test_runner_account(Path(bound['release']))
+            uid=str(account.pw_uid)
+            results=state_root/('typed-ts-unit-'+operation_id)
+            if results.exists() or results.is_symlink():
+                raise ValueError('Synthetic test results already exist')
+            rc=subprocess.run(['runuser','-u',account.pw_name,'--','env',
+                               'HOME='+account.pw_dir,'XDG_RUNTIME_DIR=/run/user/'+uid,
+                               'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/'+uid+'/bus',
+                               'TEST_RESULTS_HOST_DIR='+str(results),
+                               str(runner),'ts-unit'],stdout=output,stderr=subprocess.STDOUT,
                               cwd='/',timeout=6900).returncode
             output.flush();os.fsync(output.fileno())
         if rc:raise ValueError('Synthetic unit test runner refused')
