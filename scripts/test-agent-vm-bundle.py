@@ -2,6 +2,8 @@
 """No mutation before missing/ambiguous/tampered site runtime pins are refused."""
 import importlib.util
 import json
+import shutil
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -64,6 +66,19 @@ class BundlePins(unittest.TestCase):
     def test_mixed_control_commit_refused(self):
         with self.assertRaisesRegex(ValueError, 'checkout differs'): module.verify(
             self.root, Path(__file__).resolve().parents[1])
+
+    def test_activation_refuses_missing_or_mixed_control_before_state(self):
+        ops = self.root / 'ops'; ops.mkdir()
+        shutil.copyfile(SOURCE, ops / SOURCE.name)
+        (self.root / 'quadlet').mkdir()
+        script = SOURCE.with_name('install-podman-bundle.sh')
+        for extra in ([], ['--control-checkout', str(self.root)]):
+            result = subprocess.run(['bash', str(script), '--bundle', str(self.root), '--activate', *extra],
+                                    capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn('preflight passed', result.stdout + result.stderr)
+            self.assertFalse((self.root / 'podman-domains.json').exists())
+
 
 
 if __name__ == '__main__': unittest.main()
