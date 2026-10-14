@@ -79,6 +79,7 @@ ops/verify-agent-vm-bundle.py /usr/local/libexec/p0-verify-agent-vm-bundle
 ops/p0-hostctl.py /usr/local/bin/p0-hostctl
 ops/p0-host-approve.py /usr/local/sbin/p0-host-approve
 ops/p0-host-test-approve.py /usr/local/sbin/p0-host-test-approve
+ops/p0-host-rollback-approve.py /usr/local/sbin/p0-host-rollback-approve
 ops/p0-domain-dispatch /usr/local/libexec/p0-domain-dispatch
 ops/install-domain-dispatch-key.py /usr/local/libexec/p0-install-domain-dispatch-key
 ops/start-worklane-containers.py /usr/local/libexec/p0-start-worklanes
@@ -117,6 +118,7 @@ install -m 0755 "$BUNDLE/ops/verify-agent-vm-bundle.py" /usr/local/libexec/p0-ve
 install -m 0755 "$BUNDLE/ops/p0-hostctl.py" /usr/local/bin/p0-hostctl
 install -m 0750 "$BUNDLE/ops/p0-host-approve.py" /usr/local/sbin/p0-host-approve
 install -m 0750 "$BUNDLE/ops/p0-host-test-approve.py" /usr/local/sbin/p0-host-test-approve
+install -m 0750 "$BUNDLE/ops/p0-host-rollback-approve.py" /usr/local/sbin/p0-host-rollback-approve
 install -m 0755 "$BUNDLE/ops/p0-domain-dispatch" /usr/local/libexec/p0-domain-dispatch
 install -m 0755 "$BUNDLE/ops/install-domain-dispatch-key.py" /usr/local/libexec/p0-install-domain-dispatch-key
 install -m 0755 "$BUNDLE/ops/start-worklane-containers.py" /usr/local/libexec/p0-start-worklanes

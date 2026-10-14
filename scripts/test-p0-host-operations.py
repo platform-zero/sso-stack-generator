@@ -36,6 +36,7 @@ with tempfile.TemporaryDirectory(prefix='p0-typed-operations-test-',dir='/var/li
         if command[0]=='systemd-run':return SimpleNamespace(returncode=0,stdout='',stderr='')
         assert command==[str(bundle/'ops/install-podman-bundle.sh'),'--bundle',str(bundle),
                          '--control-checkout',data['controlCheckout'],'--image-inputs',data['imageInputs'],'--activate']
+        assert kwargs['env']['WEBSERVICES_ACTIVATION_ROLLBACK']=='0'
         kwargs['stdout'].write(b'fixture private log marker; do not send to lane\n')
         return SimpleNamespace(returncode=0)
     with patch.multiple(ops,OPERATIONS=store,NATIVE_ROOT=native),patch.object(ops,'approved_inputs',side_effect=accepted),patch.object(ops.subprocess,'run',side_effect=native_run):
@@ -50,6 +51,10 @@ with tempfile.TemporaryDirectory(prefix='p0-typed-operations-test-',dir='/var/li
         assert len(commands)==1
         assert ops.execute_apply(plan) is True
         assert consumed==[(plan,release)] and ops.status(plan)['state']=='native-installed'
+        bound=ops.read_private(store/(plan+'.json'))
+        assert bound['selectedRelease']==str(selected)
+        assert bound['selectedJournalSha256']==hashlib.sha256(private.read_bytes()).hexdigest()
+        assert 'selectedRelease' not in ops.status(plan)
         assert not (store/'.active.json').exists()
         assert stat.S_IMODE((store/(plan+'.log')).stat().st_mode)==0o600
         assert 'private log' not in json.dumps(ops.status(plan))

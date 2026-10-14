@@ -28,6 +28,7 @@ OPERATIONS = Path('/var/lib/platform-zero/maintenance-operations')
 INPUTS = Path('/etc/platform-zero/maintenance-install.json')
 APPROVER = Path('/usr/local/sbin/p0-host-approve')
 TEST_APPROVER = Path('/usr/local/sbin/p0-host-test-approve')
+ROLLBACK_APPROVER = Path('/usr/local/sbin/p0-host-rollback-approve')
 BINDER = Path('/usr/local/libexec/p0-host-install-inputs.py')
 BROKER = Path('/usr/local/libexec/p0-host-broker')
 NATIVE_ROOT = Path('/var/lib/webservices')
@@ -255,6 +256,107 @@ def execute_test(operation_id):
     return result=='synthetic-test-passed'
 
 
+def approved_rollback(apply_id,claimed_operation=None):
+    if os.geteuid()!=0 or not re.fullmatch('[a-f0-9]{32}',apply_id):
+        raise ValueError('Exact approved isolated apply required')
+    approver=load(ROLLBACK_APPROVER,'p0_typed_rollback_approver')
+    bound=approver.review(apply_id,claimed_operation=claimed_operation)
+    data=read_private(INPUTS)
+    if (set(data)!={'schemaVersion','scope','machineUuid','release','controlCommit',
+                    'controlCheckout','siteSpecSha256','imageInputs','imageInputsSha256'}
+            or data['schemaVersion']!=1 or data['scope']!='isolated-synthetic'
+            or data['machineUuid']!=bound['machineUuid']
+            or data['release']!=bound['applyRelease']):
+        raise ValueError('Isolated native installer inputs changed after approved apply')
+    binder=load(BINDER,'p0_rollback_trusted_input_binder')
+    binder.OUTPUT=INPUTS
+    incoming=INCOMING/data['release']
+    binder.root_controlled_parents(incoming)
+    binder.protected(incoming,directory=True)
+    checked=binder.prepare(incoming,Path(data['controlCheckout']),
+                           Path(data['imageInputs']),data['release'])
+    if not checked['unchanged']or read_private(INPUTS)!=data:
+        raise ValueError('Rollback worker cannot create a new installer authority')
+    return bound,data,approver
+
+
+def queue_rollback(apply_id):
+    bound,_,_=approved_rollback(apply_id)
+    with operation_lock():
+        marker=OPERATIONS/'.active.json'
+        if marker.exists()or marker.is_symlink():
+            raise ValueError('Another typed operation requires settlement/root review')
+        operation_id=secrets.token_hex(16)
+        receipt=OPERATIONS/(operation_id+'.json')
+        if receipt.exists()or receipt.is_symlink():raise ValueError('Typed operation ID collision')
+        row={'schemaVersion':1,'operationId':operation_id,'kind':'rollback',
+             'applyOperationId':apply_id,'release':bound['currentJournalSha256'],
+             'state':'queued','startedAt':int(time.time()),'finishedAt':None}
+        atomic_private(receipt,row)
+        atomic_private(marker,{'schemaVersion':1,'operationId':operation_id})
+        command=['systemd-run','--collect','--unit=p0-typed-rollback-'+operation_id,
+                 '--property=Type=oneshot','--property=TimeoutStartSec=3h',
+                 '/usr/bin/python3',str(Path(__file__).resolve()),'--execute-rollback',operation_id]
+        started=subprocess.run(command,capture_output=True,text=True,timeout=30,cwd='/')
+        if started.returncode:
+            row['state']='failed-unstarted';row['finishedAt']=int(time.time())
+            atomic_private(receipt,row)
+            marker.unlink();raise ValueError('Typed rollback worker could not start')
+    return {'operation_id':operation_id,'state':'queued','rolledBack':False}
+
+
+def execute_rollback(operation_id):
+    with operation_lock():
+        row=read_private(OPERATIONS/(operation_id+'.json'))
+        marker=read_private(OPERATIONS/'.active.json')
+        if (marker!={'schemaVersion':1,'operationId':operation_id} or row.get('state')!='queued'
+                or row.get('kind')!='rollback' or not isinstance(row.get('applyOperationId'),str)):
+            raise ValueError('Unqueued or unsupported synthetic rollback refused')
+        row['state']='validating';atomic_private(OPERATIONS/(operation_id+'.json'),row)
+    claimed=False
+    try:
+        bound,data,approver=approved_rollback(row['applyOperationId'])
+        guard_test_capacity()
+        approver.consume(row['applyOperationId'],operation_id)
+        claimed=True
+        reviewed,again,_=approved_rollback(row['applyOperationId'],claimed_operation=operation_id)
+        if reviewed!=bound or again!=data or row['release']!=bound['currentJournalSha256']:
+            raise ValueError('Native predecessor or root installer inputs changed')
+        previous=Path(bound['previousRelease']);selected=Path(bound['selectedRelease'])
+        native_installer=selected/'ops/install-podman-bundle.sh'
+        with operation_lock():
+            row['state']='running';atomic_private(OPERATIONS/(operation_id+'.json'),row)
+        log=OPERATIONS/(operation_id+'.log')
+        fd=os.open(log,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+        with os.fdopen(fd,'wb')as output:
+            rc=subprocess.run([str(native_installer),'--bundle',str(previous),
+                '--control-checkout',data['controlCheckout'],'--image-inputs',data['imageInputs'],
+                '--activate'],stdout=output,stderr=subprocess.STDOUT,cwd='/',timeout=None,
+                env=dict(os.environ,WEBSERVICES_ACTIVATION_ROLLBACK='0')).returncode
+            output.flush();os.fsync(output.fileno())
+        if rc:raise ValueError('Native predecessor reinstallation refused; never restart automatically')
+        native=read_private(NATIVE_ROOT/'.install-intent.json')
+        now=Path(native.get('release',''))
+        expected=read_private(previous/'installation-receipt.json')['inputs']
+        if (native.get('schemaVersion')!=1 or native.get('phase')!='active'
+                or native.get('inputs')!=expected
+                or native.get('previousRelease')!=str(selected)
+                or now.parent!=NATIVE_ROOT/'releases' or now==selected or now==previous
+                or (NATIVE_ROOT/'current').resolve()!=now):
+            raise ValueError('Native rollback release selection could not be proved')
+        result='native-predecessor-reinstalled'
+    except (ValueError,OSError,KeyError,TypeError,subprocess.SubprocessError):
+        result='failed-after-approval' if claimed else 'failed-before-approval'
+    with operation_lock():
+        row=read_private(OPERATIONS/(operation_id+'.json'))
+        row['state']=result;row['finishedAt']=int(time.time())
+        atomic_private(OPERATIONS/(operation_id+'.json'),row)
+        if read_private(OPERATIONS/'.active.json')!={'schemaVersion':1,'operationId':operation_id}:
+            raise ValueError('Synthetic rollback lease changed; root review required')
+        (OPERATIONS/'.active.json').unlink()
+    return result=='native-predecessor-reinstalled'
+
+
 def execute_apply(plan_id):
     # The transient unit is root-only; it rechecks, then consumes, before any
     # installer code. Errors preserve source data/intent and never restart.
@@ -276,7 +378,8 @@ def execute_apply(plan_id):
         with os.fdopen(fd,'wb')as output:
             rc=subprocess.run([str(bundle/'ops/install-podman-bundle.sh'),'--bundle',str(bundle),
                 '--control-checkout',data['controlCheckout'],'--image-inputs',data['imageInputs'],
-                '--activate'],stdout=output,stderr=subprocess.STDOUT,cwd='/',timeout=None).returncode
+                '--activate'],stdout=output,stderr=subprocess.STDOUT,cwd='/',timeout=None,
+                env=dict(os.environ,WEBSERVICES_ACTIVATION_ROLLBACK='0')).returncode
             output.flush();os.fsync(output.fileno())
         if rc:raise ValueError('Native selected installer refused; inspect protected journal')
         current=NATIVE_ROOT/'.install-intent.json'
@@ -292,12 +395,17 @@ def execute_apply(plan_id):
             expected[name]=hashlib.sha256(pinned.read_bytes()).hexdigest() if pinned.is_file() else None
         if native.get('inputs')!=expected:
             raise ValueError('Native selected journal differs from approved final pins')
+        selected_release=str(selected)
+        selected_journal_sha=hashlib.sha256(current.read_bytes()).hexdigest()
         result='native-installed'
     except (ValueError,OSError,KeyError,TypeError,subprocess.SubprocessError):
         result='failed-after-approval' if claimed else 'failed-before-approval'
     with operation_lock():
         row=read_private(OPERATIONS/(plan_id+'.json'))
         row['state']=result;row['finishedAt']=int(time.time())
+        if result=='native-installed':
+            row['selectedRelease']=selected_release
+            row['selectedJournalSha256']=selected_journal_sha
         atomic_private(OPERATIONS/(plan_id+'.json'),row)
         marker=read_private(OPERATIONS/'.active.json')
         if marker!={'schemaVersion':1,'operationId':plan_id}:
@@ -311,8 +419,12 @@ def main():
     kind=p.add_mutually_exclusive_group(required=True)
     kind.add_argument('--execute-apply')
     kind.add_argument('--execute-test')
+    kind.add_argument('--execute-rollback')
     a=p.parse_args()
-    try:success=execute_apply(a.execute_apply) if a.execute_apply else execute_test(a.execute_test)
+    try:
+        if a.execute_apply:success=execute_apply(a.execute_apply)
+        elif a.execute_test:success=execute_test(a.execute_test)
+        else:success=execute_rollback(a.execute_rollback)
     except (ValueError,OSError,KeyError,TypeError,subprocess.SubprocessError):success=False
     raise SystemExit(0 if success else 1)
 

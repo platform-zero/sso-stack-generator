@@ -195,8 +195,18 @@ root-selected synthetic `ts-unit` receipt also binds the current native
 journal, DMI marker and exact test-runner bytes; the typed test worker refuses
 non-unit/Android suites, changed selection or physical reserve loss, consumes
 one receipt and retains only root0600 logs. This is source/fixture behavior,
-not installed test proof or all nine suite coverage. `rollback` remains closed,
-and production `apply` remains refused. Do not report a consumed
+not installed test proof or all nine suite coverage. A separate root-only
+`--apply-operation-id ID --reviewed-data-state` approval can authorize
+single-use typed **isolated-only**, same-60/95-composition predecessor
+reinstallation with identical site, secret, image and domain pins. It binds
+the successfully applied selected native journal, previous active immutable
+receipt, current native installer bytes and the actual synthetic machine.
+The transient worker rechecks root installer inputs and physical reserve,
+uses the supported current native installer with implicit activation rollback
+**disabled**, and fails closed with private logs/no automatic restart. This is
+source-fixture proof, not installed rollback or a guarantee that different
+schema/image/controller releases are data-compatible. Production apply and
+rollback remain refused. Do not report a consumed
 receipt as an apply, or a Worklane confirmation as independent root approval.
 
 The root-only `ops/p0-host-install-inputs.py` prepares a separate **synthetic

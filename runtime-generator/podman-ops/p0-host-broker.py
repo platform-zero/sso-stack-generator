@@ -527,6 +527,17 @@ def operation_status(request: dict[str, object]) -> dict[str, object]:
         raise RequestError('no approved operation with this identifier') from None
 
 
+def rollback(request: dict[str, object]) -> dict[str, object]:
+    apply_id = request.get('operation_id')
+    if (set(request) != {'version', 'action', 'operation_id'}
+            or not isinstance(apply_id,str) or not re.fullmatch(r'[a-f0-9]{32}',apply_id)):
+        raise RequestError('exact approved isolated apply operation required')
+    try:
+        return operation_module().queue_rollback(apply_id)
+    except (ValueError, FileNotFoundError, subprocess.SubprocessError):
+        raise RequestError('typed native rollback refused; inspect root authority') from None
+
+
 def test(request: dict[str, object]) -> dict[str, object]:
     suite = request.get('suite')
     if set(request) != {'version', 'action', 'suite'} or suite != 'ts-unit':
@@ -548,10 +559,11 @@ def apply(request: dict[str, object]) -> dict[str, object]:
 
 
 # Historical host-admin snapshot/restore/prune/sudo operations remain
-# unreachable. New typed apply is isolated-marker-only and independently root
-# approved; rollback remains closed, never mapped to legacy mutations.
+# unreachable. Apply/test and same-composition predecessor rollback require
+# separate root synthetic approval; none map to legacy broad mutations.
 ACTIONS = {"status": status, "diagnostics": diagnostics, "operation-status": operation_status,
-           "verify": verify, "logs": logs, "plan": plan, "apply": apply, "test": test}
+           "verify": verify, "logs": logs, "plan": plan, "apply": apply,
+           "test": test, "rollback": rollback}
 
 
 def authorized_uid_ranges(user: str, subuid_file: Path = Path("/etc/subuid")) -> tuple[int, list[tuple[int, int]]]:
