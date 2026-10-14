@@ -1129,6 +1129,36 @@ retry_failed_rootless_services() {
   done
 }
 
+start_missing_rootless_daemons() {
+  # A cold target transaction can silently skip an otherwise healthy daemon
+  # when a completed build/remote producer was unavailable at the first start.
+  # Failed units have their separate bounded retry above. Only the exact
+  # selected target's daemon units may be started here; never oneshot builds,
+  # unrelated user services, or anything already running/in a queued job.
+  local i unit detail state kind result job load
+  for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+    while IFS= read -r unit; do
+      [ -n "$unit" ] || continue
+      [[ "$unit" =~ ^webservices-[a-z0-9-]+\.service$ ]] || {
+        printf '[podman-install] invalid selected daemon unit name\n' >&2
+        return 1
+      }
+      detail="$(user_systemctl "$i" show "$unit" -p ActiveState -p Type -p Result -p Job -p LoadState)" || return 1
+      state="$(awk -F= '$1 == "ActiveState" {print $2}' <<<"$detail")"
+      kind="$(awk -F= '$1 == "Type" {print $2}' <<<"$detail")"
+      result="$(awk -F= '$1 == "Result" {print $2}' <<<"$detail")"
+      job="$(awk -F= '$1 == "Job" {print $2}' <<<"$detail")"
+      load="$(awk -F= '$1 == "LoadState" {print $2}' <<<"$detail")"
+      case "$kind" in notify|simple|exec|forking) ;; *) continue ;; esac
+      if [ "$state" = inactive ] && [ "$result" = success ] && [ -z "$job" ] && [ "$load" = loaded ]; then
+        printf '[podman-install] starting selected initially skipped daemon: domain=%s unit=%s\n' "${ROOTLESS_DOMAIN_NAMES[$i]}" "$unit" >&2
+        user_systemctl "$i" --no-block start "$unit" || return 1
+      fi
+    done < <(awk '/^Wants=/ {sub(/^Wants=/, ""); for (j = 1; j <= NF; j++) print $j}' \
+      "${ROOTLESS_SYSTEMD_DIRS[$i]}"/webservices-*.target | sort -u)
+  done
+}
+
 grant_test_runner_managed_socket_access() {
   local launch_domain managed_domain launch_index managed_index launch_user
   launch_domain="$(jq -r '.services["test-runner"].rootlessDomain // empty' "$BUNDLE/stack.ir.json")"
@@ -1190,6 +1220,8 @@ for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user_systemctl "$i" --no-block restart webservices.target
 done
 wait_for_cross_domain_producers
+retry_failed_rootless_services
+start_missing_rootless_daemons
 retry_failed_rootless_services
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   wait_for_target_services rootless "$i" "${ROOTLESS_SYSTEMD_DIRS[$i]}"
