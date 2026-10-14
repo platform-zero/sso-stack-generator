@@ -4,6 +4,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 from unittest.mock import patch
 
@@ -12,6 +14,12 @@ spec = importlib.util.spec_from_file_location('p0_typed_broker_boundary', source
 assert spec and spec.loader
 broker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(broker)
+client = source.with_name('p0-hostctl.py')
+for action in ('stage', 'snapshot', 'activate', 'restore', 'gc', 'finalize-access', 'apply', 'rollback', 'test'):
+    result = subprocess.run([sys.executable, str(client), action], capture_output=True, text=True, timeout=8)
+    assert result.returncode == 2 and 'invalid choice' in result.stderr
+help_text = subprocess.run([sys.executable, str(client), '--help'], capture_output=True, text=True, check=True, timeout=8).stdout
+assert 'operation-status' in help_text and 'plan' in help_text
 
 for action in ('stage', 'preflight', 'snapshot', 'activate', 'restore', 'gc', 'finalize-access',
                'apply', 'rollback', 'test'):

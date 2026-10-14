@@ -18,15 +18,13 @@ def unique_json_pairs(pairs):
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["stage", "preflight", "snapshot", "activate", "status", "verify", "logs", "restore", "gc", "finalize-access"])
+    parser.add_argument("action", choices=["status", "diagnostics", "verify", "logs", "operation-status", "plan"])
     parser.add_argument("--bundle")
     parser.add_argument("--release")
     parser.add_argument("--sha256")
+    parser.add_argument("--operation-id")
     parser.add_argument("--domain", default="rootful")
     parser.add_argument("--unit")
-    parser.add_argument("--snapshot")
-    parser.add_argument("--confirm")
-    parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--socket", default="/run/platform-zero/host-broker.sock")
     args = parser.parse_args()
     request = {key: value for key, value in vars(args).items() if key != "socket" and value is not None}
