@@ -453,6 +453,8 @@ ensure_rootless_domain() {
     /mnt/stack/podman/*) install -d -m 0710 -o root -g "$user" "$(dirname "$graph_root")" ;;
   esac
   mkdir -p "${ROOTLESS_RELEASES[$index]}" "$state_root/releases" "$graph_root" "$volume_root" "$runtime" "$env_store" "$quadlet_dir" "$systemd_dir" "$home/.config/containers"
+  python3 "$BUNDLE/ops/grant-rootless-volume-parent-traverse.py" \
+    --domain "${ROOTLESS_DOMAIN_NAMES[$index]}" --user "$user" --volume-root "$volume_root"
   if command -v setfacl >/dev/null 2>&1; then
     setfacl -b -k "$graph_root" "$volume_root"
   fi
