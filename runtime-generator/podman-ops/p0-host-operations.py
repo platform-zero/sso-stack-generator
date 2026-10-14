@@ -142,6 +142,37 @@ def approved_inputs(plan_id):
     return release,bundle,data,approver
 
 
+def materialize_approved_worktree(plan_id,release,bundle):
+    """Run the native renderer on a private copy, never on sealed approval input.
+
+    Native rendering writes decrypted runtime files into its --bundle directory.
+    Mutating INCOMING/<sha> would invalidate future exact-release review after a
+    successful apply or failed-intent recovery. No copy is an experiment backup:
+    this is the selected one-operation installer input, retained only on error.
+    """
+    binder=load(BINDER,'p0_typed_worktree_binder')
+    broker=load(BROKER,'p0_typed_worktree_broker')
+    parent=INCOMING.parent/'maintenance-install-worktrees'
+    binder.root_controlled_parents(parent)
+    protected_directory(parent,create=True)
+    destination=parent/plan_id
+    if destination.exists()or destination.is_symlink():
+        raise ValueError('Approved installer worktree already exists')
+    temporary=Path(tempfile.mkdtemp(prefix='.approved-'+plan_id+'-',dir=parent))
+    try:
+        shutil.copytree(bundle,temporary,symlinks=True,dirs_exist_ok=True)
+        temporary.chmod(0o700)
+        if broker.tree_sha256(temporary)!=release or broker.tree_sha256(bundle)!=release:
+            raise ValueError('Approved release changed during private installer staging')
+        broker.validate_bundle(temporary)
+        if destination.exists()or destination.is_symlink():
+            raise ValueError('Approved installer worktree raced')
+        os.rename(temporary,destination)
+        return destination
+    finally:
+        if temporary.exists():shutil.rmtree(temporary)
+
+
 def status(plan_id):
     if not re.fullmatch('[a-f0-9]{32}',plan_id):raise ValueError('Exact typed operation ID required')
     protected_directory(OPERATIONS)
@@ -367,16 +398,19 @@ def execute_apply(plan_id):
             raise ValueError('Unqueued typed operation refused')
         row['state']='validating';atomic_private(OPERATIONS/(plan_id+'.json'),row)
     claimed=False
+    worktree=None
     try:
         release,bundle,data,approver=approved_inputs(plan_id)
         approver.consume(plan_id,release)
         claimed=True
+        worktree=materialize_approved_worktree(plan_id,release,bundle)
         with operation_lock():
-            row['state']='running';atomic_private(OPERATIONS/(plan_id+'.json'),row)
+            row['state']='running';row['installWorktree']=str(worktree)
+            atomic_private(OPERATIONS/(plan_id+'.json'),row)
         log=OPERATIONS/(plan_id+'.log')
         fd=os.open(log,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
         with os.fdopen(fd,'wb')as output:
-            rc=subprocess.run([str(bundle/'ops/install-podman-bundle.sh'),'--bundle',str(bundle),
+            rc=subprocess.run([str(worktree/'ops/install-podman-bundle.sh'),'--bundle',str(worktree),
                 '--control-checkout',data['controlCheckout'],'--image-inputs',data['imageInputs'],
                 '--activate'],stdout=output,stderr=subprocess.STDOUT,cwd='/',timeout=None,
                 env=dict(os.environ,WEBSERVICES_ACTIVATION_ROLLBACK='0')).returncode
@@ -397,6 +431,11 @@ def execute_apply(plan_id):
             raise ValueError('Native selected journal differs from approved final pins')
         selected_release=str(selected)
         selected_journal_sha=hashlib.sha256(current.read_bytes()).hexdigest()
+        if load(BROKER,'p0_typed_post_install_broker').tree_sha256(bundle)!=release:
+            raise ValueError('Approved sealed release changed after native installation')
+        # The selected native release has its own independent copy. Do not
+        # remove a failed install's private worktree or any data/intent.
+        shutil.rmtree(worktree)
         result='native-installed'
     except (ValueError,OSError,KeyError,TypeError,subprocess.SubprocessError):
         result='failed-after-approval' if claimed else 'failed-before-approval'
@@ -404,6 +443,7 @@ def execute_apply(plan_id):
         row=read_private(OPERATIONS/(plan_id+'.json'))
         row['state']=result;row['finishedAt']=int(time.time())
         if result=='native-installed':
+            row.pop('installWorktree',None)
             row['selectedRelease']=selected_release
             row['selectedJournalSha256']=selected_journal_sha
         atomic_private(OPERATIONS/(plan_id+'.json'),row)

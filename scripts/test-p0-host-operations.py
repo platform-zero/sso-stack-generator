@@ -16,9 +16,15 @@ spec=importlib.util.spec_from_file_location('p0_typed_operations_fixture',source
 ops=importlib.util.module_from_spec(spec);spec.loader.exec_module(ops)
 with tempfile.TemporaryDirectory(prefix='p0-typed-operations-test-',dir='/var/lib/platform-zero')as tmp:
     base=Path(tmp);store=base/'operations';native=base/'native';native.mkdir()
-    bundle=base/'selected-bundle';bundle.mkdir()
+    incoming=base/'incoming';incoming.mkdir()
+    bundle=incoming/'selected-bundle';bundle.mkdir()
     for name in ('bundle.json','stack.ir.json','source-provenance.json'):(bundle/name).write_text('{}')
-    plan='a'*32;release='b'*64
+    (bundle/'ops').mkdir();(bundle/'ops/install-podman-bundle.sh').write_text('#!/bin/sh\n')
+    plan='a'*32
+    broker_source=source.with_name('p0-host-broker.py')
+    broker_spec=importlib.util.spec_from_file_location('p0_worktree_fixture_broker',broker_source)
+    broker=importlib.util.module_from_spec(broker_spec);broker_spec.loader.exec_module(broker)
+    release=broker.tree_sha256(bundle)
     data={'controlCheckout':'/root/selected-control','imageInputs':'/root/reviewed-image-inputs'}
     consumed=[];commands=[]
     approver=SimpleNamespace(consume=lambda p,r:consumed.append((p,r)))
@@ -31,15 +37,28 @@ with tempfile.TemporaryDirectory(prefix='p0-typed-operations-test-',dir='/var/li
           for name in ops.PIN_FILES}
     private=native/'.install-intent.json';private.write_text(json.dumps({'schemaVersion':1,'phase':'active',
         'release':str(selected),'inputs':pins}));private.chmod(0o600)
+    original_load=ops.load
+    binder_spec=importlib.util.spec_from_file_location('p0_worktree_fixture_binder',
+        source.with_name('p0-host-install-inputs.py'))
+    binder=importlib.util.module_from_spec(binder_spec);binder_spec.loader.exec_module(binder)
+    def fixture_load(path,name):
+        if path==ops.BROKER:
+            return SimpleNamespace(tree_sha256=broker.tree_sha256,validate_bundle=lambda _:None)
+        if path==ops.BINDER:return binder
+        return original_load(path,name)
     def native_run(command,**kwargs):
         commands.append(command)
         if command[0]=='systemd-run':return SimpleNamespace(returncode=0,stdout='',stderr='')
-        assert command==[str(bundle/'ops/install-podman-bundle.sh'),'--bundle',str(bundle),
+        staged=base/'maintenance-install-worktrees'/active_plan[0]
+        assert command==[str(staged/'ops/install-podman-bundle.sh'),'--bundle',str(staged),
                          '--control-checkout',data['controlCheckout'],'--image-inputs',data['imageInputs'],'--activate']
+        assert broker.tree_sha256(staged)==release and broker.tree_sha256(bundle)==release
         assert kwargs['env']['WEBSERVICES_ACTIVATION_ROLLBACK']=='0'
+        (staged/'runtime').mkdir();(staged/'runtime/stack.env').write_text('rendered-only-in-worktree\n')
         kwargs['stdout'].write(b'fixture private log marker; do not send to lane\n')
         return SimpleNamespace(returncode=0)
-    with patch.multiple(ops,OPERATIONS=store,NATIVE_ROOT=native),patch.object(ops,'approved_inputs',side_effect=accepted),patch.object(ops.subprocess,'run',side_effect=native_run):
+    active_plan=[plan]
+    with patch.multiple(ops,OPERATIONS=store,NATIVE_ROOT=native,INCOMING=incoming),patch.object(ops,'load',side_effect=fixture_load),patch.object(ops,'approved_inputs',side_effect=accepted),patch.object(ops.subprocess,'run',side_effect=native_run):
         queued=ops.queue_apply(plan)
         assert queued=={'operation_id':plan,'release':release,'state':'queued','applied':False}
         assert not consumed and len(commands)==1 and commands[0][0]=='systemd-run'
@@ -51,6 +70,8 @@ with tempfile.TemporaryDirectory(prefix='p0-typed-operations-test-',dir='/var/li
         assert len(commands)==1
         assert ops.execute_apply(plan) is True
         assert consumed==[(plan,release)] and ops.status(plan)['state']=='native-installed'
+        assert broker.tree_sha256(bundle)==release
+        assert not (base/'maintenance-install-worktrees'/plan).exists()
         bound=ops.read_private(store/(plan+'.json'))
         assert bound['selectedRelease']==str(selected)
         assert bound['selectedJournalSha256']==hashlib.sha256(private.read_bytes()).hexdigest()
@@ -75,8 +96,11 @@ with tempfile.TemporaryDirectory(prefix='p0-typed-operations-test-',dir='/var/li
         changed['inputs']['site/agent-vm.json']='f'*64
         private.write_text(json.dumps(changed))
         ops.queue_apply(wrong)
+        active_plan[0]=wrong
         assert ops.execute_apply(wrong) is False
         assert ops.status(wrong)['state']=='failed-after-approval'
+        assert broker.tree_sha256(bundle)==release
+        assert (base/'maintenance-install-worktrees'/wrong/'runtime/stack.env').is_file()
         assert consumed[-1]==(wrong,release) and not(store/'.active.json').exists()
         private.write_bytes(old)
         blocked='d'*32
