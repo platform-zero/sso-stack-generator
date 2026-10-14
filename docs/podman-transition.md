@@ -190,8 +190,13 @@ source queues a root worker **only on a marked synthetic isolated host**, after
 rechecking the protected selected inputs and root approval. Its worker consumes
 one receipt before using the native installer, records private operation status
 and never restarts or rolls back on failure. This is source/fixture proof until
-installed socket and real isolated application checks pass; `test` and
-`rollback` remain closed, production `apply` remains refused. Do not report a consumed
+installed socket and real isolated application checks pass. An independent
+root-selected synthetic `ts-unit` receipt also binds the current native
+journal, DMI marker and exact test-runner bytes; the typed test worker refuses
+non-unit/Android suites, changed selection or physical reserve loss, consumes
+one receipt and retains only root0600 logs. This is source/fixture behavior,
+not installed test proof or all nine suite coverage. `rollback` remains closed,
+and production `apply` remains refused. Do not report a consumed
 receipt as an apply, or a Worklane confirmation as independent root approval.
 
 The root-only `ops/p0-host-install-inputs.py` prepares a separate **synthetic

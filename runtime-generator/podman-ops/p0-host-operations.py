@@ -14,6 +14,8 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -25,6 +27,7 @@ INCOMING = Path('/var/lib/platform-zero/incoming')
 OPERATIONS = Path('/var/lib/platform-zero/maintenance-operations')
 INPUTS = Path('/etc/platform-zero/maintenance-install.json')
 APPROVER = Path('/usr/local/sbin/p0-host-approve')
+TEST_APPROVER = Path('/usr/local/sbin/p0-host-test-approve')
 BINDER = Path('/usr/local/libexec/p0-host-install-inputs.py')
 BROKER = Path('/usr/local/libexec/p0-host-broker')
 NATIVE_ROOT = Path('/var/lib/webservices')
@@ -172,6 +175,86 @@ def queue_apply(plan_id):
     return {'operation_id':plan_id,'release':release,'state':'queued','applied':False}
 
 
+def approved_test(suite,claimed_operation=None):
+    if os.geteuid()!=0 or suite!='ts-unit':raise ValueError('Unsupported isolated test suite')
+    approver=load(TEST_APPROVER,'p0_typed_test_approver')
+    bound=approver.review(suite,claimed_operation=claimed_operation)
+    runner=Path(bound['release'])/'build/stack.containers/test-runner/run-tests.sh'
+    return bound,runner,approver
+
+
+def queue_test(suite):
+    bound,_,_=approved_test(suite)
+    with operation_lock():
+        marker=OPERATIONS/'.active.json'
+        if marker.exists()or marker.is_symlink():
+            raise ValueError('Another typed operation requires settlement/root review')
+        operation_id=secrets.token_hex(16)
+        receipt=OPERATIONS/(operation_id+'.json')
+        if receipt.exists()or receipt.is_symlink():raise ValueError('Typed operation ID collision')
+        row={'schemaVersion':1,'operationId':operation_id,'kind':'test','suite':suite,
+             'release':bound['journalSha256'],'state':'queued','startedAt':int(time.time()),'finishedAt':None}
+        atomic_private(receipt,row)
+        atomic_private(marker,{'schemaVersion':1,'operationId':operation_id})
+        command=['systemd-run','--collect','--unit=p0-typed-test-'+operation_id,
+                 '--property=Type=oneshot','--property=TimeoutStartSec=2h',
+                 '/usr/bin/python3',str(Path(__file__).resolve()),'--execute-test',operation_id]
+        started=subprocess.run(command,capture_output=True,text=True,timeout=30,cwd='/')
+        if started.returncode:
+            row['state']='failed-unstarted';row['finishedAt']=int(time.time())
+            atomic_private(receipt,row)
+            marker.unlink();raise ValueError('Typed synthetic test worker could not start')
+    return {'operation_id':operation_id,'suite':suite,'state':'queued','testPassed':False}
+
+
+def guard_test_capacity():
+    available=next((int(line.split()[1])for line in Path('/proc/meminfo').read_text().splitlines()
+                    if line.startswith('MemAvailable:')),0)
+    if available<10*1024*1024 or shutil.disk_usage('/').free<55*2**30:
+        raise ValueError('Insufficient measured memory/disk reserve for synthetic suite')
+
+
+def execute_test(operation_id):
+    with operation_lock():
+        row=read_private(OPERATIONS/(operation_id+'.json'))
+        marker=read_private(OPERATIONS/'.active.json')
+        if (marker!={'schemaVersion':1,'operationId':operation_id} or row.get('state')!='queued'
+                or row.get('kind')!='test' or row.get('suite')!='ts-unit'):
+            raise ValueError('Unqueued or unsupported synthetic test refused')
+        row['state']='validating';atomic_private(OPERATIONS/(operation_id+'.json'),row)
+    claimed=False
+    try:
+        bound,runner,approver=approved_test('ts-unit')
+        guard_test_capacity()
+        approver.consume('ts-unit',operation_id)
+        claimed=True
+        refreshed,runner,_=approved_test('ts-unit',claimed_operation=operation_id)
+        if refreshed!=bound or row['release']!=bound['journalSha256']:
+            raise ValueError('Selected synthetic test authority changed')
+        with operation_lock():
+            row['state']='running';atomic_private(OPERATIONS/(operation_id+'.json'),row)
+        log=OPERATIONS/(operation_id+'.log')
+        fd=os.open(log,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+        with os.fdopen(fd,'wb')as output:
+            rc=subprocess.run([str(runner),'ts-unit'],stdout=output,stderr=subprocess.STDOUT,
+                              cwd='/',timeout=6900).returncode
+            output.flush();os.fsync(output.fileno())
+        if rc:raise ValueError('Synthetic unit test runner refused')
+        after,_,_=approved_test('ts-unit',claimed_operation=operation_id)
+        if after!=bound:raise ValueError('Selected native test release changed during run')
+        result='synthetic-test-passed'
+    except (ValueError,OSError,KeyError,TypeError,subprocess.SubprocessError):
+        result='failed-after-approval' if claimed else 'failed-before-approval'
+    with operation_lock():
+        row=read_private(OPERATIONS/(operation_id+'.json'))
+        row['state']=result;row['finishedAt']=int(time.time())
+        atomic_private(OPERATIONS/(operation_id+'.json'),row)
+        if read_private(OPERATIONS/'.active.json')!={'schemaVersion':1,'operationId':operation_id}:
+            raise ValueError('Synthetic test operation lease changed')
+        (OPERATIONS/'.active.json').unlink()
+    return result=='synthetic-test-passed'
+
+
 def execute_apply(plan_id):
     # The transient unit is root-only; it rechecks, then consumes, before any
     # installer code. Errors preserve source data/intent and never restart.
@@ -225,9 +308,11 @@ def execute_apply(plan_id):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--execute-apply',required=True)
+    kind=p.add_mutually_exclusive_group(required=True)
+    kind.add_argument('--execute-apply')
+    kind.add_argument('--execute-test')
     a=p.parse_args()
-    try:success=execute_apply(a.execute_apply)
+    try:success=execute_apply(a.execute_apply) if a.execute_apply else execute_test(a.execute_test)
     except (ValueError,OSError,KeyError,TypeError,subprocess.SubprocessError):success=False
     raise SystemExit(0 if success else 1)
 

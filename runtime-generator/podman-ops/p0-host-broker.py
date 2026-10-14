@@ -527,6 +527,16 @@ def operation_status(request: dict[str, object]) -> dict[str, object]:
         raise RequestError('no approved operation with this identifier') from None
 
 
+def test(request: dict[str, object]) -> dict[str, object]:
+    suite = request.get('suite')
+    if set(request) != {'version', 'action', 'suite'} or suite != 'ts-unit':
+        raise RequestError('unsupported or unapproved isolated test suite')
+    try:
+        return operation_module().queue_test(suite)
+    except (ValueError, FileNotFoundError, subprocess.SubprocessError):
+        raise RequestError('typed synthetic test refused; inspect root approval and lease') from None
+
+
 def apply(request: dict[str, object]) -> dict[str, object]:
     plan_id = request.get('plan_id')
     if set(request) != {'version', 'action', 'plan_id'} or not isinstance(plan_id, str) or not re.fullmatch(r'[a-f0-9]{32}', plan_id):
@@ -539,9 +549,9 @@ def apply(request: dict[str, object]) -> dict[str, object]:
 
 # Historical host-admin snapshot/restore/prune/sudo operations remain
 # unreachable. New typed apply is isolated-marker-only and independently root
-# approved; rollback/test are still closed, never mapped to legacy mutations.
+# approved; rollback remains closed, never mapped to legacy mutations.
 ACTIONS = {"status": status, "diagnostics": diagnostics, "operation-status": operation_status,
-           "verify": verify, "logs": logs, "plan": plan, "apply": apply}
+           "verify": verify, "logs": logs, "plan": plan, "apply": apply, "test": test}
 
 
 def authorized_uid_ranges(user: str, subuid_file: Path = Path("/etc/subuid")) -> tuple[int, list[tuple[int, int]]]:
