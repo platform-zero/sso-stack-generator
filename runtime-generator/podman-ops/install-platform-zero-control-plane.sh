@@ -19,10 +19,39 @@ done
 
 [ "$(id -u)" -eq 0 ] || { printf 'control-plane installation requires root\n' >&2; exit 1; }
 [ -f "$BUNDLE/podman-domains.json" ] || { printf 'missing podman-domains.json\n' >&2; exit 1; }
-for command in install jq ssh-keygen systemctl udevadm; do command -v "$command" >/dev/null; done
-id stack_lab >/dev/null 2>&1 || { printf 'stack_lab account does not exist\n' >&2; exit 1; }
+for command in install jq ssh-keygen systemctl useradd usermod getent; do command -v "$command" >/dev/null; done
+[[ "$STACK_LAB_ROOT" == /* && "$STACK_LAB_ROOT" != / && ! -L "$STACK_LAB_ROOT" ]] || {
+  printf 'unsafe maintenance account home\n' >&2; exit 1;
+}
+if ! id stack_lab >/dev/null 2>&1; then
+  [ ! -e "$STACK_LAB_ROOT" ] || { printf 'unowned maintenance account home cannot be adopted\n' >&2; exit 1; }
+  useradd --user-group --create-home --home-dir "$STACK_LAB_ROOT" --shell /usr/sbin/nologin stack_lab
+fi
+account_home="$(getent passwd stack_lab | cut -d: -f6)"
+[ "$account_home" = "$STACK_LAB_ROOT" ] && [ "$(id -u stack_lab)" != 0 ] &&
+  [ "$(getent passwd stack_lab | cut -d: -f7)" = /usr/sbin/nologin ] || {
+    printf 'maintenance account identity mismatch\n' >&2; exit 1;
+  }
+for range_file in /etc/subuid /etc/subgid; do
+  awk -F: '$1 == "stack_lab" && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $3 > 0 { n++ } END { exit (n == 1 ? 0 : 1) }' "$range_file" || {
+    printf 'maintenance account requires one valid subordinate range\n' >&2; exit 1;
+  }
+done
 [ -z "$SOPS_AGE_KEY_FILE" ] || [ -f "$SOPS_AGE_KEY_FILE" ] || { printf 'SOPS age key file does not exist\n' >&2; exit 1; }
 [ -z "$SOPS_BINARY" ] || [ -x "$SOPS_BINARY" ] || { printf 'SOPS binary is not executable\n' >&2; exit 1; }
+kvm_user="$(jq -r '.domains[] | select(any(.hostCapabilities[]?; . == "kvm")) | .user' "$BUNDLE/podman-domains.json" | head -n 1)"
+if [ -n "$kvm_user" ]; then
+  [ ! -e /etc/udev/rules.d/70-platform-zero-kvm.rules ] &&
+    [ ! -L /etc/udev/rules.d/70-platform-zero-kvm.rules ] || {
+      printf 'existing KVM ownership rule requires separate review; install refused\n' >&2; exit 1;
+    }
+  id "$kvm_user" >/dev/null 2>&1 || { printf 'missing KVM domain account: %s\n' "$kvm_user" >&2; exit 1; }
+  kvm_mode="$(stat -c %a /dev/kvm 2>/dev/null)" || { printf 'KVM device unavailable\n' >&2; exit 1; }
+  [ -c /dev/kvm ] && [ "$(stat -c %G /dev/kvm)" = kvm ] &&
+    [ $(( 8#$kvm_mode & 060 )) -eq 060 ] && [ $(( 8#$kvm_mode & 007 )) -eq 0 ] || {
+      printf 'existing KVM group/device permissions must be preserved; install refused\n' >&2; exit 1;
+    }
+fi
 
 install -d -m 0755 /usr/local/libexec /etc/platform-zero /etc/systemd/user
 install -d -m 0750 -o root -g stack_lab /run/platform-zero
@@ -30,6 +59,7 @@ install -d -m 0700 -o root -g root /var/lib/platform-zero/incoming /mnt/stack/pl
 install -m 0755 "$BUNDLE/ops/p0-host-broker.py" /usr/local/libexec/p0-host-broker
 install -m 0755 "$BUNDLE/ops/p0-hostctl.py" /usr/local/bin/p0-hostctl
 install -m 0755 "$BUNDLE/ops/p0-domain-dispatch" /usr/local/libexec/p0-domain-dispatch
+install -m 0755 "$BUNDLE/ops/install-domain-dispatch-key.py" /usr/local/libexec/p0-install-domain-dispatch-key
 install -m 0755 "$BUNDLE/ops/start-worklane-containers.py" /usr/local/libexec/p0-start-worklanes
 install -m 0755 "$BUNDLE/ops/reap-idle-worklanes.py" /usr/local/libexec/p0-reap-idle-worklanes
 install -m 0644 "$BUNDLE/ops/platform-zero-worklanes.service" /etc/systemd/user/platform-zero-worklanes.service
@@ -38,16 +68,10 @@ install -m 0644 "$BUNDLE/ops/platform-zero-worklane-idle-reaper.timer" /etc/syst
 install -m 0644 "$BUNDLE/ops/platform-zero-host-broker.service" /etc/systemd/system/
 install -m 0644 "$BUNDLE/ops/platform-zero-host-broker.socket" /etc/systemd/system/
 install -m 0644 "$BUNDLE/podman-domains.json" /etc/platform-zero/podman-domains.json
-kvm_user="$(jq -r '.domains[] | select(any(.hostCapabilities[]?; . == "kvm")) | .user' "$BUNDLE/podman-domains.json" | head -n 1)"
 if [ -n "$kvm_user" ]; then
-  id "$kvm_user" >/dev/null 2>&1 || { printf 'missing KVM domain account: %s\n' "$kvm_user" >&2; exit 1; }
-  printf 'KERNEL=="kvm", OWNER="%s", GROUP="kvm", MODE="0660"\n' "$kvm_user" \
-    >/etc/udev/rules.d/70-platform-zero-kvm.rules
-  udevadm control --reload-rules
-  if [ -e /dev/kvm ]; then
-    chown "$kvm_user:kvm" /dev/kvm
-    chmod 0660 /dev/kvm
-  fi
+  # Add only the selected workload user to the pre-existing KVM group. Never
+  # reown /dev/kvm, change its mode, or replace an unrelated udev policy.
+  id -nG "$kvm_user" | tr ' ' '\n' | grep -Fxq kvm || usermod -aG kvm "$kvm_user"
 fi
 if [ -n "$SOPS_AGE_KEY_FILE" ]; then
   install -d -m 0700 /root/.config/sops/age
@@ -71,15 +95,8 @@ while IFS="$(printf '\t')" read -r domain user maintenance_lane; do
   fi
   chmod 0600 "$private_key"
   chown stack_lab:stack_lab "$private_key" "$private_key.pub"
-  home="$(getent passwd "$user" | cut -d: -f6)"
-  install -d -m 0700 -o "$user" -g "$user" "$home/.ssh"
-  authorized="$home/.ssh/authorized_keys"
-  touch "$authorized"
-  sed -i "/ p0-${domain}$/d" "$authorized"
-  printf 'restrict,command="/usr/local/libexec/p0-domain-dispatch %s" %s p0-%s\n' \
-    "$domain" "$(cut -d' ' -f1,2 "$private_key.pub")" "$domain" >>"$authorized"
-  chown "$user:$user" "$authorized"
-  chmod 0600 "$authorized"
+  python3 /usr/local/libexec/p0-install-domain-dispatch-key \
+    --user "$user" --domain "$domain" --public-key-file "$private_key.pub"
 done < <(jq -r '.domains[] | [.name, .user, (.maintenanceLane // .name)] | @tsv' "$BUNDLE/podman-domains.json")
 
 install_workspace_lifecycle() {
