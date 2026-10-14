@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import shutil
 import socket
 import struct
@@ -64,7 +65,9 @@ def decode_json(raw):
 def run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(args, text=True, capture_output=True, check=False)
     if check and result.returncode:
-        raise RequestError(f"command failed ({result.returncode}): {' '.join(args)}\n{result.stderr[-4000:]}")
+        # Neither argv nor stderr is a safe authority-bound response: native
+        # commands may include private environment paths or credential values.
+        raise RequestError(f"host operation failed (exit {result.returncode})")
     return result
 
 
@@ -422,22 +425,66 @@ def garbage_collect(request: dict[str, object]) -> dict[str, object]:
 
 def logs(request: dict[str, object]) -> dict[str, object]:
     unit = str(request.get("unit", ""))
-    if not unit.startswith("webservices-") or not unit.endswith(".service") or "/" in unit:
+    if not re.fullmatch(r"webservices-[A-Za-z0-9_.@-]+\.service", unit) or len(unit) > 160:
         raise RequestError("logs requires a webservices-*.service unit")
     domain = str(request.get("domain", "rootful"))
+    argv = ["journalctl", "--output=json", "--no-pager", "-n", "100", "-u", unit]
     if domain == "rootful":
-        result = run("journalctl", "-u", unit, "-n", "200", "--no-pager", check=False)
+        result = run(*argv, check=False)
     else:
         path = release_path(request)
         entries = decode_json((path / "podman-domains.json").read_text()).get("domains", [])
         item = next((entry for entry in entries if entry["name"] == domain), None)
         if item is None:
             raise RequestError("unknown domain")
-        result = user_systemctl(item["user"], "status", unit, "--no-pager", "-l", check=False)
-    return {"output": (result.stdout + result.stderr)[-16000:]}
+        user = pwd.getpwnam(item["user"])
+        result = run("/usr/sbin/runuser", "-u", user.pw_name, "--", "env",
+                     f"HOME={user.pw_dir}", f"XDG_RUNTIME_DIR=/run/user/{user.pw_uid}",
+                     "journalctl", "--user", *argv[1:], check=False)
+    if result.returncode:
+        raise RequestError("scoped journal unavailable")
+    records = []
+    for line in result.stdout.splitlines()[-100:]:
+        try:
+            row = decode_json(line)
+        except RequestError:
+            continue
+        # Do not return MESSAGE, argv, stderr, environment, paths or identity
+        # values from native journals. The digest identifies a record for
+        # private operator review without publishing its contents to a lane.
+        message = row.get("MESSAGE", "")
+        if not isinstance(message, str):
+            continue
+        priority = row.get("PRIORITY", "")
+        records.append({"priority": priority if priority in tuple(str(n) for n in range(8)) else "unknown",
+                        "messageSha256": hashlib.sha256(message.encode()).hexdigest()})
+    return {"unit": unit, "domain": domain, "recordCount": len(records), "records": records}
 
 
-ACTIONS = {"stage": stage, "preflight": preflight, "snapshot": snapshot, "activate": activate, "status": status, "verify": verify, "logs": logs, "restore": restore, "gc": garbage_collect, "finalize-access": finalize_access}
+def diagnostics(_: dict[str, object]) -> dict[str, object]:
+    # Resource counters and scoped unit state only; no system logs or secrets.
+    available = next((int(line.split()[1]) for line in Path('/proc/meminfo').read_text().splitlines()
+                      if line.startswith('MemAvailable:')), None)
+    if available is None:
+        raise RequestError('memory inventory unavailable')
+    root = shutil.disk_usage('/')
+    backing = shutil.disk_usage('/mnt/lab_debian')
+    return {"hostAvailableKiB": available, "rootFreeBytes": root.free,
+            "backingFreeBytes": backing.free, "scopedStatus": status({})}
+
+
+def operation_status(request: dict[str, object]) -> dict[str, object]:
+    if not re.fullmatch(r'[a-f0-9]{32}', str(request.get('operation_id', ''))):
+        raise RequestError('exact operation identifier required')
+    raise RequestError('no approved operation with this identifier')
+
+
+# Historical host-admin snapshot/restore/prune/sudo operations are deliberately
+# unreachable from the lane socket. They are not a compatible approval API.
+# Mutations stay closed until a separately reviewed plan/approval/apply/rollback
+# implementation exists; do not map a typed request to legacy broad operations.
+ACTIONS = {"status": status, "diagnostics": diagnostics, "operation-status": operation_status,
+           "verify": verify, "logs": logs}
 
 
 def authorized_uid_ranges(user: str, subuid_file: Path = Path("/etc/subuid")) -> tuple[int, list[tuple[int, int]]]:
@@ -466,7 +513,8 @@ def handle(raw: bytes) -> dict[str, object]:
             raise RequestError(f"unsupported action: {action}")
         return {"ok": True, "result": ACTIONS[action](request)}
     except (RequestError, ValueError, OSError, KeyError) as error:
-        return {"ok": False, "error": str(error)}
+        # No native argv/stderr/absolute private paths in socket errors.
+        return {"ok": False, "error": str(error) if isinstance(error, RequestError) else "host operation refused"}
 
 
 def main() -> None:
