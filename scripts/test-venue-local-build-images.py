@@ -33,7 +33,7 @@ class LocalBuildFixtures(unittest.TestCase):
         tag='localhost/webservices/keycloak:bundle';unit='p0test-r1-keycloak-build.service'
         def checked(command,**kwargs):
             if 'cat' in command:return SimpleNamespace(returncode=0,stdout=
-                'ExecStart=/usr/bin/podman build --pull=never --network=none --tag '+tag+' --file Containerfile /build\n')
+                'ExecStart=/usr/bin/podman build --pull=never --network none --tag '+tag+' --file Containerfile /build\n')
             return SimpleNamespace(returncode=0,stdout='LoadState=loaded\nActiveState=inactive\nResult=success\nExecMainStatus=0\n')
         with patch.object(local.graph,'run',side_effect=checked):
             self.assertEqual(local.selected_unit(['selected-user'],unit,tag)['ActiveState'],'inactive')
