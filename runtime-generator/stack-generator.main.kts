@@ -1686,6 +1686,9 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
     if (hostNetwork) {
         lines += "Network=host"
     } else {
+        // Namespace the engine object, not the module's intra-network DNS API.
+        // Environment/dependency URLs still use the original service identity.
+        if (unitPrefix != "webservices") lines += "NetworkAlias=$name"
         service.path("networks").let { networkNode ->
             if (networkNode.isArray) networkNode.forEach { lines += "Network=$unitPrefix-${it.asText()}.network" }
             else networkNode.fieldsMap().forEach { (network, config) ->
