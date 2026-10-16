@@ -177,7 +177,8 @@ def classify_intermediates(bundle,selector,plan,data,key,image,outputs,recorded)
     found={'sha256:'+x.removeprefix('sha256:') for x in observed.stdout.splitlines() if x.strip()}
     prior={v for k,v in {**data['venueRegistryVerified'],**data['venueBuildBaseVerified'],**outputs}.items()
            if k.startswith(user+'|')}
-    prior.update(v for k,ids in recorded.items() if k.startswith(user+'|') for v in ids)
+    prior.update(v for k,ids in {**recorded,**data.get('venueFailedBuildIntermediates',{})}.items()
+                 if k.startswith(user+'|') for v in ids)
     if image not in found or not prior<=found:
         raise Refusal('selected build graph lost a prior exact image')
     extra=found-prior-{image}
@@ -234,7 +235,8 @@ def classify_failed_intermediates(bundle,selector,plan,data,key,outputs,intermed
     found={'sha256:'+x.removeprefix('sha256:') for x in listing.stdout.splitlines() if x.strip()}
     prior={v for k,v in {**data['venueRegistryVerified'],**data['venueBuildBaseVerified'],**outputs}.items()
            if k.startswith(user+'|')}
-    prior.update(v for k,ids in intermediates.items() if k.startswith(user+'|') for v in ids)
+    prior.update(v for k,ids in {**intermediates,**data.get('venueFailedBuildIntermediates',{})}.items()
+                 if k.startswith(user+'|') for v in ids)
     if not prior<=found:raise Refusal('failed build lost selected prior image')
     extras=found-prior
     if len(extras)>128:raise Refusal('unbounded failed build layers')

@@ -74,6 +74,7 @@ class LocalBuildFixtures(unittest.TestCase):
         home=self.bundle/'home';path=home/'.config/containers/systemd/p0test-r1-forgejo.build'
         path.parent.mkdir(parents=True);path.write_text('[Build]\n')
         output='sha256:'+'a'*64;extra='sha256:'+'b'*64;base='sha256:'+'c'*64
+        older='sha256:'+'e'*64
         begin=int(time.time()*1000000)+1_000_000;end=begin+2_000_000
         start={'JOB_ID':'41','JOB_TYPE':'start','MESSAGE_ID':'7d4958e842da4a758f6c1cdc7b36dcc5',
                '__REALTIME_TIMESTAMP':str(begin)}
@@ -87,13 +88,13 @@ class LocalBuildFixtures(unittest.TestCase):
             if command[0]=='journalctl':
                 rows=(start,done) if 'USER_UNIT=p0test-r1-forgejo-build.service' in command else logs
                 return SimpleNamespace(returncode=0,stdout='\n'.join(map(json.dumps,rows)))
-            if 'ls' in command:return SimpleNamespace(returncode=0,stdout='\n'.join((base,output,extra)))
+            if 'ls' in command:return SimpleNamespace(returncode=0,stdout='\n'.join((base,output,extra,older)))
             if 'inspect' in command:return SimpleNamespace(returncode=0,stdout=json.dumps(
                 {'Id':extra,'RepoTags':[],'Created':created,'Labels':{'io.buildah.version':'1.39.3'}}))
             raise AssertionError(command)
         plan={'accounts':[{'name':user,'uid':3201,'home':str(home)}]}
         data={'venueLocalBuildPlan':self.plan,'venueRegistryVerified':{user+'|base':base},
-              'venueBuildBaseVerified':{}}
+              'venueBuildBaseVerified':{},'venueFailedBuildIntermediates':{user+'|failed':[older]}}
         with (patch.object(local,'selected_unit',return_value={'ActiveState':'inactive','Job':''}),
               patch.object(local.registry,'command_graphs',return_value={user:(home,['selected'])}),
               patch.object(local.graph,'run',side_effect=seen),
@@ -109,10 +110,11 @@ class LocalBuildFixtures(unittest.TestCase):
         def failed_seen(command,**kwargs):
             if 'USER_UNIT=p0test-r1-forgejo-build.service' in command:
                 return SimpleNamespace(returncode=0,stdout='\n'.join(map(json.dumps,(start,failure))))
-            if 'ls' in command:return SimpleNamespace(returncode=0,stdout='\n'.join((base,extra)))
+            if 'ls' in command:return SimpleNamespace(returncode=0,stdout='\n'.join((base,extra,older)))
             return seen(command,**kwargs)
         old='sha256:'+'d'*64
-        data['venueFailedBuildIntermediates']={'p0test-r1-test-runners|localhost/webservices/android-test-runner-api34:bundle':[old]}
+        data['venueFailedBuildIntermediates']={user+'|failed':[older],
+            'p0test-r1-test-runners|localhost/webservices/android-test-runner-api34:bundle':[old]}
         def failed_probe(_bundle,_plan,_data,expected):
             self.assertEqual(expected['p0test-r1-test-runners|'+old],old)
             return {},{}
