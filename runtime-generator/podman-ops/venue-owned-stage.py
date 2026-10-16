@@ -234,6 +234,41 @@ def stage(bundle,selector,inventory,ledger,*,mutate=False):
         # Preserve the exact ledger and partial state; never guess a rollback.
         raise
 
+def boot_observation():
+    import time
+    rows=[line.split() for line in Path('/proc/self/mountinfo').read_text().splitlines()]
+    return {'bootId':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+            'monotonicUsec':int(time.monotonic()*1_000_000),
+            'runTmpfs':any(len(row)>6 and row[4]=='/run' and row[row.index('-')+1]=='tmpfs' for row in rows)}
+
+
+def boot_lost_runtime_paths(plan,state,observation):
+    """Only receipted /run roots may disappear across a positively proven boot."""
+    prior=state.get('venueBootLostRuntimePaths');epoch=state.get('venueStartMonotonicUsec',0)
+    if prior:
+        if prior.get('bootId')!=observation['bootId'] or prior.get('startMonotonicUsec')!=epoch:
+            raise Refusal('boot-lost runtime path review belongs to another boot/epoch')
+        missing=set(prior['paths'])
+    else:
+        eligible=(state.get('venueInstallerVersion')==2 and state.get('venueInstallerPhase')=='retiring' and
+                  state.get('activationAuthorized') is False and state.get('venueOwnedReset',{}).get('phase')=='empty-owned' and
+                  all(state.get(key)=='retired-inert' for key in ('venueReleasePhase','venueDomainRuntimePhase','venueRuntimeEnvPhase','venueCompositeMode')) and
+                  state.get('managerStopped')==[a['name'] for a in reversed(plan['accounts'])] and
+                  state.get('graphCleared')==['root']+[a['name'] for a in plan['accounts']] and
+                  epoch>observation['monotonicUsec'] and observation['runTmpfs'])
+        if not eligible:return set()
+        allowed={'/run/'+plan['prefix'],'/run/'+plan['prefix']+'-podman'}&set(plan['roots'].values())&set(state['createdPaths'])
+        missing={name for name in allowed if not os.path.lexists(name)}
+        if not missing:return set()
+        state['venueBootLostRuntimePaths']={'bootId':observation['bootId'],'startMonotonicUsec':epoch,
+             'observedMonotonicUsec':observation['monotonicUsec'],'paths':sorted(missing),'evidence':'recorded-start-monotonic-exceeds-current-boot'}
+    if (not observation['runTmpfs'] or not missing<={'/run/'+plan['prefix'],'/run/'+plan['prefix']+'-podman'} or
+            not missing<=set(plan['roots'].values()) or not missing<=set(state['createdPaths']) or
+            any(os.path.lexists(name) for name in missing)):
+        raise Refusal('boot-lost path is not an absent exact selected tmpfs runtime root')
+    return missing
+
+
 def retire_empty(bundle,selector,ledger):
     if os.geteuid()!=0:raise Refusal('empty-stage retirement requires root')
     path=Path(ledger)
@@ -279,7 +314,9 @@ def retire_empty(bundle,selector,ledger):
             raise Refusal('staged directory identity drift')
         if (st.st_dev,st.st_ino,st.st_uid,stat.S_IMODE(st.st_mode))!=(value['dev'],value['ino'],value['uid'],value['mode']):
             raise Refusal('staged directory identity drift')
-    remaining=[name for name in state['createdPaths'] if name not in state.get('retiredPaths',[])]
+    boot_lost=boot_lost_runtime_paths(plan,state,boot_observation())
+    if boot_lost:write_ledger(path,state)
+    remaining=[name for name in state['createdPaths'] if name not in state.get('retiredPaths',[]) and name not in boot_lost]
     mountpoints=[]
     for row in Path('/proc/self/mountinfo').read_text().splitlines():
         parts=row.split()
@@ -305,8 +342,11 @@ def retire_empty(bundle,selector,ledger):
         state['retiredConfigs'].append(name);write_ledger(path,state)
     for name in reversed(state['createdPaths']):
         if name in state['retiredPaths']:continue
-        check_identity(name)
-        Path(name).rmdir()  # never recursive; refuse unreviewed contents
+        if name in boot_lost:
+            if os.path.lexists(name):raise Refusal('boot-lost runtime path was repopulated; no adoption/deletion')
+        else:
+            check_identity(name)
+            Path(name).rmdir()  # never recursive; refuse unreviewed contents
         state['retiredPaths'].append(name);write_ledger(path,state)
     for account in reversed(plan['accounts']):
         name=account['name']

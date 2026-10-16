@@ -27,6 +27,16 @@ class Retirement(unittest.TestCase):
   self.assertEqual(self.retire()['status'],'retired-runtime-authority');self.assertFalse(self.capability.exists())
   state=json.loads(self.ledger.read_text());self.assertEqual(state['venueRuntimeAuthorityRetired']['contextSha256'],self.context.digest)
   self.assertFalse(state['activationAuthorized']);self.assertNotIn('venueRuntimeAuthorityRetireIntent',state)
+ def test_boot_lost_missing_capability_requires_positive_monotonic_reset(self):
+  self.capability.unlink();self.state.update(venueStartPhase='failed-quarantined',venueStartMonotonicUsec=1000000)
+  self.ledger.write_text(json.dumps(self.state))
+  with patch.object(m.stage,'boot_observation',return_value={'bootId':'new-boot','monotonicUsec':1000,'runTmpfs':True}):
+   self.assertEqual(self.retire()['status'],'retired-runtime-authority')
+  self.assertTrue(json.loads(self.ledger.read_text())['venueRuntimeAuthorityRetired']['bootLost'])
+ def test_missing_capability_on_same_boot_does_not_qualify(self):
+  self.capability.unlink()
+  with patch.object(m.stage,'boot_observation',return_value={'bootId':'same-boot','monotonicUsec':1000,'runTmpfs':True}):
+   with self.assertRaises(m.Refusal):self.retire()
  def test_live_capability_is_never_removed(self):
   self.receipt['activationAuthorized']=True;self.save_receipt()
   with self.assertRaises(m.Refusal):self.retire()

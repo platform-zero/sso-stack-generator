@@ -84,6 +84,14 @@ uses the complete selected direct/local identity map and bounded catalogue, not 
 legacy one-archive/direct-only assumption. Stopped metadata cleanup needs a fenced
 exact epoch/CAS, not an unconsumed restart repair; it never grants runtime authority.
 A guest must be separately exactly retired first. No global prune/data backup.
+If a host reboot interrupts completed reverse retirement, only the two exact
+source-selected `/run` roots may be classified boot-lost: `/run` must be tmpfs,
+the recorded start monotonic time must exceed current-boot monotonic time, all
+graphs/managers/private releases must already be retired, and both paths must
+remain absent. Persist that current-boot proof; never recreate/adopt replacement
+inodes or excuse a missing persistent directory. Fully retired false runtime
+capability cleanup can similarly receipt a positively proven boot-lost file;
+missing/stale authority never becomes permission to start or use legacy scope.
 
 This does not supply a general production reset, guest idle/trigger authority or proof of
 operational host/guest coupling, ingress or integrated delivery. Consumers still

@@ -546,7 +546,14 @@ def retire_authority(bundle,selector,ledger,expected_sha):
             current={'path':str(runtime),'dev':info.st_dev,'ino':info.st_ino,'sha256':stage.hashlib.sha256(body).hexdigest(),'contextSha256':context.digest}
             if intent is not None and intent!=current:raise Refusal('interrupted authority retirement identity differs')
             state['venueRuntimeAuthorityRetireIntent']=current;stage.write_ledger(path,state);runtime.unlink();intent=current
-        elif not intent or intent.get('path')!=str(runtime) or intent.get('contextSha256')!=context.digest:
+        elif not intent:
+            boot=stage.boot_observation();epoch=state.get('venueStartMonotonicUsec',0)
+            if not boot['runTmpfs'] or epoch<=boot['monotonicUsec'] or state.get('venueStartPhase')!='failed-quarantined':
+                raise Refusal('missing authority without exact pending intent or positively proven reboot')
+            intent={'path':str(runtime),'contextSha256':context.digest,'bootLost':True,'bootId':boot['bootId'],
+                    'sourceStartMonotonicUsec':epoch,'observedMonotonicUsec':boot['monotonicUsec']}
+            state['venueRuntimeAuthorityRetireIntent']=intent;stage.write_ledger(path,state)
+        elif intent.get('path')!=str(runtime) or intent.get('contextSha256')!=context.digest:
             raise Refusal('missing authority without exact pending retirement intent')
         fd=os.open(context.runtime,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
         try:os.fsync(fd)
