@@ -107,6 +107,12 @@ def journaled_local_output_ids(bundle,selector,state,source=None):
         raise Refusal('local build output image journal/source differs')
     commands={user:command for user,_,command in stores(bundle,stage.owned_plan(bundle,selector))}
     by_user={user:set() for user in commands}
+    intermediates=state.get('venueLocalBuildIntermediates',{})
+    if (not isinstance(intermediates,dict) or any(key not in outputs or not isinstance(ids,list) or
+            len(ids)!=len(set(ids)) or any(not isinstance(image,str) or
+                not re.fullmatch(r'sha256:[0-9a-f]{64}',image) for image in ids)
+            for key,ids in intermediates.items())):
+        raise Refusal('unclassified local build intermediate image journal')
     for key,value in outputs.items():
         user,sep,tag=key.partition('|')
         if not sep or user not in commands:raise Refusal('unknown local output store authority')
@@ -117,6 +123,13 @@ def journaled_local_output_ids(bundle,selector,state,source=None):
             elif 'sha256:'+observed.stdout.strip().removeprefix('sha256:')!=value:
                 raise Refusal('selected built output config ID changed')
         by_user[user].add(value)
+        if user not in state.get('graphCleared',[]):
+            for image in intermediates.get(key,[]):
+                observed=run(commands[user]+['image','inspect','--format','{{.Id}}',image],timeout=30)
+                if observed.returncode or 'sha256:'+observed.stdout.strip().removeprefix('sha256:')!=image:
+                    if state.get('status')!='graphs-clearing':
+                        raise Refusal('selected intermediate build image absent or changed')
+        by_user[user].update(intermediates.get(key,[]))
     return by_user
 
 def remove_exact_dual_named_base(bundle,selector,state,path,user,image,command,source=None):
@@ -154,7 +167,7 @@ def inspect_graph(command):
         result=run(command+args)
         if result.returncode:raise Refusal('selected Podman '+label+' inventory unavailable')
         observations[label]=result.stdout.strip().splitlines() if result.stdout.strip() else []
-    images=run(command+['image','ls','--no-trunc','--format','{{.ID}}'])
+    images=run(command+['image','ls','-a','--no-trunc','--format','{{.ID}}'])
     if images.returncode:raise Refusal('selected image inventory unavailable')
     observations['images']={('sha256:'+value.removeprefix('sha256:')) for value in images.stdout.splitlines() if value.strip()}
     networks=run(command+['network','ls','--format','{{.Name}}'])

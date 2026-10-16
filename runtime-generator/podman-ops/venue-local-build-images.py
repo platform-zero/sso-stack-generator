@@ -7,6 +7,7 @@ reviewed and frozen in clean site source. Never start container target units,
 issue a data readiness marker or credit a trial as an integrated installation.
 """
 import argparse
+from datetime import datetime
 import importlib.util
 import json
 from pathlib import Path
@@ -53,8 +54,16 @@ def plan_for(bundle,source):
         raise Refusal('selected 3 offline and 11 egress build units differ')
     return dict(sorted(plan.items()))
 
-def probe(bundle,selector,plan,data,outputs):
+def probe(bundle,selector,plan,data,outputs,intermediates=None):
     all_ids=data['venueRegistryVerified'].copy();all_ids.update(data['venueBuildBaseVerified']);all_ids.update(outputs)
+    for key,ids in (intermediates if intermediates is not None else data.get('venueLocalBuildIntermediates',{})).items():
+        user,sep,_=key.partition('|')
+        if not sep or key not in outputs or not isinstance(ids,list):
+            raise Refusal('unbound local build intermediate images')
+        for image in ids:
+            if not isinstance(image,str) or not re.fullmatch(r'sha256:[0-9a-f]{64}',image):
+                raise Refusal('malformed local build intermediate image')
+            all_ids[user+'|'+image]=image
     roots,found=registry.probe(bundle,plan,data,all_ids)
     base_ids=graph.journaled_build_base_ids(bundle,selector,data)
     for user,ids in base_ids.items():
@@ -121,7 +130,72 @@ def journaled_unloaded_success(ledger,uid,unit):
             finishes.add(job)
     return len(starts)==1 and starts==finishes
 
-def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,abandon_failed_pending=False):
+def classify_intermediates(bundle,selector,plan,data,key,image,outputs,recorded):
+    """Attest every Buildah layer against ONE selected user-unit start/finish.
+
+    A multi-stage Containerfile leaves anonymous images, sometimes hidden by
+    Podman's default image list. Neither an image prune nor a guessed tag is
+    authority. Refuse ANY unexplained new ID, process or graph object.
+    """
+    user,_,tag=key.partition('|');row=data['venueLocalBuildPlan'][key]
+    account=next(a for a in plan['accounts'] if a['name']==user)
+    unit=row['unit'];source=Path(account['home'])/'.config/containers/systemd'/unit.replace('-build.service','.build')
+    state=selected_unit(unit_command(plan,user,unit),unit,tag,source,row['offline'])
+    if state.get('ActiveState')!='inactive' or state.get('Job') not in (None,'','0'):
+        raise Refusal('build unit still active while classifying generated layers')
+    start_floor=source.stat().st_ctime_ns//1000000-1000
+    since='--since=@'+str(max(0,start_floor//1000))
+    def journal(selector,limit):
+        result=graph.run(['journalctl','--boot','--no-pager','--output=json',since,
+                          '_UID='+str(account['uid']),selector+'='+unit],timeout=60)
+        if result.returncode or len(result.stdout)>limit:
+            raise Refusal('selected build journal cannot bound intermediate images')
+        return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    rows=journal('USER_UNIT',262144)
+    starts={r.get('JOB_ID'):int(r.get('__REALTIME_TIMESTAMP','0')) for r in rows
+            if r.get('MESSAGE_ID')=='7d4958e842da4a758f6c1cdc7b36dcc5' and
+               r.get('JOB_TYPE')=='start' and int(r.get('__REALTIME_TIMESTAMP','0'))>start_floor*1000}
+    finishes={r.get('JOB_ID'):int(r.get('__REALTIME_TIMESTAMP','0')) for r in rows
+              if r.get('MESSAGE_ID')=='39f53479d3a045ac8e11786248231fbf' and
+                 r.get('JOB_TYPE')=='start' and r.get('JOB_RESULT')=='done'}
+    if len(starts)!=1 or set(starts)!=set(finishes) or None in starts:
+        raise Refusal('one completed selected build job not proved for anonymous images')
+    began=next(iter(starts.values()));ended=finishes[next(iter(starts))]
+    if ended<began:raise Refusal('selected build job clock reversed')
+    logs=journal('_SYSTEMD_USER_UNIT',8388608)
+    steps={m.group(1) for r in logs if began<=int(r.get('__REALTIME_TIMESTAMP','0'))<=ended+2000000
+           if (m:=re.fullmatch(r'--> ([0-9a-f]{12,64})',r.get('MESSAGE','')))}
+    if not any(image.removeprefix('sha256:').startswith(short) for short in steps):
+        raise Refusal('built output ID absent from selected build job transcript')
+    roots=registry.command_graphs(bundle,plan);command=roots[user][1]
+    observed=graph.run(command+['image','ls','-a','--no-trunc','--format','{{.ID}}'],timeout=45)
+    if observed.returncode:raise Refusal('selected all-images inventory unavailable')
+    found={'sha256:'+x.removeprefix('sha256:') for x in observed.stdout.splitlines() if x.strip()}
+    prior={v for k,v in {**data['venueRegistryVerified'],**data['venueBuildBaseVerified'],**outputs}.items()
+           if k.startswith(user+'|')}
+    prior.update(v for k,ids in recorded.items() if k.startswith(user+'|') for v in ids)
+    if image not in found or not prior<=found:
+        raise Refusal('selected build graph lost a prior exact image')
+    extra=found-prior-{image}
+    if len(extra)>128:raise Refusal('selected build generated unbounded anonymous images')
+    for ref in extra:
+        matching=[short for short in steps if ref.removeprefix('sha256:').startswith(short)]
+        if len(matching)!=1:raise Refusal('anonymous build image absent from exact step transcript')
+        res=graph.run(command+['image','inspect','--format','{{json .}}',ref],timeout=30)
+        if res.returncode:raise Refusal('anonymous selected build image cannot be inspected')
+        info=json.loads(res.stdout)
+        created=datetime.fromisoformat(info['Created'].replace('Z','+00:00')).timestamp()*1000000
+        if (info.get('Id','').removeprefix('sha256:')!=ref.removeprefix('sha256:') or
+                info.get('RepoTags') or not info.get('Labels',{}).get('io.buildah.version') or
+                created<began-2000000 or created>ended+2000000):
+            raise Refusal('anonymous image not a selected completed Buildah step')
+    candidate=recorded.copy();candidate[key]=sorted(extra)
+    attested=outputs.copy();attested[key]=image
+    probe(bundle,selector,plan,data,attested,candidate)  # all eight graphs prewrite
+    return sorted(extra)
+
+def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,abandon_failed_pending=False,
+            classify_only=False):
     p,data,plan,_=registry.journal(bundle,selector,site_source,ledger)
     source=authority.authority(bundle,selector,site_source,require_pinned_bases=True)
     selected=plan_for(bundle,source)
@@ -134,14 +208,29 @@ def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,aba
     if type(max_new) is not int or not 1<=max_new<=14:raise Refusal('one to fourteen bounded local builds per invocation')
     if data.get('venueLocalBuildPhase') is None:
         data['venueLocalBuildPhase']='preparing';data['venueLocalBuildPlan']=selected
-        data['venueLocalBuildOutputs']={};stage.write_ledger(p,data)
+        data['venueLocalBuildOutputs']={};data['venueLocalBuildIntermediates']={}
+        stage.write_ledger(p,data)
     outputs=data.get('venueLocalBuildOutputs')
+    intermediates=data.setdefault('venueLocalBuildIntermediates',{})
     if (data.get('venueLocalBuildPhase') not in ('preparing','inert-ready','abandoned-inert') or
             data.get('venueLocalBuildPlan')!=selected or not isinstance(outputs,dict) or
             any(key not in selected or not isinstance(value,str) or
                 not re.fullmatch(r'sha256:[0-9a-f]{64}',value) for key,value in outputs.items()) or
-            (data['venueLocalBuildPhase']=='inert-ready' and set(outputs)!=set(selected))):
+            (data['venueLocalBuildPhase']=='inert-ready' and set(outputs)!=set(selected)) or
+            not isinstance(intermediates,dict) or any(k not in outputs or not isinstance(v,list)
+                 for k,v in intermediates.items())):
         raise Refusal('selected local build output CAS differs')
+    if classify_only:
+        if data.get('venueLocalBuildPending'):
+            raise Refusal('pending build process cannot classify image layers')
+        missing=sorted(set(outputs)-set(intermediates))
+        if len(missing)!=1:raise Refusal('one completed unclassified build output required')
+        key=missing[0]
+        intermediates[key]=classify_intermediates(bundle,selector,plan,data,key,outputs[key],outputs,intermediates)
+        stage.write_ledger(p,data)
+        return {'status':data['venueLocalBuildPhase'],'builtOutputIds':len(outputs),
+                'classifiedIntermediateIds':sum(map(len,intermediates.values())),
+                'activationAuthorized':False,'acceptedIntegratedInstalls':0}
     pending=data.get('venueLocalBuildPending')
     if pending:
         if (not recover_pending and not abandon_failed_pending) or pending not in selected or pending in outputs:
@@ -181,7 +270,7 @@ def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,aba
         image=registry.pulled(roots[user][1],tag)
         if image is None:raise Refusal('interrupted local image output absent')
         staged=outputs.copy();staged[pending]=image
-        probe(bundle,selector,plan,data,staged)  # all 8 graphs checked prewrite
+        intermediates[pending]=classify_intermediates(bundle,selector,plan,data,pending,image,outputs,intermediates)
         outputs[pending]=image
         data.pop('venueLocalBuildPending');data.pop('venueLocalBuildPriorStartTimestamp')
         if set(outputs)==set(selected):data['venueLocalBuildPhase']='inert-ready'
@@ -237,6 +326,7 @@ def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,aba
             time.sleep(1)
         image=registry.pulled(roots[user][1],tag)
         if image is None:raise Refusal('selected build completed without a local output image')
+        intermediates[key]=classify_intermediates(bundle,selector,plan,data,key,image,outputs,intermediates)
         outputs[key]=image
         data.pop('venueLocalBuildPending');data.pop('venueLocalBuildPriorStartTimestamp')
         stage.write_ledger(p,data)
@@ -253,9 +343,11 @@ def main():
     pending=a.add_mutually_exclusive_group()
     pending.add_argument('--recover-pending-only',action='store_true')
     pending.add_argument('--abandon-failed-pending-only',action='store_true')
+    pending.add_argument('--classify-intermediates-only',action='store_true')
     args=a.parse_args()
     try:print(json.dumps(prepare(args.bundle,args.selector,args.site_source,args.ledger,args.max_new,
-                                 args.recover_pending_only,args.abandon_failed_pending_only),sort_keys=True))
+                                 args.recover_pending_only,args.abandon_failed_pending_only,
+                                 args.classify_intermediates_only),sort_keys=True))
     except (Refusal,OSError,ValueError,KeyError,TypeError) as exc:
         raise SystemExit('venue fourteen local build discovery refused: '+str(exc)) from exc
 if __name__=='__main__':main()

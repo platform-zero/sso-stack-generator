@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import importlib.util
 from pathlib import Path
 import tempfile
+import time
+from datetime import datetime, timezone
 import unittest
 from unittest.mock import patch
 ops=Path(__file__).resolve().parents[1]/'runtime-generator/podman-ops'
@@ -67,6 +69,38 @@ class LocalBuildFixtures(unittest.TestCase):
         with patch.object(local.graph,'run',side_effect=missing_timeout):
             with self.assertRaisesRegex(local.Refusal,'lacks bounded systemd start timeout'):
                 local.selected_unit(['selected-user'],unit,tag,offline=False)
+    def test_anonymous_multistage_ids_require_selected_job_and_exact_step(self):
+        user='p0test-r1-apps';key=user+'|localhost/webservices/forgejo:bundle'
+        home=self.bundle/'home';path=home/'.config/containers/systemd/p0test-r1-forgejo.build'
+        path.parent.mkdir(parents=True);path.write_text('[Build]\n')
+        output='sha256:'+'a'*64;extra='sha256:'+'b'*64;base='sha256:'+'c'*64
+        begin=int(time.time()*1000000)+1_000_000;end=begin+2_000_000
+        start={'JOB_ID':'41','JOB_TYPE':'start','MESSAGE_ID':'7d4958e842da4a758f6c1cdc7b36dcc5',
+               '__REALTIME_TIMESTAMP':str(begin)}
+        done={**start,'MESSAGE_ID':'39f53479d3a045ac8e11786248231fbf',
+              'JOB_RESULT':'done','__REALTIME_TIMESTAMP':str(end)}
+        logs=[{'MESSAGE':'--> '+extra[7:19],'__REALTIME_TIMESTAMP':str(begin+200000)},
+              {'MESSAGE':'--> '+output[7:19],'__REALTIME_TIMESTAMP':str(end-200000)}]
+        created=datetime.fromtimestamp((begin+700000)/1_000_000,timezone.utc).isoformat()
+        def seen(command,**kwargs):
+            if command[0]=='journalctl':
+                rows=(start,done) if 'USER_UNIT=p0test-r1-forgejo-build.service' in command else logs
+                return SimpleNamespace(returncode=0,stdout='\n'.join(map(json.dumps,rows)))
+            if 'ls' in command:return SimpleNamespace(returncode=0,stdout='\n'.join((base,output,extra)))
+            if 'inspect' in command:return SimpleNamespace(returncode=0,stdout=json.dumps(
+                {'Id':extra,'RepoTags':[],'Created':created,'Labels':{'io.buildah.version':'1.39.3'}}))
+            raise AssertionError(command)
+        plan={'accounts':[{'name':user,'uid':3201,'home':str(home)}]}
+        data={'venueLocalBuildPlan':self.plan,'venueRegistryVerified':{user+'|base':base},
+              'venueBuildBaseVerified':{}}
+        with (patch.object(local,'selected_unit',return_value={'ActiveState':'inactive','Job':''}),
+              patch.object(local.registry,'command_graphs',return_value={user:(home,['selected'])}),
+              patch.object(local.graph,'run',side_effect=seen),
+              patch.object(local,'probe',return_value={})):
+            self.assertEqual(local.classify_intermediates(self.bundle,'selector',plan,data,key,output,{},{}),[extra])
+            logs[0]['MESSAGE']='--> '+'f'*12
+            with self.assertRaisesRegex(local.Refusal,'absent from exact step transcript'):
+                local.classify_intermediates(self.bundle,'selector',plan,data,key,output,{}, {})
     def test_unloaded_oneshot_needs_exact_post_ledger_journal_pair(self):
         ledger=self.bundle/'ledger';ledger.write_text('{}')
         ts=ledger.stat().st_mtime_ns//1000
@@ -109,11 +143,13 @@ class LocalBuildFixtures(unittest.TestCase):
               patch.object(local,'selected_unit',return_value=state),
               patch.object(local.registry,'command_graphs',return_value={user:(home,['selected'])}),
               patch.object(local.registry,'pulled',return_value='sha256:'+'a'*64),
+              patch.object(local,'classify_intermediates',return_value=[]),
               patch.object(local,'probe',side_effect=check),
               patch.object(local.stage,'write_ledger',side_effect=save)):
             self.assertEqual(local.prepare(self.bundle,'selector','site',ledger,1,True)['builtOutputIds'],1)
             self.assertNotIn('venueLocalBuildPending',data)
         data['venueLocalBuildPending']=key;data['venueLocalBuildOutputs']={}
+        data['venueLocalBuildIntermediates']={}
         data['venueLocalBuildPriorStartTimestamp']=6
         with (patch.object(local.registry,'journal',return_value=(ledger,data,plan,None)),
               patch.object(local.authority,'authority',return_value=result),

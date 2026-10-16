@@ -91,7 +91,7 @@ def probe(bundle,plan,data,expected):
             raise Refusal('foreign or missing selected named image-graph volume')
         if listing(['network','ls','--format','{{.Name}}'])-{'podman'}:
             raise Refusal('selected image graph has foreign network')
-        ids={'sha256:'+v.removeprefix('sha256:') for v in listing(['image','ls','--no-trunc','--format','{{.ID}}'])}
+        ids={'sha256:'+v.removeprefix('sha256:') for v in listing(['image','ls','-a','--no-trunc','--format','{{.ID}}'])}
         if ids!=permitted[user]:raise Refusal('selected graph image IDs differ from completed journal')
         found[user]=ids
     return roots,found

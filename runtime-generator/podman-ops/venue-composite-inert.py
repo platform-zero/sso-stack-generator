@@ -93,7 +93,7 @@ def recover_failed_import(bundle,selector,ledger):
             raise Refusal('interrupted import graph has foreign named volume')
         if listing(['network','ls','--format','{{.Name}}'])-{'podman'}:
             raise Refusal('interrupted import graph has foreign network')
-        found={('sha256:'+v.removeprefix('sha256:')) for v in listing(['image','ls','--no-trunc','--format','{{.ID}}'])}
+        found={('sha256:'+v.removeprefix('sha256:')) for v in listing(['image','ls','-a','--no-trunc','--format','{{.ID}}'])}
         if found-(set([row['image']]) if user==row['authorities'][0] else set()):
             raise Refusal('interrupted import graph has unjournaled image')
         observed[user]=found
@@ -212,7 +212,7 @@ def retire(bundle,selector,ledger):
             raise Refusal('foreign or missing named volume in inert venue graph')
         if listing(['network','ls','--format','{{.Name}}'])-{'podman'}:
             raise Refusal('foreign network in inert venue graph')
-        found={('sha256:'+value.removeprefix('sha256:')) for value in listing(['image','ls','--no-trunc','--format','{{.ID}}'])}
+        found={('sha256:'+value.removeprefix('sha256:')) for value in listing(['image','ls','-a','--no-trunc','--format','{{.ID}}'])}
         if found!=expected[user]:
             raise Refusal('missing or unjournaled image in inert venue graph')
     data['venueCompositeMode']='retiring';stage.write_ledger(path,data)
