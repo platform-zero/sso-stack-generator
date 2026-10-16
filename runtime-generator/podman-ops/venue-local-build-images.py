@@ -257,7 +257,7 @@ def classify_failed_intermediates(bundle,selector,plan,data,key,outputs,intermed
     return sorted(extras)
 
 def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,abandon_failed_pending=False,
-            classify_only=False):
+            classify_only=False,skip_identical_failed_twin=False):
     p,data,plan,_=registry.journal(bundle,selector,site_source,ledger)
     source=authority.authority(bundle,selector,site_source,require_pinned_bases=True)
     selected=plan_for(bundle,source)
@@ -283,7 +283,7 @@ def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,aba
                  for k,v in intermediates.items()) or
             not isinstance(data.get('venueLocalBuildSkipped',[]),list) or
             any(k not in selected or k in outputs for k in data.get('venueLocalBuildSkipped',[])) or
-            len(data.get('venueLocalBuildSkipped',[]))>1):
+            len(data.get('venueLocalBuildSkipped',[]))>2):
         raise Refusal('selected local build output CAS differs')
     if classify_only:
         if data.get('venueLocalBuildPending'):
@@ -349,6 +349,35 @@ def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,aba
         return {'status':data['venueLocalBuildPhase'],'builtOutputIds':len(outputs),
                 'remaining':len(selected)-len(outputs),'activationAuthorized':False,'acceptedIntegratedInstalls':0}
     if recover_pending or abandon_failed_pending:raise Refusal('no interrupted selected output pending review')
+    if skip_identical_failed_twin:
+        failed=plan['prefix']+'-test-runners|localhost/webservices/android-test-runner-api34:bundle'
+        twin=plan['prefix']+'-test-runners|localhost/webservices/android-test-runner-api36:bundle'
+        if (data.get('venueLocalBuildSkipped')!=[failed] or
+                data.get('venueLocalBuildFailure',{}).get('key')!=failed or
+                data.get('venueLocalBuildDuplicateSkip') or twin in outputs or
+                data.get('venueLocalBuildPending')):
+            raise Refusal('no exact selected failed-build twin to skip')
+        a,b=(Path(bundle)/'quadlet/rootless-test-runners'/('p0test-r1-android-test-runner-'+n+'.build')
+             for n in ('api34','api36'))
+        left=a.read_text().replace('localhost/webservices/android-test-runner-api34:bundle','SAME-TAG')
+        right=b.read_text().replace('localhost/webservices/android-test-runner-api36:bundle','SAME-TAG')
+        if left!=right or left.count('SAME-TAG')!=1:raise Refusal('failed Android source twin differs')
+        user=twin.partition('|')[0];tag=twin.partition('|')[2]
+        account=next(x for x in plan['accounts'] if x['name']==user)
+        installed=Path(account['home'])/'.config/containers/systemd'/b.name
+        record=next((x for x in data['installedUnits'] if x['path']==str(installed)),None)
+        if (not record or installed.is_symlink() or installed.stat().st_ino!=record['ino'] or
+                installed.read_bytes()!=b.read_bytes()):
+            raise Refusal('failed twin installed build source changed')
+        state=selected_unit(unit_command(plan,user,selected[twin]['unit']),selected[twin]['unit'],tag,installed,False)
+        if state.get('ActiveState')!='inactive' or state.get('Job') not in ('',None,'0') or registry.pulled(
+                registry.command_graphs(bundle,plan)[user][1],tag) is not None:
+            raise Refusal('failed Android twin is not a fresh inactive output')
+        probe(bundle,selector,plan,data,outputs)
+        data['venueLocalBuildDuplicateSkip']=twin
+        data['venueLocalBuildSkipped']=[failed,twin];stage.write_ledger(p,data)
+        return {'status':'preparing','builtOutputIds':len(outputs),'skippedFailedTwins':2,
+                'activationAuthorized':False,'acceptedIntegratedInstalls':0}
     roots=probe(bundle,selector,plan,data,outputs)
     if data['venueLocalBuildPhase']=='abandoned-inert':
         raise Refusal('failed selected build may retire only; never retry under the same ledger')
@@ -417,10 +446,11 @@ def main():
     pending.add_argument('--recover-pending-only',action='store_true')
     pending.add_argument('--abandon-failed-pending-only',action='store_true')
     pending.add_argument('--classify-intermediates-only',action='store_true')
+    pending.add_argument('--skip-identical-failed-twin-only',action='store_true')
     args=a.parse_args()
     try:print(json.dumps(prepare(args.bundle,args.selector,args.site_source,args.ledger,args.max_new,
                                  args.recover_pending_only,args.abandon_failed_pending_only,
-                                 args.classify_intermediates_only),sort_keys=True))
+                                 args.classify_intermediates_only,args.skip_identical_failed_twin_only),sort_keys=True))
     except (Refusal,OSError,ValueError,KeyError,TypeError) as exc:
         raise SystemExit('venue fourteen local build discovery refused: '+str(exc)) from exc
 if __name__=='__main__':main()

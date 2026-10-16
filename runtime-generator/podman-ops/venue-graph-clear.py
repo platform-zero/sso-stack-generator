@@ -115,8 +115,13 @@ def journaled_local_output_ids(bundle,selector,state,source=None):
         raise Refusal('unclassified local build intermediate image journal')
     failed=state.get('venueFailedBuildIntermediates',{})
     skipped=state.get('venueLocalBuildSkipped',[])
-    if (not isinstance(failed,dict) or not isinstance(skipped,list) or len(skipped)>1 or
-            set(failed)!=set(skipped) or any(key not in expected or key in outputs or
+    twin=state.get('venueLocalBuildDuplicateSkip')
+    permitted_skips=set(failed)|({twin} if twin else set())
+    if (not isinstance(failed,dict) or not isinstance(skipped,list) or len(skipped)>2 or
+            set(skipped)!=permitted_skips or (twin and (len(skipped)!=2 or
+                not twin.endswith('/android-test-runner-api36:bundle') or
+                not skipped[0].endswith('/android-test-runner-api34:bundle'))) or
+            any(key not in expected or key in outputs or
                 not isinstance(ids,list) or len(ids)!=len(set(ids)) or
                 any(not isinstance(image,str) or not re.fullmatch(r'sha256:[0-9a-f]{64}',image)
                     for image in ids) for key,ids in failed.items()) or
