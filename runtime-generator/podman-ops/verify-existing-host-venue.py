@@ -223,7 +223,12 @@ def screen_quadlet_names(bundle, selector):
                 if not value.startswith(prefix + '-') and not value.startswith(prefix + '_'):
                     raise Refusal('rendered container or network name collides: ' + path.name)
             elif key == 'Network' and value != 'host' and not value.startswith(prefix + '-'):
-                raise Refusal('rendered network reference collides: ' + path.name)
+                # Network=none is ONLY the three selected local-only build
+                # units. It cannot authorize a container bridge/host escape.
+                offline={prefix+'-'+name+'.build' for name in ('keycloak','onboarding','mastodon-rss-publisher')}
+                if not (value=='none' and path.name in offline and
+                        path.read_text().splitlines().count('Pull=never')==1):
+                    raise Refusal('rendered network reference collides: ' + path.name)
             elif key in ('Requires', 'Wants', 'After', 'PartOf', 'WantedBy'):
                 for name in value.split():
                     if name.startswith('webservices-') or name in ('webservices.target', 'webservices-runtime-env.service'):
