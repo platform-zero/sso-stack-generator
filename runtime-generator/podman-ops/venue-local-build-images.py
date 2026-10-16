@@ -59,7 +59,8 @@ def probe(bundle,selector,plan,data,outputs,intermediates=None):
     for key,ids in {**(intermediates if intermediates is not None else data.get('venueLocalBuildIntermediates',{})),
                     **data.get('venueFailedBuildIntermediates',{})}.items():
         user,sep,_=key.partition('|')
-        failed=key==data.get('venueLocalBuildFailure',{}).get('key')
+        failed=(key==data.get('venueLocalBuildFailure',{}).get('key') or
+                key in data.get('venueLocalBuildFailures',{}))
         if not sep or (key not in outputs and not failed) or not isinstance(ids,list):
             raise Refusal('unbound local build intermediate images')
         for image in ids:
@@ -283,7 +284,7 @@ def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,aba
                  for k,v in intermediates.items()) or
             not isinstance(data.get('venueLocalBuildSkipped',[]),list) or
             any(k not in selected or k in outputs for k in data.get('venueLocalBuildSkipped',[])) or
-            len(data.get('venueLocalBuildSkipped',[]))>2):
+            len(data.get('venueLocalBuildSkipped',[]))>14):
         raise Refusal('selected local build output CAS differs')
     if classify_only:
         if data.get('venueLocalBuildPending'):
@@ -322,12 +323,18 @@ def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,aba
                     len(data.get('venueFailedBuildTmpRetired',[]))!=4):
                 raise Refusal('selected failed Android scratch must be exactly retired first')
             failed=classify_failed_intermediates(bundle,selector,plan,data,pending,outputs,intermediates)
-            data['venueLocalBuildFailure']={'key':pending,'result':state.get('Result'),
-                                             'execMainStatus':state.get('ExecMainStatus')}
-            data['venueFailedBuildIntermediates']={pending:failed}
-            data['venueLocalBuildSkipped']=[pending]
+            receipt={'key':pending,'result':state.get('Result'),
+                     'execMainStatus':state.get('ExecMainStatus')}
+            if not data.get('venueLocalBuildFailure'):
+                data['venueLocalBuildFailure']=receipt
+            failures=data.setdefault('venueLocalBuildFailures',{})
+            failures.setdefault(data['venueLocalBuildFailure']['key'],data['venueLocalBuildFailure'])
+            failures[pending]=receipt
+            data.setdefault('venueFailedBuildIntermediates',{})[pending]=failed
+            data.setdefault('venueLocalBuildSkipped',[]).append(pending)
             data.pop('venueLocalBuildPending');data.pop('venueLocalBuildPriorStartTimestamp')
-            if set(outputs)|{pending}==set(selected):data['venueLocalBuildPhase']='abandoned-inert'
+            if set(outputs)|set(data['venueLocalBuildSkipped'])==set(selected):
+                data['venueLocalBuildPhase']='abandoned-inert'
             stage.write_ledger(p,data)
             return {'status':data['venueLocalBuildPhase'],'builtOutputIds':len(outputs),
                     'remaining':len(selected)-len(outputs),'activationAuthorized':False,'acceptedIntegratedInstalls':0}

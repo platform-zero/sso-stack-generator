@@ -117,15 +117,19 @@ def journaled_local_output_ids(bundle,selector,state,source=None):
     skipped=state.get('venueLocalBuildSkipped',[])
     twin=state.get('venueLocalBuildDuplicateSkip')
     permitted_skips=set(failed)|({twin} if twin else set())
-    if (not isinstance(failed,dict) or not isinstance(skipped,list) or len(skipped)>2 or
-            set(skipped)!=permitted_skips or (twin and (len(skipped)!=2 or
-                not twin.endswith('/android-test-runner-api36:bundle') or
+    failures=state.get('venueLocalBuildFailures',{})
+    if (not isinstance(failed,dict) or not isinstance(skipped,list) or len(skipped)>14 or
+            len(skipped)!=len(set(skipped)) or set(skipped)!=permitted_skips or
+            not isinstance(failures,dict) or (failures and set(failures)!=set(failed)) or
+            (twin and (not twin.endswith('/android-test-runner-api36:bundle') or
                 not skipped[0].endswith('/android-test-runner-api34:bundle'))) or
             any(key not in expected or key in outputs or
                 not isinstance(ids,list) or len(ids)!=len(set(ids)) or
                 any(not isinstance(image,str) or not re.fullmatch(r'sha256:[0-9a-f]{64}',image)
                     for image in ids) for key,ids in failed.items()) or
-            (skipped and state.get('venueLocalBuildFailure',{}).get('key')!=skipped[0])):
+            (skipped and state.get('venueLocalBuildFailure',{}).get('key')!=skipped[0]) or
+            any(key not in failed or not isinstance(row,dict) or row.get('key')!=key
+                for key,row in failures.items())):
         raise Refusal('failed selected build intermediate IDs are not journaled')
     for key,ids in failed.items():
         user=key.partition('|')[0]
