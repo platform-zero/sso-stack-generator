@@ -204,6 +204,26 @@ def inspect_graph(command):
         raise Refusal('graph has container, pod, named volume or nondefault network')
     return observations
 
+def removal_order(command,images):
+    """Exact child-first order for selected Buildah stage and output IDs."""
+    images=set(images);parents={}
+    for image in images:
+        row=run(command+['image','inspect','--format','{{.Parent}}',image],timeout=30)
+        if row.returncode:raise Refusal('selected image dependency cannot be inventoried')
+        parent=row.stdout.strip()
+        if parent and parent!='<nil>':
+            parent='sha256:'+parent.removeprefix('sha256:')
+            if not re.fullmatch(r'sha256:[0-9a-f]{64}',parent):
+                raise Refusal('selected image parent identity malformed')
+        parents[image]=parent if parent in images else None
+    remaining=images.copy();order=[]
+    while remaining:
+        ancestors={p for image,p in parents.items() if image in remaining and p in remaining}
+        leaves=sorted(remaining-ancestors)
+        if not leaves:raise Refusal('selected image parent graph has a cycle')
+        order.extend(leaves);remaining.difference_update(leaves)
+    return order
+
 def clear(bundle,selector,ledger):
     if os.geteuid()!=0 or not shutil.rmtree.avoids_symlink_attacks:
         raise Refusal('root and fd-safe recursive deletion support required')
@@ -320,7 +340,7 @@ def clear(bundle,selector,ledger):
         if user in state['graphCleared']:
             if any(g.iterdir()):raise Refusal('previously cleared selected graph repopulated')
             continue
-        for image in sorted(o['images']):
+        for image in removal_order(command,o['images']):
             state['pendingGraphImageRemoval']={'user':user,'image':image}
             stage.write_ledger(path,state)
             removed=run(command+['image','rm',image],timeout=180)

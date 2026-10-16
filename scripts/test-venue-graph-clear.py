@@ -40,11 +40,21 @@ class GraphClearFixtures(unittest.TestCase):
     def runner(self,command,**kwargs):
         if command[-2:]==['ps','-aq'] or command[-3:]==['pod','ps','--quiet'] or command[-3:]==['volume','ls','-q']:
             return SimpleNamespace(returncode=0,stdout='')
+        if 'image' in command and 'inspect' in command and '{{.Parent}}' in command:
+            return SimpleNamespace(returncode=0,stdout='')
         if command[-4:]==['image','ls','--no-trunc','--format'] or 'image' in command and 'ls' in command:
             return SimpleNamespace(returncode=0,stdout='')
         if command[-3:]==['network','ls','--format'] or 'network' in command and 'ls' in command:
             return SimpleNamespace(returncode=0,stdout='podman\n')
         raise AssertionError('unexpected selected Podman call '+str(command))
+    def test_build_parent_image_retirement_is_child_first(self):
+        base='sha256:'+'a'*64;parent='sha256:'+'b'*64;output='sha256:'+'c'*64
+        def hierarchy(command,**kwargs):
+            if command[-1]==output:return SimpleNamespace(returncode=0,stdout=parent+'\n')
+            if command[-1]==parent:return SimpleNamespace(returncode=0,stdout=base+'\n')
+            return SimpleNamespace(returncode=0,stdout='')
+        with patch.object(clear,'run',side_effect=hierarchy):
+            self.assertEqual(clear.removal_order(['selected'],{base,parent,output}),[output,parent,base])
     def test_empty_test_only_metadata_is_removed_without_deleting_graph_root(self):
         child=Path(self.plan['roots']['rootful-graph'])/'metadata';child.mkdir();(child/'runtime.json').write_text('{}')
         with (patch.object(clear.stage,'owned_plan',return_value=self.plan),
