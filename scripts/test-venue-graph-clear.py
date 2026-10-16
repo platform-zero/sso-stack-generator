@@ -193,7 +193,11 @@ class GraphClearFixtures(unittest.TestCase):
             with self.assertRaisesRegex(clear.Refusal,'metadata file'):
                 clear.retire_empty_runroot(self.bundle,self.root/'unused',self.ledger)
             lock.write_bytes(b'x'*64)
-            self.assertEqual(clear.retire_empty_runroot(self.bundle,self.root/'unused',self.ledger)['retiredRunrootFiles'],6)
+            volatile=root/'overlay/volatile-true';volatile.write_bytes(b'x');volatile.chmod(0o644)
+            with self.assertRaisesRegex(clear.Refusal,'metadata file'):
+                clear.retire_empty_runroot(self.bundle,self.root/'unused',self.ledger)
+            self.assertEqual(volatile.read_bytes(),b'x');volatile.write_bytes(b'')
+            self.assertEqual(clear.retire_empty_runroot(self.bundle,self.root/'unused',self.ledger)['retiredRunrootFiles'],7)
         self.assertFalse(any(root.iterdir()))
     def test_build_only_store_image_may_be_exactly_retired_without_direct_image_authority(self):
         apps='p0test-r1-apps';image='sha256:'+'c'*64

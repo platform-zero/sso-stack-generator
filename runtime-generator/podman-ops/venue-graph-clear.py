@@ -542,6 +542,7 @@ def retire_empty_runroot(bundle,selector,ledger):
     if {p.name for p in root.iterdir()}!=set(allowed):raise Refusal('unreviewed Podman runroot directory')
     if (root/'overlay-layers/mountpoints.json').exists() and (root/'overlay/idmapped-lower-dir-true').exists():
         allowed['overlay-layers'].add('mountpoints.json');allowed['overlay'].add('idmapped-lower-dir-true')
+    if (root/'overlay/volatile-true').exists():allowed['overlay'].add('volatile-true')
     files=[];dirs=[]
     for name,names in allowed.items():
         d=root/name;info=d.lstat()
