@@ -129,6 +129,8 @@ def retire(bundle,selector,ledger):
     b,p,data,plan,state=context(bundle,selector,ledger)
     if data.get('venueReleasePhase')!='inert-ready' or data.get('status')!='staged-empty':
         raise Refusal('only complete inactive release may use empty release retirement')
+    if data.get('venueDomainRuntimePhase') not in (None,'retired-inert'):
+        raise Refusal('all selected rootless current releases must retire first')
     started=data.get('managerStarted',[])
     if started:
         if (started!=[a['name'] for a in plan['accounts']] or

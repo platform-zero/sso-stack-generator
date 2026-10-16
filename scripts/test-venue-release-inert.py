@@ -56,6 +56,12 @@ class ReleaseFixture(unittest.TestCase):
         self.assertEqual(release.retire(self.bundle,None,self.ledger)['status'],'retired-inert')
         self.assertFalse(self.pointer.exists());self.assertFalse(self.slot.exists());self.assertFalse((self.state/'releases').exists())
         self.assertEqual(json.loads(self.ledger.read_text())['venueReleasePhase'],'retired-inert')
+    def test_root_release_refuses_while_seven_domain_releases_remain(self):
+        self.record['venueDomainRuntimePhase']='inert-ready'
+        self.ledger.write_text(json.dumps(self.record));self.ledger.chmod(0o600)
+        with self.assertRaises(release.Refusal):release.retire(self.bundle,None,self.ledger)
+        self.assertTrue(self.pointer.is_symlink());self.assertTrue(self.slot.exists())
+
     def test_pointer_retarget_or_inode_drift_refuses_without_removal(self):
         self.pointer.unlink();self.pointer.symlink_to('releases/foreign')
         with self.assertRaises(release.Refusal):release.retire(self.bundle,None,self.ledger)
