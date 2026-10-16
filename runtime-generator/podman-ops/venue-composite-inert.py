@@ -115,6 +115,8 @@ def finish_graph_retirement(bundle,selector,ledger):
         data['venueRegistryPhase']='retired-inert';stage.write_ledger(path,data)
     if data.get('venueBuildBasePhase') in ('preparing','inert-ready'):
         data['venueBuildBasePhase']='retired-inert';stage.write_ledger(path,data)
+    if data.get('venueLocalBuildPhase') in ('preparing','inert-ready','abandoned-inert'):
+        data['venueLocalBuildPhase']='retired-inert';stage.write_ledger(path,data)
     data['venueCompositeMode']='retired-inert';stage.write_ledger(path,data)
     return {'status':'retired-inert','activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
@@ -193,9 +195,11 @@ def retire(bundle,selector,ledger):
             if not sep or user not in expected or value not in source.get(user,set()):
                 raise Refusal('registry image not selected for exact graph authority')
             expected[user].add(value)
-    for user,values in graph.journaled_build_base_ids(bundle,selector,data).items():
-        if user not in expected:raise Refusal('build-base graph authority unknown')
-        expected[user].update(values)
+    for observed in (graph.journaled_build_base_ids(bundle,selector,data),
+                     graph.journaled_local_output_ids(bundle,selector,data)):
+        for user,values in observed.items():
+            if user not in expected:raise Refusal('build graph authority unknown')
+            expected[user].update(values)
     for user,_,command in graph.stores(bundle,plan):
         def listing(args):
             result=graph.run(command+args)

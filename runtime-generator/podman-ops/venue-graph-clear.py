@@ -91,6 +91,34 @@ def journaled_build_base_ids(bundle,selector,state,source=None):
         result[user].add(value)
     return result
 
+def journaled_local_output_ids(bundle,selector,state,source=None):
+    phase=state.get('venueLocalBuildPhase')
+    if phase is None:return {}
+    spec=importlib.util.spec_from_file_location('venue_local_build_images',HERE/'venue-local-build-images.py')
+    local=importlib.util.module_from_spec(spec);spec.loader.exec_module(local)
+    if source is None:source=local.authority.authority(bundle,selector)
+    expected=local.plan_for(bundle,source)
+    outputs=state.get('venueLocalBuildOutputs')
+    if (phase not in ('preparing','inert-ready','abandoned-inert') or state.get('venueLocalBuildPending') or
+            state.get('venueLocalBuildPlan')!=expected or not isinstance(outputs,dict) or
+            any(k not in expected or not isinstance(v,str) or not re.fullmatch(r'sha256:[0-9a-f]{64}',v)
+                for k,v in outputs.items()) or
+            (phase=='inert-ready' and set(outputs)!=set(expected))):
+        raise Refusal('local build output image journal/source differs')
+    commands={user:command for user,_,command in stores(bundle,stage.owned_plan(bundle,selector))}
+    by_user={user:set() for user in commands}
+    for key,value in outputs.items():
+        user,sep,tag=key.partition('|')
+        if not sep or user not in commands:raise Refusal('unknown local output store authority')
+        if user not in state.get('graphCleared',[]):
+            observed=run(commands[user]+['image','inspect','--format','{{.Id}}',tag],timeout=30)
+            if observed.returncode:
+                if state.get('status')!='graphs-clearing':raise Refusal('selected built output tag absent')
+            elif 'sha256:'+observed.stdout.strip().removeprefix('sha256:')!=value:
+                raise Refusal('selected built output config ID changed')
+        by_user[user].add(value)
+    return by_user
+
 def remove_exact_dual_named_base(bundle,selector,state,path,user,image,command,source=None):
     """Never force an image: untag only its frozen site-owned mutable alias."""
     spec=importlib.util.spec_from_file_location('venue_image_authority',HERE/'venue-image-authority.py')
@@ -173,9 +201,11 @@ def clear(bundle,selector,ledger):
                 if not sep or user not in exact:raise Refusal('unknown registry image graph authority')
                 exact[user].add(value)
         selected_stores={user for user,_,_ in stores(bundle,plan)}
-        for user,values in journaled_build_base_ids(bundle,selector,state).items():
-            if user not in selected_stores:raise Refusal('unknown build-base image authority')
-            exact.setdefault(user,set()).update(values)
+        for selected in (journaled_build_base_ids(bundle,selector,state),
+                         journaled_local_output_ids(bundle,selector,state)):
+            for user,values in selected.items():
+                if user not in selected_stores:raise Refusal('unknown build image authority')
+                exact.setdefault(user,set()).update(values)
         allowed=exact
     # The netavark rootful default is /etc/containers/networks even with a
     # private image graph. Never enumerate/mutate that shared directory as
