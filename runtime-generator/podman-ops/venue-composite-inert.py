@@ -121,8 +121,8 @@ def finish_graph_retirement(bundle,selector,ledger):
 def retire(bundle,selector,ledger):
     path,data,plan=context(bundle,selector,ledger)
     if (data.get('venueCompositeVersion')==2 and data.get('venueCompositeMode')=='retiring' and
-            data.get('status')=='managers-ready' and len(data.get('retiredUnits',[]))==194 and
-            len(data.get('graphCleared',[]))==0 and
+            data.get('status') in ('managers-ready','graphs-clearing') and
+            len(data.get('retiredUnits',[]))==194 and
             not data.get('podmanImageCacheRetired')):
         # Only graph metadata remains. Re-check the full exact 8-store image
         # inventory inside graph.clear before removing ANY image; never rerun

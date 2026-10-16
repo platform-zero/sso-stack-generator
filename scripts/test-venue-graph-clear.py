@@ -169,6 +169,21 @@ class GraphClearFixtures(unittest.TestCase):
               patch.object(clear.os,'geteuid',return_value=0)):
             self.assertEqual(clear.clear(self.bundle,self.root/'unused',self.ledger)['graphRootsCleared'],8)
         self.assertTrue(removed)
+    def test_partially_cleared_ledger_never_reopens_cleared_root_and_records_missing_id(self):
+        self.data.update({'venueCompositeVersion':2,'venueCompositeOfflineImages':[
+            {'authorities':['root'],'image':self.allowed}],
+            'status':'graphs-clearing','graphCleared':['root']})
+        self.ledger.write_text(json.dumps(self.data))
+        def selected(command,**kwargs):
+            if 'podman' in command and '--root' in command:
+                raise AssertionError('never reopen an already cleared selected root graph')
+            return self.runner(command,**kwargs)
+        with (patch.object(clear.stage,'owned_plan',return_value=self.plan),
+              patch.object(clear.stage,'write_ledger',side_effect=lambda path,state:self.data.update(state)),
+              patch.object(clear,'run',side_effect=selected),
+              patch.object(clear.os,'geteuid',return_value=0)):
+            self.assertEqual(clear.clear(self.bundle,self.root/'unused',self.ledger)['graphRootsCleared'],8)
+        self.assertEqual(self.data['graphRecoveredMissingSelectedImages']['root'],[self.allowed])
     def test_versioned_graph_refuses_selected_but_not_journaled_image(self):
         marker=Path(self.plan['roots']['rootful-graph'])/'keep';marker.write_text('untouched')
         self.data['venueCompositeVersion']=2;self.data['venueCompositeOfflineImages']=[]

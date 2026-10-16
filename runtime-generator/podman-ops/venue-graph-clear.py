@@ -69,14 +69,22 @@ def journaled_build_base_ids(bundle,selector,state,source=None):
         raise Refusal('build-base image journal lacks exact selected FROM authority')
     commands={user:command for user,_,command in stores(bundle,stage.owned_plan(bundle,selector))}
     result={user:set() for user in commands}
+    partially_clearing=state.get('status')=='graphs-clearing'
     for key,value in verified.items():
         user,sep,ref=key.partition('|');pinned=source['buildBaseImages'].get(key)
         if (not sep or user not in commands or
                 (pinned and value!=pinned['configId']) or
                 (not pinned and not re.search(r'@sha256:[0-9a-f]{64}\Z',ref))):
             raise Refusal('build-base key/config ID differs from selected source')
+        if user in state.get('graphCleared',[]):
+            result[user].add(value);continue
         observed=run(commands[user]+['image','inspect','--format','{{.Id}}',ref],timeout=35)
         arch=run(commands[user]+['image','inspect','--format','{{.Architecture}}/{{.Os}}',ref],timeout=35)
+        if observed.returncode and partially_clearing and arch.returncode:
+            # Earlier exact graph removal can have deleted this previously
+            # attested image. The full graph inventory below must still be a
+            # subset of the immutable selected IDs; record any absent IDs.
+            result[user].add(value);continue
         if (observed.returncode or arch.returncode or arch.stdout.strip()!='amd64/linux' or
                 'sha256:'+observed.stdout.strip().removeprefix('sha256:')!=value):
             raise Refusal('local selected build FROM image/tag drift')
@@ -185,18 +193,42 @@ def clear(bundle,selector,ledger):
             raise Refusal('graph root identity differs from exclusive fresh stage')
         if any(mp==graph or mp.startswith(graph.rstrip('/')+'/') for mp in mountpoints):
             raise Refusal('Podman graph has a live mount')
+        if user in state.get('graphCleared',[]):
+            # Podman inventory itself initializes a cleared graph. Preserve
+            # its proven empty inode instead of recreating metadata to query.
+            if any(g.iterdir()):raise Refusal('previously cleared selected graph repopulated')
+            observations.append((user,graph,command,{'images':set()}));continue
         o=inspect_graph(command)
-        if (o['images']!=allowed.get(user,set()) if state.get('venueCompositeVersion')==2 else
-                bool(o['images']-allowed.get(user,set()))):
+        expected=allowed.get(user,set())
+        if (bool(o['images']-expected) or
+                (state.get('venueCompositeVersion')==2 and state['status']!='graphs-clearing' and o['images']!=expected) or
+                (user in state.get('graphCleared',[]) and o['images'])):
             raise Refusal('unselected, unjournaled or missing image in test-only graph: '+user)
         observations.append((user,graph,command,o))
+    if state['status']=='graphs-clearing':
+        pending=state.get('pendingGraphImageRemoval')
+        if pending and (not isinstance(pending,dict) or
+                        pending.get('image') not in allowed.get(pending.get('user'),set())):
+            raise Refusal('interrupted image removal lacks selected exact CAS')
+        missing={user:sorted(allowed.get(user,set())-o['images']) for user,_,_,o in observations
+                 if allowed.get(user,set())-o['images']}
+        if missing:
+            state['graphRecoveredMissingSelectedImages']=missing
+            stage.write_ledger(path,state)
     # All eight graphs were checked before removing even one selected image.
     state['status']='graphs-clearing';state.setdefault('graphCleared',[]);stage.write_ledger(path,state)
     for user,graph,command,o in observations:
-        if user in state['graphCleared']:continue
+        g=Path(graph)
+        if user in state['graphCleared']:
+            if any(g.iterdir()):raise Refusal('previously cleared selected graph repopulated')
+            continue
         for image in sorted(o['images']):
+            state['pendingGraphImageRemoval']={'user':user,'image':image}
+            stage.write_ledger(path,state)
             removed=run(command+['image','rm',image],timeout=180)
-            if removed.returncode:raise Refusal('exact selected image removal failed: '+user)
+            if removed.returncode:
+                raise Refusal('exact selected image removal failed: '+user+'; '+removed.stderr.strip()[:240])
+            state.pop('pendingGraphImageRemoval');stage.write_ledger(path,state)
         current=inspect_graph(command)
         if current['images'] or any(current[k] for k in ('containers','pods','volumes')):
             raise Refusal('selected graph objects remained after image removal')
