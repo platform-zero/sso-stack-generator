@@ -222,6 +222,40 @@ def remove_exact_dual_named_output(state,path,user,image,command):
     result=run(command+['image','rm',image],timeout=180)
     if result.returncode:raise Refusal('exact selected dual-output image removal failed')
 
+def remove_exact_frozen_import(bundle,state,path,user,image,command,aliases=None):
+    """Remove only receipted canonical producer plus seeded config-ID aliases."""
+    key=user+'|'+image
+    if (state.get('venueRegistryPhase')!='inert-ready' or state.get('venueRegistryVerified',{}).get(key)!=image or
+            not any(row.get('image')==image and user in row.get('authorities',[]) for row in state.get('venueCompositeOfflineImages',[]))):
+        raise Refusal('multi-name frozen import lacks exact store/import/verification receipt')
+    if aliases is None:
+        spec=importlib.util.spec_from_file_location('frozen_retirement_pins',HERE/'install-pinned-images.py')
+        pins=importlib.util.module_from_spec(spec);spec.loader.exec_module(pins)
+        if pins.frozen_image_ids(Path(bundle)).get(key)!=image:raise Refusal('image is not selected frozen import')
+        metadata=json.loads((Path(bundle)/'podman-domains.json').read_text())
+        aliases={tag for (config,owner),tags in pins.frozen_aliases(Path(bundle),metadata).items() if config==image for tag in tags}
+    if not aliases:raise Refusal('no canonical producer alias for imported frozen image')
+    tags=set(aliases)|{'localhost/sha256:'+image.removeprefix('sha256:')}
+    details=run(command+['image','inspect','--format','{{json .RepoTags}}|{{json .RepoDigests}}',image],timeout=35)
+    if details.returncode or details.stdout.count('|')!=1:raise Refusal('frozen import alias metadata unavailable')
+    try:
+        tagged,digested=details.stdout.strip().split('|',1);current=set(json.loads(tagged));digests=set(json.loads(digested))
+    except (ValueError,TypeError):raise Refusal('invalid frozen import alias metadata')
+    if (current!=tags or len(digests)!=len(tags) or
+            {value.partition('@')[0] for value in digests}!={tag.rsplit(':',1)[0] for tag in tags} or
+            len({value.partition('@')[2] for value in digests})!=1 or
+            any(not re.fullmatch(r'sha256:[0-9a-f]{64}',value.partition('@')[2]) for value in digests)):
+        raise Refusal('frozen import has foreign alias/digest; no untag')
+    remove=sorted(tags)[1:]
+    state['pendingGraphImageUntag']={'user':user,'image':image,'tags':remove,'digests':sorted(digests),'frozenImport':True}
+    stage.write_ledger(path,state)
+    result=run(command+['image','untag',image,*remove],timeout=35)
+    if result.returncode:raise Refusal('exact frozen import alias untag failed')
+    state.setdefault('graphUntaggedFrozenImports',[]).append(state.pop('pendingGraphImageUntag'));stage.write_ledger(path,state)
+    result=run(command+['image','rm',image],timeout=180)
+    if result.returncode:raise Refusal('exact frozen import image removal failed')
+
+
 def inspect_graph(command):
     observations={}
     for label,args in (('containers',['ps','-aq']),('pods',['pod','ps','--quiet']),
@@ -389,7 +423,9 @@ def clear(bundle,selector,ledger):
             removed=run(command+['image','rm',image],timeout=180)
             if removed.returncode:
                 if 'by digest with more than one tag' in removed.stderr:
-                    if len({key for key,value in state.get('venueLocalBuildOutputs',{}).items()
+                    if approved_pairs.get(user+'|'+image)==image and state.get('venueRegistryPhase')=='inert-ready':
+                        remove_exact_frozen_import(bundle,state,path,user,image,command)
+                    elif len({key for key,value in state.get('venueLocalBuildOutputs',{}).items()
                             if key.startswith(user+'|') and value==image})==2:
                         remove_exact_dual_named_output(state,path,user,image,command)
                     else:

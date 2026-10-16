@@ -150,7 +150,8 @@ class GraphClearFixtures(unittest.TestCase):
                 'overlay-containers':set(),'overlay':{'native-diff()-true','metacopy()-false','overlay-true'}}
         for name,files in layout.items():
             d=root/name;d.mkdir(mode=0o700)
-            for filename in files:(d/filename).touch(mode=0o644)
+            for filename in files:
+                (d/filename).touch(mode=0o644);(d/filename).chmod(0o644)
         self.data.update({'status':'staged-empty',
                           'managerStopped':[a['name'] for a in reversed(self.plan['accounts'])],
                           'graphCleared':['root',*(a['name'] for a in self.plan['accounts'])],
@@ -173,7 +174,8 @@ class GraphClearFixtures(unittest.TestCase):
                 'overlay':{'native-diff()-true','metacopy()-false','overlay-true','idmapped-lower-dir-true'}}
         for name,files in layout.items():
             d=root/name;d.mkdir(mode=0o700)
-            for filename in files:(d/filename).touch(mode=0o644)
+            for filename in files:
+                (d/filename).touch(mode=0o644);(d/filename).chmod(0o644)
         lock=root/'overlay-layers/mountpoints.lock';lock.write_bytes(b'x'*64)
         points=root/'overlay-layers/mountpoints.json';points.write_bytes(b'["foreign"]');points.chmod(0o600)
         self.data.update({'status':'staged-empty',
@@ -212,6 +214,29 @@ class GraphClearFixtures(unittest.TestCase):
               patch.object(clear.os,'geteuid',return_value=0)):
             self.assertEqual(clear.clear(self.bundle,self.root/'unused',self.ledger)['graphRootsCleared'],8)
         self.assertTrue(removed)
+    def frozen_import_aliases(self,*,shared=False,foreign=False):
+        image='sha256:'+'b'*64;user='p0test-r1-platform';aliases={'localhost/webservices/selected:bundle'}
+        if shared:aliases.add('localhost/webservices/selected-twin:bundle')
+        tags=aliases|{'localhost/sha256:'+image.removeprefix('sha256:')}
+        if foreign:tags.add('localhost/unowned:latest')
+        digest='sha256:'+'f'*64;details=json.dumps(sorted(tags))+'|'+json.dumps(sorted(tag.rsplit(':',1)[0]+'@'+digest for tag in tags))
+        self.data.update(venueRegistryPhase='inert-ready',venueRegistryVerified={user+'|'+image:image},venueCompositeOfflineImages=[{'image':image,'authorities':[user]}])
+        commands=[]
+        def selected(command,**kwargs):
+            commands.append(command);self.assertNotIn('--force',command)
+            return SimpleNamespace(returncode=0,stdout=details if 'inspect' in command else '')
+        with patch.object(clear,'run',side_effect=selected),patch.object(clear.stage,'write_ledger'):
+            if foreign:
+                with self.assertRaisesRegex(clear.Refusal,'foreign alias/digest'):
+                    clear.remove_exact_frozen_import(self.bundle,self.data,self.ledger,user,image,['selected'],aliases=aliases)
+                self.assertEqual(len(commands),1)
+            else:
+                clear.remove_exact_frozen_import(self.bundle,self.data,self.ledger,user,image,['selected'],aliases=aliases)
+                self.assertEqual(len(self.data['graphUntaggedFrozenImports']),1)
+                self.assertEqual(set(commands[1][4:]),set(sorted(tags)[1:]));self.assertEqual(commands[-1],['selected','image','rm',image])
+    def test_frozen_archive_tag_and_seeded_identity_alias_exactly_retire(self):self.frozen_import_aliases()
+    def test_frozen_shared_producer_aliases_retire_without_force(self):self.frozen_import_aliases(shared=True)
+    def test_frozen_foreign_alias_is_never_untagged(self):self.frozen_import_aliases(foreign=True)
     def test_complete_selected_frozen_catalogue_retirement_keeps_legacy_bound(self):
         identities={'sha256:'+format(i,'064x') for i in range(1,14)};remaining=set(identities)
         self.data.update(venueCompositeVersion=2,venueCompositeOfflineImages=[{'authorities':['root'],'image':value} for value in sorted(identities)])
