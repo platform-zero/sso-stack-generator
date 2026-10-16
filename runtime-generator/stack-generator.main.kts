@@ -1054,12 +1054,17 @@ fun materializeSiteManifest(manifestPath: Path, output: Path) {
         fail("Latium requires exact site-owned agent-vm.json")
     (listOf("stackConfig", "secretStore") + listOfNotNull(
         "imageIdentityPinsPath".takeIf { manifest.has(it) },
+        "buildBaseIdentityPinsPath".takeIf { manifest.has(it) },
         "agentVmSpec".takeIf { manifest.has(it) })).forEach { key ->
         val relative = manifest.path(key).textOrNull() ?: fail("site manifest missing $key")
         if (relative.startsWith("/")) fail("site manifest $key must be relative: $relative")
         val source = manifestPath.parent.resolve(relative).normalize()
         if (!source.isRegularFile() || source.isSymbolicLink() || !source.toRealPath().startsWith(manifestPath.parent.toRealPath()))
             fail("site manifest $key points to missing or linked file: $source")
+        if (key == "buildBaseIdentityPinsPath" &&
+            (relative != "global.settings/build-base-image-ids.json" ||
+             activePodmanPolicy.unitPrefix == "webservices"))
+            fail("only isolated venue may select exact build-base identity pins")
         if (key == "agentVmSpec") {
             val vm = readTree(source)
             val pins = vm.path("runtime")
