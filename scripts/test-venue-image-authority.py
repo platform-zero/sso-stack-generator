@@ -2,6 +2,7 @@
 """Hostile complete-image and local-build authority fixtures, no pulls."""
 import importlib.util
 import json
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -50,12 +51,35 @@ class ImageAuthority(unittest.TestCase):
         with self.assertRaises(authority.Refusal):authority.authority(self.b,'unused')
         self.pins.write_text(json.dumps(self.rows));(self.root/'p0test-r1-build-0.build').unlink()
         with self.assertRaises(authority.Refusal):authority.authority(self.b,'unused')
+    def test_clean_site_pins_mutable_base_per_store_and_tampering_refuses(self):
+        (self.b/'build/p0test-r1-build-0/Containerfile').write_text('FROM docker.io/library/python:3.12-slim\n')
+        pins=self.site/'build-base-image-ids.json'
+        approved={'schemaVersion':1,'platform':'linux/amd64','baseImages':{
+            'root|docker.io/library/python:3.12-slim':{
+                'registryReference':'docker.io/library/python:3.12-slim',
+                'linuxAmd64ManifestDigest':'sha256:'+'d'*64,'configId':'sha256:'+'e'*64}}}
+        pins.write_text(json.dumps(approved))
+        checkout=self.b/'site-source';published=checkout/'sites/latium/global.settings'
+        published.mkdir(parents=True)
+        (published/'registry-image-ids.json').write_bytes(self.pins.read_bytes())
+        (published/'build-base-image-ids.json').write_bytes(pins.read_bytes())
+        def git(*args):subprocess.run(['git','-C',str(checkout),*args],check=True,capture_output=True)
+        git('init','-q');git('add','.');subprocess.run(['git','-C',str(checkout),
+            '-c','user.email=fixture@localhost','-c','user.name=Fixture','commit','-qm','pin'],
+            check=True,capture_output=True)
+        commit=subprocess.check_output(['git','-C',str(checkout),'rev-parse','HEAD'],text=True).strip()
+        (self.b/'source-provenance.json').write_text(json.dumps({'siteCommit':commit}))
+        result=authority.authority(self.b,'unused',checkout,require_pinned_bases=True)
+        self.assertEqual(result['frozenBuildBasePairs'],1)
+        pins.write_text(pins.read_text()+' ')
+        with self.assertRaisesRegex(authority.Refusal,'differ from clean pinned site'):
+            authority.authority(self.b,'unused',checkout,require_pinned_bases=True)
     def test_mutable_local_build_base_refuses_when_pinning_required(self):
         self.assertEqual(authority.authority(self.b,'unused',require_pinned_bases=True)['unpinnedBuildBaseReferences'],[])
         (self.b/'build/p0test-r1-build-0/Containerfile').write_text('FROM docker.io/library/python:3.12-slim\n')
         self.assertEqual(authority.authority(self.b,'unused')['unpinnedBuildBaseReferences'],
                          ['docker.io/library/python:3.12-slim'])
-        with self.assertRaisesRegex(authority.Refusal,'lack frozen digest'):
+        with self.assertRaisesRegex(authority.Refusal,'lack clean frozen'):
             authority.authority(self.b,'unused',require_pinned_bases=True)
     def test_unpinned_latest_refuses_even_if_identity_added(self):
         p=self.root/'p0test-r1-image-0.container';old=p.read_text().split('=',1)[1].strip()

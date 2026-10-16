@@ -63,7 +63,7 @@ def authority(bundle,selector,site_source=None,require_pinned_bases=False):
     data=json.loads(identities.read_text())
     if not isinstance(data,dict) or not data or any(not isinstance(k,str) or not isinstance(v,str) or not HEX.fullmatch(v) for k,v in data.items()):
         raise Refusal('malformed frozen site image config identities')
-    rows={};builds={};unit_count=0;base_refs={}
+    rows={};builds={};unit_count=0;base_refs={};mutable_store_bases=set()
     for directory in sorted((b/'quadlet').iterdir()):
         if not directory.is_dir() or directory.is_symlink():raise Refusal('unknown Quadlet image authority')
         user='root' if directory.name=='rootful' else names.get(directory.name.removeprefix('rootless-'))
@@ -81,7 +81,9 @@ def authority(bundle,selector,site_source=None,require_pinned_bases=False):
                 digest=hashlib.sha256(file.read_bytes()).hexdigest()
                 bases=build_bases(b,file)
                 builds[str(file.relative_to(b))]={'user':user,'sha256':digest}
-                for base in bases:base_refs.setdefault(base,[]).append(str(file.relative_to(b)))
+                for base in bases:
+                    base_refs.setdefault(base,[]).append(str(file.relative_to(b)))
+                    if not re.search(r'@sha256:[0-9a-f]{64}\Z',base):mutable_store_bases.add(user+'|'+base)
             else:
                 if not (HEX.fullmatch(ref) or REF.fullmatch(ref)) or ref.endswith(':latest'):
                     raise Refusal('unreviewed implicit image or mutable latest')
@@ -94,8 +96,25 @@ def authority(bundle,selector,site_source=None,require_pinned_bases=False):
         if ref.startswith('sha256:') and ref!=image_id:
             raise Refusal('offline direct image/config identity differs')
     unpinned=sorted(base for base in base_refs if not re.search(r'@sha256:[0-9a-f]{64}\Z',base))
-    if require_pinned_bases and unpinned:
-        raise Refusal('local build base tags lack frozen digest authority: '+', '.join(unpinned))
+    pins=b/'site/global.settings/build-base-image-ids.json'
+    base_map={};base_sha=None
+    if pins.exists():
+        if pins.is_symlink() or not pins.is_file():raise Refusal('build-base frozen source unsafe')
+        base_sha=hashlib.sha256(pins.read_bytes()).hexdigest()
+        base_document=json.loads(pins.read_text())
+        if (base_document.get('schemaVersion')!=1 or base_document.get('platform')!='linux/amd64' or
+                not isinstance(base_document.get('baseImages'),dict) or
+                set(base_document['baseImages'])!=mutable_store_bases):
+            raise Refusal('frozen build-base per-store identities differ from selected FROM inputs')
+        for key,row in base_document['baseImages'].items():
+            ref=key.split('|',1)[1];expanded=ref if '/' in ref else 'docker.io/library/'+ref
+            if (not isinstance(row,dict) or set(row)!=set(('registryReference','linuxAmd64ManifestDigest','configId')) or
+                    row['registryReference']!=expanded or
+                    not HEX.fullmatch(row['linuxAmd64ManifestDigest']) or not HEX.fullmatch(row['configId'])):
+                raise Refusal('frozen build-base tag/image identity malformed')
+            base_map[key]=row
+    if require_pinned_bases and mutable_store_bases and (not site_source or set(base_map)!=mutable_store_bases):
+        raise Refusal('local build base tags lack clean frozen per-store config authority')
     source=hashlib.sha256(identities.read_bytes()).hexdigest()
     if site_source is not None:
         checkout=Path(site_source)
@@ -110,12 +129,18 @@ def authority(bundle,selector,site_source=None,require_pinned_bases=False):
         if (actual.returncode or actual.stdout.strip()!=commit or dirty.returncode or dirty.stdout.strip() or
                 frozen.returncode or frozen.stdout.encode()!=identities.read_bytes()):
             raise Refusal('bundle image identity bytes differ from clean pinned site source')
+        if base_sha is not None:
+            build_pins=subprocess.run(git+['show',commit+':sites/latium/global.settings/build-base-image-ids.json'],
+                                      capture_output=True,text=True,timeout=20)
+            if build_pins.returncode or build_pins.stdout.encode()!=pins.read_bytes():
+                raise Refusal('bundle build-base IDs differ from clean pinned site source')
     return {'schemaVersion':1,'generatorCommit':plan['sourceCommit'],
             'bundleIrSha256':plan['bundleIrSha256'],'quadletTreeSha256':plan['quadletTreeSha256'],
             'selectorSha256':plan['selectorSha256'],'frozenRegistrySha256':source,
             'containerUnits':unit_count,'directImageReferences':len(rows),'localBuildUnits':len(builds),
             'buildBaseReferences':len(base_refs),'unpinnedBuildBaseReferences':unpinned,
-            'imageIds':data,'buildUnits':builds,'activationAuthorized':False,
+            'frozenBuildBasePairs':len(base_map),'frozenBuildBaseSha256':base_sha,
+            'imageIds':data,'buildUnits':builds,'buildBaseImages':base_map,'activationAuthorized':False,
             'acceptedIntegratedInstalls':0}
 
 def main():
@@ -126,7 +151,7 @@ def main():
     a=ap.parse_args()
     try:
         result=authority(a.bundle,a.selector,a.site_source,a.require_pinned_bases)
-        print(json.dumps({k:v for k,v in result.items() if k not in ('imageIds','buildUnits')},sort_keys=True))
+        print(json.dumps({k:v for k,v in result.items() if k not in ('imageIds','buildUnits','buildBaseImages')},sort_keys=True))
     except (Refusal,KeyError,OSError,ValueError,TypeError,subprocess.SubprocessError) as exc:
         raise SystemExit('venue complete image/build authority refused: '+str(exc)) from exc
 if __name__=='__main__':main()
