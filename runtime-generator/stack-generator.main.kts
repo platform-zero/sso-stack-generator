@@ -1757,6 +1757,10 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
             buildLines += "SetWorkingDirectory=${systemdQuote(workingDirectory)}"
         }
         build.path("containerfile").textOrNull()?.let { buildLines += "File=${systemdQuote(it)}" }
+        // The isolated venue must preload each reviewed build base in its
+        // exclusive graph. Never silently advance a mutable FROM tag while
+        // executing a generated build unit. Legacy units are unchanged.
+        if (unitPrefix != "webservices") buildLines += "Pull=never"
         if (domain.name == "rootful" && unitPrefix != "webservices") {
             buildLines += "[Service]"
             buildLines += "Environment=CONTAINERS_STORAGE_CONF=${domain.stateRoot}/containers-storage.conf"

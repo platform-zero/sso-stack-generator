@@ -28,7 +28,7 @@ class ImageAuthority(unittest.TestCase):
             name=f'p0test-r1-build-{i}'
             (self.root/(name+'.container')).write_text('Image='+name+'.build\n')
             (self.root/(name+'.build')).write_text('[Build]\nImageTag=selected\n'
-                f'SetWorkingDirectory="/tmp/current/build/{name}"\nFile="Containerfile"\n')
+                f'SetWorkingDirectory="/tmp/current/build/{name}"\nFile="Containerfile"\nPull=never\n')
             source=self.b/'build'/name;source.mkdir(parents=True)
             (source/'Containerfile').write_text('FROM docker.io/selected/base:1@sha256:'+'f'*64+'\n')
         self.pins=self.site/'registry-image-ids.json';self.pins.write_text(json.dumps(self.rows))
@@ -40,6 +40,11 @@ class ImageAuthority(unittest.TestCase):
     def test_all_60_frozen_authorities_and_14_local_builds(self):
         r=authority.authority(self.b,'unused');self.assertEqual((r['containerUnits'],r['directImageReferences'],r['localBuildUnits']),(93,60,14))
         self.assertEqual(set(r['imageIds']),set(self.rows))
+    def test_build_without_no_pull_refuses_pinned_activation(self):
+        p=self.root/'p0test-r1-build-0.build'
+        p.write_text(p.read_text().replace('Pull=never\n',''))
+        with self.assertRaisesRegex(authority.Refusal,'may pull an unreviewed base'):
+            authority.authority(self.b,'unused',require_pinned_bases=True)
     def test_missing_identity_or_selected_build_refuses(self):
         key=next(iter(self.rows));data=self.rows.copy();data.pop(key);self.pins.write_text(json.dumps(data))
         with self.assertRaises(authority.Refusal):authority.authority(self.b,'unused')
