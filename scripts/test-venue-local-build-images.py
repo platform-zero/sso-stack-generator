@@ -111,10 +111,15 @@ class LocalBuildFixtures(unittest.TestCase):
                 return SimpleNamespace(returncode=0,stdout='\n'.join(map(json.dumps,(start,failure))))
             if 'ls' in command:return SimpleNamespace(returncode=0,stdout='\n'.join((base,extra)))
             return seen(command,**kwargs)
+        old='sha256:'+'d'*64
+        data['venueFailedBuildIntermediates']={'p0test-r1-test-runners|localhost/webservices/android-test-runner-api34:bundle':[old]}
+        def failed_probe(_bundle,_plan,_data,expected):
+            self.assertEqual(expected['p0test-r1-test-runners|'+old],old)
+            return {},{}
         with (patch.object(local,'selected_unit',return_value={'ActiveState':'failed','Job':''}),
               patch.object(local.registry,'command_graphs',return_value={user:(home,['selected'])}),
               patch.object(local.registry,'pulled',return_value=None),
-              patch.object(local.registry,'probe',return_value=({},{})),
+              patch.object(local.registry,'probe',side_effect=failed_probe),
               patch.object(local.graph,'run',side_effect=failed_seen)):
             self.assertEqual(local.classify_failed_intermediates(self.bundle,'selector',plan,data,key,{},{}),[extra])
             logs[1]['MESSAGE']='--> '+'f'*12

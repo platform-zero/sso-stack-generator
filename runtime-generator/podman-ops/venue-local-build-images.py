@@ -251,7 +251,7 @@ def classify_failed_intermediates(bundle,selector,plan,data,key,outputs,intermed
             raise Refusal('failed anonymous image not from selected job')
     # Check all eight graphs with provisional evidence BEFORE ledger authority.
     expected={**data['venueRegistryVerified'],**data['venueBuildBaseVerified'],**outputs}
-    for k,ids in intermediates.items():
+    for k,ids in {**intermediates,**data.get('venueFailedBuildIntermediates',{})}.items():
         for ref in ids:expected[k.partition('|')[0]+'|'+ref]=ref
     for ref in extras:expected[user+'|'+ref]=ref
     registry.probe(bundle,plan,data,expected)
