@@ -1779,6 +1779,12 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
             // short default timeout; the guarded build worker enforces the
             // same 30-minute ceiling and physical reserve independently.
             buildLines += "TimeoutStartSec=1800"
+            // Buildah's large layer-copy scratch must not silently consume
+            // host /var/tmp. Reuse only the selected, UID-private SSD graph;
+            // failed scratch remains subject to exact cleanup, never prune.
+            val buildScratch = domain.graphRoot ?: activePodmanPolicy.rootfulGraphRoot
+                ?: fail("venue build lacks a selected scratch graph")
+            buildLines += "Environment=TMPDIR=$buildScratch"
             if (domain.name == "rootful") {
                 buildLines += "Environment=CONTAINERS_STORAGE_CONF=${domain.stateRoot}/containers-storage.conf"
                 buildLines += "Environment=CONTAINERS_CONF=${domain.stateRoot}/containers.conf"

@@ -47,6 +47,11 @@ never silently edit the installed bundle or call the successor its selected pin.
   unmapped inside rootless namespaces and break image extraction/account setup.
   Never scrub existing parents or recursively repair an existing graph.
   Cross-domain access grants are separate, explicit and journaled.
+- Venue build units set host-side `TMPDIR` to their selected private SSD graph.
+  Buildah can otherwise copy multi-GiB image layers through host `/var/tmp` even
+  when graph storage itself is on SSD. Never lower a root-space reserve or
+  retry an unchanged failed build to work around that problem. Changed unit
+  bytes require a new immutable candidate; do not hand-edit installed units.
 - Journal intent before mutations. Interrupted/failed operations retain their
   exact pending state; inspect it before an explicit recovery. No blind retry,
   automatic restart, or inference of completion from an inactive systemd unit.
