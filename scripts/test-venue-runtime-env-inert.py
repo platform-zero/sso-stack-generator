@@ -18,6 +18,8 @@ class EnvParser(unittest.TestCase):
             self.assertEqual(module.expand('${MISSING:-fallback}',values),'fallback')
             with self.assertRaises(module.Refusal):module.expand('${MISSING:?required}',values)
             with self.assertRaises(module.Refusal):module.expand('${A}\nSPOOF=bad',values)
+            p.write_text('FORGEJO__database__HOST=local\ndiscovery.type=single-node\n')
+            self.assertEqual(module.env_values(p)['discovery.type'],'single-node')
             p.write_text('A=x\nA=y\n')
             with self.assertRaises(module.Refusal):module.env_values(p)
     def test_aggregate_requires_exact_root0600_regular_file(self):
