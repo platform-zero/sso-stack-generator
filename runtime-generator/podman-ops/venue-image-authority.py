@@ -138,7 +138,8 @@ def authority(bundle,selector,site_source=None,require_pinned_bases=False):
             'bundleIrSha256':plan['bundleIrSha256'],'quadletTreeSha256':plan['quadletTreeSha256'],
             'selectorSha256':plan['selectorSha256'],'frozenRegistrySha256':source,
             'containerUnits':unit_count,'directImageReferences':len(rows),'localBuildUnits':len(builds),
-            'buildBaseReferences':len(base_refs),'unpinnedBuildBaseReferences':unpinned,
+            'buildBaseReferences':len(base_refs),'mutableBuildBaseReferences':unpinned,
+            'unfrozenBuildBaseReferences':sorted(set(mutable_store_bases)-set(base_map)),
             'frozenBuildBasePairs':len(base_map),'frozenBuildBaseSha256':base_sha,
             'imageIds':data,'buildUnits':builds,'buildBaseImages':base_map,'activationAuthorized':False,
             'acceptedIntegratedInstalls':0}

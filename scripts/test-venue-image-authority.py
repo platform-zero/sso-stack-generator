@@ -75,9 +75,9 @@ class ImageAuthority(unittest.TestCase):
         with self.assertRaisesRegex(authority.Refusal,'differ from clean pinned site'):
             authority.authority(self.b,'unused',checkout,require_pinned_bases=True)
     def test_mutable_local_build_base_refuses_when_pinning_required(self):
-        self.assertEqual(authority.authority(self.b,'unused',require_pinned_bases=True)['unpinnedBuildBaseReferences'],[])
+        self.assertEqual(authority.authority(self.b,'unused',require_pinned_bases=True)['mutableBuildBaseReferences'],[])
         (self.b/'build/p0test-r1-build-0/Containerfile').write_text('FROM docker.io/library/python:3.12-slim\n')
-        self.assertEqual(authority.authority(self.b,'unused')['unpinnedBuildBaseReferences'],
+        self.assertEqual(authority.authority(self.b,'unused')['mutableBuildBaseReferences'],
                          ['docker.io/library/python:3.12-slim'])
         with self.assertRaisesRegex(authority.Refusal,'lack clean frozen'):
             authority.authority(self.b,'unused',require_pinned_bases=True)
