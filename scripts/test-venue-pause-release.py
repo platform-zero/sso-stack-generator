@@ -42,7 +42,7 @@ class PauseFixture(unittest.TestCase):
             return pause.release(self.root,self.root,self.ledger,32323),run
     def test_only_exact_graph_migration_preserves_images_and_journals(self):
         result,run=self.exercise()
-        self.assertEqual(result['imageIdsPreserved'],1)
+        self.assertEqual(result['imageIdsBeforeRelease'],1)
         self.assertEqual(json.loads(self.ledger.read_text())['venuePauseReleasePhase'],'released')
         run.assert_called_once_with(['selected','system','migrate'],timeout=180)
     def test_foreign_image_refused_before_migration(self):

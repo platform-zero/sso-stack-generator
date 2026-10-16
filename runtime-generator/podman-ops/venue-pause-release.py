@@ -82,17 +82,29 @@ def release(bundle,selector,ledger,pid):
     if before['images']!=expected:raise Refusal('selected pause graph has unreviewed/missing images')
     intent={'process':ident,'graph':{'path':str(root),'dev':info.st_dev,'ino':info.st_ino},
             'images':sorted(expected)}
-    if data.get('venuePauseReleaseIntent') not in (None,intent):
-        raise Refusal('selected pause migration intent changed')
+    previous=data.get('venuePauseReleaseIntent')
+    if previous not in (None,intent):
+        if (data.get('venuePauseReleasePhase')!='released' or
+                not isinstance(previous,dict) or previous.get('graph')!=intent['graph'] or
+                previous.get('images')!=intent['images'] or
+                previous.get('process',{}).get('pid')==pid):
+            raise Refusal('selected pause migration intent changed')
+        old=previous['process'];oldproc=Path('/proc')/str(old['pid'])
+        if oldproc.exists() and oldproc.joinpath('stat').read_text().split(') ',1)[1].split()[19]==old['startTicks']:
+            raise Refusal('previous selected pause was not released')
     data['venuePauseReleaseIntent']=intent;stage.write_ledger(path,data)
     result=graph.run(command+['system','migrate'],timeout=180)
     if result.returncode:raise Refusal('selected Podman migrate refused; pause receipt retained')
     if (Path('/proc')/str(pid)).exists() and (Path('/proc')/str(pid)/'stat').read_text().split(') ',1)[1].split()[19]==ident['startTicks']:
         raise Refusal('selected pause process still owns graph after migration')
-    after=graph.inspect_graph(command)
-    if after!=before:raise Refusal('selected graph objects changed after supported pause release')
+    # Any subsequent rootless Podman inventory recreates a fresh pause process.
+    # Never query Podman again here: graph.clear will independently inventory all
+    # eight stores, compare exact IDs and refuse before its first deletion.
+    new=root.lstat()
+    if (new.st_dev,new.st_ino,new.st_uid)!=(info.st_dev,info.st_ino,account['uid']):
+        raise Refusal('selected graph root changed after pause release')
     data['venuePauseReleasePhase']='released';stage.write_ledger(path,data)
-    return {'status':'released-selected-pause','imageIdsPreserved':len(expected),
+    return {'status':'released-selected-pause-awaiting-independent-graph-inventory','imageIdsBeforeRelease':len(expected),
             'activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
 def main():
