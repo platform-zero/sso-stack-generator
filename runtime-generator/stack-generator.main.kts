@@ -1767,16 +1767,22 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
         // executing a generated build unit. Legacy units are unchanged.
         if (unitPrefix != "webservices") {
             buildLines += "Pull=never"
-            // These three pinned Containerfiles need no build-time egress.
-            // Keep their build graph offline; other builds are NOT authorized
-            // until package fetches and output identities are reviewed.
+            // Three selected Containerfiles need no build-time egress.
+            // Other builds may discover candidate outputs only; their
+            // network-fetched dependencies still require reviewed output pins.
             if (name in setOf("keycloak", "onboarding", "mastodon-rss-publisher"))
                 buildLines += "Network=none"
         }
-        if (domain.name == "rootful" && unitPrefix != "webservices") {
+        if (unitPrefix != "webservices") {
             buildLines += "[Service]"
-            buildLines += "Environment=CONTAINERS_STORAGE_CONF=${domain.stateRoot}/containers-storage.conf"
-            buildLines += "Environment=CONTAINERS_CONF=${domain.stateRoot}/containers.conf"
+            // Native generated build oneshots otherwise inherit systemd's
+            // short default timeout; the guarded build worker enforces the
+            // same 30-minute ceiling and physical reserve independently.
+            buildLines += "TimeoutStartSec=1800"
+            if (domain.name == "rootful") {
+                buildLines += "Environment=CONTAINERS_STORAGE_CONF=${domain.stateRoot}/containers-storage.conf"
+                buildLines += "Environment=CONTAINERS_CONF=${domain.stateRoot}/containers.conf"
+            }
         }
         output.resolve("${domain.quadletDir}/$unitPrefix-$name.build").writeText(buildLines.joinToString("\n", postfix = "\n"))
     }
