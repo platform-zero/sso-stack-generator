@@ -58,6 +58,8 @@ def act(bundle,selector,ledger,*,stop=False):
     path,data,plan=read_stage(bundle,selector,ledger)
     accounts=plan['accounts']
     if stop:
+        if data.get('venueRuntimeEnvPhase') not in (None,'retired-inert'):
+            raise Refusal('retire all private selected service environments before manager shutdown')
         if data['status'] not in ('managers-ready','managers-stopping','managers-starting'):
             raise Refusal('unreviewed manager stop authority')
         started=data.get('managerStarted',[])
