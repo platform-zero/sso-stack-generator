@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -59,5 +60,30 @@ class ReleaseFixture(unittest.TestCase):
         self.pointer.unlink();self.pointer.symlink_to('releases/foreign')
         with self.assertRaises(release.Refusal):release.retire(self.bundle,None,self.ledger)
         self.assertTrue(self.slot.exists());self.assertEqual(os.readlink(self.pointer),'releases/foreign')
+
+    def test_interrupted_copy_prefix_and_foreign_file_recovery(self):
+        self.pointer.unlink();shutil.rmtree(self.slot);(self.state/'releases').rmdir()
+        self.record={k:self.record[k] for k in ('plan','status','activationAuthorized','pathIdentities')}
+        self.ledger.write_text(json.dumps(self.record));self.ledger.chmod(0o600)
+        units=self.bundle/'quadlet/rootful';units.mkdir(parents=True)
+        for i in range(194):(units/('test-%03d.container'%i)).write_text('selected-unit-%03d\n'%i)
+        key=self.root/'keys.txt';key.write_text('fake private fixture');key.chmod(0o600)
+        def interrupted(source,dest,**kwargs):
+            target=Path(dest)/'quadlet/rootful';target.mkdir(parents=True)
+            (target/'test-000.container').write_bytes((units/'test-000.container').read_bytes()[:7])
+            raise OSError('injected partial copy')
+        with patch.object(release.shutil,'copytree',side_effect=interrupted):
+            with self.assertRaises(OSError):release.prepare(self.bundle,None,self.ledger,key)
+        self.assertEqual(json.loads(self.ledger.read_text())['venueReleasePhase'],'copying')
+        foreign=self.slot/'unexpected-file';foreign.write_text('must not remove')
+        with self.assertRaises(release.Refusal):release.recover_interrupted_copy(self.bundle,None,self.ledger)
+        self.assertTrue(foreign.exists());foreign.unlink()
+        copied=self.slot/'quadlet/rootful/test-000.container';copied.write_text('WRONG')
+        with self.assertRaises(release.Refusal):release.recover_interrupted_copy(self.bundle,None,self.ledger)
+        self.assertTrue(self.slot.exists());copied.write_bytes((units/'test-000.container').read_bytes()[:7])
+        result=release.recover_interrupted_copy(self.bundle,None,self.ledger)
+        self.assertEqual(result['status'],'retired-interrupted-copy')
+        self.assertFalse(self.slot.exists());self.assertFalse((self.state/'releases').exists())
+        self.assertEqual(json.loads(self.ledger.read_text())['venueReleasePhase'],'retired-interrupted-copy')
 
 if __name__=='__main__':unittest.main()

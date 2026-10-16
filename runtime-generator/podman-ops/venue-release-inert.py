@@ -75,11 +75,15 @@ def prepare(bundle,selector,ledger,age_key):
     data['venueReleasePhase']='copying'
     data['venueReleaseRoot']=str(release)
     data['venueReleaseSourceEntries']=len(source_tree)
+    data['venueReleaseSourceManifest']=source_tree
     data['venueReleaseSourceRootSha256']=sha(b/'source-provenance.json')
     stage.write_ledger(p,data)
     releases.mkdir(mode=0o700);releases.chmod(0o700)
     rs=releases.lstat();data['venueReleasesParentIdentity']={'dev':rs.st_dev,'ino':rs.st_ino,'uid':0,'mode':0o700};stage.write_ledger(p,data)
-    shutil.copytree(b,release,symlinks=False,copy_function=shutil.copy2)
+    release.mkdir(mode=0o700);release.chmod(0o700)
+    st=release.lstat();data['venueReleaseIdentity']={'dev':st.st_dev,'ino':st.st_ino,'uid':0,'mode':0o700}
+    stage.write_ledger(p,data)
+    shutil.copytree(b,release,symlinks=False,copy_function=shutil.copy2,dirs_exist_ok=True)
     release.chmod(0o700)
     copied=inventory(release)
     if (set(copied)!=set(source_tree) or any(
@@ -171,17 +175,79 @@ def retire(bundle,selector,ledger):
     data['venueReleasePhase']='retired-inert';stage.write_ledger(p,data)
     return {'status':'retired-inert','activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
+def recover_interrupted_copy(bundle,selector,ledger):
+    """Retire ONLY prefix-identical, journaled release-copy files.
+
+    A renderer might have emitted secrets or rewritten configs already; it
+    must never be classified as a partial copy. Missing inode records also
+    require inspected manual recovery, not an unlink by pathname alone.
+    """
+    b,p,data,plan,state=context(bundle,selector,ledger)
+    if (data.get('venueReleasePhase')!='copying' or data.get('status')!='staged-empty' or
+            data.get('managerStarted') or data.get('unitFiles') or data.get('venueDataBindDirs') or
+            data.get('venueHulyVolumes') or data.get('crossDomainAclStatus')):
+        raise Refusal('only a pre-render interrupted copy is recoverable')
+    releases,release,current=layout(b,plan,state)
+    if str(release)!=data.get('venueReleaseRoot') or os.path.lexists(current):
+        raise Refusal('release copy slot or current pointer is not untouched')
+    saved=data.get('venueReleaseSourceManifest')
+    if not isinstance(saved,dict) or not saved or len(saved)!=data.get('venueReleaseSourceEntries') or inventory(b)!=saved:
+        raise Refusal('immutable source changed since copying began')
+    for path,key in ((releases,'venueReleasesParentIdentity'),(release,'venueReleaseIdentity')):
+        row=data.get(key,{})
+        try:s=path.lstat()
+        except FileNotFoundError as exc:raise Refusal('interrupted copy directory inode was not recorded') from exc
+        if (path.is_symlink() or not stat.S_ISDIR(s.st_mode) or s.st_uid!=0 or
+                (s.st_dev,s.st_ino)!=(row.get('dev'),row.get('ino')) or
+                (stat.S_IMODE(s.st_mode) not in ({0o700} if path==releases else {0o700,stat.S_IMODE(b.stat().st_mode)}))):
+            raise Refusal('interrupted copy inode or mode differs')
+    if {child.name for child in releases.iterdir()}!={release.name}:
+        raise Refusal('foreign private release slot')
+    found=inventory(release)
+    if not set(found)<=set(saved):raise Refusal('foreign partial-copy entry')
+    for name,row in found.items():
+        source=saved[name]
+        if row['type']!=source['type'] or row['uid']!=0:
+            raise Refusal('interrupted copy inode class changed')
+        if row['type']=='dir':
+            if row['mode'] not in (source['mode'],0o700,0o755):
+                raise Refusal('interrupted copy directory mode changed')
+        else:
+            original=b/name;partial=release/name
+            if row['mode'] not in (source['mode'],0o644,0o600):
+                raise Refusal('interrupted copy file mode changed')
+            if partial.stat().st_size>original.stat().st_size:
+                raise Refusal('partial copy exceeds source')
+            with partial.open('rb') as inp,original.open('rb') as known:
+                while block:=inp.read(1024*1024):
+                    if known.read(len(block))!=block:
+                        raise Refusal('partial copy differs from exact source prefix')
+    for proc in Path('/proc').iterdir():
+        if not proc.name.isdigit():continue
+        try:lines=(proc/'mountinfo').read_text().splitlines()
+        except (FileNotFoundError,PermissionError,ProcessLookupError):continue
+        if any((mp:=line.split()[4].replace('\\040',' '))==str(release) or mp.startswith(str(release)+'/') for line in lines if len(line.split())>=5):
+            raise Refusal('interrupted release copy still mounted')
+    data['venueReleasePhase']='retiring-interrupted-copy';stage.write_ledger(p,data)
+    shutil.rmtree(release);releases.rmdir()
+    data['venueReleasePhase']='retired-interrupted-copy';stage.write_ledger(p,data)
+    return {'status':'retired-interrupted-copy','sourceEntries':len(saved),'partialEntries':len(found),
+            'activationAuthorized':False,'acceptedIntegratedInstalls':0}
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     for key in ('bundle','selector','ledger'):p.add_argument('--'+key,required=True)
     p.add_argument('--sops-age-key-file')
     mode=p.add_mutually_exclusive_group(required=True)
     mode.add_argument('--prepare',action='store_true');mode.add_argument('--retire',action='store_true')
+    mode.add_argument('--recover-interrupted-copy',action='store_true')
     a=p.parse_args()
     try:
         if (a.prepare and not a.sops_age_key_file) or (a.retire and a.sops_age_key_file):
             raise Refusal('SOPS identity only for fresh private rendering')
-        result=prepare(a.bundle,a.selector,a.ledger,a.sops_age_key_file) if a.prepare else retire(a.bundle,a.selector,a.ledger)
+        if a.prepare:result=prepare(a.bundle,a.selector,a.ledger,a.sops_age_key_file)
+        elif a.retire:result=retire(a.bundle,a.selector,a.ledger)
+        else:result=recover_interrupted_copy(a.bundle,a.selector,a.ledger)
         print(json.dumps(result,sort_keys=True))
     except (Refusal,KeyError,ValueError,TypeError,OSError,subprocess.SubprocessError,json.JSONDecodeError) as exc:
         raise SystemExit('venue inactive release lifecycle refused: '+str(exc)) from exc
