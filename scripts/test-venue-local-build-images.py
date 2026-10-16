@@ -27,6 +27,16 @@ class LocalBuildFixtures(unittest.TestCase):
                              ('Network=none\n' if offline else ''))
                 self.source['buildUnits'][rel]={'user':user,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}
         self.plan=local.plan_for(self.bundle,self.source)
+    def test_targeted_diagnosis_selects_only_exact_missing_output(self):
+        key='p0test-r1-workloads|localhost/webservices/jupyter-notebook-build:bundle'
+        self.assertNotEqual(sorted(self.plan)[0],key)
+        self.assertEqual(local.build_candidates(self.plan,{},[],1,key),[key])
+        self.assertEqual(local.build_candidates(self.plan,{key:'sha256:'+'a'*64},[],1,key),[])
+        self.assertEqual(local.build_candidates(self.plan,{},[],2),sorted(self.plan)[:2])
+        for wrong,skipped in (('foreign|image',[]),(key,[key])):
+            with self.subTest(wrong=wrong,skipped=skipped),self.assertRaises(local.Refusal):
+                local.build_candidates(self.plan,{},skipped,1,wrong)
+
     def test_fourteen_selected_source_builds_and_hostile_egress_refusal(self):
         self.assertEqual(len(self.plan),14)
         self.assertEqual(sum(row['offline'] for row in self.plan.values()),3)

@@ -259,11 +259,22 @@ def classify_failed_intermediates(bundle,selector,plan,data,key,outputs,intermed
     registry.probe(bundle,plan,data,expected)
     return sorted(extras)
 
+def build_candidates(selected,outputs,skipped,max_new,only_key=None):
+    if only_key is not None:
+        if only_key not in selected or only_key in skipped:
+            raise Refusal('target build must be a selected non-skipped output')
+        return [] if only_key in outputs else [only_key]
+    return sorted(set(selected)-set(outputs)-set(skipped))[:max_new]
+
+
 def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,abandon_failed_pending=False,
-            classify_only=False,skip_identical_failed_twin=False):
+            classify_only=False,skip_identical_failed_twin=False,only_key=None):
     p,data,plan,_=registry.journal(bundle,selector,site_source,ledger)
     source=authority.authority(bundle,selector,site_source,require_pinned_bases=True)
     selected=plan_for(bundle,source)
+    if only_key is not None and (only_key not in selected or max_new!=1 or any((recover_pending,
+            abandon_failed_pending,classify_only,skip_identical_failed_twin))):
+        raise Refusal('one exact selected build key cannot combine with recovery modes or a batch')
     if (data.get('venueRegistryPhase')!='inert-ready' or data.get('venueRegistryVerified')!=source['imageIds'] or
             data.get('venueBuildBasePhase')!='inert-ready' or
             set(data.get('venueBuildBaseVerified',{}))!=set(source['buildBaseStores']) or
@@ -393,7 +404,7 @@ def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,aba
     if data['venueLocalBuildPhase']=='inert-ready':
         return {'status':'inert-ready','builtOutputIds':len(outputs),'remaining':0,
                 'activationAuthorized':False,'acceptedIntegratedInstalls':0}
-    for key in sorted(set(selected)-set(outputs)-set(data.get('venueLocalBuildSkipped',[])))[:max_new]:
+    for key in build_candidates(selected,outputs,data.get('venueLocalBuildSkipped',[]),max_new,only_key):
         user,_,tag=key.partition('|');unit=selected[key]['unit']
         command=unit_command(plan,user,unit)
         account=next(a for a in plan['accounts'] if a['name']==user)
@@ -451,6 +462,7 @@ def main():
     a=argparse.ArgumentParser(description=__doc__)
     for key in ('bundle','selector','site-source','ledger'):a.add_argument('--'+key,required=True)
     a.add_argument('--max-new',type=int,default=1)
+    a.add_argument('--only-key',help='Build one exact selected user|image key without rebuilding earlier outputs')
     pending=a.add_mutually_exclusive_group()
     pending.add_argument('--recover-pending-only',action='store_true')
     pending.add_argument('--abandon-failed-pending-only',action='store_true')
@@ -459,7 +471,7 @@ def main():
     args=a.parse_args()
     try:print(json.dumps(prepare(args.bundle,args.selector,args.site_source,args.ledger,args.max_new,
                                  args.recover_pending_only,args.abandon_failed_pending_only,
-                                 args.classify_intermediates_only,args.skip_identical_failed_twin_only),sort_keys=True))
+                                 args.classify_intermediates_only,args.skip_identical_failed_twin_only,args.only_key),sort_keys=True))
     except (Refusal,OSError,ValueError,KeyError,TypeError) as exc:
         raise SystemExit('venue fourteen local build discovery refused: '+str(exc)) from exc
 if __name__=='__main__':main()
