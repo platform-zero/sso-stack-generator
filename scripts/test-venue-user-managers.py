@@ -17,6 +17,12 @@ class ManagerAuthorityTests(unittest.TestCase):
         self.ledger=self.root/'ledger.json'
         self.bundle=self.root/'bundle'
         self.selector=self.root/'selector'
+        # Never let a source-only fixture observe real installed linger state.
+        def fixture_path(*parts):
+            path=Path(*parts)
+            return self.root/'linger' if path==Path('/var/lib/systemd/linger') else path
+        paths=patch.object(managers,'Path',side_effect=fixture_path)
+        paths.start();self.addCleanup(paths.stop)
     def test_missing_ledger_refuses_before_subprocess(self):
         with patch.object(managers,'run',side_effect=AssertionError('unexpected systemctl')):
             with self.assertRaises(managers.Refusal):
@@ -49,6 +55,14 @@ class ManagerAuthorityTests(unittest.TestCase):
             with self.assertRaises(managers.Refusal):managers.act(self.bundle,self.selector,self.ledger)
         self.assertFalse(any(row[:2]==('loginctl','enable-linger') for row in calls))
         self.assertEqual((graph/'foreign').read_text(),'untouched')
+        (graph/'foreign').unlink()
+        linger=self.root/'linger';linger.mkdir();(linger/account['name']).touch()
+        calls.clear();data={'status':'staged-empty'}
+        with (patch.object(managers,'read_stage',return_value=(self.ledger,data,plan)),
+              patch.object(managers.stage,'write_ledger'),
+              patch.object(managers,'run',side_effect=guarded_run)):
+            with self.assertRaises(managers.Refusal):managers.act(self.bundle,self.selector,self.ledger)
+        self.assertFalse(any(row[:2]==('loginctl','enable-linger') for row in calls))
     def test_out_of_order_manager_record_refuses_before_subprocess(self):
         accounts=[{'name':'p0test-r1-platform','uid':3200,'graph':str(self.root/'g0'),'volume':str(self.root/'v0')},
                   {'name':'p0test-r1-apps','uid':3201,'graph':str(self.root/'g1'),'volume':str(self.root/'v1')}]
