@@ -27,7 +27,10 @@ class ImageAuthority(unittest.TestCase):
         for i in range(14):
             name=f'p0test-r1-build-{i}'
             (self.root/(name+'.container')).write_text('Image='+name+'.build\n')
-            (self.root/(name+'.build')).write_text('[Build]\nImageTag=selected\n')
+            (self.root/(name+'.build')).write_text('[Build]\nImageTag=selected\n'
+                f'SetWorkingDirectory="/tmp/current/build/{name}"\nFile="Containerfile"\n')
+            source=self.b/'build'/name;source.mkdir(parents=True)
+            (source/'Containerfile').write_text('FROM docker.io/selected/base:1@sha256:'+'f'*64+'\n')
         self.pins=self.site/'registry-image-ids.json';self.pins.write_text(json.dumps(self.rows))
         self.plan={'sourceCommit':'a'*40,'bundleIrSha256':'b'*64,
                    'quadletTreeSha256':'c'*64,'selectorSha256':'d'*64,
@@ -42,6 +45,13 @@ class ImageAuthority(unittest.TestCase):
         with self.assertRaises(authority.Refusal):authority.authority(self.b,'unused')
         self.pins.write_text(json.dumps(self.rows));(self.root/'p0test-r1-build-0.build').unlink()
         with self.assertRaises(authority.Refusal):authority.authority(self.b,'unused')
+    def test_mutable_local_build_base_refuses_when_pinning_required(self):
+        self.assertEqual(authority.authority(self.b,'unused',require_pinned_bases=True)['unpinnedBuildBaseReferences'],[])
+        (self.b/'build/p0test-r1-build-0/Containerfile').write_text('FROM docker.io/library/python:3.12-slim\n')
+        self.assertEqual(authority.authority(self.b,'unused')['unpinnedBuildBaseReferences'],
+                         ['docker.io/library/python:3.12-slim'])
+        with self.assertRaisesRegex(authority.Refusal,'lack frozen digest'):
+            authority.authority(self.b,'unused',require_pinned_bases=True)
     def test_unpinned_latest_refuses_even_if_identity_added(self):
         p=self.root/'p0test-r1-image-0.container';old=p.read_text().split('=',1)[1].strip()
         p.write_text('Image=docker.io/selected/image0:latest\n')
