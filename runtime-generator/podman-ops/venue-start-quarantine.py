@@ -17,6 +17,7 @@ import stat
 import time
 
 HERE=Path(__file__).resolve().parent
+HOST_UNIT_DIRECTORY=Path('/etc/systemd/system')
 def load(name,file):
     spec=importlib.util.spec_from_file_location(name,HERE/file)
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
@@ -437,6 +438,78 @@ def cleanup_stopped(bundle,selector,ledger,reviewed_failed_sha):
                 'dataAndVolumesRetained':True,'servicesStarted':False,'activationAuthorized':False}
 
 
+def retire_host_units(bundle,selector,ledger,expected_sha):
+    """Remove only three unchanged inactive installed isolated control units."""
+    path=Path(ledger);info=path.lstat()
+    if (path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid or info.st_nlink!=1 or
+            stat.S_IMODE(info.st_mode)!=0o600 or stage.sha(path)!=expected_sha):raise Refusal('protected exact retiring-ledger SHA required')
+    plan=stage.owned_plan(bundle,selector);context=host_context(bundle,plan)
+    with lifecycle(context):
+        state=json.loads(path.read_bytes())
+        if (stage.sha(path)!=expected_sha or state.get('plan')!=plan or state.get('venueInstallerVersion')!=2 or
+                state.get('status')!='managers-ready' or state.get('venueInstallerPhase')!='retiring' or
+                state.get('venueCompositeMode')!='retired-inert' or state.get('venueRuntimeEnvPhase')!='retired-inert' or
+                state.get('graphCleared')!=['root']+[a['name'] for a in plan['accounts']] or
+                len(state.get('retiredUnits',[]))!=194 or state.get('activationAuthorized') is not False):
+            raise Refusal('exact retired native graph/units/env required before isolated host-unit removal')
+        runtime=context.runtime/'runtime-authority.json';meta=runtime.lstat();receipt=json.loads(runtime.read_bytes())
+        if (runtime.is_symlink() or not stat.S_ISREG(meta.st_mode) or meta.st_uid or meta.st_nlink!=1 or stat.S_IMODE(meta.st_mode)!=0o600 or
+                receipt.get('schemaVersion')!=2 or receipt.get('namespace')!=context.namespace or receipt.get('hostContextSha256')!=context.digest or
+                receipt.get('activationAuthorized') is not False or receipt.get('phase')!='failed-quarantined'):
+            raise Refusal('exact false quarantined installed context required')
+        slot=(context.source/'agent-services-current-host').resolve(strict=True);manifest=json.loads((slot/'manifest.json').read_bytes())
+        names=('p0-identity-reconcile.service','p0-identity-reconcile.timer','p0-web.service')
+        rows=[]
+        for name in names:
+            member=slot/'units'/name;target=HOST_UNIT_DIRECTORY/context.unit(name)
+            expected=manifest['files']['units/'+name];st=member.lstat()
+            if member.is_symlink() or not stat.S_ISREG(st.st_mode) or st.st_uid or st.st_mode&0o022 or stage.sha(member)!=expected:
+                raise Refusal('selected immutable host unit source differs')
+            rows.append({'path':str(target),'sha256':expected})
+        saved=state.get('venueHostUnitsRetirement')
+        if saved is None:
+            saved={'contextSha256':context.digest,'units':rows,'identities':{},'removed':[],'phase':'intended'}
+        if saved.get('contextSha256')!=context.digest or saved.get('units')!=rows:raise Refusal('host-unit retirement source/context changed')
+        commands=['systemctl'];jobs=graph.run(commands+['list-jobs','--no-legend','--no-pager'],timeout=30)
+        if jobs.returncode or any(len(line.split())<4 or line.split()[1] in {Path(row['path']).name for row in rows} for line in jobs.stdout.splitlines() if line.strip()):
+            raise Refusal('host-role job inventory not idle')
+        for row in rows:
+            target=Path(row['path'])
+            if row['path'] in saved['removed']:
+                if os.path.lexists(target):raise Refusal('retired host unit path was repopulated')
+                continue
+            if not os.path.lexists(target) and saved.get('pending')==row['path']:continue
+            st=target.lstat()
+            if (target.is_symlink() or not stat.S_ISREG(st.st_mode) or st.st_uid or st.st_nlink!=1 or
+                    stat.S_IMODE(st.st_mode)!=0o644 or stage.sha(target)!=row['sha256']):raise Refusal('authored/foreign installed host unit; no deletion')
+            identity={'dev':st.st_dev,'ino':st.st_ino}
+            if saved['identities'].get(row['path'],identity)!=identity:raise Refusal('host unit inode changed after retirement intent')
+            saved['identities'][row['path']]=identity
+            result=graph.run(commands+['show',target.name,'--property=ActiveState,UnitFileState,DropInPaths,FragmentPath'],timeout=30)
+            fields=dict(line.split('=',1) for line in result.stdout.splitlines() if '=' in line)
+            if (result.returncode or fields.get('ActiveState') not in ('inactive','failed') or fields.get('UnitFileState') not in ('disabled','static') or
+                    fields.get('DropInPaths') or fields.get('FragmentPath')!=str(target)):raise Refusal('host role active/enabled/overridden; no deletion')
+        state['venueHostUnitsRetirement']=saved;stage.write_ledger(path,state)
+        for row in rows:
+            if row['path'] in saved['removed']:continue
+            saved['pending']=row['path'];stage.write_ledger(path,state)
+            target=Path(row['path'])
+            if os.path.lexists(target):
+                info=target.lstat()
+                if (target.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid or info.st_nlink!=1 or stat.S_IMODE(info.st_mode)!=0o644 or
+                        {'dev':info.st_dev,'ino':info.st_ino}!=saved['identities'][row['path']] or stage.sha(target)!=row['sha256']):
+                    raise Refusal('host unit changed before unlink')
+                target.unlink()
+            saved['removed'].append(row['path']);saved.pop('pending');stage.write_ledger(path,state)
+        fd=os.open(HOST_UNIT_DIRECTORY,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        try:os.fsync(fd)
+        finally:os.close(fd)
+        result=graph.run(['systemctl','daemon-reload'],timeout=30)
+        if result.returncode:raise Refusal('host unit removal daemon-reload failed')
+        saved['phase']='retired';stage.write_ledger(path,state)
+        return {'status':'retired-host-role-units','retiredExactInactiveUnits':3,'runtimeAuthorityRetainedFalse':True,'servicesStarted':False}
+
+
 def retire_authority(bundle,selector,ledger,expected_sha):
     """Remove only a false old runtime capability after complete exact retirement."""
     path=Path(ledger);info=path.lstat()
@@ -488,6 +561,7 @@ def main():
     mode=ap.add_mutually_exclusive_group()
     mode.add_argument('--cleanup-stopped-native',metavar='REVIEWED_LEDGER_SHA256')
     mode.add_argument('--retire-runtime-authority',metavar='RETIRED_LEDGER_SHA256')
+    mode.add_argument('--retire-host-role-units',metavar='RETIRING_LEDGER_SHA256')
     mode.add_argument('--review-stale-result-unit',metavar='UNIT')
     ap.add_argument('--reviewed-ledger-sha',metavar='SHA256')
     a=ap.parse_args()
@@ -497,7 +571,8 @@ def main():
             result=review_stale_result(a.bundle,a.selector,a.ledger,a.reviewed_ledger_sha,a.review_stale_result_unit)
         else:
             if a.reviewed_ledger_sha is not None:raise Refusal('ledger SHA is only for explicit stale-result review')
-            if a.retire_runtime_authority is not None:result=retire_authority(a.bundle,a.selector,a.ledger,a.retire_runtime_authority)
+            if a.retire_host_role_units is not None:result=retire_host_units(a.bundle,a.selector,a.ledger,a.retire_host_role_units)
+            elif a.retire_runtime_authority is not None:result=retire_authority(a.bundle,a.selector,a.ledger,a.retire_runtime_authority)
             else:result=(cleanup_stopped(a.bundle,a.selector,a.ledger,a.cleanup_stopped_native)
                          if a.cleanup_stopped_native is not None else quarantine(a.bundle,a.selector,a.ledger))
         print(json.dumps(result,sort_keys=True))
