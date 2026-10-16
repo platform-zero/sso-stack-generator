@@ -103,8 +103,31 @@ def recover_failed_import(bundle,selector,ledger):
     data['venueCompositeMode']='inert-ready';stage.write_ledger(path,data)
     return retire(bundle,selector,ledger)
 
+def finish_graph_retirement(bundle,selector,ledger):
+    graph.clear(bundle,selector,ledger)
+    path,data,_=context(bundle,selector,ledger)
+    if not data.get('podmanImageCacheRetired'):
+        graph.retire_image_cache(bundle,selector,ledger)
+    path,data,_=context(bundle,selector,ledger)
+    if data['status']!='managers-ready' or len(data.get('graphCleared',[]))!=8:
+        raise Refusal('composite graph stack did not unwind exactly')
+    if data.get('venueRegistryPhase') in ('preparing','inert-ready'):
+        data['venueRegistryPhase']='retired-inert';stage.write_ledger(path,data)
+    if data.get('venueBuildBasePhase') in ('preparing','inert-ready'):
+        data['venueBuildBasePhase']='retired-inert';stage.write_ledger(path,data)
+    data['venueCompositeMode']='retired-inert';stage.write_ledger(path,data)
+    return {'status':'retired-inert','activationAuthorized':False,'acceptedIntegratedInstalls':0}
+
 def retire(bundle,selector,ledger):
     path,data,plan=context(bundle,selector,ledger)
+    if (data.get('venueCompositeVersion')==2 and data.get('venueCompositeMode')=='retiring' and
+            data.get('status')=='managers-ready' and len(data.get('retiredUnits',[]))==194 and
+            len(data.get('graphCleared',[]))==0 and
+            not data.get('podmanImageCacheRetired')):
+        # Only graph metadata remains. Re-check the full exact 8-store image
+        # inventory inside graph.clear before removing ANY image; never rerun
+        # earlier bind/volume/unit deletion against a partially unwound stage.
+        return finish_graph_retirement(bundle,selector,ledger)
     if (data.get('venueCompositeVersion')!=2 or data.get('venueCompositeMode') not in ('inert-ready','retiring') or
             data.get('status') not in ('units-staged','units-retiring')):
         raise Refusal('only a fully journaled inert composition may be retired here')
@@ -193,16 +216,7 @@ def retire(bundle,selector,ledger):
     huly.retire(bundle,selector,ledger)
     acl.restore(bundle,selector,ledger)
     binds.retire(bundle,selector,ledger)
-    graph.clear(bundle,selector,ledger)
-    graph.retire_image_cache(bundle,selector,ledger)
-    path,data,_=context(bundle,selector,ledger)
-    if data['status']!='managers-ready':raise Refusal('composite phase stack did not unwind exactly')
-    if data.get('venueRegistryPhase') in ('preparing','inert-ready'):
-        data['venueRegistryPhase']='retired-inert';stage.write_ledger(path,data)
-    if data.get('venueBuildBasePhase') in ('preparing','inert-ready'):
-        data['venueBuildBasePhase']='retired-inert';stage.write_ledger(path,data)
-    data['venueCompositeMode']='retired-inert';stage.write_ledger(path,data)
-    return {'status':'retired-inert','activationAuthorized':False,'acceptedIntegratedInstalls':0}
+    return finish_graph_retirement(bundle,selector,ledger)
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)

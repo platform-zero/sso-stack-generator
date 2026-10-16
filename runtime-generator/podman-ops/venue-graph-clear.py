@@ -136,9 +136,10 @@ def clear(bundle,selector,ledger):
                 user,sep,_=key.partition('|')
                 if not sep or user not in exact:raise Refusal('unknown registry image graph authority')
                 exact[user].add(value)
+        selected_stores={user for user,_,_ in stores(bundle,plan)}
         for user,values in journaled_build_base_ids(bundle,selector,state).items():
-            if user not in exact:raise Refusal('unknown build-base image authority')
-            exact[user].update(values)
+            if user not in selected_stores:raise Refusal('unknown build-base image authority')
+            exact.setdefault(user,set()).update(values)
         allowed=exact
     # The netavark rootful default is /etc/containers/networks even with a
     # private image graph. Never enumerate/mutate that shared directory as

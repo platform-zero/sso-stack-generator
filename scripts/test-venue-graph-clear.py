@@ -150,6 +150,25 @@ class GraphClearFixtures(unittest.TestCase):
             lock.write_bytes(b'x'*64)
             self.assertEqual(clear.retire_empty_runroot(self.bundle,self.root/'unused',self.ledger)['retiredRunrootFiles'],6)
         self.assertFalse(any(root.iterdir()))
+    def test_build_only_store_image_may_be_exactly_retired_without_direct_image_authority(self):
+        apps='p0test-r1-apps';image='sha256:'+'c'*64
+        self.data['venueCompositeVersion']=2;self.data['venueCompositeOfflineImages']=[]
+        self.ledger.write_text(json.dumps(self.data));removed=False
+        def selected(command,**kwargs):
+            nonlocal removed
+            if 'image' in command and 'rm' in command:
+                self.assertEqual(command[-1],image);self.assertIn(apps,command);removed=True
+                return SimpleNamespace(returncode=0,stdout='')
+            if 'image' in command and 'ls' in command:
+                return SimpleNamespace(returncode=0,stdout=image+'\n' if apps in command and not removed else '')
+            return self.runner(command,**kwargs)
+        with (patch.object(clear.stage,'owned_plan',return_value=self.plan),
+              patch.object(clear.stage,'write_ledger',side_effect=lambda path,state:self.data.update(state)),
+              patch.object(clear,'journaled_build_base_ids',return_value={apps:{image}}),
+              patch.object(clear,'run',side_effect=selected),
+              patch.object(clear.os,'geteuid',return_value=0)):
+            self.assertEqual(clear.clear(self.bundle,self.root/'unused',self.ledger)['graphRootsCleared'],8)
+        self.assertTrue(removed)
     def test_versioned_graph_refuses_selected_but_not_journaled_image(self):
         marker=Path(self.plan['roots']['rootful-graph'])/'keep';marker.write_text('untouched')
         self.data['venueCompositeVersion']=2;self.data['venueCompositeOfflineImages']=[]
