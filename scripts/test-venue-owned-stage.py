@@ -5,6 +5,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -33,6 +35,43 @@ class EmptyStageTests(unittest.TestCase):
                    'storageRoots':{'pgSsdRoot':'/mnt/stack/new/pg-ssd','vectorDbsRoot':'/mnt/stack/new/vector-dbs',
                                    'logRoot':'/var/log/p0test-r1'}}
         self.selector=self.root/'selector.json';self.selector.write_text(json.dumps(self.data))
+    @unittest.skipUnless(shutil.which('setfacl'), 'physical ACL fixtures require setfacl')
+    def test_fresh_directory_drops_inherited_acls_without_changing_parent(self):
+        subprocess.run(['setfacl','-m',f'd:u:{os.getuid()+1}:rwx',str(self.root)],check=True)
+        original={name:os.getxattr(self.root,name) for name in os.listxattr(self.root)}
+        path=self.root/'isolated'
+        stage.create_private_directory(path,os.getuid(),0o700)
+        self.assertEqual(path.stat().st_mode&0o7777,0o700)
+        self.assertFalse(any(n.startswith('system.posix_acl_') for n in os.listxattr(path)))
+        child=path/'image-root';child.mkdir(mode=0o755)
+        self.assertFalse(any(n.startswith('system.posix_acl_') for n in os.listxattr(child)))
+        self.assertEqual(original,{name:os.getxattr(self.root,name) for name in os.listxattr(self.root)})
+
+    def test_existing_directory_and_symlink_are_never_acl_scrubbed(self):
+        existing=self.root/'existing';existing.mkdir();existing.chmod(0o755)
+        link=self.root/'link';link.symlink_to(existing)
+        for path in (existing,link):
+            with self.subTest(path=path),self.assertRaises(FileExistsError):
+                stage.create_private_directory(path,os.getuid(),0o700)
+        self.assertEqual(existing.stat().st_mode&0o777,0o755)
+
+    @unittest.skipUnless(shutil.which('setfacl') and shutil.which('unshare'),
+                         'namespace ACL fixture requires setfacl and unshare')
+    def test_unmapped_inherited_acl_copy_fails_but_isolated_copy_succeeds(self):
+        available=subprocess.run(['unshare','--user','--map-root-user','true'],capture_output=True)
+        if available.returncode:self.skipTest('user namespace unavailable in this test environment')
+        subprocess.run(['setfacl','-m',f'd:u:{os.getuid()+1}:rwx',str(self.root)],check=True)
+        dirty=self.root/'inherited';dirty.mkdir();(dirty/'file').write_text('synthetic\n')
+        clean=self.root/'isolated';stage.create_private_directory(clean,os.getuid(),0o700)
+        (clean/'file').write_text('synthetic\n')
+        command=['unshare','--user','--map-root-user','cp','--preserve=mode']
+        bad=subprocess.run(command+[str(dirty/'file'),str(clean/'bad-copy')],capture_output=True,text=True)
+        self.assertNotEqual(bad.returncode,0)
+        self.assertIn('Invalid argument',bad.stderr)
+        good=subprocess.run(command+[str(clean/'file'),str(clean/'good-copy')],capture_output=True,text=True)
+        self.assertEqual(good.returncode,0,good.stderr)
+        self.assertEqual((clean/'good-copy').read_bytes(),(clean/'file').read_bytes())
+
     def test_all_seven_and_rootful_stores_have_exact_new_identities(self):
         p=stage.owned_plan(self.bundle,self.selector)
         self.assertEqual(len(p['accounts']),7)

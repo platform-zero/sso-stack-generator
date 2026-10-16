@@ -104,6 +104,32 @@ def safe_parents(paths):
             if ancestor==p:raise Refusal('existing target is not fresh stage ownership')
     return sorted(missing,key=lambda value:(len(Path(value).parts),value))
 
+def create_private_directory(path,uid,mode):
+    """Only fresh stage nodes: do not inherit host ACLs into rootless graphs.
+
+    chmod alone masks named access entries but leaves default ACL inheritance
+    intact. Unmapped host principals then make namespace ACL copies fail with
+    EINVAL and can change access inside extracted images. Never scrub an
+    existing parent or recursively rewrite an existing graph.
+    """
+    path=Path(path)
+    path.mkdir(mode=0o700)  # exclusive: existing files/directories must refuse
+    fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:
+        for name in ('system.posix_acl_default','system.posix_acl_access'):
+            if name in os.listxattr(fd):os.removexattr(fd,name)
+        os.fchown(fd,uid,uid)
+        os.fchmod(fd,mode)
+        st=os.fstat(fd)
+        current=path.lstat()
+        if ((st.st_dev,st.st_ino)!=(current.st_dev,current.st_ino) or
+                any(name.startswith('system.posix_acl_') for name in os.listxattr(fd)) or
+                st.st_uid!=uid or st.st_gid!=uid or stat.S_IMODE(st.st_mode)!=mode):
+            raise Refusal('fresh stage directory identity or ACL isolation failed')
+        return st
+    finally:os.close(fd)
+
+
 def write_ledger(path,data,*,create=False):
     path=Path(path)
     parent=path.parent
@@ -182,10 +208,8 @@ def stage(bundle,selector,inventory,ledger,*,mutate=False):
         for name in roots:
             p=Path(name);powner=owned_by(name);identity=int(powner['uid']) if powner else 0
             output['pending']={'operation':'mkdir','path':name};persist()
-            p.mkdir(mode=0o700)
-            os.chown(p,identity,identity)
-            os.chmod(p,0o711 if powner is None and name not in plan['roots'].values() else 0o700)
-            st=p.lstat()
+            st=create_private_directory(p,identity,
+                    0o711 if powner is None and name not in plan['roots'].values() else 0o700)
             output['createdPaths'].append(name)
             output['pathIdentities'][name]={'dev':st.st_dev,'ino':st.st_ino,'uid':st.st_uid,'mode':stat.S_IMODE(st.st_mode)}
             output.pop('pending');persist()
