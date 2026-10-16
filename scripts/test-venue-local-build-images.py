@@ -102,6 +102,24 @@ class LocalBuildFixtures(unittest.TestCase):
             logs[1]['MESSAGE']='--> '+'f'*12
             with self.assertRaisesRegex(local.Refusal,'absent from exact step transcript'):
                 local.classify_intermediates(self.bundle,'selector',plan,data,key,output,{}, {})
+        failure={'MESSAGE_ID':'d9b373ed55a64feb8242e02dbe79a49c',
+                 'MESSAGE':'p0test-r1-forgejo-build.service: Failed with result \'exit-code\'.',
+                 '__REALTIME_TIMESTAMP':str(end)}
+        logs[1]['MESSAGE']='--> '+extra[7:19]
+        def failed_seen(command,**kwargs):
+            if 'USER_UNIT=p0test-r1-forgejo-build.service' in command:
+                return SimpleNamespace(returncode=0,stdout='\n'.join(map(json.dumps,(start,failure))))
+            if 'ls' in command:return SimpleNamespace(returncode=0,stdout='\n'.join((base,extra)))
+            return seen(command,**kwargs)
+        with (patch.object(local,'selected_unit',return_value={'ActiveState':'failed','Job':''}),
+              patch.object(local.registry,'command_graphs',return_value={user:(home,['selected'])}),
+              patch.object(local.registry,'pulled',return_value=None),
+              patch.object(local.registry,'probe',return_value=({},{})),
+              patch.object(local.graph,'run',side_effect=failed_seen)):
+            self.assertEqual(local.classify_failed_intermediates(self.bundle,'selector',plan,data,key,{},{}),[extra])
+            logs[1]['MESSAGE']='--> '+'f'*12
+            with self.assertRaisesRegex(local.Refusal,'absent from selected step log'):
+                local.classify_failed_intermediates(self.bundle,'selector',plan,data,key,{}, {})
     def test_unloaded_oneshot_needs_exact_post_ledger_journal_pair(self):
         ledger=self.bundle/'ledger';ledger.write_text('{}')
         ts=ledger.stat().st_mtime_ns//1000
@@ -164,9 +182,9 @@ class LocalBuildFixtures(unittest.TestCase):
               patch.object(local,'selected_unit',return_value=failed),
               patch.object(local.registry,'command_graphs',return_value={user:(home,['selected'])}),
               patch.object(local.registry,'pulled',return_value=None),
-              patch.object(local,'probe',return_value={}),
+              patch.object(local,'classify_failed_intermediates',return_value=[]),
               patch.object(local.stage,'write_ledger',side_effect=save)):
-            self.assertEqual(local.prepare(self.bundle,'selector','site',ledger,1,False,True)['status'],'abandoned-inert')
+            self.assertEqual(local.prepare(self.bundle,'selector','site',ledger,1,False,True)['status'],'preparing')
             self.assertEqual(data['venueLocalBuildFailure']['execMainStatus'],'1')
     def test_output_graph_requires_exact_tag_id_and_no_pending(self):
         graph=local.graph;key='p0test-r1-platform|localhost/webservices/keycloak:bundle'

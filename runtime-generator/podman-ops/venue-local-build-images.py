@@ -56,9 +56,11 @@ def plan_for(bundle,source):
 
 def probe(bundle,selector,plan,data,outputs,intermediates=None):
     all_ids=data['venueRegistryVerified'].copy();all_ids.update(data['venueBuildBaseVerified']);all_ids.update(outputs)
-    for key,ids in (intermediates if intermediates is not None else data.get('venueLocalBuildIntermediates',{})).items():
+    for key,ids in {**(intermediates if intermediates is not None else data.get('venueLocalBuildIntermediates',{})),
+                    **data.get('venueFailedBuildIntermediates',{})}.items():
         user,sep,_=key.partition('|')
-        if not sep or key not in outputs or not isinstance(ids,list):
+        failed=key==data.get('venueLocalBuildFailure',{}).get('key')
+        if not sep or (key not in outputs and not failed) or not isinstance(ids,list):
             raise Refusal('unbound local build intermediate images')
         for image in ids:
             if not isinstance(image,str) or not re.fullmatch(r'sha256:[0-9a-f]{64}',image):
@@ -195,6 +197,65 @@ def classify_intermediates(bundle,selector,plan,data,key,image,outputs,recorded)
     probe(bundle,selector,plan,data,attested,candidate)  # all eight graphs prewrite
     return sorted(extra)
 
+def classify_failed_intermediates(bundle,selector,plan,data,key,outputs,intermediates):
+    user,_,tag=key.partition('|');row=data['venueLocalBuildPlan'][key]
+    account=next(a for a in plan['accounts'] if a['name']==user)
+    unit=row['unit'];source=Path(account['home'])/'.config/containers/systemd'/unit.replace('-build.service','.build')
+    status=selected_unit(unit_command(plan,user,unit),unit,tag,source,row['offline'])
+    if status.get('ActiveState') not in ('inactive','failed') or status.get('Job') not in (None,'','0'):
+        raise Refusal('failed build has an active selected unit/job')
+    floor=source.stat().st_ctime_ns//1000
+    since='--since=@'+str(max(0,floor//1000000-1))
+    def journal(selector,cap):
+        result=graph.run(['journalctl','--boot','--no-pager','--output=json',since,
+                          '_UID='+str(account['uid']),selector+'='+unit],timeout=60)
+        if result.returncode or len(result.stdout)>cap:
+            raise Refusal('failed selected build journal not bounded')
+        return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    events=journal('USER_UNIT',262144)
+    starts=[int(r.get('__REALTIME_TIMESTAMP','0')) for r in events
+            if r.get('MESSAGE_ID')=='7d4958e842da4a758f6c1cdc7b36dcc5' and
+               r.get('JOB_TYPE')=='start' and int(r.get('__REALTIME_TIMESTAMP','0'))>floor]
+    failures=[int(r.get('__REALTIME_TIMESTAMP','0')) for r in events
+              if r.get('MESSAGE_ID')=='d9b373ed55a64feb8242e02dbe79a49c' and
+                 r.get('MESSAGE')==unit+": Failed with result 'exit-code'."]
+    if len(starts)!=1 or len(failures)!=1 or failures[0]<=starts[0]:
+        raise Refusal('one exact failed selected build job not proved')
+    logs=journal('_SYSTEMD_USER_UNIT',8388608)
+    steps={m.group(1) for r in logs
+           if starts[0]<=int(r.get('__REALTIME_TIMESTAMP','0'))<=failures[0]+2000000
+           if isinstance(r.get('MESSAGE'),str)
+           if (m:=re.fullmatch(r'--> ([0-9a-f]{12,64})',r['MESSAGE']))}
+    roots=registry.command_graphs(bundle,plan);command=roots[user][1]
+    if registry.pulled(command,tag) is not None:raise Refusal('failed selected build produced an output')
+    listing=graph.run(command+['image','ls','-a','--no-trunc','--format','{{.ID}}'],timeout=45)
+    if listing.returncode:raise Refusal('failed selected build image inventory unavailable')
+    found={'sha256:'+x.removeprefix('sha256:') for x in listing.stdout.splitlines() if x.strip()}
+    prior={v for k,v in {**data['venueRegistryVerified'],**data['venueBuildBaseVerified'],**outputs}.items()
+           if k.startswith(user+'|')}
+    prior.update(v for k,ids in intermediates.items() if k.startswith(user+'|') for v in ids)
+    if not prior<=found:raise Refusal('failed build lost selected prior image')
+    extras=found-prior
+    if len(extras)>128:raise Refusal('unbounded failed build layers')
+    for ref in extras:
+        if len([short for short in steps if ref.removeprefix('sha256:').startswith(short)])!=1:
+            raise Refusal('failed anonymous image absent from selected step log')
+        res=graph.run(command+['image','inspect','--format','{{json .}}',ref],timeout=30)
+        if res.returncode:raise Refusal('failed anonymous image cannot be inspected')
+        info=json.loads(res.stdout)
+        created=datetime.fromisoformat(info['Created'].replace('Z','+00:00')).timestamp()*1000000
+        if (info.get('Id','').removeprefix('sha256:')!=ref.removeprefix('sha256:') or
+                info.get('RepoTags') or not info.get('Labels',{}).get('io.buildah.version') or
+                created<starts[0]-2000000 or created>failures[0]+2000000):
+            raise Refusal('failed anonymous image not from selected job')
+    # Check all eight graphs with provisional evidence BEFORE ledger authority.
+    expected={**data['venueRegistryVerified'],**data['venueBuildBaseVerified'],**outputs}
+    for k,ids in intermediates.items():
+        for ref in ids:expected[k.partition('|')[0]+'|'+ref]=ref
+    for ref in extras:expected[user+'|'+ref]=ref
+    registry.probe(bundle,plan,data,expected)
+    return sorted(extras)
+
 def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,abandon_failed_pending=False,
             classify_only=False):
     p,data,plan,_=registry.journal(bundle,selector,site_source,ledger)
@@ -219,7 +280,10 @@ def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,aba
                 not re.fullmatch(r'sha256:[0-9a-f]{64}',value) for key,value in outputs.items()) or
             (data['venueLocalBuildPhase']=='inert-ready' and set(outputs)!=set(selected)) or
             not isinstance(intermediates,dict) or any(k not in outputs or not isinstance(v,list)
-                 for k,v in intermediates.items())):
+                 for k,v in intermediates.items()) or
+            not isinstance(data.get('venueLocalBuildSkipped',[]),list) or
+            any(k not in selected or k in outputs for k in data.get('venueLocalBuildSkipped',[])) or
+            len(data.get('venueLocalBuildSkipped',[]))>1):
         raise Refusal('selected local build output CAS differs')
     if classify_only:
         if data.get('venueLocalBuildPending'):
@@ -254,12 +318,18 @@ def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,aba
             roots=registry.command_graphs(bundle,plan)
             if registry.pulled(roots[user][1],tag) is not None:
                 raise Refusal('failed selected build produced an image; exact manual image review required')
-            probe(bundle,selector,plan,data,outputs)
+            if (pending.endswith('/android-test-runner-api34:bundle') and
+                    len(data.get('venueFailedBuildTmpRetired',[]))!=4):
+                raise Refusal('selected failed Android scratch must be exactly retired first')
+            failed=classify_failed_intermediates(bundle,selector,plan,data,pending,outputs,intermediates)
             data['venueLocalBuildFailure']={'key':pending,'result':state.get('Result'),
                                              'execMainStatus':state.get('ExecMainStatus')}
+            data['venueFailedBuildIntermediates']={pending:failed}
+            data['venueLocalBuildSkipped']=[pending]
             data.pop('venueLocalBuildPending');data.pop('venueLocalBuildPriorStartTimestamp')
-            data['venueLocalBuildPhase']='abandoned-inert';stage.write_ledger(p,data)
-            return {'status':'abandoned-inert','builtOutputIds':len(outputs),
+            if set(outputs)|{pending}==set(selected):data['venueLocalBuildPhase']='abandoned-inert'
+            stage.write_ledger(p,data)
+            return {'status':data['venueLocalBuildPhase'],'builtOutputIds':len(outputs),
                     'remaining':len(selected)-len(outputs),'activationAuthorized':False,'acceptedIntegratedInstalls':0}
         unloaded=(started==0 and exited==0 and state.get('Job') in (None,'','0') and
                   journaled_unloaded_success(p,account['uid'],unit))
@@ -285,7 +355,7 @@ def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,aba
     if data['venueLocalBuildPhase']=='inert-ready':
         return {'status':'inert-ready','builtOutputIds':len(outputs),'remaining':0,
                 'activationAuthorized':False,'acceptedIntegratedInstalls':0}
-    for key in sorted(set(selected)-set(outputs))[:max_new]:
+    for key in sorted(set(selected)-set(outputs)-set(data.get('venueLocalBuildSkipped',[])))[:max_new]:
         user,_,tag=key.partition('|');unit=selected[key]['unit']
         command=unit_command(plan,user,unit)
         account=next(a for a in plan['accounts'] if a['name']==user)
@@ -334,6 +404,8 @@ def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,aba
         roots=probe(bundle,selector,plan,data,outputs)
     if set(outputs)==set(selected):
         data['venueLocalBuildPhase']='inert-ready';stage.write_ledger(p,data)
+    elif set(outputs)|set(data.get('venueLocalBuildSkipped',[]))==set(selected):
+        data['venueLocalBuildPhase']='abandoned-inert';stage.write_ledger(p,data)
     return {'status':data['venueLocalBuildPhase'],'builtOutputIds':len(outputs),
             'remaining':len(selected)-len(outputs),'activationAuthorized':False,'acceptedIntegratedInstalls':0}
 

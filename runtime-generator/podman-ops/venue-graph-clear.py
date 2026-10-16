@@ -113,6 +113,24 @@ def journaled_local_output_ids(bundle,selector,state,source=None):
                 not re.fullmatch(r'sha256:[0-9a-f]{64}',image) for image in ids)
             for key,ids in intermediates.items())):
         raise Refusal('unclassified local build intermediate image journal')
+    failed=state.get('venueFailedBuildIntermediates',{})
+    skipped=state.get('venueLocalBuildSkipped',[])
+    if (not isinstance(failed,dict) or not isinstance(skipped,list) or len(skipped)>1 or
+            set(failed)!=set(skipped) or any(key not in expected or key in outputs or
+                not isinstance(ids,list) or len(ids)!=len(set(ids)) or
+                any(not isinstance(image,str) or not re.fullmatch(r'sha256:[0-9a-f]{64}',image)
+                    for image in ids) for key,ids in failed.items()) or
+            (skipped and state.get('venueLocalBuildFailure',{}).get('key')!=skipped[0])):
+        raise Refusal('failed selected build intermediate IDs are not journaled')
+    for key,ids in failed.items():
+        user=key.partition('|')[0]
+        if user not in by_user:raise Refusal('failed build store not selected')
+        if user not in state.get('graphCleared',[]):
+            for image in ids:
+                observed=run(commands[user]+['image','inspect','--format','{{.Id}}',image],timeout=30)
+                if observed.returncode or 'sha256:'+observed.stdout.strip().removeprefix('sha256:')!=image:
+                    if state.get('status')!='graphs-clearing':raise Refusal('failed build intermediate image drift')
+        by_user[user].update(ids)
     for key,value in outputs.items():
         user,sep,tag=key.partition('|')
         if not sep or user not in commands:raise Refusal('unknown local output store authority')
