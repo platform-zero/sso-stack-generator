@@ -377,6 +377,11 @@ def host_identity_port_screen(selector):
         low = entry['subuidStart']; high = low + 65536
         if any(low < end and start < high for start,end in occupied_subids):
             raise Refusal('existing subordinate-id range')
+    port_screen(selector)
+
+
+def port_screen(selector):
+    """Recheck listeners after account provisioning without re-adopting users."""
     occupied_ports = set()
     for filename in ('/proc/net/tcp','/proc/net/tcp6','/proc/net/udp','/proc/net/udp6'):
         for line in Path(filename).read_text().splitlines()[1:]:

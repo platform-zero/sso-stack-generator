@@ -34,7 +34,7 @@ class Journal(unittest.TestCase):
         with patch.object(composite.binds,'create',side_effect=create),patch.object(
                 composite.acl,'grant',side_effect=composite.Refusal('selected ACL failed')):
             with self.assertRaisesRegex(composite.Refusal,'selected ACL failed'):
-                composite.prepare(None,None,self.ledger)
+                composite.prepare(self.root,None,self.ledger)
         data=json.loads(self.ledger.read_text())
         self.assertEqual(data['venueCompositeVersion'],2)
         self.assertEqual(data['venueCompositeMode'],'preparing')
@@ -46,7 +46,7 @@ class Journal(unittest.TestCase):
         (self.state/'volume-ready-r1.txt').write_text('untrusted')
         original=self.ledger.read_bytes()
         with self.assertRaisesRegex(composite.Refusal,'readiness marker'):
-            composite.prepare(None,None,self.ledger)
+            composite.prepare(self.root,None,self.ledger)
         self.assertEqual(self.ledger.read_bytes(),original)
     def test_interrupted_image_import_recovery_refuses_foreign_and_records_absent(self):
         image='sha256:'+'a'*64
@@ -80,7 +80,7 @@ class Journal(unittest.TestCase):
         self.update(status='huly-volumes-inert')
         original=self.ledger.read_bytes()
         with patch.object(composite.binds,'create') as create:
-            with self.assertRaises(composite.Refusal):composite.prepare(None,None,self.ledger)
+            with self.assertRaises(composite.Refusal):composite.prepare(self.root,None,self.ledger)
             create.assert_not_called()
         self.assertEqual(self.ledger.read_bytes(),original)
 

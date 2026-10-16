@@ -3,10 +3,12 @@
 
 One release journal coordinates source, selected accounts, rendered aggregate
 and seven private domain releases, 75 env files, seven managers, 61 binds,
-three ACLs, four Huly volumes, 194 INACTIVE units and one offline image.
-This entrypoint MUST NOT start services, issue volume readiness, declare
-activation authority, reset populated data, change host-control or create a
-guest. It is preparation engineering, not an integrated install.
+three ACLs, four Huly volumes, 194 INACTIVE units and exact offline inputs.
+Version-1 preparation/retirement MUST NOT activate anything. Only explicit
+--activate-isolated upgrades a fresh exact frozen stage to a version-2 intent,
+issues current-boot authority under the controller lifecycle lock, and queues
+native startup. Failed starts fence/cancel/stop exact units, retaining data.
+No populated reset or guest mutation is implied; running is not acceptance.
 """
 import argparse
 import importlib.util
@@ -54,8 +56,7 @@ def prepare(bundle,selector,inventory,ledger,age_key,image_inputs):
     if input_manifest.is_symlink() or not stat.S_ISREG(i.st_mode) or i.st_uid!=0:
         raise Refusal('selected image manifest changed')
     rows=composite.images.validate(b,input_manifest)
-    if len(rows)!=1 or rows[0][2]!=[plan['prefix']+'-apps']:
-        raise Refusal('exact single selected offline image and apps authority required')
+    offline=composite.offline_plan(b,plan,[{'image':image,'authorities':users} for image,_,users in rows])
     # Baseline stage itself validates protected host preflight/inventory and
     # journals every newly created account, config and directory BEFORE use.
     stage.stage(b,selector,inventory,p,mutate=True)
@@ -74,7 +75,7 @@ def prepare(bundle,selector,inventory,ledger,age_key,image_inputs):
             data.get('status')!='units-staged' or marker.exists() or
             len(data.get('venueRuntimeEnvFiles',{}))!=75 or len(data.get('installedUnits',[]))!=194 or
             len(data.get('venueDataBindDirs',[]))!=61 or len(data.get('venueHulyVolumes',[]))!=4 or
-            len(data.get('venueCompositeOfflineImages',[]))!=1):
+            data.get('venueCompositeOfflineImages')!=offline):
         raise Refusal('inert installer co-presence invariants not met')
     data['venueInstallerPhase']='inert-ready';stage.write_ledger(p,data)
     return {'status':'inert-ready','rootlessCurrentTrees':7,'privateEnvFiles':75,
@@ -121,6 +122,18 @@ def retire(bundle,selector,inventory,ledger):
     data['venueInstallerPhase']='retired-inert';stage.write_ledger(p,data)
     return {'status':'retired-inert','activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
+def activate(bundle,selector,ledger):
+    lifecycle=load('venue_lifecycle','venue-start-quarantine.py')
+    try:return lifecycle.start(bundle,selector,ledger)
+    except Exception as failure:
+        state=receipt(ledger)
+        if state.get('venueInstallerVersion')==2 and state.get('venueStartPhase') in ('starting','running','failed-quarantining'):
+            try:lifecycle.quarantine(bundle,selector,ledger)
+            except Exception as stop_failure:
+                raise Refusal('activation failed: '+str(failure)+'; exact quarantine incomplete: '+str(stop_failure)) from stop_failure
+        raise
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     for key in ('bundle','selector','protected-inventory','ledger'):p.add_argument('--'+key,required=True)
@@ -128,15 +141,20 @@ def main():
     mode=p.add_mutually_exclusive_group(required=True)
     mode.add_argument('--prepare-inactive',action='store_true')
     mode.add_argument('--retire-inactive',action='store_true')
+    mode.add_argument('--activate-isolated',action='store_true')
+    mode.add_argument('--quarantine-start',action='store_true')
     a=p.parse_args()
     try:
         if a.prepare_inactive:
             if not a.sops_age_key_file or not a.image_inputs:raise Refusal('exact SOPS/image inputs required')
             result=prepare(a.bundle,a.selector,a.protected_inventory,a.ledger,a.sops_age_key_file,a.image_inputs)
         else:
-            if a.sops_age_key_file or a.image_inputs:raise Refusal('retirement must not accept new secret/image inputs')
-            result=retire(a.bundle,a.selector,a.protected_inventory,a.ledger)
+            if a.sops_age_key_file or a.image_inputs:raise Refusal('lifecycle actions must not accept new secret/image inputs')
+            if a.activate_isolated:result=activate(a.bundle,a.selector,a.ledger)
+            elif a.quarantine_start:
+                result=load('venue_lifecycle','venue-start-quarantine.py').quarantine(a.bundle,a.selector,a.ledger)
+            else:result=retire(a.bundle,a.selector,a.protected_inventory,a.ledger)
         print(json.dumps(result,sort_keys=True))
     except (Refusal,KeyError,TypeError,ValueError,OSError) as exc:
-        raise SystemExit('venue version-1 inactive installer refused: '+str(exc)) from exc
+        raise SystemExit('venue versioned installer refused: '+str(exc)) from exc
 if __name__=='__main__':main()

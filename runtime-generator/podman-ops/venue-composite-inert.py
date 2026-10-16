@@ -38,11 +38,33 @@ def context(bundle,selector,ledger):
         raise Refusal('protected readiness marker is not permitted in inert composition')
     return p,data,plan
 
+def offline_plan(bundle,plan,rows):
+    """Single legacy offline image, or the exact complete frozen input set."""
+    if any(not isinstance(row,dict) or set(row)!={'image','authorities'} or
+           not isinstance(row['image'],str) or not isinstance(row['authorities'],list) or
+           not row['authorities'] or any(not isinstance(user,str) for user in row['authorities']) for row in rows):
+        raise Refusal('offline image plan fields differ')
+    local=images.frozen_image_ids(Path(bundle))
+    if local:
+        ir=json.loads((Path(bundle)/'stack.ir.json').read_text())
+        required={s['image'] for s in ir['services'].values() if s.get('image','').startswith('sha256:')}
+        selected={row.get('image') for row in rows if isinstance(row,dict)}
+        direct=[row for row in rows if row.get('image') not in set(local.values())]
+        if (len(rows)!=len(required) or selected!=required or len(direct)!=1 or
+                direct[0].get('authorities')!=[plan['prefix']+'-apps']):
+            raise Refusal('complete exact frozen inputs plus selected apps offline image required')
+    elif len(rows)!=1 or rows[0].get('authorities')!=[plan['prefix']+'-apps']:
+        raise Refusal('one exact selected offline image and apps authority required')
+    return rows
+
+
 def prepare(bundle,selector,ledger,image_inputs=None):
     path,data,plan=context(bundle,selector,ledger)
     rows=images.validate(Path(bundle),Path(image_inputs)) if image_inputs is not None else []
-    if image_inputs is not None and len(rows)!=1:
-        raise Refusal('one exact selected offline image input expected')
+    if image_inputs is not None:
+        offline_plan(bundle,plan,[{'image':image,'authorities':users} for image,_,users in rows])
+    elif images.frozen_image_ids(Path(bundle)):
+        raise Refusal('frozen composition requires its complete offline input manifest')
     if data['status']!='managers-ready' or data.get('venueCompositeVersion') or any(
             data.get(key) for key in ('venueDataBindDirs','venueHulyVolumes','unitFiles','crossDomainAclStatus')):
         raise Refusal('composite preparation requires fresh staged managers and zero assets')

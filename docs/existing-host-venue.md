@@ -22,13 +22,24 @@ listener/capacity gate to get an installation attempt.
 | Prepare immutable image inputs | `ops/venue-registry-images.py`, `ops/venue-build-base-images.py` | Exact selected image/store IDs and frozen base identities, not running services |
 | Discover local build outputs | `ops/venue-local-build-images.py` | Bounded selected builds and output/intermediate receipts; not frozen release inputs |
 | Retire inactive release | `ops/venue-install-inert.py --retire-inactive` | Guarded reverse-order retirement of the exact inactive installation, not populated-data reset |
-| Quarantine failed activation | `ops/venue-start-quarantine.py` | Stops only an exact version-2 start intent and retains data; cannot create activation authority |
+| Attempt isolated activation | `ops/venue-install-inert.py --activate-isolated` | Explicitly upgrades a fresh frozen-input preparation to a current-boot version-2 intent; native startup is not integrated acceptance |
+| Quarantine selected activation | `ops/venue-install-inert.py --quarantine-start` | Fences runtime authority, cancels selected late jobs and stops exact native units/sockets while retaining data; never retries |
 
-The inactive installer is version 1. A version-2 installed-running lifecycle,
-operational isolated host-control, installed ingress and populated-state reset
-remain separate requirements. Consumers that require version-2 authority must
-continue to refuse a version-1 preparation receipt. Do not synthesize a running
-journal or readiness marker to satisfy them.
+Inactive preparation remains version 1 and grants no activation. Explicit
+version-2 activation requires the selected immutable host context, matching
+bundle/site provenance, every registry/import store ID, frozen producer aliases,
+61 exact empty owned binds, idle units/jobs, free listeners and physical reserves.
+Only source-declared API consumers start their separate rootless Podman sockets;
+manager environment and resulting socket identities are checked first. Intent
+precedes readiness/authority and every queue acknowledgement. Authority writing,
+controller mutations and quarantine share the same private lifecycle lock.
+Readiness observes actual startup leaves, not merely successful Wants targets.
+A failed start is fenced and stopped without deleting data or automatic retry.
+
+This is not populated-state reset, guest idle/trigger authority or proof of
+operational host/guest coupling, ingress or integrated delivery. Consumers still
+refuse version-1 preparation and missing/stale version-2 authority. Never forge
+a running journal/readiness marker or patch immutable units to satisfy a gate.
 
 Use the bundled tools from a clean provenance-bound release. A reviewed source
 successor used for a scoped recovery or diagnosis must be recorded separately;

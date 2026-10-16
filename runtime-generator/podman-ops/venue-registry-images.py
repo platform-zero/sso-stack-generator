@@ -24,6 +24,7 @@ def load(name,file):
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
 authority=load('venue_image_authority','venue-image-authority.py')
 graph=load('venue_graph','venue-graph-clear.py')
+composite=load('venue_composite','venue-composite-inert.py')
 stage=authority.stage
 Refusal=stage.Refusal
 HULY={'huly_cockroach','huly_elastic','huly_minio','huly_redpanda'}
@@ -54,10 +55,11 @@ def journal(bundle,selector,site_source,ledger):
             source['quadletTreeSha256']!=plan['quadletTreeSha256']):
         raise Refusal('selected frozen image source differs from release CAS')
     offline=data.get('venueCompositeOfflineImages',[])
-    if (len(offline)!=1 or offline[0].get('authorities')!=[plan['prefix']+'-apps'] or
-            source['imageIds'].get(offline[0]['authorities'][0]+'|'+offline[0]['image'])!=offline[0]['image'] or
+    composite.offline_plan(bundle,plan,offline)
+    if (any(source['imageIds'].get(user+'|'+row['image'])!=row['image']
+            for row in offline for user in row['authorities']) or
             {x.get('name') for x in data.get('venueHulyVolumes',[])}!=HULY):
-        raise Refusal('single selected offline image authority differs')
+        raise Refusal('exact selected offline image authorities differ')
     if (Path(plan['roots']['rootful-state'])/'volume-ready-r1.txt').exists():
         raise Refusal('activation marker present in image-only preparation')
     return p,data,plan,source
@@ -130,19 +132,19 @@ def fetch(command,ref):
 def prepare(bundle,selector,site_source,ledger,max_new,retry_pending=False):
     p,data,plan,source=journal(bundle,selector,site_source,ledger)
     if type(max_new) is not int or not 1<=max_new<=60:raise Refusal('one to sixty bounded new images per invocation')
-    ids=source['imageIds'];offline=data['venueCompositeOfflineImages'][0]
-    key=offline['authorities'][0]+'|'+offline['image']
+    ids=source['imageIds'];offline=data['venueCompositeOfflineImages']
+    imported={user+'|'+row['image']:row['image'] for row in offline for user in row['authorities']}
     if data.get('venueRegistryPhase') is None:
         data['venueRegistryPhase']='preparing'
         data['venueRegistryFrozenSha256']=source['frozenRegistrySha256']
         data['venueRegistryPlan']=ids
-        data['venueRegistryVerified']={key:offline['image']}
+        data['venueRegistryVerified']=dict(imported)
         stage.write_ledger(p,data)
     if (data.get('venueRegistryPhase') not in ('preparing','inert-ready') or
             data.get('venueRegistryFrozenSha256')!=source['frozenRegistrySha256'] or
             data.get('venueRegistryPlan')!=ids or not isinstance(data.get('venueRegistryVerified'),dict) or
-            data['venueRegistryVerified'].get(key)!=offline['image']):
-        raise Refusal('registry progress not bound to exact 60-input source CAS')
+            any(data['venueRegistryVerified'].get(key)!=image for key,image in imported.items())):
+        raise Refusal('registry progress not bound to exact selected-input source CAS')
     verified=data['venueRegistryVerified']
     if any(k not in ids or ids[k]!=v for k,v in verified.items()):
         raise Refusal('journaled image config ID differs from frozen site source')

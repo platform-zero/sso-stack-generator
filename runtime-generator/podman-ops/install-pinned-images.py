@@ -133,6 +133,50 @@ def frozen_aliases(bundle, metadata):
     return result
 
 
+def frozen_image_ids(bundle, metadata=None):
+    """Exact per-store offline identities, including non-producer consumers."""
+    ir_path = Path(bundle) / 'stack.ir.json'
+    if not ir_path.exists():
+        return {}
+    ir = json.loads(ir_path.read_text())
+    selected = [s for s in ir['services'].values() if 'frozenBuildImage' in s]
+    if not selected:
+        return {}
+    metadata = metadata or json.loads((Path(bundle) / 'podman-domains.json').read_text())
+    frozen_aliases(Path(bundle), metadata)
+    domains = {d['name']: d['user'] for d in metadata['domains']}
+    result = {}
+    for service in selected:
+        image = service.get('image')
+        if (ir.get('quadletBuildImagesFrozen') is not True or
+                not isinstance(image, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', image) or
+                image != service['frozenBuildImage'] or service.get('updatePolicy') != 'pinned'):
+            raise ValueError('Invalid frozen imported image authority')
+        domain = service.get('rootlessDomain') if service.get('placement') == 'rootless' else None
+        if domain is not None and domain not in domains:
+            raise ValueError('Unselected frozen image consumer authority')
+        user = domains[domain] if domain is not None else 'root'
+        result[user + '|' + image] = image
+    return result
+
+
+def selected_image_ids(bundle):
+    """Keep the registry and imported local sources distinct but jointly exact."""
+    path = Path(bundle) / 'site/global.settings/registry-image-ids.json'
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('Missing selected registry identity source')
+    result = json.loads(path.read_text())
+    if (not isinstance(result, dict) or not result or
+            any(not isinstance(k, str) or k.count('|') != 1 or not all(k.split('|')) or
+                not isinstance(v, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', v) for k, v in result.items())):
+        raise ValueError('Invalid selected registry identity source')
+    for key, image in frozen_image_ids(bundle).items():
+        if key in result and result[key] != image:
+            raise ValueError('Conflicting registry/imported image identity')
+        result[key] = image
+    return result
+
+
 def install(rows, bundle=None):
     os.chdir('/')
     metadata = json.loads((bundle / 'podman-domains.json').read_text()) if bundle is not None else {}
@@ -203,26 +247,8 @@ def prepare_registry(bundle, *, runner=subprocess.run):
                 or any(not isinstance(k, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', v)
                        for k, v in expected_ids.items())):
             raise ValueError('Invalid site image identity pins')
-    ir_path = bundle / 'stack.ir.json'
-    if ir_path.exists():
-        ir = json.loads(ir_path.read_text())
-        selected = [s for s in ir['services'].values() if 'frozenBuildImage' in s]
-        if selected:
-            # Imported frozen outputs are mandatory offline inputs, not registry
-            # substitutions. Include consumers in every selected authority store.
-            frozen_aliases(bundle, metadata)
-            domain_users = {d['name']: d['user'] for d in domains}
-            for service in selected:
-                image = service.get('image')
-                if (ir.get('quadletBuildImagesFrozen') is not True or
-                        not isinstance(image, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', image) or
-                        image != service['frozenBuildImage'] or service.get('updatePolicy') != 'pinned'):
-                    raise ValueError('Invalid frozen imported image authority')
-                domain = service.get('rootlessDomain') if service.get('placement') == 'rootless' else None
-                if domain is not None and domain not in domain_users:
-                    raise ValueError('Unselected frozen image consumer authority')
-                user = domain_users[domain] if domain is not None else 'root'
-                expected_ids[user + '|' + image] = image
+    # Imported outputs must already exist; never use registry fallback for them.
+    expected_ids.update(frozen_image_ids(bundle, metadata))
     if ledger_path.exists() or ledger_path.is_symlink():
         protected(ledger_path)
         ledger = json.loads(ledger_path.read_text())

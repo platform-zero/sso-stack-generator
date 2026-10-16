@@ -40,7 +40,9 @@ def stores(bundle,plan):
 def selected_images(bundle):
     path=Path(bundle)/'site/global.settings/registry-image-ids.json'
     if path.is_symlink() or not path.is_file():raise Refusal('missing site-pinned image identities')
-    identities=json.loads(path.read_text())
+    source_spec=importlib.util.spec_from_file_location('selected_pinned_images',HERE/'install-pinned-images.py')
+    source=importlib.util.module_from_spec(source_spec);source_spec.loader.exec_module(source)
+    identities=source.selected_image_ids(Path(bundle))
     if not isinstance(identities,dict) or not identities:raise Refusal('empty frozen image authority')
     out={}
     for key,value in identities.items():

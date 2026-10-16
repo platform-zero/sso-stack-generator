@@ -18,6 +18,8 @@ HERE=Path(__file__).resolve().parent
 spec=importlib.util.spec_from_file_location('venue_stage',HERE/'venue-owned-stage.py')
 stage=importlib.util.module_from_spec(spec);spec.loader.exec_module(stage)
 Refusal=stage.Refusal
+spec=importlib.util.spec_from_file_location('venue_pinned_images',HERE/'install-pinned-images.py')
+pinned_images=importlib.util.module_from_spec(spec);spec.loader.exec_module(pinned_images)
 HEX=re.compile(r'sha256:[0-9a-f]{64}\Z')
 REF=re.compile(r'(?:[a-z0-9][a-z0-9.:-]*/[a-z0-9][a-z0-9._/-]*:(?!latest\Z)[A-Za-z0-9._-]+(?:@sha256:[0-9a-f]{64})?|[a-z0-9][a-z0-9.:-]*/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64})\Z')
 
@@ -60,9 +62,26 @@ def authority(bundle,selector,site_source=None,require_pinned_bases=False):
     names={a['name'].removeprefix(plan['prefix']+'-'):a['name'] for a in plan['accounts']}
     identities=b/'site/global.settings/registry-image-ids.json'
     if identities.is_symlink() or not identities.is_file():raise Refusal('frozen per-store identity authority missing')
-    data=json.loads(identities.read_text())
-    if not isinstance(data,dict) or not data or any(not isinstance(k,str) or not isinstance(v,str) or not HEX.fullmatch(v) for k,v in data.items()):
-        raise Refusal('malformed frozen site image config identities')
+    registry_ids=json.loads(identities.read_text())
+    if (not isinstance(registry_ids,dict) or len(registry_ids)!=60 or
+            any(not isinstance(k,str) or not isinstance(v,str) or not HEX.fullmatch(v) for k,v in registry_ids.items())):
+        raise Refusal('malformed sixty frozen site image config identities')
+    local_ids=pinned_images.frozen_image_ids(b)
+    data=pinned_images.selected_image_ids(b)
+    local_pins=b/'site/global.settings/local-build-image-ids.json'
+    local_sha=None;producer_pins={}
+    if local_ids:
+        manifest=json.loads((b/'site/manifest.json').read_text())
+        if (manifest.get('localBuildImagePinsPath')!='global.settings/local-build-image-ids.json' or
+                local_pins.is_symlink() or not local_pins.is_file()):
+            raise Refusal('frozen managed build identity source missing')
+        document=json.loads(local_pins.read_text());ir=json.loads((b/'stack.ir.json').read_text())
+        producer_pins={name:s['frozenBuildImage'] for name,s in ir['services'].items()
+                       if 'build' in s and (s.get('lifecycle')!='on-demand' or s.get('quadletManaged') is True)}
+        if (type(document.get('schemaVersion')) is not int or document['schemaVersion']!=1 or
+                len(producer_pins)!=14 or document.get('images')!=producer_pins):
+            raise Refusal('all fourteen frozen recipe identities must match the selected site')
+        local_sha=hashlib.sha256(local_pins.read_bytes()).hexdigest()
     rows={};builds={};unit_count=0;base_refs={};store_bases={};mutable_store_bases=set()
     for directory in sorted((b/'quadlet').iterdir()):
         if not directory.is_dir() or directory.is_symlink():raise Refusal('unknown Quadlet image authority')
@@ -72,10 +91,19 @@ def authority(bundle,selector,site_source=None,require_pinned_bases=False):
             images=[x[6:] for x in unit.read_text().splitlines() if x.startswith('Image=')]
             if len(images)!=1 or unit.is_symlink():raise Refusal('selected unit image is ambiguous')
             unit_count+=1;ref=images[0]
-            if ref.endswith('.build'):
-                file=directory/(unit.stem+'.build')
-                if ref!=unit.stem+'.build' or file.is_symlink() or not file.is_file():
+            file=directory/(unit.stem+'.build')
+            if ref.endswith('.build') or (local_ids and file.exists()):
+                if file.is_symlink() or not file.is_file():
                     raise Refusal('selected local build consumer lacks exact generated build unit')
+                if local_ids:
+                    name=unit.stem.removeprefix(plan['prefix']+'-')
+                    if (producer_pins.get(name)!=ref or local_ids.get(user+'|'+ref)!=ref or
+                            file.read_text().splitlines().count('RefuseManualStart=yes')!=1 or
+                            unit.read_text().splitlines().count('Pull=never')!=1):
+                        raise Refusal('frozen recipe/consumer may build, pull or substitute an image')
+                    rows.setdefault(user+'|'+ref,[]).append(unit.name)
+                elif ref!=unit.stem+'.build':
+                    raise Refusal('selected build consumer differs from exact recipe')
                 if require_pinned_bases and file.read_text().splitlines().count('Pull=never')!=1:
                     raise Refusal('selected build unit may pull an unreviewed base')
                 if (require_pinned_bases and unit.stem.removeprefix(plan['prefix']+'-') in
@@ -94,8 +122,8 @@ def authority(bundle,selector,site_source=None,require_pinned_bases=False):
                     raise Refusal('unreviewed implicit image or mutable latest')
                 key=user+'|'+ref
                 rows.setdefault(key,[]).append(unit.name)
-    if unit_count!=93 or len(builds)!=14 or len(rows)!=60 or set(rows)!=set(data):
-        raise Refusal('93 selected containers, 14 local build units and 60 frozen authority/image pairs required')
+    if unit_count!=93 or len(builds)!=14 or len(rows)!=len(data) or set(rows)!=set(data):
+        raise Refusal('93 containers, 14 recipes and exact registry plus imported image authority required')
     for key,image_id in data.items():
         ref=key.split('|',1)[1]
         if ref.startswith('sha256:') and ref!=image_id:
@@ -134,6 +162,11 @@ def authority(bundle,selector,site_source=None,require_pinned_bases=False):
         if (actual.returncode or actual.stdout.strip()!=commit or dirty.returncode or dirty.stdout.strip() or
                 frozen.returncode or frozen.stdout.encode()!=identities.read_bytes()):
             raise Refusal('bundle image identity bytes differ from clean pinned site source')
+        if local_sha is not None:
+            local_source=subprocess.run(git+['show',commit+':sites/latium/global.settings/local-build-image-ids.json'],
+                                        capture_output=True,text=True,timeout=20)
+            if local_source.returncode or local_source.stdout.encode()!=local_pins.read_bytes():
+                raise Refusal('bundle local image IDs differ from clean pinned site source')
         if base_sha is not None:
             build_pins=subprocess.run(git+['show',commit+':sites/latium/global.settings/build-base-image-ids.json'],
                                       capture_output=True,text=True,timeout=20)
@@ -142,7 +175,8 @@ def authority(bundle,selector,site_source=None,require_pinned_bases=False):
     return {'schemaVersion':1,'generatorCommit':plan['sourceCommit'],
             'bundleIrSha256':plan['bundleIrSha256'],'quadletTreeSha256':plan['quadletTreeSha256'],
             'selectorSha256':plan['selectorSha256'],'frozenRegistrySha256':source,
-            'containerUnits':unit_count,'directImageReferences':len(rows),'localBuildUnits':len(builds),
+            'containerUnits':unit_count,'directImageReferences':len(registry_ids),'localBuildUnits':len(builds),
+            'selectedImagePairs':len(data),'frozenLocalImagePairs':len(local_ids),'frozenLocalPinsSha256':local_sha,
             'buildBaseReferences':len(base_refs),'buildBaseStorePairs':len(store_bases),
             'mutableBuildBaseReferences':unpinned,
             'unfrozenBuildBaseReferences':sorted(set(mutable_store_bases)-set(base_map)),
