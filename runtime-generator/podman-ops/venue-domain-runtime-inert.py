@@ -59,15 +59,20 @@ def verify_tree(root,identity,items):
 def context(bundle,selector,ledger):
     b,p,data,plan,state=release.context(bundle,selector,ledger)
     original=Path(data.get('releaseRoot') or '')
+    started=data.get('managerStarted',[])
+    stopped=data.get('managerStopped',[])
     if (data.get('venueReleasePhase')!='inert-ready' or data.get('status')!='staged-empty' or
-            data.get('managerStarted') or original!=Path(data.get('venueReleaseRoot') or '') or
+            (started and (started!=[a['name'] for a in plan['accounts']] or
+                          stopped!=[a['name'] for a in reversed(plan['accounts'])])) or
+            original!=Path(data.get('venueReleaseRoot') or '') or
             data.get('venueReleaseManifest')!=release.inventory(original)):
         raise Refusal('exact completed, inactive private rootful release required')
     return b,p,data,plan,domains(b,plan),original
 
 def prepare(bundle,selector,ledger):
     b,p,data,plan,selected,original=context(bundle,selector,ledger)
-    if data.get('venueDomainRuntimePhase'):raise Refusal('domain release lifecycle already used')
+    if data.get('venueDomainRuntimePhase') or data.get('managerStarted'):
+        raise Refusal('domain copies require fresh pre-manager stage')
     root_configs=original/'runtime/configs';records={}
     for name,domain in selected.items():
         state_root=Path(domain['state'])

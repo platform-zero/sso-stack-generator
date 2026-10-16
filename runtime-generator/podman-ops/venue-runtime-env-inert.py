@@ -19,7 +19,8 @@ spec=importlib.util.spec_from_file_location('venue_release',HERE/'venue-release-
 release=importlib.util.module_from_spec(spec);spec.loader.exec_module(release)
 stage=release.stage;Refusal=release.Refusal
 PATTERN=re.compile(r'\$\{([A-Z_][A-Z0-9_]*)(?:(:-|:\?)([^}]*))?\}')
-NAME=re.compile(r'[A-Z_][A-Z0-9_]*\Z')
+# Forgejo deliberately uses lowercase section names in FORGEJO__section__KEY.
+NAME=re.compile(r'[A-Za-z_][A-Za-z0-9_]*\Z')
 
 def sha(value):return hashlib.sha256(value).hexdigest()
 def identity(path):

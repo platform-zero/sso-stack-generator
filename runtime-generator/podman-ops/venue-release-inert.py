@@ -134,13 +134,18 @@ def retire(bundle,selector,ledger):
     started=data.get('managerStarted',[])
     if started:
         if (started!=[a['name'] for a in plan['accounts']] or
-                data.get('managerStopped')!=[a['name'] for a in reversed(plan['accounts'])] or
-                len(data.get('retiredUnits',[]))!=194 or
-                len(data.get('retiredDataBindDirs',[]))!=61 or
-                len(data.get('retiredHulyVolumes',[]))!=4 or
-                len(data.get('graphCleared',[]))!=8 or
-                not data.get('podmanImageCacheRetired') or not data.get('podmanRunrootRetired')):
-            raise Refusal('all inert co-staged assets must be exactly retired first')
+                data.get('managerStopped')!=[a['name'] for a in reversed(plan['accounts'])]):
+            raise Refusal('all selected managers must stop first')
+        if data.get('venueCompositeVersion'):
+            if (data.get('venueCompositeMode')!='retired-inert' or
+                    len(data.get('retiredUnits',[]))!=194 or
+                    len(data.get('retiredDataBindDirs',[]))!=61 or
+                    len(data.get('retiredHulyVolumes',[]))!=4 or
+                    len(data.get('graphCleared',[]))!=8 or
+                    not data.get('podmanImageCacheRetired') or not data.get('podmanRunrootRetired')):
+                raise Refusal('all inert co-staged assets must be exactly retired first')
+        elif any(data.get(k) for k in ('installedUnits','unitFiles','venueDataBindDirs','venueHulyVolumes')):
+            raise Refusal('unknown selected unit/data asset requires exact retirement')
     releases,release,current=layout(b,plan,state)
     if (str(release)!=data.get('venueReleaseRoot') or
             data.get('releaseRoot')!=str(release) or
