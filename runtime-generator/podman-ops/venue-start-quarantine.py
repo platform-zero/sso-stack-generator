@@ -437,11 +437,57 @@ def cleanup_stopped(bundle,selector,ledger,reviewed_failed_sha):
                 'dataAndVolumesRetained':True,'servicesStarted':False,'activationAuthorized':False}
 
 
+def retire_authority(bundle,selector,ledger,expected_sha):
+    """Remove only a false old runtime capability after complete exact retirement."""
+    path=Path(ledger);info=path.lstat()
+    if (path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid or info.st_nlink!=1 or stat.S_IMODE(info.st_mode)!=0o600):
+        raise Refusal('protected exact retired-ledger required')
+    state=json.loads(path.read_bytes());plan=stage.owned_plan(bundle,selector)
+    if stage.sha(path)!=expected_sha:raise Refusal('exact retired-ledger SHA review required')
+    context=host_context(bundle,plan)
+    with lifecycle(context):
+        state=json.loads(path.read_bytes())
+        if (stage.sha(path)!=expected_sha or state.get('plan')!=plan or state.get('status')!='retired-empty' or
+                state.get('venueInstallerVersion')!=2 or state.get('venueInstallerPhase')!='retired-inert' or
+                state.get('activationAuthorized') is not False or state.get('venueStartHostContextSha256')!=context.digest or
+                state.get('venueOwnedReset',{}).get('phase')!='empty-owned' or
+                state.get('graphCleared')!=['root']+[a['name'] for a in plan['accounts']] or
+                set(state.get('managerStopped',[]))!={a['name'] for a in plan['accounts']} or
+                not state.get('createdPaths') or set(state.get('pathIdentities',{}))!=set(state['createdPaths']) or
+                any(os.path.lexists(p) for p in state['pathIdentities'])):
+            raise Refusal('complete exact experimental retirement required before authority removal')
+        for account in plan['accounts']:
+            for lookup,value in ((stage.pwd.getpwnam,account['name']),(stage.pwd.getpwuid,account['uid'])):
+                try:lookup(value)
+                except KeyError:continue
+                raise Refusal('retired account name/UID still exists or was reused')
+        runtime=context.runtime/'runtime-authority.json';intent=state.get('venueRuntimeAuthorityRetireIntent')
+        if os.path.lexists(runtime):
+            info=runtime.lstat();body=runtime.read_bytes();receipt=json.loads(body)
+            if (runtime.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid or info.st_nlink!=1 or
+                    stat.S_IMODE(info.st_mode)!=0o600 or receipt.get('schemaVersion')!=2 or
+                    receipt.get('namespace')!=context.namespace or receipt.get('hostContextSha256')!=context.digest or
+                    receipt.get('sourceProvenanceSha256')!=context.data['sourceProvenanceSha256'] or
+                    receipt.get('phase')!='failed-quarantined' or receipt.get('activationAuthorized') is not False):
+                raise Refusal('only the exact false failed-context receipt may be retired')
+            current={'path':str(runtime),'dev':info.st_dev,'ino':info.st_ino,'sha256':stage.hashlib.sha256(body).hexdigest(),'contextSha256':context.digest}
+            if intent is not None and intent!=current:raise Refusal('interrupted authority retirement identity differs')
+            state['venueRuntimeAuthorityRetireIntent']=current;stage.write_ledger(path,state);runtime.unlink();intent=current
+        elif not intent or intent.get('path')!=str(runtime) or intent.get('contextSha256')!=context.digest:
+            raise Refusal('missing authority without exact pending retirement intent')
+        fd=os.open(context.runtime,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        try:os.fsync(fd)
+        finally:os.close(fd)
+        state['venueRuntimeAuthorityRetired']=state.pop('venueRuntimeAuthorityRetireIntent');stage.write_ledger(path,state)
+        return {'status':'retired-runtime-authority','activationAuthorized':False,'servicesStarted':False}
+
+
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     for name in ('bundle','selector','ledger'):ap.add_argument('--'+name,required=True)
     mode=ap.add_mutually_exclusive_group()
     mode.add_argument('--cleanup-stopped-native',metavar='REVIEWED_LEDGER_SHA256')
+    mode.add_argument('--retire-runtime-authority',metavar='RETIRED_LEDGER_SHA256')
     mode.add_argument('--review-stale-result-unit',metavar='UNIT')
     ap.add_argument('--reviewed-ledger-sha',metavar='SHA256')
     a=ap.parse_args()
@@ -451,8 +497,9 @@ def main():
             result=review_stale_result(a.bundle,a.selector,a.ledger,a.reviewed_ledger_sha,a.review_stale_result_unit)
         else:
             if a.reviewed_ledger_sha is not None:raise Refusal('ledger SHA is only for explicit stale-result review')
-            result=(cleanup_stopped(a.bundle,a.selector,a.ledger,a.cleanup_stopped_native)
-                    if a.cleanup_stopped_native is not None else quarantine(a.bundle,a.selector,a.ledger))
+            if a.retire_runtime_authority is not None:result=retire_authority(a.bundle,a.selector,a.ledger,a.retire_runtime_authority)
+            else:result=(cleanup_stopped(a.bundle,a.selector,a.ledger,a.cleanup_stopped_native)
+                         if a.cleanup_stopped_native is not None else quarantine(a.bundle,a.selector,a.ledger))
         print(json.dumps(result,sort_keys=True))
     except (Refusal,OSError,KeyError,ValueError,TypeError) as exc:
         raise SystemExit('venue exact failed-start quarantine refused: '+str(exc)) from exc
