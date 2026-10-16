@@ -143,6 +143,23 @@ class PinnedImages(unittest.TestCase):
         self.assertEqual(tags,{alias:self.image})
         self.assertTrue(all('TMPDIR='+str(graph) in command for command in calls))
 
+    def test_shared_frozen_id_restores_both_exact_producer_aliases(self):
+        graph,alias=self.frozen_fixture();tags={}
+        self.ir['services']['selected-twin']=dict(self.ir['services']['selected'])
+        (self.root/'stack.ir.json').write_text(json.dumps(self.ir))
+        def run(command,**kwargs):
+            self.assertIn('TMPDIR='+str(graph),command)
+            if 'exists' in command:return SimpleNamespace(returncode=int(command[-1] not in tags))
+            if 'tag' in command:
+                self.assertEqual(command[-2],self.image);tags[command[-1]]=self.image
+                return SimpleNamespace(returncode=0)
+            ref=command[command.index('inspect')+1]
+            return SimpleNamespace(returncode=0,stdout=self.image if ref==self.image else tags[ref])
+        with (patch.object(mod.pwd,'getpwnam',return_value=SimpleNamespace(pw_uid=3201,pw_dir='/home/service-apps')),
+              patch.object(mod.subprocess,'run',side_effect=run),contextlib.redirect_stdout(io.StringIO())):
+            mod.install(mod.validate(self.root,self.inputs),self.root)
+        self.assertEqual(tags,{alias:self.image,'localhost/webservices/selected-twin:bundle':self.image})
+
     def test_frozen_alias_collision_and_inventory_failure_never_retag(self):
         _,alias=self.frozen_fixture()
         for code in (0,125):
