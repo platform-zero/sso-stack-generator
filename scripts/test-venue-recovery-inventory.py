@@ -53,6 +53,15 @@ class Recovery(unittest.TestCase):
                 if valid:self.assertTrue(m.recovery_networks(self.root,self.plan,self.data,'root',['podman'],{'p0test-r1_net'}))
                 else:
                     with self.assertRaises(m.Refusal):m.recovery_networks(self.root,self.plan,self.data,'root',['podman'],{'p0test-r1_net'})
+    def test_exact_previous_network_id_proof_survives_later_epoch_gc(self):
+        self.data['venueRecoveryNetworks']={'root|p0test-r1_net':{'id':'b'*64,'unit':'p0test-r1-net-network.service'}}
+        with patch.object(m.graph,'run',return_value=self.inspect) as run:
+            proof=m.recovery_networks(self.root,self.plan,self.data,'root',['podman'],{'p0test-r1_net'})
+        self.assertEqual(proof,self.data['venueRecoveryNetworks']);self.assertEqual(run.call_count,1)
+    def test_previous_network_name_never_substitutes_different_id(self):
+        self.data['venueRecoveryNetworks']={'root|p0test-r1_net':{'id':'c'*64,'unit':'p0test-r1-net-network.service'}}
+        with patch.object(m.graph,'run',return_value=self.inspect):
+            with self.assertRaises(m.Refusal):m.recovery_networks(self.root,self.plan,self.data,'root',['podman'],{'p0test-r1_net'})
     def test_unknown_network_never_adopted(self):
         with self.assertRaises(m.Refusal):m.recovery_networks(self.root,self.plan,self.data,'root',['podman'],{'foreign'})
 if __name__=='__main__':unittest.main()

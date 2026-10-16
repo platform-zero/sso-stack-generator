@@ -85,6 +85,14 @@ def recovery_networks(bundle,plan,data,user,command,names):
     proofs={}
     for name in names:
         if name not in source:raise Refusal('post-start graph contains unselected network')
+        prior=data.get('venueRecoveryNetworks',{}).get(user+'|'+name)
+        if prior is not None:
+            inspect=graph.run(command+['network','inspect',name],timeout=30)
+            rows=json.loads(inspect.stdout) if not inspect.returncode else []
+            if (len(rows)!=1 or rows[0].get('name')!=name or prior.get('unit')!=source[name] or
+                    rows[0].get('id')!=prior.get('id') or not re.fullmatch(r'[0-9a-f]{64}',prior.get('id',''))):
+                raise Refusal('previously proven native network ID changed')
+            proofs[user+'|'+name]=prior;continue
         native=graph.run(systemd[user]+['show',source[name],'-p','ExecMainStatus','-p','ExecMainStartTimestampMonotonic'],timeout=30)
         fields=dict(line.split('=',1) for line in native.stdout.splitlines() if '=' in line)
         if native.returncode or fields.get('ExecMainStatus')!='0':
@@ -177,12 +185,14 @@ def probe(bundle,plan,data,expected,*,recovering=False):
         found[user]=ids
     if recovering:
         prior=data.get('venueRecoveryNetworks')
-        if prior is not None and prior!=network_proofs:raise Refusal('recorded retained network identities changed')
+        if prior is not None and any(network_proofs.get(key)!=value for key,value in prior.items()):
+            raise Refusal('recorded retained network identities changed')
         data['venueRecoveryNetworks']=network_proofs
         prior=data.get('venueRecoveryContainers')
         if prior is not None:
             remaining={key:value for key,value in prior.items() if value['id'] not in data.get('venueStoppedBootstrapCleaned',{})}
-            if remaining!=container_proofs:raise Refusal('retained bootstrap identities changed')
+            if any(container_proofs.get(key)!=value for key,value in remaining.items()):
+                raise Refusal('retained bootstrap identities changed')
         data['venueRecoveryContainers']=container_proofs
     return roots,found
 

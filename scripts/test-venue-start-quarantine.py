@@ -111,6 +111,26 @@ class StartQuarantine(unittest.TestCase):
         with self.assertRaises(q.Refusal):q.reviewed_retry(self.row,self.plan,self.context)
         self.reviewed_fixture();path=self.context.runtime/'runtime-authority.json';data=json.loads(path.read_text());data['bootId']='stale';path.write_text(json.dumps(data))
         with self.assertRaises(q.Refusal):q.reviewed_retry(self.row,self.plan,self.context)
+    def test_old_failed_result_is_pending_not_a_new_attempt_failure(self):
+        row={'ActiveState':'failed','Result':'exit-code','ExecMainStartTimestampMonotonic':'19','InactiveExitTimestampMonotonic':'18'}
+        self.assertFalse(q.observed_ready(row,20,'selected.service'))
+    def test_current_failed_result_still_refuses(self):
+        row={'ActiveState':'failed','Result':'exit-code','ExecMainStartTimestampMonotonic':'21'}
+        with self.assertRaises(q.Refusal):q.observed_ready(row,20,'selected.service')
+    def test_new_target_transition_and_successful_oneshot_ready(self):
+        self.assertTrue(q.observed_ready({'ActiveState':'active','Result':'success','InactiveExitTimestampMonotonic':'21'},20,'selected.target'))
+        self.assertTrue(q.observed_ready({'ActiveState':'inactive','Result':'success','ExecMainStatus':'0','ExecMainStartTimestampMonotonic':'21'},20,'selected.service'))
+    def test_stale_review_requires_exact_old_native_result_and_changed_source(self):
+        self.reviewed_fixture();self.save()
+        selected={None:[],'p0test-r1-apps':['p0test-r1-app.service']}
+        row='ActiveState=failed\nResult=exit-code\nExecMainStartTimestampMonotonic=41\nInactiveExitTimestampMonotonic=40\n'
+        with (patch.object(q.stage,'owned_plan',return_value=self.plan),patch.object(q,'targets',return_value=selected),
+              patch.object(q.units,'units_idle'),patch.object(q.graph,'run',return_value=SimpleNamespace(returncode=0,stdout=row))):
+            result=q.review_stale_result(self.root,'selector',self.ledger,q.stage.sha(self.ledger),'p0test-r1-app.service')
+        self.assertFalse(result['servicesStarted']);state=json.loads(self.ledger.read_text())
+        q.reviewed_retry(state,self.plan,self.context)
+        state['venueStartMonotonicUsec']=43
+        with self.assertRaises(q.Refusal):q.reviewed_retry(state,self.plan,self.context)
     def test_cancel_race_requires_fresh_exact_id_absence(self):
         replies=[SimpleNamespace(returncode=0,stdout='41 p0test-r1-app.service start running\n'),
                  SimpleNamespace(returncode=1,stdout=''),SimpleNamespace(returncode=0,stdout='')]

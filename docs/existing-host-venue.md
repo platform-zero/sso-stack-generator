@@ -25,6 +25,7 @@ listener/capacity gate to get an installation attempt.
 | Prepare required runtime bridge | `ops/render-existing-host-guest-network.py --prepare-owned --journal ...` | Applies only the exact new guest fence before atomic network creation; journals UUID and persists only its own native XML; no guest or autostart |
 | Repair a missing owned log bind | `ops/venue-bind-dirs.py --repair-failed-logs ...` | Only after completed selected failed-start quarantine; creates absent immediate rootful log children under exact receipted parent, never adopts or resets data |
 | Clean exact stopped native bootstrap metadata | `ops/venue-start-quarantine.py --cleanup-stopped-native SHA256 ...` | Under the same fenced lease/failed-ledger CAS and specific repair; journals exact source/image/unit/epoch-owned exited IDs before non-force cleanup/rm; no volumes or data reset |
+| Review a proven stale prior-result observation | `ops/venue-start-quarantine.py --review-stale-result-unit UNIT --reviewed-ledger-sha SHA256 ...` | One selected owner/unit, failed result whose activation/exec timestamps precede this attempt, changed lifecycle source, fenced current-boot context; no start or data reset |
 | Review changed-input recovery | `ops/venue-install-inert.py --retry-reviewed-failed-sha SHA256 ...` | Explicit failed-ledger CAS, current-boot fenced context and one unconsumed specific repair; retained source/epoch-bound native object IDs checked, not a new clean installation |
 | Attempt isolated activation | `ops/venue-install-inert.py --activate-isolated` | Explicitly upgrades a fresh frozen-input preparation to a current-boot version-2 intent; native startup is not integrated acceptance |
 | Quarantine selected activation | `ops/venue-install-inert.py --quarantine-start` | Fences runtime authority, cancels selected late jobs and stops exact native units/sockets while retaining data; never retries |
@@ -44,6 +45,16 @@ Bridge publishers require the actual selected gateway to exist. Runtime bridge
 preparation deliberately leaves network autostart **off** until durable fence/boot
 ordering is installed; it is not guest boot readiness. Existing network names,
 routes, interfaces, fence tables or journals are never adopted or retried.
+
+Readiness checks correlate both native activation and exec timestamps to the
+current start epoch. A prior attempt's retained failed Result is pending, never
+success and never a new failure; current-epoch failures still refuse immediately.
+No reset-failed or automatic retry hides previous evidence. Proven retained network
+IDs survive later systemd GC via their existing root receipt; new objects still
+require source/owner/unit/epoch proof, and an ID substitution refuses. Each new
+intent records the lifecycle code hash; an old legacy receipt without that hash
+is explicitly labelled rather than falsely upgraded. Failure/fence evidence is
+written under the lifecycle lease after authority is fenced, before native stop.
 
 Version-one preparation includes actual rootful log-bind children, separate from
 the 61 data binds. Failed-start recovery never relaxes the fresh-stage gate: it is

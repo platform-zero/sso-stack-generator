@@ -130,7 +130,7 @@ def activate(bundle,selector,ledger,*,reviewed_failed_sha=None):
     except Exception as failure:
         state=receipt(ledger)
         if state.get('venueInstallerVersion')==2 and state.get('venueStartPhase') in ('starting','running','failed-quarantining'):
-            try:lifecycle.quarantine(bundle,selector,ledger)
+            try:lifecycle.quarantine(bundle,selector,ledger,failure_reason=str(failure))
             except Exception as stop_failure:
                 raise Refusal('activation failed: '+str(failure)+'; exact quarantine incomplete: '+str(stop_failure)) from stop_failure
         raise

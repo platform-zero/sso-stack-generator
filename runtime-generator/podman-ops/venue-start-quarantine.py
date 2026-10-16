@@ -137,7 +137,18 @@ def cancel_starts(command,names):
                 if again.returncode or any(len(row)<4 or row[0]==fields[0] for row in rows):
                     raise Refusal('selected late start job could not be cancelled')
 
-def reviewed_retry(state,plan,context):
+def observed_ready(row,epoch,name):
+    changed=max(int(row.get('ExecMainStartTimestampMonotonic','0')),
+                int(row.get('InactiveExitTimestampMonotonic','0')))>=epoch
+    failed=row.get('ActiveState')=='failed' or row.get('Result','success') not in ('','success')
+    if failed:
+        if changed:raise Refusal('native selected service failed: '+name)
+        return False  # prior attempt's retained Result is not this start's failure
+    return changed and (row.get('ActiveState')=='active' or
+           (row.get('ActiveState')=='inactive' and row.get('ExecMainStatus')=='0'))
+
+
+def reviewed_retry(state,plan,context,*,require_repair=True):
     repair=state.get('venueStartRepair',{})
     if (state.get('plan')!=plan or state.get('venueInstallerVersion')!=2 or
             state.get('status')!='installed-starting' or state.get('venueInstallerPhase')!='starting' or
@@ -145,11 +156,18 @@ def reviewed_retry(state,plan,context):
             state.get('venueStartIntent')!=plan['quadletTreeSha256'] or
             state.get('venueStartHostContextSha256')!=context.digest or
             state.get('venueRegistryPhase')!='inert-ready' or state.get('managerStopped') or
-            state.get('managerStarted')!=[a['name'] for a in plan['accounts']] or
-            repair.get('kind')!='missing-owned-log-bind' or not repair.get('paths') or
-            repair.get('sourceSha256')!=stage.sha(HERE/'venue-bind-dirs.py') or
-            repair.get('appliesToStartMonotonicUsec')!=state.get('venueStartMonotonicUsec')):
-        raise Refusal('exact quarantined intent and unconsumed specific source repair required')
+            state.get('managerStarted')!=[a['name'] for a in plan['accounts']]):
+        raise Refusal('exact quarantined intent required')
+    if require_repair:
+        kind=repair.get('kind');source={'missing-owned-log-bind':HERE/'venue-bind-dirs.py',
+                                     'stale-native-result':Path(__file__)}.get(kind)
+        if (source is None or repair.get('sourceSha256')!=stage.sha(source) or
+                repair.get('appliesToStartMonotonicUsec')!=state.get('venueStartMonotonicUsec') or
+                (kind=='missing-owned-log-bind' and not repair.get('paths')) or
+                (kind=='stale-native-result' and (not repair.get('unit') or
+                    max(int(repair.get('observed',{}).get('ExecMainStartTimestampMonotonic','0')),
+                        int(repair.get('observed',{}).get('InactiveExitTimestampMonotonic','0')))>=state['venueStartMonotonicUsec']))):
+            raise Refusal('unconsumed specific changed-source repair required')
     path=context.runtime/'runtime-authority.json';info=path.lstat()
     if path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid or info.st_nlink!=1 or stat.S_IMODE(info.st_mode)!=0o600:
         raise Refusal('unsafe failed runtime receipt')
@@ -240,10 +258,11 @@ def start(bundle,selector,ledger,timeout=900,*,reviewed_failed_sha=None):
                 raise Refusal('original exact failed-intent readiness marker changed')
             state.setdefault('venueStartAttempts',[]).append({key:state.get(key) for key in
                   ('venueStartPhase','venueStartIntent','venueStartMonotonicUsec','venueStartRepair',
-                   'venueStartQuarantineUnits','venueRecoveryNetworks','venueRecoveryContainers')})
+                   'venueStartQuarantineUnits','venueRecoveryNetworks','venueRecoveryContainers',
+                   'venueStartLifecycleSha256','venueStartFailure','venueStartFenceMonotonicUsec')})
         state.update(venueInstallerVersion=2,venueInstallerPhase='starting',status='installed-starting',
                      venueStartPhase='starting',venueStartIntent=plan['quadletTreeSha256'],
-                     venueStartHostContextSha256=context.digest,activationAuthorized=True,
+                     venueStartHostContextSha256=context.digest,venueStartLifecycleSha256=stage.sha(__file__),activationAuthorized=True,
                      venueStartMonotonicUsec=time.monotonic_ns()//1000,venueStartQueued=[],venueStartApiSockets=api)
         stage.write_ledger(p,state)  # intent BEFORE marker, authority or native start
         try:
@@ -287,15 +306,10 @@ def start(bundle,selector,ledger,timeout=900,*,reviewed_failed_sha=None):
             if not wanted<=set(selected[owner]):raise Refusal('startup dependency escaped selected unit set')
             for name in sorted(wanted|{plan['prefix']+'.target'}):
                 registry.reserve()
-                result=graph.run(command+['show',name,'-p','ActiveState','-p','Result','-p','ExecMainStatus','-p','ExecMainStartTimestampMonotonic'],timeout=30)
+                result=graph.run(command+['show',name,'-p','ActiveState','-p','Result','-p','ExecMainStatus','-p','ExecMainStartTimestampMonotonic','-p','InactiveExitTimestampMonotonic'],timeout=30)
                 if result.returncode:raise Refusal('cannot inspect selected startup state')
                 row=dict(line.split('=',1) for line in result.stdout.splitlines() if '=' in line)
-                if row.get('ActiveState')=='failed' or row.get('Result','success') not in ('','success'):
-                    raise Refusal('native selected service failed: '+name)
-                if not (row.get('ActiveState')=='active' or
-                        (row.get('ActiveState')=='inactive' and row.get('ExecMainStatus')=='0' and
-                         int(row.get('ExecMainStartTimestampMonotonic','0'))>=state['venueStartMonotonicUsec'])):
-                    pending.append(name)
+                if not observed_ready(row,state['venueStartMonotonicUsec'],name):pending.append(name)
         if not pending:
             with lifecycle(context):
                 state=json.loads(p.read_text())
@@ -306,11 +320,11 @@ def start(bundle,selector,ledger,timeout=900,*,reviewed_failed_sha=None):
         if time.monotonic()>=deadline:raise Refusal('selected native startup deadline; pending '+','.join(pending))
         time.sleep(2)
 
-def quarantine(bundle,selector,ledger):
+def quarantine(bundle,selector,ledger,*,failure_reason=None):
     plan=stage.owned_plan(bundle,selector);context=host_context(bundle,plan)
-    with lifecycle(context):return quarantine_locked(bundle,selector,ledger,context)
+    with lifecycle(context):return quarantine_locked(bundle,selector,ledger,context,failure_reason=failure_reason)
 
-def quarantine_locked(bundle,selector,ledger,context):
+def quarantine_locked(bundle,selector,ledger,context,*,failure_reason=None):
     p=Path(ledger)
     if os.geteuid()!=0 or p.is_symlink() or not p.is_file() or p.stat().st_uid!=0 or stat.S_IMODE(p.stat().st_mode)!=0o600:
         raise Refusal('exact root0600 failed-start journal required')
@@ -330,8 +344,12 @@ def quarantine_locked(bundle,selector,ledger,context):
     if state.get('venueStartHostContextSha256')!=context.digest:
         raise Refusal('failed-start intent belongs to another host context')
     runtime_receipt(context,'failed-quarantining',False)
-    if state['venueStartPhase'] in ('starting','running'):
-        state['venueStartPhase']='failed-quarantining';stage.write_ledger(p,state)
+    state['venueStartPhase']='failed-quarantining'
+    state['venueStartFenceMonotonicUsec']=time.monotonic_ns()//1000
+    if failure_reason is not None:
+        state['venueStartFailure']={'reason':str(failure_reason)[:1000],
+            'startMonotonicUsec':state['venueStartMonotonicUsec'],'sourceSha256':stage.sha(__file__)}
+    stage.write_ledger(p,state)
     # Stop exact namespace units, never restart previously stopped production.
     # Targets first, then containers/builds/networks; the latter cannot be
     # inferred stopped merely because a target has entered inactive state.
@@ -371,6 +389,30 @@ def quarantine_locked(bundle,selector,ledger,context):
     return {'status':'failed-quarantined','selectedUnitNames':state['venueStartQuarantineUnits'],
             'populatedDataRetained':True,'activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
+def review_stale_result(bundle,selector,ledger,reviewed_failed_sha,unit):
+    p=Path(ledger);plan=stage.owned_plan(bundle,selector);context=host_context(bundle,plan)
+    with lifecycle(context):
+        if stage.sha(p)!=reviewed_failed_sha:raise Refusal('stale observation review ledger CAS changed')
+        state=json.loads(p.read_text());reviewed_retry(state,plan,context,require_repair=False)
+        units.units_idle(plan);selected=targets(bundle,plan,state)
+        matches=[cmd for account,cmd in selected_commands(plan) if unit in selected[account['name'] if account else None]]
+        if len(matches)!=1:raise Refusal('failed native observation must identify one exact selected owner/unit')
+        result=graph.run(matches[0]+['show',unit,'-p','ActiveState','-p','Result','-p','ExecMainStartTimestampMonotonic',
+                                     '-p','InactiveExitTimestampMonotonic'],timeout=30)
+        row=dict(line.split('=',1) for line in result.stdout.splitlines() if '=' in line)
+        epoch=state['venueStartMonotonicUsec'];source_sha=stage.sha(__file__)
+        if (result.returncode or row.get('Result','success') in ('','success') or
+                row.get('ActiveState') not in ('failed','inactive') or observed_ready(row,epoch,unit) or
+                state.get('venueStartLifecycleSha256')==source_sha):
+            raise Refusal('no proven stale prior-epoch failure or no changed observation source')
+        state['venueStartRepair']={'kind':'stale-native-result','unit':unit,'observed':row,
+            'sourceSha256':source_sha,'previousLifecycleSha256':state.get('venueStartLifecycleSha256'),
+            'appliesToStartMonotonicUsec':epoch}
+        stage.write_ledger(p,state)
+        return {'reviewedStaleNativeResult':unit,'legacySourceHashUnrecorded':state.get('venueStartLifecycleSha256') is None,
+                'servicesStarted':False,'dataReset':False}
+
+
 def cleanup_stopped(bundle,selector,ledger,reviewed_failed_sha):
     p=Path(ledger);plan=stage.owned_plan(bundle,selector)
     context=host_context(bundle,plan);registry=load('bootstrap_cleanup_registry','venue-registry-images.py')
@@ -398,11 +440,19 @@ def cleanup_stopped(bundle,selector,ledger,reviewed_failed_sha):
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     for name in ('bundle','selector','ledger'):ap.add_argument('--'+name,required=True)
-    ap.add_argument('--cleanup-stopped-native',metavar='REVIEWED_LEDGER_SHA256')
+    mode=ap.add_mutually_exclusive_group()
+    mode.add_argument('--cleanup-stopped-native',metavar='REVIEWED_LEDGER_SHA256')
+    mode.add_argument('--review-stale-result-unit',metavar='UNIT')
+    ap.add_argument('--reviewed-ledger-sha',metavar='SHA256')
     a=ap.parse_args()
     try:
-        result=(cleanup_stopped(a.bundle,a.selector,a.ledger,a.cleanup_stopped_native)
-                if a.cleanup_stopped_native is not None else quarantine(a.bundle,a.selector,a.ledger))
+        if a.review_stale_result_unit:
+            if not a.reviewed_ledger_sha:raise Refusal('explicit stale-result ledger SHA review required')
+            result=review_stale_result(a.bundle,a.selector,a.ledger,a.reviewed_ledger_sha,a.review_stale_result_unit)
+        else:
+            if a.reviewed_ledger_sha is not None:raise Refusal('ledger SHA is only for explicit stale-result review')
+            result=(cleanup_stopped(a.bundle,a.selector,a.ledger,a.cleanup_stopped_native)
+                    if a.cleanup_stopped_native is not None else quarantine(a.bundle,a.selector,a.ledger))
         print(json.dumps(result,sort_keys=True))
     except (Refusal,OSError,KeyError,ValueError,TypeError) as exc:
         raise SystemExit('venue exact failed-start quarantine refused: '+str(exc)) from exc

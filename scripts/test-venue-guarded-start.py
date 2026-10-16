@@ -73,7 +73,7 @@ class Start(unittest.TestCase):
             self.assertTrue(authority['activationAuthorized'])
         if 'show' in command:
             failed=self.fail and 'p0test-r1-app.service' in command
-            return NS(returncode=0,stdout='ActiveState='+('failed' if failed else 'active')+'\nResult=success\n')
+            return NS(returncode=0,stdout='ActiveState='+('failed' if failed else 'active')+'\nResult=success\nExecMainStartTimestampMonotonic='+str(receipt['venueStartMonotonicUsec']+1)+'\n')
         if 'stop' in command:
             self.assertEqual(authority['phase'],'failed-quarantining')
             self.assertFalse(authority['activationAuthorized'])
