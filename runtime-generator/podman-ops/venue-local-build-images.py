@@ -7,6 +7,11 @@ reviewed and frozen in clean site source. Never start container target units,
 issue a data readiness marker or credit a trial as an integrated installation.
 """
 import argparse
+import hashlib
+import os
+import signal
+import stat
+import subprocess
 from datetime import datetime
 import importlib.util
 import json
@@ -458,6 +463,110 @@ def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,aba
     return {'status':data['venueLocalBuildPhase'],'builtOutputIds':len(outputs),
             'remaining':len(selected)-len(outputs),'activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
+def export_plan(data,selected):
+    outputs=data.get('venueLocalBuildOutputs',{})
+    if (data.get('venueLocalBuildPhase')!='inert-ready' or data.get('venueLocalBuildPlan')!=selected or
+            set(outputs)!=set(selected) or
+            data.get('venueLocalBuildPending') or data.get('venueLocalBuildSkipped') or
+            any(not isinstance(value,str) or not re.fullmatch(r'sha256:[0-9a-f]{64}',value)
+                for value in outputs.values())):
+        raise Refusal('export requires every selected build complete without pending or skipped outputs')
+    grouped={}
+    for key,image in sorted(outputs.items()):
+        grouped.setdefault(image,[]).append(key)
+    return [{'image':image,'archiveFilename':image[7:]+'.oci.tar','sourceKeys':keys,
+             'buildQuadletSha256':{key:selected[key]['quadletSha256'] for key in keys}}
+            for image,keys in sorted(grouped.items())]
+
+
+def export_reserve(root):
+    registry.reserve()
+    fs=os.statvfs(root)
+    if fs.f_bavail*fs.f_frsize<120*(1<<30):
+        raise Refusal('canonical output filesystem proactive reserve reached')
+
+
+def save_image(command,image,output,root):
+    """Stream one immutable selected image; cancel only this owned saver."""
+    process=subprocess.Popen(command+['save','--format','oci-archive',image],cwd='/',
+                             stdin=subprocess.DEVNULL,stdout=output,stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+    began=time.monotonic()
+    try:
+        while process.poll() is None:
+            export_reserve(root)
+            if time.monotonic()-began>1800:raise Refusal('selected image export timed out')
+            time.sleep(1)
+        if process.returncode:raise Refusal('selected image export failed; exact partial receipt retained')
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid,signal.SIGTERM)
+            try:process.wait(timeout=12)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid,signal.SIGKILL);process.wait(timeout=12)
+
+
+def export_outputs(bundle,selector,site_source,ledger,destination):
+    """Publish canonical build inputs, not guest/data backups or release approval.
+
+    A fresh private output directory holds an independent manifest. Failures
+    retain pending file/inode evidence; never overwrite or retry implicitly.
+    """
+    p,data,plan,_=registry.journal(bundle,selector,site_source,ledger)
+    source=authority.authority(bundle,selector,site_source,require_pinned_bases=True)
+    selected=plan_for(bundle,source);rows=export_plan(data,selected)
+    root=Path(destination)
+    if (not root.is_absolute() or '..' in root.parts or root.name in ('','.','..') or
+            os.path.lexists(root) or root.parent.is_symlink() or not root.parent.is_dir()):
+        raise Refusal('new canonical image output directory required')
+    if any(parent.is_symlink() for parent in root.parents):raise Refusal('linked output ancestor')
+    parent=root.parent.stat()
+    if parent.st_uid!=0 or stat.S_IMODE(parent.st_mode)&0o022:
+        raise Refusal('canonical output parent must be root-owned and non-writable by others')
+    export_reserve(root.parent)
+    roots=probe(bundle,selector,plan,data,data['venueLocalBuildOutputs'])
+    stage.create_private_directory(root,0,0o700)
+    manifest={'schemaVersion':1,'status':'exporting-discovery','activationAuthorized':False,
+              'generatorCommit':plan['sourceCommit'],'selectorSha256':plan['selectorSha256'],
+              'quadletTreeSha256':plan['quadletTreeSha256'],
+              'sourceProvenanceSha256':stage.sha(Path(bundle)/'source-provenance.json'),
+              'images':[]}
+    receipt=root/'manifest.json';stage.write_ledger(receipt,manifest,create=True)
+    for row in rows:
+        export_reserve(root)
+        roots=probe(bundle,selector,plan,data,data['venueLocalBuildOutputs'])
+        user=row['sourceKeys'][0].partition('|')[0]
+        temporary=root/(row['archiveFilename']+'.partial');final=root/row['archiveFilename']
+        manifest['pending']={**row,'temporaryFilename':temporary.name}
+        stage.write_ledger(receipt,manifest)
+        fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+        info=os.fstat(fd)
+        manifest['pending'].update({'dev':info.st_dev,'ino':info.st_ino})
+        try:
+            stage.write_ledger(receipt,manifest)
+            with os.fdopen(fd,'wb') as output:
+                fd=None
+                save_image(roots[user][1],row['image'],output,root)
+                output.flush();os.fsync(output.fileno())
+        finally:
+            if fd is not None:os.close(fd)
+        current=temporary.lstat()
+        if (not stat.S_ISREG(current.st_mode) or current.st_uid!=0 or current.st_nlink!=1 or
+                stat.S_IMODE(current.st_mode)!=0o600 or
+                (current.st_dev,current.st_ino)!=(info.st_dev,info.st_ino)):
+            raise Refusal('pending canonical image file changed')
+        digest=hashlib.sha256()
+        with temporary.open('rb') as stream:
+            for chunk in iter(lambda:stream.read(8*1024*1024),b''):digest.update(chunk)
+        os.link(temporary,final,follow_symlinks=False)  # refuses an existing destination
+        temporary.unlink()
+        manifest['images'].append({**row,'archiveSha256':digest.hexdigest(),'archiveBytes':current.st_size})
+        manifest.pop('pending');stage.write_ledger(receipt,manifest)
+    manifest['status']='exported-discovery';stage.write_ledger(receipt,manifest)
+    return {'status':manifest['status'],'selectedBuildOutputs':len(selected),'imageArchives':len(rows),
+            'manifest':str(receipt),'activationAuthorized':False,'acceptedIntegratedInstalls':0}
+
+
 def main():
     a=argparse.ArgumentParser(description=__doc__)
     for key in ('bundle','selector','site-source','ledger'):a.add_argument('--'+key,required=True)
@@ -468,10 +577,18 @@ def main():
     pending.add_argument('--abandon-failed-pending-only',action='store_true')
     pending.add_argument('--classify-intermediates-only',action='store_true')
     pending.add_argument('--skip-identical-failed-twin-only',action='store_true')
+    pending.add_argument('--export-built-images',metavar='NEW_PRIVATE_DIRECTORY',
+                         help='Export complete discovery outputs as canonical image inputs, never activation')
     args=a.parse_args()
-    try:print(json.dumps(prepare(args.bundle,args.selector,args.site_source,args.ledger,args.max_new,
-                                 args.recover_pending_only,args.abandon_failed_pending_only,
-                                 args.classify_intermediates_only,args.skip_identical_failed_twin_only,args.only_key),sort_keys=True))
+    try:
+        if args.export_built_images:
+            if args.only_key or args.max_new!=1:raise Refusal('export cannot combine with build selection')
+            result=export_outputs(args.bundle,args.selector,args.site_source,args.ledger,args.export_built_images)
+        else:
+            result=prepare(args.bundle,args.selector,args.site_source,args.ledger,args.max_new,
+                           args.recover_pending_only,args.abandon_failed_pending_only,
+                           args.classify_intermediates_only,args.skip_identical_failed_twin_only,args.only_key)
+        print(json.dumps(result,sort_keys=True))
     except (Refusal,OSError,ValueError,KeyError,TypeError) as exc:
         raise SystemExit('venue fourteen local build discovery refused: '+str(exc)) from exc
 if __name__=='__main__':main()

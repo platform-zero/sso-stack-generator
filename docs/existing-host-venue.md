@@ -74,6 +74,25 @@ checks still apply. Mutable build-time downloads make outputs discovery-only
 until separately reviewed and frozen; `Pull=never` pins FROM selection, not APT,
 pip, npm, SDK or other dependency downloads.
 
+## Preserve completed outputs as release inputs
+
+After all selected outputs are complete, the same discovery tool accepts
+`--export-built-images NEW_PRIVATE_DIRECTORY`. It verifies the exact complete
+plan and all selected graphs, then streams OCI image archives to an exclusive
+root-owned directory with a hash-bound `manifest.json`. Identical image IDs are
+exported once with all source keys retained. This publishes **canonical image
+inputs**, not backups of guest/project/service state. It does not approve a
+release, activate services, or silently replace the site's pins.
+
+The exporter refuses incomplete, skipped or pending builds, existing output
+directories and unsafe parents. It monitors existing host reserves plus a
+120-GiB proactive output-filesystem reserve. A failed save retains its exact
+partial filename/inode receipt; it cannot be implicitly retried or imported as
+a complete image. Review and freeze the successful artifact manifest into the
+next site/release inputs before retiring discovery graphs or starting clean
+acceptance runs. Do not discard successful outputs and repeat network builds
+merely to cross an installer phase boundary.
+
 ## Running-integration acceptance
 
 Before activation, prove actual installed ownership, recovery/stop authority,

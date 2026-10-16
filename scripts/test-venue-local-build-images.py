@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Only fourteen exact no-pull builds run; three have no network."""
 import hashlib
+import io
 import json
+import os
 from types import SimpleNamespace
 import importlib.util
 from pathlib import Path
@@ -36,6 +38,69 @@ class LocalBuildFixtures(unittest.TestCase):
         for wrong,skipped in (('foreign|image',[]),(key,[key])):
             with self.subTest(wrong=wrong,skipped=skipped),self.assertRaises(local.Refusal):
                 local.build_candidates(self.plan,{},skipped,1,wrong)
+
+    def test_export_requires_complete_exact_plan_and_groups_shared_ids(self):
+        image='sha256:'+'a'*64
+        data={'venueLocalBuildPhase':'inert-ready','venueLocalBuildPlan':self.plan,
+              'venueLocalBuildOutputs':{key:image for key in self.plan}}
+        rows=local.export_plan(data,self.plan)
+        self.assertEqual(len(rows),1)
+        self.assertEqual(rows[0]['sourceKeys'],sorted(self.plan))
+        self.assertEqual(rows[0]['archiveFilename'],'a'*64+'.oci.tar')
+        for update in ({'venueLocalBuildPhase':'preparing'},{'venueLocalBuildPlan':{}},
+                       {'venueLocalBuildPending':next(iter(self.plan))},
+                       {'venueLocalBuildSkipped':[next(iter(self.plan))]},
+                       {'venueLocalBuildOutputs':{}},
+                       {'venueLocalBuildOutputs':{key:'not-an-id' for key in self.plan}}):
+            with self.subTest(update=update),self.assertRaises(local.Refusal):
+                local.export_plan({**data,**update},self.plan)
+
+    def test_export_reserve_failure_cancels_only_its_saver(self):
+        process=SimpleNamespace(pid=987654321,poll=lambda:None,wait=lambda **kwargs:0)
+        with (patch.object(local.subprocess,'Popen',return_value=process) as start,
+              patch.object(local,'export_reserve',side_effect=local.Refusal('reserve')),
+              patch.object(local.os,'killpg') as kill):
+            with self.assertRaisesRegex(local.Refusal,'reserve'):
+                local.save_image(['selected-podman'],'sha256:'+'a'*64,io.BytesIO(),self.bundle)
+        kill.assert_called_once_with(process.pid,local.signal.SIGTERM)
+        self.assertEqual(start.call_args.args[0],['selected-podman','save','--format','oci-archive','sha256:'+'a'*64])
+        self.assertTrue(start.call_args.kwargs['start_new_session'])
+
+    @unittest.skipUnless(os.geteuid()==0,'physical export receipt fixtures require root')
+    def test_export_publishes_exclusive_hash_bound_files_and_retains_partial_failure(self):
+        image='sha256:'+'a'*64
+        data={'venueLocalBuildPhase':'inert-ready','venueLocalBuildPlan':self.plan,
+              'venueLocalBuildOutputs':{key:image for key in self.plan}}
+        plan={'sourceCommit':'b'*40,'selectorSha256':'c'*64,'quadletTreeSha256':'d'*64}
+        (self.bundle/'source-provenance.json').write_text('{}')
+        root=self.bundle/'canonical';user=sorted(self.plan)[0].partition('|')[0]
+        roots={user:(self.bundle,['selected-podman'])}
+        def save(command,image,output,root):output.write(b'synthetic image archive fixture')
+        with (patch.object(local.registry,'journal',return_value=(self.bundle/'unused-ledger',data,plan,{})),
+              patch.object(local.authority,'authority',return_value=self.source),
+              patch.object(local,'probe',return_value=roots),
+              patch.object(local,'export_reserve'),patch.object(local,'save_image',side_effect=save)):
+            result=local.export_outputs(self.bundle,'selector','site','ledger',root)
+            self.assertEqual(result['status'],'exported-discovery')
+            receipt=json.loads((root/'manifest.json').read_text())
+            row=receipt['images'][0];archive=root/row['archiveFilename']
+            self.assertEqual(row['archiveSha256'],hashlib.sha256(archive.read_bytes()).hexdigest())
+            self.assertEqual(archive.stat().st_mode&0o777,0o600)
+            self.assertEqual(archive.stat().st_nlink,1)
+            self.assertFalse(receipt['activationAuthorized'])
+            with self.assertRaises(local.Refusal):local.export_outputs(self.bundle,'selector','site','ledger',root)
+            def fail(command,image,output,root):
+                output.write(b'partial');raise local.Refusal('synthetic saver failure')
+            failed=self.bundle/'failed-canonical'
+            with patch.object(local,'save_image',side_effect=fail),self.assertRaises(local.Refusal):
+                local.export_outputs(self.bundle,'selector','site','ledger',failed)
+            receipt=json.loads((failed/'manifest.json').read_text())
+            pending=receipt['pending'];partial=failed/pending['temporaryFilename']
+            self.assertEqual(receipt['status'],'exporting-discovery')
+            self.assertEqual(partial.stat().st_ino,pending['ino'])
+            self.assertEqual(partial.read_bytes(),b'partial')
+            self.assertFalse((failed/pending['archiveFilename']).exists())
+            with self.assertRaises(local.Refusal):local.export_outputs(self.bundle,'selector','site','ledger',failed)
 
     def test_fourteen_selected_source_builds_and_hostile_egress_refusal(self):
         self.assertEqual(len(self.plan),14)
