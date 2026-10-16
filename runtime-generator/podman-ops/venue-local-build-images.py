@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Build ONLY 3 offline/no-pull selected Quadlets in inactive exact-CAS venue.
+"""Build 14 no-pull selected Quadlets in an inactive exact-CAS venue.
 
-This is output-ID discovery, not a claim of pinned 14-image release or of any
-running service. All other 11 builds remain refused pending dependency/output
-pin review. Never start target units or issue a data readiness marker.
+Three are network-disabled. Eleven may fetch mutable dependencies while being
+built: their resulting IDs are DISCOVERY, never release pins until separately
+reviewed and frozen in clean site source. Never start container target units,
+issue a data readiness marker or credit a trial as an integrated installation.
 """
 import argparse
 import importlib.util
@@ -19,12 +20,19 @@ def load(name,file):
 registry=load('venue_registry_images','venue-registry-images.py')
 base=load('venue_build_base_images','venue-build-base-images.py')
 graph=registry.graph;authority=registry.authority;stage=registry.stage;Refusal=stage.Refusal
-LOCAL={'p0test-r1-apps':('mastodon-rss-publisher',),
-       'p0test-r1-platform':('keycloak','onboarding')}
+OFFLINE={'p0test-r1-apps':('mastodon-rss-publisher',),
+         'p0test-r1-platform':('keycloak','onboarding')}
+NETWORK={'p0test-r1-apps':('forgejo','jellyfin','legal-research-mcp'),
+         'p0test-r1-ci-runner':('forgejo-runner',),
+         'p0test-r1-platform':('market-data-exporter',),
+         'p0test-r1-test-runners':('android-test-runner-api34','android-test-runner-api36'),
+         'p0test-r1-workloads':('jupyter-notebook-build','jupyterhub',
+                                'workload-spawner-api','workload-spawner-router')}
 
 def plan_for(bundle,source):
     plan={}
-    for user,names in LOCAL.items():
+    for user,names in {name:OFFLINE.get(name,())+NETWORK.get(name,())
+                       for name in set(OFFLINE)|set(NETWORK)}.items():
         domain=user.removeprefix('p0test-r1-')
         for name in names:
             quadlet='quadlet/rootless-'+domain+'/p0test-r1-'+name+'.build'
@@ -34,11 +42,15 @@ def plan_for(bundle,source):
                 raise Refusal('selected offline build unit/source missing')
             text=path.read_text().splitlines()
             tag='localhost/webservices/'+name+':bundle'
-            if text.count('ImageTag='+tag)!=1 or text.count('Pull=never')!=1 or text.count('Network=none')!=1:
-                raise Refusal('selected local-only Quadlet may pull or use build network')
+            offline=name in OFFLINE.get(user,())
+            if (text.count('ImageTag='+tag)!=1 or text.count('Pull=never')!=1 or
+                    [row for row in text if row.startswith('Network=')]!=(['Network=none'] if offline else [])):
+                raise Refusal('selected build Quadlet pull/network authority differs')
             key=user+'|'+tag
-            plan[key]={'unit':'p0test-r1-'+name+'-build.service','quadletSha256':entry['sha256']}
-    if len(plan)!=3:raise Refusal('exactly three selected offline-only builds required')
+            plan[key]={'unit':'p0test-r1-'+name+'-build.service','quadletSha256':entry['sha256'],
+                       'offline':offline}
+    if len(plan)!=14 or sum(row['offline'] for row in plan.values())!=3:
+        raise Refusal('selected 3 offline and 11 egress build units differ')
     return dict(sorted(plan.items()))
 
 def probe(bundle,selector,plan,data,outputs):
@@ -63,7 +75,7 @@ def unit_command(plan,user,unit):
             'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/'+str(uid)+'/bus',
             'systemctl','--user']
 
-def selected_unit(command,unit,tag,source_path=None):
+def selected_unit(command,unit,tag,source_path=None,offline=True):
     cat=graph.run(command+['cat',unit],timeout=30)
     starts=[line for line in cat.stdout.splitlines() if line.startswith('ExecStart=')]
     if (cat.returncode or len(starts)!=1 or
@@ -71,10 +83,11 @@ def selected_unit(command,unit,tag,source_path=None):
         raise Refusal('generated selected local build unit unavailable or source path changed')
     start=starts[0];words=start.split()
     network=('--network=none' in words or any(words[i:i+2]==['--network','none'] for i in range(len(words)-1)))
+    any_network=any(word.startswith('--network') for word in words)
     if (not start.startswith('ExecStart=/usr/bin/podman build ') or
-            '--pull=never' not in words or not network or
-            '--tag '+tag not in start or '--push' in start):
-        raise Refusal('installed selected build unit could pull or reach network')
+            words.count('--pull=never')!=1 or (network if offline else not any_network) is False or
+            words.count('--tag')!=1 or words[words.index('--tag')+1]!=tag or '--push' in words):
+        raise Refusal('installed selected build unit pull/network/tag authority differs')
     info=graph.run(command+['show',unit,'-p','LoadState','-p','ActiveState','-p','Job','-p','Result',
                              '-p','ExecMainStatus','-p','ExecMainStartTimestampMonotonic',
                              '-p','ExecMainExitTimestampMonotonic'],timeout=30)
@@ -116,7 +129,7 @@ def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,aba
             data.get('venueBuildBaseFrozenSha256')!=source['frozenBuildBaseSha256'] or
             data.get('venueCompositeMode')!='inert-ready' or data.get('status')!='units-staged'):
         raise Refusal('three builds need 60 direct and 14 frozen build-base inputs in fully inert installer')
-    if type(max_new) is not int or not 1<=max_new<=3:raise Refusal('one to three bounded local builds per invocation')
+    if type(max_new) is not int or not 1<=max_new<=14:raise Refusal('one to fourteen bounded local builds per invocation')
     if data.get('venueLocalBuildPhase') is None:
         data['venueLocalBuildPhase']='preparing';data['venueLocalBuildPlan']=selected
         data['venueLocalBuildOutputs']={};stage.write_ledger(p,data)
@@ -137,7 +150,7 @@ def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,aba
         entry=next((r for r in data['installedUnits'] if r['path']==str(path)),None)
         if not entry or path.is_symlink() or path.stat().st_ino!=entry['ino'] or path.stat().st_uid!=account['uid']:
             raise Refusal('interrupted selected build unit source changed')
-        state=selected_unit(unit_command(plan,user,unit),unit,tag,path)
+        state=selected_unit(unit_command(plan,user,unit),unit,tag,path,selected[pending]['offline'])
         prior=data.get('venueLocalBuildPriorStartTimestamp')
         started=int(state.get('ExecMainStartTimestampMonotonic','0'))
         exited=int(state.get('ExecMainExitTimestampMonotonic','0'))
@@ -189,7 +202,7 @@ def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,aba
         if (not staged or source_path.is_symlink() or not source_path.is_file() or
                 source_path.stat().st_ino!=staged['ino'] or source_path.stat().st_uid!=account['uid']):
             raise Refusal('selected local Quadlet build source inode changed')
-        before=selected_unit(command,unit,tag,source_path)
+        before=selected_unit(command,unit,tag,source_path,selected[key]['offline'])
         prior=int(before.get('ExecMainStartTimestampMonotonic','0'))
         if before.get('ActiveState')!='inactive' or registry.pulled(roots[user][1],tag) is not None:
             raise Refusal('selected local output not fresh/idle')
@@ -204,7 +217,7 @@ def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,aba
             except Refusal:
                 graph.run(command+['stop',unit],timeout=35)
                 raise
-            state=selected_unit(command,unit,tag,source_path)
+            state=selected_unit(command,unit,tag,source_path,selected[key]['offline'])
             started=int(state.get('ExecMainStartTimestampMonotonic','0'))
             exited=int(state.get('ExecMainExitTimestampMonotonic','0'))
             if state.get('ActiveState')=='failed':
@@ -242,5 +255,5 @@ def main():
     try:print(json.dumps(prepare(args.bundle,args.selector,args.site_source,args.ledger,args.max_new,
                                  args.recover_pending_only,args.abandon_failed_pending_only),sort_keys=True))
     except (Refusal,OSError,ValueError,KeyError,TypeError) as exc:
-        raise SystemExit('venue three offline-only local builds refused: '+str(exc)) from exc
+        raise SystemExit('venue fourteen local build discovery refused: '+str(exc)) from exc
 if __name__=='__main__':main()

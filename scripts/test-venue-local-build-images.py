@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Only three no-pull/no-network generated image-build units may run."""
+"""Only fourteen exact no-pull builds run; three have no network."""
 import hashlib
 import json
 from types import SimpleNamespace
 import importlib.util
 from pathlib import Path
-from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -17,18 +16,25 @@ class LocalBuildFixtures(unittest.TestCase):
     def setUp(self):
         temp=tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup)
         self.bundle=Path(temp.name);self.source={'buildUnits':{}}
-        for user,names in local.LOCAL.items():
-            for name in names:
+        for user in set(local.OFFLINE)|set(local.NETWORK):
+            for name in local.OFFLINE.get(user,())+local.NETWORK.get(user,()):
                 rel='quadlet/rootless-'+user.removeprefix('p0test-r1-')+'/p0test-r1-'+name+'.build'
                 p=self.bundle/rel;p.parent.mkdir(parents=True,exist_ok=True)
-                p.write_text('[Build]\nImageTag=localhost/webservices/'+name+':bundle\nPull=never\nNetwork=none\n')
+                offline=name in local.OFFLINE.get(user,())
+                p.write_text('[Build]\nImageTag=localhost/webservices/'+name+':bundle\nPull=never\n'+
+                             ('Network=none\n' if offline else ''))
                 self.source['buildUnits'][rel]={'user':user,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}
         self.plan=local.plan_for(self.bundle,self.source)
-    def test_three_selected_source_builds_and_hostile_egress_refusal(self):
-        self.assertEqual(len(self.plan),3)
+    def test_fourteen_selected_source_builds_and_hostile_egress_refusal(self):
+        self.assertEqual(len(self.plan),14)
+        self.assertEqual(sum(row['offline'] for row in self.plan.values()),3)
         p=self.bundle/'quadlet/rootless-platform/p0test-r1-keycloak.build'
         p.write_text(p.read_text().replace('Network=none\n',''))
-        with self.assertRaisesRegex(local.Refusal,'may pull or use build network'):
+        with self.assertRaisesRegex(local.Refusal,'pull/network authority differs'):
+            local.plan_for(self.bundle,self.source)
+        p=self.bundle/'quadlet/rootless-apps/p0test-r1-forgejo.build'
+        p.write_text(p.read_text()+'Network=host\n')
+        with self.assertRaisesRegex(local.Refusal,'pull/network authority differs'):
             local.plan_for(self.bundle,self.source)
     def test_installed_quadlet_exec_must_disable_pull_and_network(self):
         tag='localhost/webservices/keycloak:bundle';unit='p0test-r1-keycloak-build.service'
@@ -43,8 +49,17 @@ class LocalBuildFixtures(unittest.TestCase):
         def unsafe(command,**kwargs):
             return SimpleNamespace(returncode=0,stdout='ExecStart=/usr/bin/podman build --pull=never --network=host --tag '+tag+' /build\n')
         with patch.object(local.graph,'run',side_effect=unsafe):
-            with self.assertRaisesRegex(local.Refusal,'reach network'):
+            with self.assertRaisesRegex(local.Refusal,'pull/network/tag authority differs'):
                 local.selected_unit(['selected-user'],unit,tag)
+        with patch.object(local.graph,'run',side_effect=checked):
+            with self.assertRaisesRegex(local.Refusal,'pull/network/tag authority differs'):
+                local.selected_unit(['selected-user'],unit,tag,offline=False)
+        def network_default(command,**kwargs):
+            if 'cat' in command:return SimpleNamespace(returncode=0,stdout=
+                'ExecStart=/usr/bin/podman build --pull=never --tag '+tag+' --file Containerfile /build\n')
+            return SimpleNamespace(returncode=0,stdout='LoadState=loaded\nActiveState=inactive\n')
+        with patch.object(local.graph,'run',side_effect=network_default):
+            self.assertEqual(local.selected_unit(['selected-user'],unit,tag,offline=False)['ActiveState'],'inactive')
     def test_unloaded_oneshot_needs_exact_post_ledger_journal_pair(self):
         ledger=self.bundle/'ledger';ledger.write_text('{}')
         ts=ledger.stat().st_mtime_ns//1000
