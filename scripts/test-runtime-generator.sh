@@ -45,6 +45,7 @@ python3 -B "$ROOT_DIR/scripts/test-venue-huly-volumes.py"
 python3 -B "$ROOT_DIR/scripts/test-venue-volume-authority.py"
 python3 -B "$ROOT_DIR/scripts/test-venue-bind-dirs.py"
 python3 -B "$ROOT_DIR/scripts/test-venue-log-binds.py"
+python3 -B "$ROOT_DIR/scripts/test-venue-populated-reset.py"
 python3 -B "$ROOT_DIR/scripts/test-venue-recovery-inventory.py"
 python3 -B "$ROOT_DIR/scripts/test-existing-host-guest-network.py"
 python3 -B "$ROOT_DIR/scripts/test-existing-host-ingress.py"
@@ -495,6 +496,10 @@ if jq -e '
 ' "$WORK_DIR/podman-a/stack.ir.json" >/dev/null; then
   printf '[runtime-test] completed dependency target is not a one-shot service\n' >&2
   exit 1
+fi
+
+if jq -e '.venue.unitPrefix' "$WORK_DIR/podman-a/podman-domains.json" >/dev/null; then
+  python3 -B "$ROOT_DIR/scripts/test-venue-network-aliases.py" --bundle "$WORK_DIR/podman-a"
 fi
 
 generated_units="$WORK_DIR/generated-units"

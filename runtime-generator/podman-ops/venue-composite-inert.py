@@ -192,8 +192,10 @@ def retire(bundle,selector,ledger):
     offline=data.get('venueCompositeOfflineImages',[])
     selected_images=graph.selected_images(bundle)
     expected={a['name']:set() for a in plan['accounts']};expected['root']=set()
-    if not isinstance(offline,list) or len(offline)>1:
-        raise Refusal('one or zero journaled offline image identities expected')
+    frozen_profile=json.loads((Path(bundle)/'stack.ir.json').read_text()).get('quadletBuildImagesFrozen') is True
+    maximum=len(set().union(*selected_images.values())) if frozen_profile else 1
+    if not isinstance(offline,list) or len(offline)>maximum:
+        raise Refusal('journaled offline images exceed selected frozen/legacy authority')
     for row in offline:
         if (not isinstance(row,dict) or not isinstance(row.get('authorities'),list) or
                 not row['authorities'] or not isinstance(row.get('image'),str)):
@@ -205,7 +207,7 @@ def retire(bundle,selector,ledger):
     registry_mode=data.get('venueRegistryPhase')
     if registry_mode is not None:
         source=graph.selected_images(bundle)
-        frozen=json.loads((Path(bundle)/'site/global.settings/registry-image-ids.json').read_text())
+        frozen=images.selected_image_ids(Path(bundle))
         progress=data.get('venueRegistryVerified')
         if (registry_mode not in ('preparing','inert-ready') or data.get('venueRegistryPending') or
                 data.get('venueRegistryPlan')!=frozen or not isinstance(progress,dict) or

@@ -8,12 +8,15 @@ Version-1 preparation/retirement MUST NOT activate anything. Only explicit
 --activate-isolated upgrades a fresh exact frozen stage to a version-2 intent,
 issues current-boot authority under the controller lifecycle lock, and queues
 native startup. Failed starts fence/cancel/stop exact units, retaining data.
-No populated reset or guest mutation is implied; running is not acceptance.
+Only explicit --reset-experimental-owned-sha permits exact owned experimental
+content deletion after quarantine. No production reset or guest mutation is
+implied; running is not acceptance.
 """
 import argparse
 import importlib.util
 import json
 import os
+import shutil
 from pathlib import Path
 import stat
 
@@ -85,11 +88,18 @@ def prepare(bundle,selector,inventory,ledger,age_key,image_inputs):
 
 def retire(bundle,selector,inventory,ledger):
     b,p,plan=context(bundle,selector,ledger);data=receipt(p)
-    if (data.get('plan')!=plan or data.get('venueInstallerVersion')!=1 or
-            data.get('venueInstallerPhase') not in ('inert-ready','retiring') or
+    reset=data.get('venueOwnedReset',{})
+    reset_complete=(reset.get('phase')=='empty-owned' and reset.get('quadletTreeSha256')==plan['quadletTreeSha256'] and
+                    reset.get('contextSha256')==data.get('venueStartHostContextSha256') and
+                    set(reset.get('emptied',[]))=={row['path'] for row in reset.get('directories',[])} and
+                    len(reset.get('directories',[]))>=65 and
+                    set(reset.get('retiredNetworks',[]))=={row['id'] for row in reset.get('networks',{}).values()})
+    version_ok=data.get('venueInstallerVersion')==1 or (data.get('venueInstallerVersion')==2 and reset_complete)
+    if (data.get('plan')!=plan or not version_ok or
+            data.get('venueInstallerPhase') not in ('inert-ready','reset-complete','retiring') or
             data.get('activationAuthorized') is not False):
         raise Refusal('inert installed-release journal differs or is not retireable')
-    if data['venueInstallerPhase']=='inert-ready':
+    if data['venueInstallerPhase'] in ('inert-ready','reset-complete'):
         if any(data.get(k)!='inert-ready' for k in ('venueReleasePhase','venueDomainRuntimePhase',
                     'venueRuntimeEnvPhase')):
             raise Refusal('private inputs must coexist before initial retirement')
@@ -124,6 +134,138 @@ def retire(bundle,selector,inventory,ledger):
     data['venueInstallerPhase']='retired-inert';stage.write_ledger(p,data)
     return {'status':'retired-inert','activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
+def empty_owned_directory(row):
+    """Keep the receipted top inode; remove only its children using dir-fds."""
+    if not shutil.rmtree.avoids_symlink_attacks:raise Refusal('fd-safe recursive deletion required')
+    path=Path(row['path']);info=path.lstat()
+    if path.is_symlink() or not stat.S_ISDIR(info.st_mode) or (info.st_dev,info.st_ino)!=(row['dev'],row['ino']):
+        raise Refusal('owned reset directory inode changed')
+    fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:
+        opened=os.fstat(fd)
+        if (opened.st_dev,opened.st_ino)!=(row['dev'],row['ino']):raise Refusal('reset directory open CAS changed')
+        for name in os.listdir(fd):
+            child=os.stat(name,dir_fd=fd,follow_symlinks=False)
+            if stat.S_ISDIR(child.st_mode):
+                if child.st_dev!=opened.st_dev:raise Refusal('nested filesystem in selected reset directory')
+                shutil.rmtree(name,dir_fd=fd)
+            else:os.unlink(name,dir_fd=fd)
+        os.fchown(fd,row['restoreUid'],row.get('restoreGid',row['restoreUid']));os.fchmod(fd,0o700)
+        if os.listdir(fd):raise Refusal('selected reset directory repopulated')
+        os.fsync(fd)
+    finally:os.close(fd)
+
+def no_data_mounts(rows):
+    def fields(line):return [value.replace('\\040',' ').replace('\\134','\\') for value in line.split()]
+    own=[fields(line) for line in Path('/proc/self/mountinfo').read_text().splitlines()]
+    selected=[]
+    for row in rows:
+        path=Path(row['path']);dev=f"{os.major(row['dev'])}:{os.minor(row['dev'])}"
+        parents=[entry for entry in own if len(entry)>=5 and entry[2]==dev and
+                 (str(path)==entry[4] or str(path).startswith(entry[4].rstrip('/')+'/'))]
+        if not parents:raise Refusal('selected data filesystem root unavailable')
+        parent=max(parents,key=lambda entry:len(entry[4]))
+        if str(path)==parent[4]:raise Refusal('never reset a whole mounted filesystem')
+        root=str(Path(parent[3])/path.relative_to(parent[4])).rstrip('/')
+        if root in ('','/'):raise Refusal('never reset a whole filesystem')
+        selected.append((dev,root))
+    for process in Path('/proc').iterdir():
+        if not process.name.isdigit():continue
+        try:lines=(process/'mountinfo').read_text().splitlines()
+        except (FileNotFoundError,ProcessLookupError):continue
+        except PermissionError as exc:raise Refusal('cannot establish absence of selected data mounts') from exc
+        for line in lines:
+            entry=fields(line)
+            if len(entry)>=5 and any(entry[2]==dev and (entry[3]==root or entry[3].startswith(root+'/')) for dev,root in selected):
+                raise Refusal('selected owned data remains mounted in a process namespace')
+
+def reset_owned(bundle,selector,inventory,ledger,reviewed_sha):
+    """Explicit experimental deletion, never a production/owner-data reset RPC."""
+    b,p,plan=context(bundle,selector,ledger);lifecycle=load('owned_reset_lifecycle','venue-start-quarantine.py')
+    controller=lifecycle.host_context(b,plan);registry=load('owned_reset_registry','venue-registry-images.py')
+    with lifecycle.lifecycle(controller):
+        if stage.sha(p)!=reviewed_sha:raise Refusal('experimental reset ledger SHA CAS changed')
+        data=receipt(p);lifecycle.reviewed_retry(data,plan,controller,require_repair=False)
+        lifecycle.targets(b,plan,data);lifecycle.units.units_idle(plan)
+        vm=json.loads((b/'site/agent-vm.json').read_text())
+        listed=graph.run(['virsh','-c','qemu:///system','list','--all','--name'],timeout=30)
+        if listed.returncode or vm['name'] in listed.stdout.splitlines():
+            raise Refusal('selected guest requires separate exact owned retirement before stack reset')
+        for account,command in lifecycle.selected_commands(plan):
+            if account and account['name'] in data.get('venueStartApiSockets',[]):
+                result=graph.run(command+['show','podman.socket','podman.service','-p','ActiveState'],timeout=30)
+                if result.returncode or any(line not in ('ActiveState=inactive','ActiveState=failed','') for line in result.stdout.splitlines()):
+                    raise Refusal('selected API not fully fenced before owned reset')
+        for name,record in data['pathIdentities'].items():
+            path=Path(name);info=path.lstat()
+            if path.is_symlink() or not stat.S_ISDIR(info.st_mode) or (info.st_dev,info.st_ino,info.st_uid)!=(record['dev'],record['ino'],record['uid']):
+                raise Refusal('reset ancestor/source identity changed')
+        authority=registry.authority.authority(b,selector)
+        roots,_=registry.probe(b,plan,data,authority['imageIds'],recovering=True)
+        if data.get('venueRecoveryContainers'):raise Refusal('exact stopped-native cleanup required before data reset')
+        sources=composite.binds.inventory(b,selector,plan);rows=[]
+        if set(sources)!={row['path'] for row in data.get('venueDataBindDirs',[])} or len(sources)!=61:
+            raise Refusal('all 61 original selected data binds required for reset')
+        for row in data['venueDataBindDirs']:rows.append({**row,'restoreUid':sources[row['path']]['owner'],'restoreGid':sources[row['path']]['owner']})
+        logs=composite.binds.log_sources(b,plan)
+        if logs!={row['path']:row['consumers'] for row in data.get('venueLogBindDirs',[])}:raise Refusal('actual owned log set differs')
+        rows.extend({**row,'restoreUid':0,'restoreGid':0} for row in data.get('venueLogBindDirs',[]))
+        apps=next(a for a in plan['accounts'] if a['name']==plan['prefix']+'-apps')
+        if composite.huly.inventory(apps)!=set(composite.huly.NAMES) or len(data.get('venueHulyVolumes',[]))!=4:
+            raise Refusal('four exact original named volumes required')
+        for row in data['venueHulyVolumes']:
+            path=composite.huly.mountpoint(apps,row['name'])
+            if str(path)!=row['mountpoint']:raise Refusal('named reset volume mountpoint drift')
+            rows.append({**row,'path':str(path),'restoreUid':path.lstat().st_uid,'restoreGid':path.lstat().st_gid})
+        paths=[Path(row['path']) for row in rows]
+        if len(set(paths))!=len(paths) or any(a in b.parents for a in paths for b in paths if a!=b):
+            raise Refusal('owned reset roots duplicate or overlap')
+        for row in rows:
+            path=Path(row['path']);info=path.lstat()
+            if path.is_symlink() or not stat.S_ISDIR(info.st_mode) or (info.st_dev,info.st_ino)!=(row['dev'],row['ino']):
+                raise Refusal('selected populated directory is not original created inode')
+        no_data_mounts(rows)
+        marker=Path(plan['roots']['rootful-state'])/'volume-ready-r1.txt'
+        prior_reset=data.get('venueOwnedReset',{})
+        marker_removed=(not os.path.lexists(marker) and data.get('venueOwnedResetPending')=={'marker':str(marker)} and
+                        prior_reset.get('phase')=='intent' and len(prior_reset.get('emptied',[]))==len(rows))
+        if not marker_removed:
+            info=marker.lstat()
+            if (marker.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid or info.st_nlink!=1 or
+                    stat.S_IMODE(info.st_mode)!=0o600 or marker.read_text()!=plan['prefix']+'-volume-ready-v1\n'):
+                raise Refusal('owned reset readiness marker changed')
+        reset=data.setdefault('venueOwnedReset',{'phase':'intent','contextSha256':controller.digest,
+            'quadletTreeSha256':plan['quadletTreeSha256'],'sourceSha256':stage.sha(__file__),
+            'directories':rows,'networks':data['venueRecoveryNetworks'],'emptied':[],'retiredNetworks':[]})
+        if reset['contextSha256']!=controller.digest or reset['directories']!=rows:raise Refusal('interrupted reset identity differs')
+        stage.write_ledger(p,data)
+        for key,proof in reset['networks'].items():
+            if proof['id'] in reset['retiredNetworks']:continue
+            user=key.split('|',1)[0];data['venueOwnedResetPending']={'network':proof['id']};stage.write_ledger(p,data)
+            if graph.run(roots[user][1]+['network','rm',proof['id']],timeout=60).returncode:
+                raise Refusal('exact native network removal failed; reset intent retained')
+            reset['retiredNetworks'].append(proof['id']);stage.write_ledger(p,data)
+        registry.probe(b,plan,data,authority['imageIds'])
+        for row in rows:
+            if row['path'] in reset['emptied']:continue
+            data['venueOwnedResetPending']={'directory':row['path']};stage.write_ledger(p,data)
+            empty_owned_directory(row);reset['emptied'].append(row['path']);stage.write_ledger(p,data)
+        for path,users in composite.acl.policy(plan,sources):
+            composite.acl.call(['setfacl','-b','-k',str(path)])
+            composite.acl.call(['setfacl','--set='+','.join(composite.acl.granted_rows(users)),str(path)])
+            if composite.acl.permission_rows(path)!=composite.acl.granted_rows(users):raise Refusal('reset ACL matrix differs')
+        data['venueOwnedResetPending']={'marker':str(marker)};stage.write_ledger(p,data)
+        if not marker_removed:marker.unlink()
+        fd=os.open(marker.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        try:os.fsync(fd)
+        finally:os.close(fd)
+        reset['phase']='empty-owned';data.pop('venueOwnedResetPending');data['status']='units-staged'
+        data['venueInstallerPhase']='reset-complete';stage.write_ledger(p,data)
+        return {'status':'reset-complete','emptiedExactOwnedDirectories':len(rows),
+                'retiredExactNativeNetworks':len(reset['retiredNetworks']),'backupsCreated':False,
+                'servicesStarted':False,'activationAuthorized':False,'acceptedIntegratedInstalls':0}
+
+
 def activate(bundle,selector,ledger,*,reviewed_failed_sha=None):
     lifecycle=load('venue_lifecycle','venue-start-quarantine.py')
     try:return lifecycle.start(bundle,selector,ledger,**({'reviewed_failed_sha':reviewed_failed_sha} if reviewed_failed_sha is not None else {}))
@@ -146,6 +288,7 @@ def main():
     mode.add_argument('--activate-isolated',action='store_true')
     mode.add_argument('--quarantine-start',action='store_true')
     mode.add_argument('--retry-reviewed-failed-sha',metavar='SHA256')
+    mode.add_argument('--reset-experimental-owned-sha',metavar='SHA256')
     a=p.parse_args()
     try:
         if a.prepare_inactive:
@@ -156,6 +299,8 @@ def main():
             if a.activate_isolated:result=activate(a.bundle,a.selector,a.ledger)
             elif a.retry_reviewed_failed_sha is not None:
                 result=activate(a.bundle,a.selector,a.ledger,reviewed_failed_sha=a.retry_reviewed_failed_sha)
+            elif a.reset_experimental_owned_sha is not None:
+                result=reset_owned(a.bundle,a.selector,a.protected_inventory,a.ledger,a.reset_experimental_owned_sha)
             elif a.quarantine_start:
                 result=load('venue_lifecycle','venue-start-quarantine.py').quarantine(a.bundle,a.selector,a.ledger)
             else:result=retire(a.bundle,a.selector,a.protected_inventory,a.ledger)

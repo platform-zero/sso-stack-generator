@@ -185,7 +185,8 @@ def probe(bundle,plan,data,expected,*,recovering=False):
         found[user]=ids
     if recovering:
         prior=data.get('venueRecoveryNetworks')
-        if prior is not None and any(network_proofs.get(key)!=value for key,value in prior.items()):
+        retired=set(data.get('venueOwnedReset',{}).get('retiredNetworks',[]))
+        if prior is not None and any(network_proofs.get(key)!=value for key,value in prior.items() if value['id'] not in retired):
             raise Refusal('recorded retained network identities changed')
         data['venueRecoveryNetworks']=network_proofs
         prior=data.get('venueRecoveryContainers')

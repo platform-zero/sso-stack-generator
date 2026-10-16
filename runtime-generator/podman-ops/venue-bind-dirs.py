@@ -163,8 +163,12 @@ def retire_logs(bundle,selector,ledger):
     if data.get('plan')!=plan:raise Refusal('log retirement source CAS differs')
     rows=data.get('venueLogBindDirs',[]);sources=log_sources(bundle,plan)
     if not rows:return
-    if data.get('venueInstallerVersion')!=1 or data.get('activationAuthorized') is not False:
-        raise Refusal('only inactive version-one logs may use empty retirement')
+    reset=data.get('venueOwnedReset',{})
+    version_ok=(data.get('venueInstallerVersion')==1 or
+                (data.get('venueInstallerVersion')==2 and reset.get('phase')=='empty-owned' and
+                 reset.get('quadletTreeSha256')==plan['quadletTreeSha256']))
+    if not version_ok or data.get('activationAuthorized') is not False:
+        raise Refusal('only inactive version-one or exactly reset version-two logs may use empty retirement')
     load('log_unit_idle','venue-unit-stage.py').units_idle(plan)
     if {row['path']:row['consumers'] for row in rows}!=sources:raise Refusal('log bind journal differs')
     for row in rows:

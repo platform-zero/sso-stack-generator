@@ -37,12 +37,15 @@ def stores(bundle,plan):
             'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/'+str(uid)+'/bus','podman']))
     return out
 
-def selected_images(bundle):
+def selected_pairs(bundle):
     path=Path(bundle)/'site/global.settings/registry-image-ids.json'
     if path.is_symlink() or not path.is_file():raise Refusal('missing site-pinned image identities')
     source_spec=importlib.util.spec_from_file_location('selected_pinned_images',HERE/'install-pinned-images.py')
     source=importlib.util.module_from_spec(source_spec);source_spec.loader.exec_module(source)
-    identities=source.selected_image_ids(Path(bundle))
+    return source.selected_image_ids(Path(bundle))
+
+def selected_images(bundle):
+    identities=selected_pairs(bundle)
     if not isinstance(identities,dict) or not identities:raise Refusal('empty frozen image authority')
     out={}
     for key,value in identities.items():
@@ -283,8 +286,10 @@ def clear(bundle,selector,ledger):
     allowed=selected_images(bundle)
     if state.get('venueCompositeVersion')==2:
         imported=state.get('venueCompositeOfflineImages',[])
-        if not isinstance(imported,list) or len(imported)>1:
-            raise Refusal('composite image import journal differs')
+        frozen_profile=json.loads((Path(bundle)/'stack.ir.json').read_text()).get('quadletBuildImagesFrozen') is True
+        maximum=len(set().union(*allowed.values())) if frozen_profile else 1
+        if not isinstance(imported,list) or len(imported)>maximum:
+            raise Refusal('composite image import journal exceeds exact frozen/legacy authority')
         exact={key:set() for key in allowed}
         for row in imported:
             if not isinstance(row,dict) or not isinstance(row.get('authorities'),list) or not row['authorities']:
@@ -295,7 +300,7 @@ def clear(bundle,selector,ledger):
                 exact[user].add(row['image'])
         registry_phase=state.get('venueRegistryPhase')
         if registry_phase is not None:
-            approved=json.loads((Path(bundle)/'site/global.settings/registry-image-ids.json').read_text())
+            approved=selected_pairs(bundle)
             recorded=state.get('venueRegistryVerified')
             if (registry_phase not in ('preparing','inert-ready') or state.get('venueRegistryPending') or
                     state.get('venueRegistryPlan')!=approved or not isinstance(recorded,dict) or

@@ -418,7 +418,7 @@ def cleanup_stopped(bundle,selector,ledger,reviewed_failed_sha):
     context=host_context(bundle,plan);registry=load('bootstrap_cleanup_registry','venue-registry-images.py')
     with lifecycle(context):
         if stage.sha(p)!=reviewed_failed_sha:raise Refusal('stopped native cleanup ledger CAS changed')
-        state=json.loads(p.read_text());reviewed_retry(state,plan,context);units.units_idle(plan)
+        state=json.loads(p.read_text());reviewed_retry(state,plan,context,require_repair=False);units.units_idle(plan)
         source=registry.authority.authority(bundle,selector)
         roots,_=registry.probe(bundle,plan,state,source['imageIds'],recovering=True)
         for key,proof in list(state.get('venueRecoveryContainers',{}).items()):

@@ -27,6 +27,7 @@ listener/capacity gate to get an installation attempt.
 | Clean exact stopped native bootstrap metadata | `ops/venue-start-quarantine.py --cleanup-stopped-native SHA256 ...` | Under the same fenced lease/failed-ledger CAS and specific repair; journals exact source/image/unit/epoch-owned exited IDs before non-force cleanup/rm; no volumes or data reset |
 | Review a proven stale prior-result observation | `ops/venue-start-quarantine.py --review-stale-result-unit UNIT --reviewed-ledger-sha SHA256 ...` | One selected owner/unit, failed result whose activation/exec timestamps precede this attempt, changed lifecycle source, fenced current-boot context; no start or data reset |
 | Review changed-input recovery | `ops/venue-install-inert.py --retry-reviewed-failed-sha SHA256 ...` | Explicit failed-ledger CAS, current-boot fenced context and one unconsumed specific repair; retained source/epoch-bound native object IDs checked, not a new clean installation |
+| Reset exact experimental owned contents | `ops/venue-install-inert.py --reset-experimental-owned-sha SHA256 ...` | Completed quarantine/current-boot fence, no guest, no containers/pods/foreign objects, all original source/parent/data inodes and process mount namespaces checked; journaled native-network IDs and fd-relative data deletion; no backups or starts |
 | Attempt isolated activation | `ops/venue-install-inert.py --activate-isolated` | Explicitly upgrades a fresh frozen-input preparation to a current-boot version-2 intent; native startup is not integrated acceptance |
 | Quarantine selected activation | `ops/venue-install-inert.py --quarantine-start` | Fences runtime authority, cancels selected late jobs and stops exact native units/sockets while retaining data; never retries |
 
@@ -69,7 +70,18 @@ the ledger. Existing stopped
 selected API socket nodes are checked against inactive selected socket/service
 units; generated units and mounted configuration inodes are never patched.
 
-This is not populated-state reset, guest idle/trigger authority or proof of
+Experimental populated reset is separate from inert retirement and startup. It
+keeps the original top bind/log/volume inodes, removes only their contents without
+following symlinks or crossing filesystems, restores reviewed top-level ownership
+and ACLs, removes only receipted native network IDs and the exact readiness marker,
+and preserves version-2 attempts/failure evidence. Empty-state proof allows reverse
+retirement without pretending the stage was never activated. Frozen retirement
+uses the complete selected direct/local identity map and bounded catalogue, not a
+legacy one-archive/direct-only assumption. Stopped metadata cleanup needs a fenced
+exact epoch/CAS, not an unconsumed restart repair; it never grants runtime authority.
+A guest must be separately exactly retired first. No global prune/data backup.
+
+This does not supply a general production reset, guest idle/trigger authority or proof of
 operational host/guest coupling, ingress or integrated delivery. Consumers still
 refuse version-1 preparation and missing/stale version-2 authority. Never forge
 a running journal/readiness marker or patch immutable units to satisfy a gate.

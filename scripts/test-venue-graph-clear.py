@@ -20,6 +20,7 @@ class GraphClearFixtures(unittest.TestCase):
         temp=tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup)
         self.root=Path(temp.name);self.bundle=self.root/'bundle'
         (self.bundle/'site/global.settings').mkdir(parents=True)
+        (self.bundle/'stack.ir.json').write_text('{"services":{}}')
         self.allowed='sha256:'+'a'*64
         (self.bundle/'site/global.settings/registry-image-ids.json').write_text(json.dumps({'root|pinned':self.allowed}))
         accounts=[];roots={'rootful-graph':str(self.root/'graph-root'),'rootful-run':str(self.root/'run-root'),
@@ -211,6 +212,23 @@ class GraphClearFixtures(unittest.TestCase):
               patch.object(clear.os,'geteuid',return_value=0)):
             self.assertEqual(clear.clear(self.bundle,self.root/'unused',self.ledger)['graphRootsCleared'],8)
         self.assertTrue(removed)
+    def test_complete_selected_frozen_catalogue_retirement_keeps_legacy_bound(self):
+        identities={'sha256:'+format(i,'064x') for i in range(1,14)};remaining=set(identities)
+        self.data.update(venueCompositeVersion=2,venueCompositeOfflineImages=[{'authorities':['root'],'image':value} for value in sorted(identities)])
+        self.ledger.write_text(json.dumps(self.data))
+        def selected(command,**kwargs):
+            if 'image' in command and 'rm' in command:
+                remaining.remove(command[-1]);return SimpleNamespace(returncode=0,stdout='')
+            if 'image' in command and 'ls' in command:
+                return SimpleNamespace(returncode=0,stdout='\n'.join(sorted(remaining)) if '--root' in command else '')
+            return self.runner(command,**kwargs)
+        with (patch.object(clear.stage,'owned_plan',return_value=self.plan),patch.object(clear,'selected_images',return_value={'root':identities}),
+              patch.object(clear,'run',side_effect=selected)):
+            with self.assertRaisesRegex(clear.Refusal,'frozen/legacy authority'):clear.clear(self.bundle,self.root/'unused',self.ledger)
+            self.assertEqual(remaining,identities)
+            (self.bundle/'stack.ir.json').write_text('{"quadletBuildImagesFrozen":true}')
+            self.assertEqual(clear.clear(self.bundle,self.root/'unused',self.ledger)['graphRootsCleared'],8)
+        self.assertFalse(remaining)
     def test_partially_cleared_ledger_never_reopens_cleared_root_and_records_missing_id(self):
         self.data.update({'venueCompositeVersion':2,'venueCompositeOfflineImages':[
             {'authorities':['root'],'image':self.allowed}],
