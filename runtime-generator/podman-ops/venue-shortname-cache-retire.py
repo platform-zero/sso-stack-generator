@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Retire ONLY present selected CAS-journaled short-name locks after graph reset.
+"""Retire ONLY two CAS-journaled Podman short-name lock files after graph reset.
 
 This is an inactive-stage repair, not a populated-data reset. Never call
 Podman while inspecting cleared graphs: even image listing recreates metadata.
@@ -89,10 +89,6 @@ def rows_for(plan,data):
                 (s.st_dev,s.st_ino,s.st_uid)!=(record.get('dev'),record.get('ino'),a['uid'])):
             raise Refusal('selected account home identity changed')
         top=home/'.cache';child=top/'containers';file=child/'short-name-aliases.conf.lock'
-        if not os.path.lexists(top):
-            if {x.name for x in home.iterdir()}!={'.config'}:
-                raise Refusal('selected short-name home has foreign content')
-            continue  # A targeted build need not create both known caches.
         if {x.name for x in home.iterdir()}!={'.config','.cache'}:
             raise Refusal('selected short-name home has foreign content')
         if {x.name for x in top.iterdir()}!={'containers'} or {x.name for x in child.iterdir()}!={file.name}:
@@ -129,8 +125,6 @@ def validate_remaining(data,plan,rows):
     for a in plan['accounts']:
         if a['name'] not in NAMES:continue
         home=Path(a['home']);top=home/'.cache';child=top/'containers';file=child/'short-name-aliases.conf.lock'
-        if str(top) not in expected and os.path.lexists(top):
-            raise Refusal('unjournaled selected short-name cache appeared')
         if {p.name for p in home.iterdir()}!=({'.config','.cache'} if os.path.lexists(top) else {'.config'}):
             raise Refusal('selected home has new content')
         if os.path.lexists(top) and {p.name for p in top.iterdir()}!=({'containers'} if os.path.lexists(child) else set()):
@@ -144,7 +138,6 @@ def retire(bundle,selector,ledger):
     process_and_mount_check(plan)
     if data.get('venueShortnameCachePhase') is None:
         rows=rows_for(plan,data)  # inventory BOTH accounts before the first unlink
-        if len(rows) not in (3,6):raise Refusal('no selected short-name cache to retire')
         data['venueShortnameCacheRows']=rows
         data['venueShortnameCacheRetiredPaths']=[]
         data['venueShortnameCachePhase']='prepared';stage.write_ledger(path,data)
@@ -154,13 +147,13 @@ def retire(bundle,selector,ledger):
         return {'status':'retired-inert','retiredExactCacheInodes':len(data['venueShortnameCacheRows']),
                 'activationAuthorized':False,'acceptedIntegratedInstalls':0}
     rows=data.get('venueShortnameCacheRows')
-    if not isinstance(rows,list) or len(rows) not in (3,6) or len({x['path'] for x in rows})!=len(rows):
-        raise Refusal('missing exact selected short-name cache ledger')
-    # Each present cache requires its entire three-inode set in plan order;
-    # absent caches are never fabricated merely to satisfy a trial-specific count.
+    if not isinstance(rows,list) or len(rows)!=6 or len({x['path'] for x in rows})!=6:
+        raise Refusal('missing exact six-inode short-name cache ledger')
+    # Verify the rows correspond to the only two site-selected account homes,
+    # not merely six arbitrary paths asserted in a writable journal.
     expected=[]
     for a in plan['accounts']:
-        if a['name'] in NAMES and str(Path(a['home'])/'.cache') in {x.get('path') for x in rows}:
+        if a['name'] in NAMES:
             home=Path(a['home']);top=home/'.cache';child=top/'containers'
             expected.extend((str(child/'short-name-aliases.conf.lock'),str(child),str(top)))
     if [x.get('path') for x in rows]!=expected:raise Refusal('short-name cache rows not selected homes')

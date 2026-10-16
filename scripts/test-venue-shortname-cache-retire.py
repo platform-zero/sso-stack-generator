@@ -59,22 +59,6 @@ class SelectedCache(unittest.TestCase):
         second.write_bytes(b'')
         self.assertEqual(cache.retire(self.bundle,'unused',self.ledger)['retiredExactCacheInodes'],6)
         for a in self.plan['accounts']:self.assertFalse((Path(a['home'])/'.cache').exists())
-    def test_targeted_build_can_leave_only_one_exact_cache(self):
-        absent=Path(self.plan['accounts'][1]['home'])/'.cache'
-        (absent/'containers/short-name-aliases.conf.lock').unlink()
-        (absent/'containers').rmdir();absent.rmdir()
-        result=cache.retire(self.bundle,'unused',self.ledger)
-        self.assertEqual(result['retiredExactCacheInodes'],3)
-        self.assertEqual(cache.retire(self.bundle,'unused',self.ledger)['status'],'retired-inert')
-        for a in self.plan['accounts']:self.assertFalse((Path(a['home'])/'.cache').exists())
-    def test_unjournaled_second_cache_blocks_subset_before_first_unlink(self):
-        rows=cache.rows_for(self.plan,self.data)[:3]
-        self.data.update({'venueShortnameCacheRows':rows,'venueShortnameCacheRetiredPaths':[],
-                          'venueShortnameCachePhase':'prepared'})
-        cache.stage.write_ledger(self.ledger,self.data)
-        with self.assertRaisesRegex(cache.Refusal,'unjournaled selected'):
-            cache.retire(self.bundle,'unused',self.ledger)
-        self.assertTrue(Path(rows[0]['path']).exists())
     def test_resume_after_journaled_lock_unlink_does_not_guess_by_path(self):
         path,data,plan=cache.check_ledger(self.bundle,'unused',self.ledger)
         rows=cache.rows_for(plan,data)
