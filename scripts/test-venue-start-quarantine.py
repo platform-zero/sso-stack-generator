@@ -43,6 +43,20 @@ class StartQuarantine(unittest.TestCase):
         with self.assertRaisesRegex(q.Refusal,'no exact version-2'):
             self.run_guard(records)
         self.assertEqual(len(records),4)
+    def test_stop_failure_keeps_partial_receipt_and_never_restarts(self):
+        calls=[]
+        selected={None:['p0test-r1.target'],'p0test-r1-apps':['p0test-r1.target']}
+        def stop(command,**kwargs):calls.append(command);return SimpleNamespace(returncode=1)
+        def save(_path,row):self.ledger.write_text(json.dumps(row))
+        with (patch.object(q.stage,'owned_plan',return_value=self.plan),
+              patch.object(q,'targets',return_value=selected),
+              patch.object(q.stage,'write_ledger',side_effect=save),
+              patch.object(q.graph,'run',side_effect=stop)):
+            with self.assertRaisesRegex(q.Refusal,'stop request failed'):
+                q.quarantine('bundle','selector',self.ledger)
+        self.assertEqual(json.loads(self.ledger.read_text())['venueStartPhase'],'failed-quarantining')
+        self.assertEqual(len(calls),1)
+        self.assertNotIn('start',calls[0])
     def test_marker_symlink_refuses_before_stop(self):
         marker=self.root/'volume-ready-r1.txt';marker.symlink_to('/etc/hosts')
         records=[]
