@@ -127,8 +127,15 @@ def cancel_starts(command,names):
         fields=line.split()
         if len(fields)<4:raise Refusal('malformed native job inventory')
         if fields[1] in names and fields[2]!='stop':
-            if not fields[0].isdigit() or graph.run(command+['cancel',fields[0]],timeout=30).returncode:
-                raise Refusal('selected late start job could not be cancelled')
+            if not fields[0].isdigit():raise Refusal('invalid selected native job identity')
+            if graph.run(command+['cancel',fields[0]],timeout=30).returncode:
+                # A job can finish between enumeration and cancellation. It is
+                # safe only if a fresh successful inventory proves that exact
+                # ID absent; the following explicit stop still fences its unit.
+                again=graph.run(command+['list-jobs','--no-legend','--no-pager'],timeout=30)
+                rows=[line.split() for line in again.stdout.splitlines()]
+                if again.returncode or any(len(row)<4 or row[0]==fields[0] for row in rows):
+                    raise Refusal('selected late start job could not be cancelled')
 
 def start(bundle,selector,ledger,timeout=900):
     """First real activation only. Partial failure fences/stops, never retries."""

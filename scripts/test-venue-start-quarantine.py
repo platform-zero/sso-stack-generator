@@ -66,6 +66,16 @@ class StartQuarantine(unittest.TestCase):
         self.assertEqual(json.loads(self.ledger.read_text())['venueStartPhase'],'failed-quarantining')
         self.assertEqual(len(calls),2)
         self.assertTrue(all('start' not in command for command in calls))
+    def test_cancel_race_requires_fresh_exact_id_absence(self):
+        replies=[SimpleNamespace(returncode=0,stdout='41 p0test-r1-app.service start running\n'),
+                 SimpleNamespace(returncode=1,stdout=''),SimpleNamespace(returncode=0,stdout='')]
+        with patch.object(q.graph,'run',side_effect=replies):
+            q.cancel_starts(['systemctl'],['p0test-r1-app.service'])
+    def test_cancel_failure_with_same_job_remaining_refuses(self):
+        row=SimpleNamespace(returncode=0,stdout='41 p0test-r1-app.service start running\n')
+        with patch.object(q.graph,'run',side_effect=[row,SimpleNamespace(returncode=1,stdout=''),row]):
+            with self.assertRaisesRegex(q.Refusal,'could not be cancelled'):
+                q.cancel_starts(['systemctl'],['p0test-r1-app.service'])
     def test_real_manifest_mapping_preserves_native_target_suffix(self):
         manifest={};records=[]
         for index in range(194):
