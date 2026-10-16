@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import shutil
 import stat
 import subprocess
@@ -48,6 +49,39 @@ def selected_images(bundle):
             raise Refusal('malformed selected frozen image identity')
         out.setdefault(user,set()).add(value)
     return out
+
+def journaled_build_base_ids(bundle,selector,state,source=None):
+    """Only locally inspect exactly journaled FROM identities before removal."""
+    phase=state.get('venueBuildBasePhase')
+    if phase is None:return {}
+    source_spec=importlib.util.spec_from_file_location('venue_image_authority',HERE/'venue-image-authority.py')
+    authority=importlib.util.module_from_spec(source_spec);source_spec.loader.exec_module(authority)
+    if source is None:source=authority.authority(bundle,selector)
+    verified=state.get('venueBuildBaseVerified')
+    if (phase not in ('preparing','inert-ready') or state.get('venueBuildBasePending') or
+            state.get('venueRegistryPhase')!='inert-ready' or
+            state.get('venueBuildBasePlan')!=source['buildBaseStores'] or
+            state.get('venueBuildBaseFrozenSha256')!=source['frozenBuildBaseSha256'] or
+            not source['frozenBuildBaseSha256'] or not isinstance(verified,dict) or
+            any(k not in source['buildBaseStores'] or not isinstance(v,str) or
+                not authority.HEX.fullmatch(v) for k,v in verified.items()) or
+            (phase=='inert-ready' and set(verified)!=set(source['buildBaseStores']))):
+        raise Refusal('build-base image journal lacks exact selected FROM authority')
+    commands={user:command for user,_,command in stores(bundle,stage.owned_plan(bundle,selector))}
+    result={user:set() for user in commands}
+    for key,value in verified.items():
+        user,sep,ref=key.partition('|');pinned=source['buildBaseImages'].get(key)
+        if (not sep or user not in commands or
+                (pinned and value!=pinned['configId']) or
+                (not pinned and not re.search(r'@sha256:[0-9a-f]{64}\Z',ref))):
+            raise Refusal('build-base key/config ID differs from selected source')
+        observed=run(commands[user]+['image','inspect','--format','{{.Id}}',ref],timeout=35)
+        arch=run(commands[user]+['image','inspect','--format','{{.Architecture}}/{{.Os}}',ref],timeout=35)
+        if (observed.returncode or arch.returncode or arch.stdout.strip()!='amd64/linux' or
+                'sha256:'+observed.stdout.strip().removeprefix('sha256:')!=value):
+            raise Refusal('local selected build FROM image/tag drift')
+        result[user].add(value)
+    return result
 
 def inspect_graph(command):
     observations={}
@@ -102,6 +136,9 @@ def clear(bundle,selector,ledger):
                 user,sep,_=key.partition('|')
                 if not sep or user not in exact:raise Refusal('unknown registry image graph authority')
                 exact[user].add(value)
+        for user,values in journaled_build_base_ids(bundle,selector,state).items():
+            if user not in exact:raise Refusal('unknown build-base image authority')
+            exact[user].update(values)
         allowed=exact
     # The netavark rootful default is /etc/containers/networks even with a
     # private image graph. Never enumerate/mutate that shared directory as

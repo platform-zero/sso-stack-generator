@@ -63,7 +63,7 @@ def authority(bundle,selector,site_source=None,require_pinned_bases=False):
     data=json.loads(identities.read_text())
     if not isinstance(data,dict) or not data or any(not isinstance(k,str) or not isinstance(v,str) or not HEX.fullmatch(v) for k,v in data.items()):
         raise Refusal('malformed frozen site image config identities')
-    rows={};builds={};unit_count=0;base_refs={};mutable_store_bases=set()
+    rows={};builds={};unit_count=0;base_refs={};store_bases={};mutable_store_bases=set()
     for directory in sorted((b/'quadlet').iterdir()):
         if not directory.is_dir() or directory.is_symlink():raise Refusal('unknown Quadlet image authority')
         user='root' if directory.name=='rootful' else names.get(directory.name.removeprefix('rootless-'))
@@ -83,6 +83,7 @@ def authority(bundle,selector,site_source=None,require_pinned_bases=False):
                 builds[str(file.relative_to(b))]={'user':user,'sha256':digest}
                 for base in bases:
                     base_refs.setdefault(base,[]).append(str(file.relative_to(b)))
+                    store_bases.setdefault(user+'|'+base,[]).append(str(file.relative_to(b)))
                     if not re.search(r'@sha256:[0-9a-f]{64}\Z',base):mutable_store_bases.add(user+'|'+base)
             else:
                 if not (HEX.fullmatch(ref) or REF.fullmatch(ref)) or ref.endswith(':latest'):
@@ -138,10 +139,12 @@ def authority(bundle,selector,site_source=None,require_pinned_bases=False):
             'bundleIrSha256':plan['bundleIrSha256'],'quadletTreeSha256':plan['quadletTreeSha256'],
             'selectorSha256':plan['selectorSha256'],'frozenRegistrySha256':source,
             'containerUnits':unit_count,'directImageReferences':len(rows),'localBuildUnits':len(builds),
-            'buildBaseReferences':len(base_refs),'mutableBuildBaseReferences':unpinned,
+            'buildBaseReferences':len(base_refs),'buildBaseStorePairs':len(store_bases),
+            'mutableBuildBaseReferences':unpinned,
             'unfrozenBuildBaseReferences':sorted(set(mutable_store_bases)-set(base_map)),
             'frozenBuildBasePairs':len(base_map),'frozenBuildBaseSha256':base_sha,
-            'imageIds':data,'buildUnits':builds,'buildBaseImages':base_map,'activationAuthorized':False,
+            'imageIds':data,'buildUnits':builds,'buildBaseImages':base_map,
+            'buildBaseStores':sorted(store_bases),'activationAuthorized':False,
             'acceptedIntegratedInstalls':0}
 
 def main():
@@ -152,7 +155,7 @@ def main():
     a=ap.parse_args()
     try:
         result=authority(a.bundle,a.selector,a.site_source,a.require_pinned_bases)
-        print(json.dumps({k:v for k,v in result.items() if k not in ('imageIds','buildUnits','buildBaseImages')},sort_keys=True))
+        print(json.dumps({k:v for k,v in result.items() if k not in ('imageIds','buildUnits','buildBaseImages','buildBaseStores')},sort_keys=True))
     except (Refusal,KeyError,OSError,ValueError,TypeError,subprocess.SubprocessError) as exc:
         raise SystemExit('venue complete image/build authority refused: '+str(exc)) from exc
 if __name__=='__main__':main()
