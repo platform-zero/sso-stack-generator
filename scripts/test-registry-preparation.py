@@ -70,7 +70,13 @@ class RegistryPreparation(unittest.TestCase):
         venue['rootfulGraphRoot']='/mnt/stack/p0-existing-host-venue-r1/rootful-graph'
         venue['rootfulRunRoot']='/run/p0test-r1-podman'
         (self.bundle/'podman-domains.json').write_text(json.dumps({'domains':[],'venue':venue}))
-        with self.assertRaises(OSError):self.run_prepare()
+        # A real inactive venue may exist while source regressions run. Model
+        # the missing store explicitly; never depend on physical host absence.
+        real_lstat=Path.lstat
+        def missing_state(path,*args,**kwargs):
+            if path==Path(venue['rootfulStateRoot']):raise FileNotFoundError(str(path))
+            return real_lstat(path,*args,**kwargs)
+        with patch.object(Path,'lstat',missing_state),self.assertRaises(OSError):self.run_prepare()
         self.assertEqual(self.calls,[])
 
     def test_exact_authority_dedup_and_cached_input(self):
