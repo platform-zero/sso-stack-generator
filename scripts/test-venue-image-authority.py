@@ -41,6 +41,17 @@ class ImageAuthority(unittest.TestCase):
     def test_all_60_frozen_authorities_and_14_local_builds(self):
         r=authority.authority(self.b,'unused');self.assertEqual((r['containerUnits'],r['directImageReferences'],r['localBuildUnits']),(93,60,14))
         self.assertEqual(set(r['imageIds']),set(self.rows))
+    def test_local_only_build_requires_offline_network(self):
+        old='p0test-r1-build-0';new='p0test-r1-keycloak'
+        (self.root/(old+'.container')).rename(self.root/(new+'.container'))
+        (self.root/(new+'.container')).write_text('Image='+new+'.build\n')
+        (self.root/(old+'.build')).rename(self.root/(new+'.build'))
+        source=self.b/'build'/old;source.rename(self.b/'build'/new)
+        p=self.root/(new+'.build');p.write_text(p.read_text().replace(old,new))
+        with self.assertRaisesRegex(authority.Refusal,'unreviewed network egress'):
+            authority.authority(self.b,'unused',require_pinned_bases=True)
+        p.write_text(p.read_text()+'Network=none\n')
+        self.assertEqual(authority.authority(self.b,'unused',require_pinned_bases=True)['localBuildUnits'],14)
     def test_build_without_no_pull_refuses_pinned_activation(self):
         p=self.root/'p0test-r1-build-0.build'
         p.write_text(p.read_text().replace('Pull=never\n',''))

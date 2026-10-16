@@ -78,6 +78,10 @@ def authority(bundle,selector,site_source=None,require_pinned_bases=False):
                     raise Refusal('selected local build consumer lacks exact generated build unit')
                 if require_pinned_bases and file.read_text().splitlines().count('Pull=never')!=1:
                     raise Refusal('selected build unit may pull an unreviewed base')
+                if (require_pinned_bases and unit.stem.removeprefix(plan['prefix']+'-') in
+                        ('keycloak','onboarding','mastodon-rss-publisher') and
+                        file.read_text().splitlines().count('Network=none')!=1):
+                    raise Refusal('selected local-only build permits unreviewed network egress')
                 digest=hashlib.sha256(file.read_bytes()).hexdigest()
                 bases=build_bases(b,file)
                 builds[str(file.relative_to(b))]={'user':user,'sha256':digest}

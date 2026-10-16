@@ -1765,7 +1765,14 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
         // The isolated venue must preload each reviewed build base in its
         // exclusive graph. Never silently advance a mutable FROM tag while
         // executing a generated build unit. Legacy units are unchanged.
-        if (unitPrefix != "webservices") buildLines += "Pull=never"
+        if (unitPrefix != "webservices") {
+            buildLines += "Pull=never"
+            // These three pinned Containerfiles need no build-time egress.
+            // Keep their build graph offline; other builds are NOT authorized
+            // until package fetches and output identities are reviewed.
+            if (name in setOf("keycloak", "onboarding", "mastodon-rss-publisher"))
+                buildLines += "Network=none"
+        }
         if (domain.name == "rootful" && unitPrefix != "webservices") {
             buildLines += "[Service]"
             buildLines += "Environment=CONTAINERS_STORAGE_CONF=${domain.stateRoot}/containers-storage.conf"
