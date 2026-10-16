@@ -51,7 +51,7 @@ class Start(unittest.TestCase):
                               pinned_images=NS(frozen_aliases=lambda *a:{})),
                     reserve=lambda:None,probe=lambda *a:None)
         fake={'venue_registry':registry,'venue_screen':NS(port_screen=lambda *a:None),
-              'venue_binds':NS(checked_stage=lambda *a:(None,None,sources))}
+              'venue_binds':NS(checked_stage=lambda *a:(None,None,sources),log_sources=lambda *a:{})}
         real_load=q.load
         patches=[patch.object(q,'load',side_effect=lambda name,file:fake[name] if name in fake else real_load(name,file)),
                  patch.object(q,'host_context',return_value=self.context),

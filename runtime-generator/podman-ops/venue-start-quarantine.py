@@ -137,7 +137,32 @@ def cancel_starts(command,names):
                 if again.returncode or any(len(row)<4 or row[0]==fields[0] for row in rows):
                     raise Refusal('selected late start job could not be cancelled')
 
-def start(bundle,selector,ledger,timeout=900):
+def reviewed_retry(state,plan,context):
+    repair=state.get('venueStartRepair',{})
+    if (state.get('plan')!=plan or state.get('venueInstallerVersion')!=2 or
+            state.get('status')!='installed-starting' or state.get('venueInstallerPhase')!='starting' or
+            state.get('venueStartPhase')!='failed-quarantined' or state.get('activationAuthorized') is not False or
+            state.get('venueStartIntent')!=plan['quadletTreeSha256'] or
+            state.get('venueStartHostContextSha256')!=context.digest or
+            state.get('venueRegistryPhase')!='inert-ready' or state.get('managerStopped') or
+            state.get('managerStarted')!=[a['name'] for a in plan['accounts']] or
+            repair.get('kind')!='missing-owned-log-bind' or not repair.get('paths') or
+            repair.get('sourceSha256')!=stage.sha(HERE/'venue-bind-dirs.py') or
+            repair.get('appliesToStartMonotonicUsec')!=state.get('venueStartMonotonicUsec')):
+        raise Refusal('exact quarantined intent and unconsumed specific source repair required')
+    path=context.runtime/'runtime-authority.json';info=path.lstat()
+    if path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid or info.st_nlink!=1 or stat.S_IMODE(info.st_mode)!=0o600:
+        raise Refusal('unsafe failed runtime receipt')
+    receipt=json.loads(path.read_text())
+    expected={'schemaVersion':2,'namespace':context.namespace,'hostContextSha256':context.digest,
+              'sourceProvenanceSha256':context.data['sourceProvenanceSha256'],
+              'bootId':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+              'phase':'failed-quarantined','activationAuthorized':False}
+    if any(receipt.get(key)!=value for key,value in expected.items()):
+        raise Refusal('failed runtime receipt not fenced in this exact current-boot context')
+
+
+def start(bundle,selector,ledger,timeout=900,*,reviewed_failed_sha=None):
     """First real activation only. Partial failure fences/stops, never retries."""
     registry=load('venue_registry','venue-registry-images.py')
     screen=load('venue_screen','verify-existing-host-venue.py')
@@ -149,7 +174,11 @@ def start(bundle,selector,ledger,timeout=900):
     selected=targets(bundle,plan,state)
     marker=Path(plan['roots']['rootful-state'])/'volume-ready-r1.txt'
     with lifecycle(context):
-        if (state.get('plan')!=plan or state.get('venueInstallerVersion')!=1 or
+        recovering=reviewed_failed_sha is not None
+        if recovering and stage.sha(p)!=reviewed_failed_sha:raise Refusal('reviewed failed-stage SHA CAS changed')
+        state=json.loads(p.read_text())
+        if recovering:reviewed_retry(state,plan,context)
+        if not recovering and (state.get('plan')!=plan or state.get('venueInstallerVersion')!=1 or
                 state.get('venueInstallerPhase')!='inert-ready' or state.get('status')!='units-staged' or
                 state.get('activationAuthorized') is not False or state.get('venueStartPhase') is not None or
                 state.get('venueRegistryPhase')!='inert-ready' or state.get('managerStopped') or
@@ -162,21 +191,35 @@ def start(bundle,selector,ledger,timeout=900):
             raise Refusal('all selected frozen native inputs must be installed and verified')
         units.units_idle(plan);screen.port_screen(json.loads(Path(selector).read_text()))
         registry.reserve();context.physical_reserves()
-        registry.probe(bundle,plan,state,source['imageIds'])
+        registry.probe(bundle,plan,state,source['imageIds'],**({'recovering':True} if recovering else {}))
+        if recovering and state.get('venueRecoveryContainers'):
+            raise Refusal('retained native bootstrap containers require exact non-volume cleanup before recovery')
         commands={name:command for name,_,command in graph.stores(bundle,plan)}
         metadata=json.loads((Path(bundle)/'podman-domains.json').read_text())
         for (image,user),aliases in registry.authority.pinned_images.frozen_aliases(Path(bundle),metadata).items():
             if any(registry.pulled(commands[user],alias)!=image for alias in aliases):
                 raise Refusal('frozen dynamic alias missing or substituted')
         binds=load('venue_binds','venue-bind-dirs.py')
-        _,_,sources=binds.checked_stage(bundle,selector,ledger,('units-staged',))
+        _,_,sources=binds.checked_stage(bundle,selector,ledger,('units-staged','installed-starting') if recovering else ('units-staged',))
+        logs=binds.log_sources(bundle,plan)
+        if {row['path']:row['consumers'] for row in state.get('venueLogBindDirs',[])}!=logs:
+            raise Refusal('actual namespace log binds were not prepared/receipted')
+        for row in state.get('venueLogBindDirs',[]):
+            path=Path(row['path']);info=path.lstat()
+            if path.is_symlink() or not path.is_dir() or (info.st_dev,info.st_ino,info.st_uid)!=(row['dev'],row['ino'],0):
+                raise Refusal('prepared namespace log bind identity changed')
         if {row['path'] for row in state.get('venueDataBindDirs',[])}!=set(sources):
             raise Refusal('exact selected data bind set differs')
         api=api_owners(bundle,plan)
         for account,command in selected_commands(plan):
             if account is None or account['name'] not in api:continue
-            if os.path.lexists('/run/user/'+str(account['uid'])+'/podman/podman.sock'):
-                raise Refusal('API socket already exists before exact start intent')
+            socket_path=Path('/run/user/'+str(account['uid'])+'/podman/podman.sock')
+            if os.path.lexists(socket_path):
+                info=socket_path.lstat()
+                stopped=graph.run(command+['is-active','podman.socket','podman.service'],timeout=30)
+                if (not recovering or socket_path.is_symlink() or not stat.S_ISSOCK(info.st_mode) or info.st_uid!=account['uid'] or
+                        stopped.stdout.split()!=['inactive','inactive']):
+                    raise Refusal('API socket is not an exact stopped selected recovery socket')
             result=graph.run(command+['show-environment'],timeout=30)
             if result.returncode:raise Refusal('cannot inspect selected API manager environment')
             environment=dict(line.split('=',1) for line in result.stdout.splitlines() if '=' in line)
@@ -186,18 +229,28 @@ def start(bundle,selector,ledger,timeout=900):
                 raise Refusal('API manager environment can escape selected storage authority')
         for row in state.get('venueDataBindDirs',[]):
             path=Path(row['path']);info=path.lstat()
-            if path.is_symlink() or not path.is_dir() or (info.st_dev,info.st_ino,info.st_uid)!=(row['dev'],row['ino'],sources[str(path)]['owner']) or any(path.iterdir()):
-                raise Refusal('selected fresh data bind changed or contains authored data')
+            if (path.is_symlink() or not path.is_dir() or (info.st_dev,info.st_ino)!=(row['dev'],row['ino']) or
+                    (not recovering and (info.st_uid!=sources[str(path)]['owner'] or any(path.iterdir())))):
+                raise Refusal('selected data bind identity changed or fresh bind contains authored data')
         if len(state.get('venueDataBindDirs',[]))!=61:raise Refusal('all 61 exact fresh data binds required')
+        if recovering:
+            info=marker.lstat()
+            if (marker.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid or info.st_nlink!=1 or
+                    stat.S_IMODE(info.st_mode)!=0o600 or marker.read_text()!=plan['prefix']+'-volume-ready-v1\n'):
+                raise Refusal('original exact failed-intent readiness marker changed')
+            state.setdefault('venueStartAttempts',[]).append({key:state.get(key) for key in
+                  ('venueStartPhase','venueStartIntent','venueStartMonotonicUsec','venueStartRepair',
+                   'venueStartQuarantineUnits','venueRecoveryNetworks','venueRecoveryContainers')})
         state.update(venueInstallerVersion=2,venueInstallerPhase='starting',status='installed-starting',
                      venueStartPhase='starting',venueStartIntent=plan['quadletTreeSha256'],
                      venueStartHostContextSha256=context.digest,activationAuthorized=True,
                      venueStartMonotonicUsec=time.monotonic_ns()//1000,venueStartQueued=[],venueStartApiSockets=api)
         stage.write_ledger(p,state)  # intent BEFORE marker, authority or native start
         try:
-            fd=os.open(marker,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
-            with os.fdopen(fd,'w') as out:
-                out.write(plan['prefix']+'-volume-ready-v1\n');out.flush();os.fsync(out.fileno())
+            if not recovering:
+                fd=os.open(marker,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+                with os.fdopen(fd,'w') as out:
+                    out.write(plan['prefix']+'-volume-ready-v1\n');out.flush();os.fsync(out.fileno())
             runtime_receipt(context,'starting',True)
             for account,command in selected_commands(plan):
                 if account is None or account['name'] not in api:continue
@@ -318,11 +371,39 @@ def quarantine_locked(bundle,selector,ledger,context):
     return {'status':'failed-quarantined','selectedUnitNames':state['venueStartQuarantineUnits'],
             'populatedDataRetained':True,'activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
+def cleanup_stopped(bundle,selector,ledger,reviewed_failed_sha):
+    p=Path(ledger);plan=stage.owned_plan(bundle,selector)
+    context=host_context(bundle,plan);registry=load('bootstrap_cleanup_registry','venue-registry-images.py')
+    with lifecycle(context):
+        if stage.sha(p)!=reviewed_failed_sha:raise Refusal('stopped native cleanup ledger CAS changed')
+        state=json.loads(p.read_text());reviewed_retry(state,plan,context);units.units_idle(plan)
+        source=registry.authority.authority(bundle,selector)
+        roots,_=registry.probe(bundle,plan,state,source['imageIds'],recovering=True)
+        for key,proof in list(state.get('venueRecoveryContainers',{}).items()):
+            user=key.split('|',1)[0];command=roots[user][1];identity=proof['id']
+            state['venueStoppedBootstrapCleanupIntent']={**proof,'user':user,'sourceSha256':stage.sha(__file__)}
+            stage.write_ledger(p,state)
+            # Neither command removes volumes or stops/races a live container.
+            # Inspection above proves exact stopped IDs from this native epoch.
+            for operation in ('cleanup','rm'):
+                result=graph.run(command+['container',operation,identity],timeout=60)
+                if result.returncode:raise Refusal('exact stopped bootstrap '+operation+' failed; intent retained')
+            state.setdefault('venueStoppedBootstrapCleaned',{})[identity]=state.pop('venueStoppedBootstrapCleanupIntent')
+            stage.write_ledger(p,state)
+        registry.probe(bundle,plan,state,source['imageIds'],recovering=True);stage.write_ledger(p,state)
+        return {'retiredStoppedNativeContainers':len(state.get('venueStoppedBootstrapCleaned',{})),
+                'dataAndVolumesRetained':True,'servicesStarted':False,'activationAuthorized':False}
+
+
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     for name in ('bundle','selector','ledger'):ap.add_argument('--'+name,required=True)
+    ap.add_argument('--cleanup-stopped-native',metavar='REVIEWED_LEDGER_SHA256')
     a=ap.parse_args()
-    try:print(json.dumps(quarantine(a.bundle,a.selector,a.ledger),sort_keys=True))
+    try:
+        result=(cleanup_stopped(a.bundle,a.selector,a.ledger,a.cleanup_stopped_native)
+                if a.cleanup_stopped_native is not None else quarantine(a.bundle,a.selector,a.ledger))
+        print(json.dumps(result,sort_keys=True))
     except (Refusal,OSError,KeyError,ValueError,TypeError) as exc:
         raise SystemExit('venue exact failed-start quarantine refused: '+str(exc)) from exc
 if __name__=='__main__':main()

@@ -69,14 +69,88 @@ def command_graphs(bundle,plan):
     if len(roots)!=8:raise Refusal('all eight selected image graphs required')
     return roots
 
-def probe(bundle,plan,data,expected):
+def recovery_networks(bundle,plan,data,user,command,names):
+    """Post-quarantine only: prove retained native networks by source and epoch."""
+    if (data.get('venueInstallerVersion')!=2 or data.get('venueStartPhase')!='failed-quarantined' or
+            data.get('activationAuthorized') is not False or data.get('venueStartIntent')!=plan['quadletTreeSha256']):
+        raise Refusal('no exact failed-start network recovery authority')
+    lifecycle=load('network_recovery_lifecycle','venue-start-quarantine.py')
+    systemd={a['name'] if a else 'root':cmd for a,cmd in lifecycle.selected_commands(plan)}
+    scope='rootful' if user=='root' else 'rootless-'+user.removeprefix(plan['prefix']+'-')
+    source={}
+    for file in (Path(bundle)/'quadlet'/scope).glob('*.network'):
+        selected=[line.split('=',1)[1] for line in file.read_text().splitlines() if line.startswith('NetworkName=')]
+        if len(selected)!=1:raise Refusal('selected network lacks exact native name')
+        source[selected[0]]=file.stem+'-network.service'
+    proofs={}
+    for name in names:
+        if name not in source:raise Refusal('post-start graph contains unselected network')
+        native=graph.run(systemd[user]+['show',source[name],'-p','ExecMainStatus','-p','ExecMainStartTimestampMonotonic'],timeout=30)
+        fields=dict(line.split('=',1) for line in native.stdout.splitlines() if '=' in line)
+        if native.returncode or fields.get('ExecMainStatus')!='0':
+            raise Refusal('retained network native creation failed')
+        if int(fields.get('ExecMainStartTimestampMonotonic','0'))<data['venueStartMonotonicUsec']:
+            # systemd may garbage-collect an inactive successful oneshot. Use
+            # its durable, UID/unit-bound Podman success output, never name-only
+            # adoption or missing volatile timestamps as permission.
+            uid=0 if user=='root' else next(a['uid'] for a in plan['accounts'] if a['name']==user)
+            field='_SYSTEMD_UNIT' if user=='root' else '_SYSTEMD_USER_UNIT'
+            journal=graph.run(['journalctl','--boot','--no-pager','-n','100','_UID='+str(uid),
+                              field+'='+source[name],'-o','json'],timeout=30)
+            records=[json.loads(line) for line in journal.stdout.splitlines()] if not journal.returncode else []
+            if not any(row.get('_COMM')=='podman' and row.get(field)==source[name] and
+                       str(row.get('_UID'))==str(uid) and row.get('MESSAGE')==name and
+                       int(row.get('__MONOTONIC_TIMESTAMP','0'))>=data['venueStartMonotonicUsec'] for row in records):
+                raise Refusal('retained network lacks native failed-epoch creation proof')
+        inspect=graph.run(command+['network','inspect',name],timeout=30)
+        rows=json.loads(inspect.stdout) if not inspect.returncode else []
+        if len(rows)!=1 or rows[0].get('name')!=name or not re.fullmatch(r'[0-9a-f]{64}',rows[0].get('id','')):
+            raise Refusal('retained native network identity unavailable')
+        proofs[user+'|'+name]={'id':rows[0]['id'],'unit':source[name]}
+    return proofs
+
+
+def recovery_containers(bundle,plan,data,user,command,ids,expected):
+    if (data.get('venueInstallerVersion')!=2 or data.get('venueStartPhase')!='failed-quarantined' or
+            data.get('activationAuthorized') is not False or data.get('venueStartIntent')!=plan['quadletTreeSha256']):
+        raise Refusal('no exact completed quarantine for retained container inspection')
+    scope='rootful' if user=='root' else 'rootless-'+user.removeprefix(plan['prefix']+'-')
+    selected={}
+    for file in (Path(bundle)/'quadlet'/scope).glob('*.container'):
+        fields={line.split('=',1)[0]:line.split('=',1)[1] for line in file.read_text().splitlines() if line.startswith(('ContainerName=','Image='))}
+        selected[fields['ContainerName']]=(file.stem+'.service',fields['Image'])
+    proofs={}
+    for value in ids:
+        result=graph.run(command+['container','inspect',value],timeout=30)
+        rows=json.loads(result.stdout) if not result.returncode else []
+        if len(rows)!=1:raise Refusal('retained container identity unavailable')
+        row=rows[0];name=row.get('Name','').removeprefix('/');state=row.get('State',{})
+        if name not in selected:raise Refusal('unselected retained container')
+        unit,image=selected[name]
+        config='sha256:'+row.get('Image','').removeprefix('sha256:')
+        if (state.get('Running') is not False or state.get('Status')!='exited' or
+                type(state.get('ExitCode')) is not int or not -1<=state['ExitCode']<=255 or
+                row.get('Config',{}).get('Labels',{}).get('PODMAN_SYSTEMD_UNIT')!=unit or
+                config!=expected.get(user+'|'+image) or not re.fullmatch(r'[0-9a-f]{64}',row.get('Id',''))):
+            raise Refusal('retained object is not the exact stopped native bootstrap')
+        lifecycle=load('bootstrap_epoch_lifecycle','venue-start-quarantine.py')
+        systemd={a['name'] if a else 'root':cmd for a,cmd in lifecycle.selected_commands(plan)}
+        started=graph.run(systemd[user]+['show',unit,'-p','ExecMainStartTimestampMonotonic'],timeout=30)
+        fields=dict(line.split('=',1) for line in started.stdout.splitlines() if '=' in line)
+        if started.returncode or int(fields.get('ExecMainStartTimestampMonotonic','0'))<data['venueStartMonotonicUsec']:
+            raise Refusal('retained bootstrap not created in the exact failed epoch')
+        proofs[user+'|'+name]={'id':row['Id'],'unit':unit,'image':config,'exitCode':state['ExitCode']}
+    return proofs
+
+
+def probe(bundle,plan,data,expected,*,recovering=False):
     roots=command_graphs(bundle,plan)
     permitted={user:set() for user in roots}
     for key,value in expected.items():
         user,sep,ref=key.partition('|')
         if not sep or user not in permitted:raise Refusal('registry image authority differs from eight stores')
         permitted[user].add(value)
-    found={}
+    found={};network_proofs={};container_proofs={}
     for user,(path,command) in roots.items():
         info=path.lstat();record=data['pathIdentities'].get(str(path),{})
         if (path.is_symlink() or not stat.S_ISDIR(info.st_mode) or
@@ -86,16 +160,30 @@ def probe(bundle,plan,data,expected):
             run=graph.run(command+args,timeout=45)
             if run.returncode:raise Refusal('selected Podman inventory unavailable')
             return set(run.stdout.strip().splitlines()) if run.stdout.strip() else set()
-        if listing(['ps','-aq']) or listing(['pod','ps','--quiet']):
-            raise Refusal('container/pod in inactive image graph')
+        containers=listing(['ps','-aq'])
+        if listing(['pod','ps','--quiet']):raise Refusal('pod in inactive image graph')
+        if containers:
+            if not recovering:raise Refusal('container/pod in inactive image graph')
+            container_proofs.update(recovery_containers(bundle,plan,data,user,command,containers,expected))
         volumes=listing(['volume','ls','-q'])
         if volumes!=(HULY if user==plan['prefix']+'-apps' else set()):
             raise Refusal('foreign or missing selected named image-graph volume')
-        if listing(['network','ls','--format','{{.Name}}'])-{'podman'}:
-            raise Refusal('selected image graph has foreign network')
+        networks=listing(['network','ls','--format','{{.Name}}'])-{'podman'}
+        if networks:
+            if not recovering:raise Refusal('selected image graph has foreign network')
+            network_proofs.update(recovery_networks(bundle,plan,data,user,command,networks))
         ids={'sha256:'+v.removeprefix('sha256:') for v in listing(['image','ls','-a','--no-trunc','--format','{{.ID}}'])}
         if ids!=permitted[user]:raise Refusal('selected graph image IDs differ from completed journal')
         found[user]=ids
+    if recovering:
+        prior=data.get('venueRecoveryNetworks')
+        if prior is not None and prior!=network_proofs:raise Refusal('recorded retained network identities changed')
+        data['venueRecoveryNetworks']=network_proofs
+        prior=data.get('venueRecoveryContainers')
+        if prior is not None:
+            remaining={key:value for key,value in prior.items() if value['id'] not in data.get('venueStoppedBootstrapCleaned',{})}
+            if remaining!=container_proofs:raise Refusal('retained bootstrap identities changed')
+        data['venueRecoveryContainers']=container_proofs
     return roots,found
 
 def pulled(command,ref):

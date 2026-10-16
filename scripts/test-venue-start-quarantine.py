@@ -66,6 +66,51 @@ class StartQuarantine(unittest.TestCase):
         self.assertEqual(json.loads(self.ledger.read_text())['venueStartPhase'],'failed-quarantining')
         self.assertEqual(len(calls),2)
         self.assertTrue(all('start' not in command for command in calls))
+    def reviewed_fixture(self):
+        self.row.update(venueStartPhase='failed-quarantined',activationAuthorized=False,venueInstallerPhase='starting',
+                        venueRegistryPhase='inert-ready',venueStartMonotonicUsec=42,
+                        venueStartRepair={'kind':'missing-owned-log-bind','paths':['caddy'],
+                            'sourceSha256':q.stage.sha(q.HERE/'venue-bind-dirs.py'),
+                            'appliesToStartMonotonicUsec':42})
+        q.runtime_receipt(self.context,'failed-quarantined',False)
+    def cleanup_fixture(self,fail=False):
+        self.reviewed_fixture();self.save();events=[]
+        proof={'id':'d'*64,'unit':'p0test-r1-init.service','image':'sha256:'+'e'*64,'exitCode':-1}
+        calls=[0]
+        def probe(bundle,plan,state,images,**kwargs):
+            calls[0]+=1;state['venueRecoveryContainers']={'p0test-r1-apps|init':proof} if calls[0]==1 else {}
+            return {'p0test-r1-apps':(self.root,['podman'])},{}
+        registry=SimpleNamespace(authority=SimpleNamespace(authority=lambda *a:{'imageIds':{}}),probe=probe)
+        def native(command,**kwargs):
+            current=json.loads(self.ledger.read_text());self.assertEqual(current['venueStoppedBootstrapCleanupIntent']['id'],'d'*64)
+            events.append(command);return SimpleNamespace(returncode=1 if fail else 0,stdout='')
+        with (patch.object(q.stage,'owned_plan',return_value=self.plan),patch.object(q,'load',return_value=registry),
+              patch.object(q.units,'units_idle'),patch.object(q.graph,'run',side_effect=native)):
+            if fail:
+                with self.assertRaises(q.Refusal):q.cleanup_stopped(self.root,'selector',self.ledger,q.stage.sha(self.ledger))
+            else:q.cleanup_stopped(self.root,'selector',self.ledger,q.stage.sha(self.ledger))
+        return events,json.loads(self.ledger.read_text())
+    def test_exact_stopped_cleanup_intent_precedes_nonvolume_commands(self):
+        events,state=self.cleanup_fixture()
+        self.assertEqual([command[2] for command in events],['cleanup','rm'])
+        self.assertTrue(all(command[-1]=='d'*64 and '--force' not in command and '--volumes' not in command for command in events))
+        self.assertIn('d'*64,state['venueStoppedBootstrapCleaned']);self.assertFalse(state['activationAuthorized'])
+    def test_failed_native_cleanup_keeps_intent_and_never_removes_or_starts(self):
+        events,state=self.cleanup_fixture(True)
+        self.assertEqual(len(events),1);self.assertIn('venueStoppedBootstrapCleanupIntent',state)
+        self.assertNotIn('venueStoppedBootstrapCleaned',state)
+    def test_reviewed_retry_accepts_only_fenced_exact_repaired_epoch(self):
+        self.reviewed_fixture();q.reviewed_retry(self.row,self.plan,self.context)
+        self.row['venueStartMonotonicUsec']=43
+        with self.assertRaises(q.Refusal):q.reviewed_retry(self.row,self.plan,self.context)
+    def test_reviewed_retry_refuses_wrong_source_repair(self):
+        self.reviewed_fixture();self.row['venueStartRepair']['sourceSha256']='0'*64
+        with self.assertRaises(q.Refusal):q.reviewed_retry(self.row,self.plan,self.context)
+    def test_reviewed_retry_refuses_live_or_stale_runtime_authority(self):
+        self.reviewed_fixture();q.runtime_receipt(self.context,'running',True)
+        with self.assertRaises(q.Refusal):q.reviewed_retry(self.row,self.plan,self.context)
+        self.reviewed_fixture();path=self.context.runtime/'runtime-authority.json';data=json.loads(path.read_text());data['bootId']='stale';path.write_text(json.dumps(data))
+        with self.assertRaises(q.Refusal):q.reviewed_retry(self.row,self.plan,self.context)
     def test_cancel_race_requires_fresh_exact_id_absence(self):
         replies=[SimpleNamespace(returncode=0,stdout='41 p0test-r1-app.service start running\n'),
                  SimpleNamespace(returncode=1,stdout=''),SimpleNamespace(returncode=0,stdout='')]

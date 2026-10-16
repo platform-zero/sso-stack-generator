@@ -68,6 +68,7 @@ def prepare(bundle,selector,inventory,ledger,age_key,image_inputs):
     managers.act(b,selector,p)
     envs.prepare(b,selector,p)
     composite.prepare(b,selector,p,input_manifest)
+    composite.binds.prepare_logs(b,selector,p)
     data=receipt(p)
     marker=Path(plan['roots']['rootful-state'])/'volume-ready-r1.txt'
     if (data.get('venueReleasePhase')!='inert-ready' or data.get('venueDomainRuntimePhase')!='inert-ready' or
@@ -109,6 +110,7 @@ def retire(bundle,selector,inventory,ledger):
         else:
             raise Refusal('all 194 units and private inputs must coexist before initial retirement')
         data['venueInstallerPhase']='retiring';stage.write_ledger(p,data)
+    if receipt(p).get('venueLogBindDirs'):composite.binds.retire_logs(b,selector,p)
     if receipt(p).get('venueCompositeMode')!='retired-inert':composite.retire(b,selector,p)
     if receipt(p).get('venueRuntimeEnvPhase')!='retired-inert':envs.retire(b,selector,p)
     if receipt(p).get('status')!='staged-empty':managers.act(b,selector,p,stop=True)
@@ -122,9 +124,9 @@ def retire(bundle,selector,inventory,ledger):
     data['venueInstallerPhase']='retired-inert';stage.write_ledger(p,data)
     return {'status':'retired-inert','activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
-def activate(bundle,selector,ledger):
+def activate(bundle,selector,ledger,*,reviewed_failed_sha=None):
     lifecycle=load('venue_lifecycle','venue-start-quarantine.py')
-    try:return lifecycle.start(bundle,selector,ledger)
+    try:return lifecycle.start(bundle,selector,ledger,**({'reviewed_failed_sha':reviewed_failed_sha} if reviewed_failed_sha is not None else {}))
     except Exception as failure:
         state=receipt(ledger)
         if state.get('venueInstallerVersion')==2 and state.get('venueStartPhase') in ('starting','running','failed-quarantining'):
@@ -143,6 +145,7 @@ def main():
     mode.add_argument('--retire-inactive',action='store_true')
     mode.add_argument('--activate-isolated',action='store_true')
     mode.add_argument('--quarantine-start',action='store_true')
+    mode.add_argument('--retry-reviewed-failed-sha',metavar='SHA256')
     a=p.parse_args()
     try:
         if a.prepare_inactive:
@@ -151,6 +154,8 @@ def main():
         else:
             if a.sops_age_key_file or a.image_inputs:raise Refusal('lifecycle actions must not accept new secret/image inputs')
             if a.activate_isolated:result=activate(a.bundle,a.selector,a.ledger)
+            elif a.retry_reviewed_failed_sha is not None:
+                result=activate(a.bundle,a.selector,a.ledger,reviewed_failed_sha=a.retry_reviewed_failed_sha)
             elif a.quarantine_start:
                 result=load('venue_lifecycle','venue-start-quarantine.py').quarantine(a.bundle,a.selector,a.ledger)
             else:result=retire(a.bundle,a.selector,a.protected_inventory,a.ledger)

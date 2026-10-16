@@ -108,13 +108,84 @@ def retire(bundle,selector,ledger):
     return {'status':data['status'],'retiredEmptyDataBindDirs':len(rows),
             'activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
+def log_sources(bundle,plan):
+    root=Path(plan['roots']['log']);result={}
+    for directory in (Path(bundle)/'quadlet').iterdir():
+        if not directory.is_dir():continue
+        for file in directory.glob('*.container'):
+            for line in file.read_text().splitlines():
+                if not line.startswith('Volume='):continue
+                source=line.split('=',1)[1].split(':',1)[0]
+                if not source.startswith(str(root)+'/'):continue
+                path=Path(source)
+                if path.parent!=root or directory.name!='rootful' or path.is_symlink():
+                    raise Refusal('log bind is not an immediate selected rootful log child')
+                result.setdefault(str(path),[]).append(file.name)
+    return {name:sorted(consumers) for name,consumers in sorted(result.items())}
+
+def prepare_logs(bundle,selector,ledger,*,repair=False):
+    if repair:
+        lifecycle=load('log_lifecycle','venue-start-quarantine.py')
+        plan=stage.owned_plan(bundle,selector);context=lifecycle.host_context(bundle,plan)
+        with lifecycle.lifecycle(context):
+            data=json.loads(Path(ledger).read_text())
+            if data.get('venueStartPhase')!='failed-quarantined' or data.get('activationAuthorized') is not False:
+                raise Refusal('complete exact failed-start quarantine required before log repair')
+            lifecycle.units.units_idle(plan)
+            return _prepare_logs(bundle,selector,ledger,True)
+    return _prepare_logs(bundle,selector,ledger,False)
+
+def _prepare_logs(bundle,selector,ledger,repair):
+    p,data,_=checked_stage(bundle,selector,ledger,('units-staged','installed-starting'))
+    plan=stage.owned_plan(bundle,selector);sources=log_sources(bundle,plan)
+    if repair and not sources:raise Refusal('no missing selected log bind to repair')
+    parent=Path(plan['roots']['log']);info=parent.lstat();record=data['pathIdentities'].get(str(parent),{})
+    if parent.is_symlink() or (info.st_dev,info.st_ino,info.st_uid)!=(record.get('dev'),record.get('ino'),0):
+        raise Refusal('selected log parent identity changed')
+    if data.get('venueLogBindDirs') or any(os.path.lexists(path) for path in sources):
+        raise Refusal('log bind already exists; no unreceipted adoption or repeated repair')
+    data['venueLogBindDirs']=[]
+    for name,consumers in sources.items():
+        data['venueLogBindPending']=name;stage.write_ledger(p,data)
+        path=Path(name);path.mkdir(mode=0o700);info=path.lstat()
+        data['venueLogBindDirs'].append({'path':name,'dev':info.st_dev,'ino':info.st_ino,
+                                      'uid':info.st_uid,'consumers':consumers})
+        data.pop('venueLogBindPending');stage.write_ledger(p,data)
+    if repair:
+        data['venueStartRepair']={'kind':'missing-owned-log-bind','sourceSha256':stage.sha(__file__),
+                                 'appliesToStartMonotonicUsec':data['venueStartMonotonicUsec'],
+                                 'paths':sorted(sources)}
+        stage.write_ledger(p,data)
+    return {'preparedLogBindDirs':len(sources),'servicesStarted':False,'dataReset':False}
+
+def retire_logs(bundle,selector,ledger):
+    p=Path(ledger);data=json.loads(p.read_text());plan=stage.owned_plan(bundle,selector)
+    if data.get('plan')!=plan:raise Refusal('log retirement source CAS differs')
+    rows=data.get('venueLogBindDirs',[]);sources=log_sources(bundle,plan)
+    if not rows:return
+    if data.get('venueInstallerVersion')!=1 or data.get('activationAuthorized') is not False:
+        raise Refusal('only inactive version-one logs may use empty retirement')
+    load('log_unit_idle','venue-unit-stage.py').units_idle(plan)
+    if {row['path']:row['consumers'] for row in rows}!=sources:raise Refusal('log bind journal differs')
+    for row in rows:
+        if row['path'] in data.get('retiredLogBindDirs',[]):continue
+        path=Path(row['path']);info=path.lstat()
+        if path.is_symlink() or (info.st_dev,info.st_ino,info.st_uid)!=(row['dev'],row['ino'],0) or any(path.iterdir()):
+            raise Refusal('changed or populated log bind; never empty-stage retire')
+        path.rmdir();data.setdefault('retiredLogBindDirs',[]).append(row['path']);stage.write_ledger(p,data)
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     for key in ('bundle','selector','ledger'):p.add_argument('--'+key,required=True)
     mode=p.add_mutually_exclusive_group(required=True)
     mode.add_argument('--create-empty',action='store_true');mode.add_argument('--retire-empty',action='store_true')
+    mode.add_argument('--prepare-logs',action='store_true');mode.add_argument('--repair-failed-logs',action='store_true')
     a=p.parse_args()
-    try:print(json.dumps((create if a.create_empty else retire)(a.bundle,a.selector,a.ledger),sort_keys=True))
+    try:
+        if a.prepare_logs or a.repair_failed_logs:result=prepare_logs(a.bundle,a.selector,a.ledger,repair=a.repair_failed_logs)
+        else:result=(create if a.create_empty else retire)(a.bundle,a.selector,a.ledger)
+        print(json.dumps(result,sort_keys=True))
     except (Refusal,KeyError,ValueError,TypeError,OSError,json.JSONDecodeError) as exc:
         raise SystemExit('venue empty data-bind lifecycle refused: '+str(exc)) from exc
 if __name__=='__main__':main()
