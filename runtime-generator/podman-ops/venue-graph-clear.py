@@ -77,6 +77,19 @@ def clear(bundle,selector,ledger):
             state.get('managerStarted')!=[a['name'] for a in plan['accounts']] or state.get('managerStopped')):
         raise Refusal('graph stage/manager authority differs')
     allowed=selected_images(bundle)
+    if state.get('venueCompositeVersion')==2:
+        imported=state.get('venueCompositeOfflineImages',[])
+        if not isinstance(imported,list) or len(imported)>1:
+            raise Refusal('composite image import journal differs')
+        exact={key:set() for key in allowed}
+        for row in imported:
+            if not isinstance(row,dict) or not isinstance(row.get('authorities'),list) or not row['authorities']:
+                raise Refusal('incomplete composite image authority')
+            for user in row['authorities']:
+                if user not in exact or row.get('image') not in allowed[user]:
+                    raise Refusal('composite image is not site-selected in exact authority')
+                exact[user].add(row['image'])
+        allowed=exact
     # The netavark rootful default is /etc/containers/networks even with a
     # private image graph. Never enumerate/mutate that shared directory as
     # though it belonged to this stage: create and journal a private empty
@@ -122,8 +135,9 @@ def clear(bundle,selector,ledger):
         if any(mp==graph or mp.startswith(graph.rstrip('/')+'/') for mp in mountpoints):
             raise Refusal('Podman graph has a live mount')
         o=inspect_graph(command)
-        if o['images']-allowed.get(user,set()):
-            raise Refusal('unselected image in test-only graph: '+user)
+        if (o['images']!=allowed.get(user,set()) if state.get('venueCompositeVersion')==2 else
+                bool(o['images']-allowed.get(user,set()))):
+            raise Refusal('unselected, unjournaled or missing image in test-only graph: '+user)
         observations.append((user,graph,command,o))
     # All eight graphs were checked before removing even one selected image.
     state['status']='graphs-clearing';state.setdefault('graphCleared',[]);stage.write_ledger(path,state)

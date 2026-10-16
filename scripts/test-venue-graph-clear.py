@@ -122,6 +122,22 @@ class GraphClearFixtures(unittest.TestCase):
             self.assertEqual(clear.retire_empty_runroot(self.bundle,self.root/'unused',self.ledger)['retiredRunrootFiles'],4)
         self.assertFalse(any(root.iterdir()))
         self.assertTrue(root.exists())
+    def test_versioned_graph_refuses_selected_but_not_journaled_image(self):
+        marker=Path(self.plan['roots']['rootful-graph'])/'keep';marker.write_text('untouched')
+        self.data['venueCompositeVersion']=2;self.data['venueCompositeOfflineImages']=[]
+        self.ledger.write_text(json.dumps(self.data))
+        def foreign_selected(command,**kwargs):
+            if 'image' in command and 'ls' in command:
+                return SimpleNamespace(returncode=0,stdout=self.allowed+'\n')
+            return self.runner(command,**kwargs)
+        with (patch.object(clear.stage,'owned_plan',return_value=self.plan),
+              patch.object(clear.stage,'write_ledger',side_effect=lambda path,state:self.data.update(state)),
+              patch.object(clear,'run',side_effect=foreign_selected),
+              patch.object(clear.os,'geteuid',return_value=0)):
+            with self.assertRaisesRegex(clear.Refusal,'unjournaled'):
+                clear.clear(self.bundle,self.root/'unused',self.ledger)
+        self.assertEqual(marker.read_text(),'untouched')
+        self.assertEqual(self.data['status'],'managers-ready')
     def test_unselected_image_refuses_before_deletion(self):
         marker=Path(self.plan['roots']['rootful-graph'])/'keep';marker.write_text('untouched')
         def foreign(command,**kwargs):
