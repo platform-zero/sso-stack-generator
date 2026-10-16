@@ -89,6 +89,19 @@ def clear(bundle,selector,ledger):
                 if user not in exact or row.get('image') not in allowed[user]:
                     raise Refusal('composite image is not site-selected in exact authority')
                 exact[user].add(row['image'])
+        registry_phase=state.get('venueRegistryPhase')
+        if registry_phase is not None:
+            approved=json.loads((Path(bundle)/'site/global.settings/registry-image-ids.json').read_text())
+            recorded=state.get('venueRegistryVerified')
+            if (registry_phase not in ('preparing','inert-ready') or state.get('venueRegistryPending') or
+                    state.get('venueRegistryPlan')!=approved or not isinstance(recorded,dict) or
+                    any(k not in approved or v!=approved[k] for k,v in recorded.items()) or
+                    (registry_phase=='inert-ready' and recorded!=approved)):
+                raise Refusal('registry image graph lacks exact completed/partial frozen authority')
+            for key,value in recorded.items():
+                user,sep,_=key.partition('|')
+                if not sep or user not in exact:raise Refusal('unknown registry image graph authority')
+                exact[user].add(value)
         allowed=exact
     # The netavark rootful default is /etc/containers/networks even with a
     # private image graph. Never enumerate/mutate that shared directory as

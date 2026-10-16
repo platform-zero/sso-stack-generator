@@ -155,6 +155,21 @@ def retire(bundle,selector,ledger):
             if user not in expected or row['image'] not in selected_images.get(user,set()):
                 raise Refusal('offline image/authority differs from selected site')
             expected[user].add(row['image'])
+    registry_mode=data.get('venueRegistryPhase')
+    if registry_mode is not None:
+        source=graph.selected_images(bundle)
+        frozen=json.loads((Path(bundle)/'site/global.settings/registry-image-ids.json').read_text())
+        progress=data.get('venueRegistryVerified')
+        if (registry_mode not in ('preparing','inert-ready') or data.get('venueRegistryPending') or
+                data.get('venueRegistryPlan')!=frozen or not isinstance(progress,dict) or
+                any(key not in frozen or frozen[key]!=value for key,value in progress.items()) or
+                (registry_mode=='inert-ready' and progress!=frozen)):
+            raise Refusal('registry image progress differs from selected site')
+        for key,value in progress.items():
+            user,sep,_=key.partition('|')
+            if not sep or user not in expected or value not in source.get(user,set()):
+                raise Refusal('registry image not selected for exact graph authority')
+            expected[user].add(value)
     for user,_,command in graph.stores(bundle,plan):
         def listing(args):
             result=graph.run(command+args)
@@ -179,6 +194,8 @@ def retire(bundle,selector,ledger):
     graph.retire_image_cache(bundle,selector,ledger)
     path,data,_=context(bundle,selector,ledger)
     if data['status']!='managers-ready':raise Refusal('composite phase stack did not unwind exactly')
+    if data.get('venueRegistryPhase') in ('preparing','inert-ready'):
+        data['venueRegistryPhase']='retired-inert';stage.write_ledger(path,data)
     data['venueCompositeMode']='retired-inert';stage.write_ledger(path,data)
     return {'status':'retired-inert','activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
