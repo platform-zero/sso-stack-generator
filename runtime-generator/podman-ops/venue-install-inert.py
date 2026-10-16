@@ -89,7 +89,23 @@ def retire(bundle,selector,inventory,ledger):
         raise Refusal('inert installed-release journal differs or is not retireable')
     if data['venueInstallerPhase']=='inert-ready':
         if any(data.get(k)!='inert-ready' for k in ('venueReleasePhase','venueDomainRuntimePhase',
-                    'venueRuntimeEnvPhase','venueCompositeMode')) or data.get('status')!='units-staged':
+                    'venueRuntimeEnvPhase')):
+            raise Refusal('private inputs must coexist before initial retirement')
+        if data.get('venueCompositeMode')=='inert-ready' and data.get('status')=='units-staged':
+            pass
+        elif data.get('venueCompositeMode')=='retired-inert' and data.get('status')=='managers-ready':
+            # A caller may have already retired the exact composite to inspect
+            # build-output graph rollback. Adopt ONLY that completed ledger,
+            # never a partly cleared graph or active installed unit.
+            if (data.get('graphCleared')!=['root']+[a['name'] for a in plan['accounts']] or
+                    data.get('managerStopped') or len(data.get('installedUnits',[]))!=194 or
+                    len(data.get('retiredUnits',[]))!=194 or
+                    any(data.get(k)!='retired-inert' for k in
+                        ('venueRegistryPhase','venueBuildBasePhase')) or
+                    not data.get('podmanImageCacheRetired') or
+                    (Path(plan['roots']['rootful-state'])/'volume-ready-r1.txt').exists()):
+                raise Refusal('external selected composite retirement is incomplete')
+        else:
             raise Refusal('all 194 units and private inputs must coexist before initial retirement')
         data['venueInstallerPhase']='retiring';stage.write_ledger(p,data)
     if receipt(p).get('venueCompositeMode')!='retired-inert':composite.retire(b,selector,p)
