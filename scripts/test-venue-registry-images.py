@@ -59,6 +59,16 @@ class RegistryProgress(unittest.TestCase):
         data=json.loads(self.ledger.read_text());data['venueRegistryPending']=self.second;self.ledger.write_text(json.dumps(data))
         with self.assertRaises(module.Refusal):module.prepare('bundle','selector','site','journal',1)
         self.assertEqual(json.loads(self.ledger.read_text())['venueRegistryPending'],self.second)
+        recovered=module.prepare('bundle','selector','site','journal',1,True)
+        self.assertEqual(recovered['status'],'inert-ready')
+        self.assertEqual(json.loads(self.ledger.read_text())['venueRegistryRetryCount'][self.second],1)
+    def test_explicit_retry_refuses_foreign_graph_prewrite(self):
+        module.prepare('bundle','selector','site','journal',1)
+        data=json.loads(self.ledger.read_text());data['venueRegistryPending']=self.second
+        self.ledger.write_text(json.dumps(data));self.images['root'].add('sha256:'+'f'*64)
+        with self.assertRaisesRegex(module.Refusal,'foreign exact image graph'):
+            module.prepare('bundle','selector','site','journal',1,True)
+        self.assertFalse(json.loads(self.ledger.read_text()).get('venueRegistryRetryCount'))
     def test_source_identity_drift_refuses_before_graph_pulls(self):
         module.prepare('bundle','selector','site','journal',1)
         self.ids[self.second]='sha256:'+'e'*64

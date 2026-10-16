@@ -127,7 +127,7 @@ def fetch(command,ref):
     if process.returncode:raise Refusal('selected registry pull failed; exact partial graph retained')
     reserve()
 
-def prepare(bundle,selector,site_source,ledger,max_new):
+def prepare(bundle,selector,site_source,ledger,max_new,retry_pending=False):
     p,data,plan,source=journal(bundle,selector,site_source,ledger)
     if type(max_new) is not int or not 1<=max_new<=60:raise Refusal('one to sixty bounded new images per invocation')
     ids=source['imageIds'];offline=data['venueCompositeOfflineImages'][0]
@@ -151,8 +151,16 @@ def prepare(bundle,selector,site_source,ledger,max_new):
         if pending not in ids or pending in verified:raise Refusal('unreviewed pending registry pull')
         user,_,ref=pending.partition('|');command=command_graphs(bundle,plan)[user][1]
         identity=pulled(command,ref)
+        if retry_pending and identity is None:
+            if ref.startswith('sha256:') or data.get('venueRegistryRetryCount',{}).get(pending,0)>=1:
+                raise Refusal('selected pending registry pull already retried or is offline ID')
+            probe(bundle,plan,data,verified)  # no foreign graph objects before retry
+            data.setdefault('venueRegistryRetryCount',{})[pending]=1;stage.write_ledger(p,data)
+            fetch(command,ref)
+            identity=pulled(command,ref)
         if identity!=ids[pending]:raise Refusal('interrupted registry pull needs exact selected-image review')
         verified[pending]=identity;data.pop('venueRegistryPending');stage.write_ledger(p,data)
+    elif retry_pending:raise Refusal('no selected registry pull awaiting explicit review')
     if data['venueRegistryPhase']=='inert-ready':
         if verified!=ids:raise Refusal('claimed complete registry images differ')
         roots,_=probe(bundle,plan,data,verified)
@@ -160,7 +168,7 @@ def prepare(bundle,selector,site_source,ledger,max_new):
                 'activationAuthorized':False,'acceptedIntegratedInstalls':0}
     roots,_=probe(bundle,plan,data,verified)
     remaining=sorted(set(ids)-set(verified))
-    for candidate in remaining[:max_new]:
+    for candidate in remaining[:(0 if retry_pending else max_new)]:
         user,_,ref=candidate.partition('|');command=roots[user][1]
         reserve()
         data['venueRegistryPending']=candidate;stage.write_ledger(p,data)
@@ -181,8 +189,9 @@ def main():
     ap=argparse.ArgumentParser(description=__doc__)
     for key in ('bundle','selector','site-source','ledger'):ap.add_argument('--'+key,required=True)
     ap.add_argument('--max-new',type=int,default=1)
+    ap.add_argument('--retry-pending-only',action='store_true')
     a=ap.parse_args()
-    try:print(json.dumps(prepare(a.bundle,a.selector,a.site_source,a.ledger,a.max_new),sort_keys=True))
+    try:print(json.dumps(prepare(a.bundle,a.selector,a.site_source,a.ledger,a.max_new,a.retry_pending_only),sort_keys=True))
     except (Refusal,OSError,KeyError,ValueError,TypeError,subprocess.SubprocessError) as exc:
         raise SystemExit('venue complete registry preparation refused: '+str(exc)) from exc
 if __name__=='__main__':main()
