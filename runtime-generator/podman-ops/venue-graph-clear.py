@@ -353,6 +353,21 @@ def clear(bundle,selector,ledger):
             if removed.returncode:
                 if 'by digest with more than one tag' in removed.stderr:
                     remove_exact_dual_named_base(bundle,selector,state,path,user,image,command)
+                elif 'image not known' in removed.stderr:
+                    # Podman can collect a now-unreferenced selected parent
+                    # while deleting its last child. This is NOT permission
+                    # to ignore a failed removal: re-inventory this exclusive
+                    # graph and attest every missing ID against the complete
+                    # before snapshot and immutable selected image allowlist.
+                    observed=inspect_graph(command)
+                    if (image in observed['images'] or not observed['images']<=o['images'] or
+                            not observed['images']<=allowed.get(user,set()) or
+                            any(observed[k] for k in ('containers','pods','volumes')) or
+                            observed['networks']-{'podman'}):
+                        raise Refusal('failed image removal changed selected graph unexpectedly')
+                    state.setdefault('graphAutoRemovedSelectedImages',[]).append(
+                        {'user':user,'image':image,'missing':sorted(o['images']-observed['images'])})
+                    stage.write_ledger(path,state)
                 else:
                     raise Refusal('exact selected image removal failed: '+user+'; '+removed.stderr.strip()[:240])
             state.pop('pendingGraphImageRemoval');stage.write_ledger(path,state)

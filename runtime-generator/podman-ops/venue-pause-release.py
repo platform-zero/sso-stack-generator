@@ -51,16 +51,19 @@ def mounted_by_other_processes(pid,graphroot):
                     raise Refusal('another process holds selected graph overlay mount')
         except (FileNotFoundError,ProcessLookupError,PermissionError):continue
 
-def release(bundle,selector,ledger,pid):
+def release(bundle,selector,ledger,pid,selected_account='test-runners'):
     if os.geteuid()!=0:raise Refusal('root only for selected pause release')
     path=Path(ledger);st=path.lstat()
     if path.is_symlink() or not stat.S_ISREG(st.st_mode) or st.st_uid!=0 or stat.S_IMODE(st.st_mode)!=0o600:
         raise Refusal('exact root0600 selected pause ledger required')
     data=json.loads(path.read_text());plan=stage.owned_plan(bundle,selector)
-    account=next(a for a in plan['accounts'] if a['name']==plan['prefix']+'-test-runners')
-    if (data.get('plan')!=plan or data.get('status')!='managers-ready' or
+    if selected_account not in ('test-runners','platform','apps','homeassistant',
+                                'vaultwarden','ci-runner','workloads'):
+        raise Refusal('unknown selected isolated rootless account')
+    account=next(a for a in plan['accounts'] if a['name']==plan['prefix']+'-'+selected_account)
+    if (data.get('plan')!=plan or data.get('status') not in ('managers-ready','graphs-clearing') or
             data.get('venueCompositeMode')!='retiring' or data.get('managerStopped') or
-            len(data.get('retiredUnits',[]))!=194 or data.get('graphCleared') or
+            len(data.get('retiredUnits',[]))!=194 or account['name'] in data.get('graphCleared',[]) or
             data.get('activationAuthorized') is not False):
         raise Refusal('only fully stopped and uncleared selected build graph can release pause')
     root=Path(account['graph']);info=root.lstat();record=data['pathIdentities'].get(str(root))
@@ -79,12 +82,19 @@ def release(bundle,selector,ledger,pid):
         expected.update(value for key,value in mapping.items() if key.startswith(account['name']+'|'))
     for mapping in (data.get('venueLocalBuildIntermediates',{}),data.get('venueFailedBuildIntermediates',{})):
         expected.update(value for key,rows in mapping.items() if key.startswith(account['name']+'|') for value in rows)
-    if before['images']!=expected:raise Refusal('selected pause graph has unreviewed/missing images')
+    if (not before['images']<=expected or
+            (data['status']=='managers-ready' and before['images']!=expected) or
+            (data['status']=='graphs-clearing' and before['images']!=expected and
+             data.get('pendingGraphImageRemoval',{}).get('user')!=account['name'])):
+        raise Refusal('selected pause graph has unreviewed/missing images')
     intent={'process':ident,'graph':{'path':str(root),'dev':info.st_dev,'ino':info.st_ino},
             'images':sorted(expected)}
-    previous=data.get('venuePauseReleaseIntent')
+    previous=data.get('venuePauseReleaseIntents',{}).get(account['name'])
+    if previous is None and selected_account=='test-runners':
+        previous=data.get('venuePauseReleaseIntent')
     if previous not in (None,intent):
-        if (data.get('venuePauseReleasePhase')!='released' or
+        if (data.get('venuePauseReleasePhases',{}).get(account['name'],
+                data.get('venuePauseReleasePhase') if selected_account=='test-runners' else None)!='released' or
                 not isinstance(previous,dict) or previous.get('graph')!=intent['graph'] or
                 previous.get('images')!=intent['images'] or
                 previous.get('process',{}).get('pid')==pid):
@@ -92,7 +102,8 @@ def release(bundle,selector,ledger,pid):
         old=previous['process'];oldproc=Path('/proc')/str(old['pid'])
         if oldproc.exists() and oldproc.joinpath('stat').read_text().split(') ',1)[1].split()[19]==old['startTicks']:
             raise Refusal('previous selected pause was not released')
-    data['venuePauseReleaseIntent']=intent;stage.write_ledger(path,data)
+    data.setdefault('venuePauseReleaseIntents',{})[account['name']]=intent
+    stage.write_ledger(path,data)
     result=graph.run(command+['system','migrate'],timeout=180)
     if result.returncode:raise Refusal('selected Podman migrate refused; pause receipt retained')
     if (Path('/proc')/str(pid)).exists() and (Path('/proc')/str(pid)/'stat').read_text().split(') ',1)[1].split()[19]==ident['startTicks']:
@@ -103,7 +114,8 @@ def release(bundle,selector,ledger,pid):
     new=root.lstat()
     if (new.st_dev,new.st_ino,new.st_uid)!=(info.st_dev,info.st_ino,account['uid']):
         raise Refusal('selected graph root changed after pause release')
-    data['venuePauseReleasePhase']='released';stage.write_ledger(path,data)
+    data.setdefault('venuePauseReleasePhases',{})[account['name']]='released'
+    stage.write_ledger(path,data)
     return {'status':'released-selected-pause-awaiting-independent-graph-inventory','imageIdsBeforeRelease':len(expected),
             'activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
@@ -111,8 +123,10 @@ def main():
     ap=argparse.ArgumentParser(description=__doc__)
     for name in ('bundle','selector','ledger'):ap.add_argument('--'+name,required=True)
     ap.add_argument('--selected-pause-pid',type=int,required=True)
+    ap.add_argument('--selected-account',choices=('test-runners','platform','apps','homeassistant',
+                    'vaultwarden','ci-runner','workloads'),default='test-runners')
     a=ap.parse_args()
-    try:print(json.dumps(release(a.bundle,a.selector,a.ledger,a.selected_pause_pid),sort_keys=True))
+    try:print(json.dumps(release(a.bundle,a.selector,a.ledger,a.selected_pause_pid,a.selected_account),sort_keys=True))
     except (Refusal,OSError,ValueError,KeyError,TypeError) as exc:
         raise SystemExit('selected Podman pause release refused: '+str(exc)) from exc
 if __name__=='__main__':main()
