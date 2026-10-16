@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """Render/read-only screen of a proposed private libvirt guest bridge.
 
-No definition, start, network repair, firewall or resolver mutation. The
-fresh-host venue installer must verify this exact artifact and provision its
-own namespace later; source-only XML is not network or ingress proof.
+Default rendering never mutates the host. Explicit --prepare-owned creates
+only a new source-bound bridge after its narrow fence, with a private intent
+journal and no adoption/retry. It creates no VM or stack activation authority;
+network boot readiness is not integrated ingress/delivery proof.
 """
 import argparse
 import ipaddress
+import hashlib
+import importlib.util
+import os
+import stat
 import json
 from pathlib import Path
 import re
@@ -120,19 +125,102 @@ def render(bundle, selector):
         'defined':False,'activated':False,'ingressProven':False}
 
 
+def owned_helpers():
+    here=Path(__file__).resolve().parent
+    def load(name,file):
+        spec=importlib.util.spec_from_file_location(name,here/file)
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
+    lifecycle=load('network_lifecycle','venue-start-quarantine.py')
+    fence=load('network_fence','render-existing-host-guest-fence.py')
+    return lifecycle,fence
+
+
+def prepare_owned(bundle,selector,journal):
+    """Create only a new fenced bridge; no VM, old-network adoption or retry."""
+    lifecycle,fence=owned_helpers();stage=lifecycle.stage
+    journal=Path(journal);parent=journal.parent;info=parent.lstat()
+    if (os.geteuid()!=0 or parent.is_symlink() or not stat.S_ISDIR(info.st_mode) or
+            info.st_uid or stat.S_IMODE(info.st_mode)!=0o700 or os.path.lexists(journal)):
+        raise Refusal('new root-private network journal required; inspect before retry')
+    plan=stage.owned_plan(bundle,selector);context=lifecycle.host_context(bundle,plan)
+    selection=strict_json(selector)
+    with lifecycle.lifecycle(context):
+        if os.path.lexists(context.runtime/'runtime-authority.json'):
+            raise Refusal('network provisioning requires preactivation scope')
+        lifecycle.units.units_idle(plan);context.physical_reserves()
+        xml,network=render(bundle,selection)
+        screen_host(ipaddress.ip_network(network['subnet']),network['network'],network['bridge'])
+        names=subprocess.check_output(['virsh','-c','qemu:///system','list','--all','--name'],text=True,timeout=20).splitlines()
+        if network['guest'] in names:raise Refusal('unreceipted selected guest already exists')
+        policy=fence.render(bundle,selection)
+        tables=json.loads(subprocess.check_output(['nft','-j','list','tables'],text=True,timeout=20))
+        if any(row.get('table',{}).get('name')==policy['table'] for row in tables.get('nftables',[])):
+            raise Refusal('guest fence table already exists; never adopt')
+        xml_path=journal.with_suffix('.xml');nft_path=journal.with_suffix('.nft')
+        if any(os.path.lexists(p) for p in (xml_path,nft_path)):raise Refusal('network artifacts already exist')
+        data={'schemaVersion':1,'namespace':plan['prefix'],'phase':'artifact-intended',
+              'selectorSha256':plan['selectorSha256'],'bundleIrSha256':plan['bundleIrSha256'],
+              'hostContextSha256':context.digest,'installerSha256':stage.sha(__file__),
+              'network':network,'xmlSha256':hashlib.sha256(xml.encode()).hexdigest(),
+              'fenceTable':policy['table'],'fenceSha256':hashlib.sha256(policy['nftables'].encode()).hexdigest(),
+              'activationAuthorized':False,'acceptedIntegratedInstalls':0}
+        stage.write_ledger(journal,data,create=True)
+        for path,body in ((xml_path,xml),(nft_path,policy['nftables'])):
+            fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+            with os.fdopen(fd,'w') as out:out.write(body);out.flush();os.fsync(out.fileno())
+        subprocess.run(['nft','-c','-f',str(nft_path)],check=True,timeout=30,capture_output=True)
+        data['phase']='fence-installing';stage.write_ledger(journal,data)
+        subprocess.run(['nft','-f',str(nft_path)],check=True,timeout=30,capture_output=True)
+        data['phase']='network-create-intended';stage.write_ledger(journal,data)
+        # net-create refuses an existing name atomically. Never net-define an
+        # unowned pre-existing network. Persist only the UUID just created here.
+        subprocess.run(['virsh','-c','qemu:///system','net-create',str(xml_path)],check=True,timeout=30,capture_output=True)
+        uuid=subprocess.check_output(['virsh','-c','qemu:///system','net-uuid',network['network']],text=True,timeout=20).strip()
+        if not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',uuid):raise Refusal('new network UUID invalid')
+        data.update(phase='network-created',networkUuid=uuid);stage.write_ledger(journal,data)
+        live=subprocess.check_output(['virsh','-c','qemu:///system','net-dumpxml',uuid],text=True,timeout=20)
+        element=ET.fromstring(live)
+        if element.findtext('name')!=network['network'] or element.find('bridge').get('name')!=network['bridge']:
+            raise Refusal('new network native identity differs')
+        # Persist the exact just-created native definition, not a name-based
+        # replacement. Artifacts and partial intent remain on any failure.
+        persistent=journal.with_suffix('.native.xml')
+        fd=os.open(persistent,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+        with os.fdopen(fd,'w') as out:out.write(live);out.flush();os.fsync(out.fileno())
+        subprocess.run(['virsh','-c','qemu:///system','net-define',str(persistent)],check=True,timeout=30,capture_output=True)
+        # Do not enable network autostart without its durable boot fence. This
+        # first runtime bridge exists for selected host publishers only; guest
+        # creation remains gated by the separately installed boot policy.
+        status=subprocess.check_output(['virsh','-c','qemu:///system','net-info',uuid],text=True,timeout=20)
+        if any(not re.search(r'(?m)^'+field+r':\s+yes\s*$',status) for field in ('Active','Persistent')) or not re.search(r'(?m)^Autostart:\s+no\s*$',status):
+            raise Refusal('new runtime network identity/policy differs')
+        native_fence=subprocess.check_output(['nft','-j','list','table','inet',policy['table']],timeout=20)
+        data.update(phase='network-runtime-ready',networkAutostart=False,nativeXmlSha256=hashlib.sha256(live.encode()).hexdigest(),
+                    nativeFenceSha256=hashlib.sha256(native_fence).hexdigest(),guestCreated=False)
+        stage.write_ledger(journal,data)
+        return {'status':data['phase'],'network':network['network'],'uuid':uuid,
+                'bridge':network['bridge'],'guestCreated':False,'activationAuthorized':False}
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bundle',type=Path,required=True)
     parser.add_argument('--selector',type=Path,required=True)
     parser.add_argument('--inspect-host',action='store_true',help='Read-only route/name/link collision check')
+    parser.add_argument('--prepare-owned',action='store_true',help='Explicit new fenced bridge creation, no guest or stack activation')
+    parser.add_argument('--journal',type=Path)
     args=parser.parse_args()
     try:
+        if args.prepare_owned:
+            if args.journal is None or args.inspect_host:raise Refusal('exact new journal and one operation required')
+            print(json.dumps(prepare_owned(args.bundle,args.selector,args.journal),sort_keys=True));return
+        if args.journal is not None:raise Refusal('journal only belongs to explicit network preparation')
         xml,info=render(args.bundle,strict_json(args.selector))
         if args.inspect_host:
             info.update(screen_host(ipaddress.ip_network(info['subnet']),info['network'],info['bridge']))
         print(json.dumps(info,sort_keys=True),file=sys.stderr)
         print(xml,end='')
-    except (Refusal,KeyError,TypeError,OSError,subprocess.SubprocessError,json.JSONDecodeError) as exc:
+    except (Refusal,ValueError,KeyError,TypeError,OSError,subprocess.SubprocessError,json.JSONDecodeError) as exc:
         raise SystemExit('private guest network refused: '+str(exc)) from exc
 
 

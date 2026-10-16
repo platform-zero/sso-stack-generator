@@ -22,6 +22,7 @@ listener/capacity gate to get an installation attempt.
 | Prepare immutable image inputs | `ops/venue-registry-images.py`, `ops/venue-build-base-images.py` | Exact selected image/store IDs and frozen base identities, not running services |
 | Discover local build outputs | `ops/venue-local-build-images.py` | Bounded selected builds and output/intermediate receipts; not frozen release inputs |
 | Retire inactive release | `ops/venue-install-inert.py --retire-inactive` | Guarded reverse-order retirement of the exact inactive installation, not populated-data reset |
+| Prepare required runtime bridge | `ops/render-existing-host-guest-network.py --prepare-owned --journal ...` | Applies only the exact new guest fence before atomic network creation; journals UUID and persists only its own native XML; no guest or autostart |
 | Attempt isolated activation | `ops/venue-install-inert.py --activate-isolated` | Explicitly upgrades a fresh frozen-input preparation to a current-boot version-2 intent; native startup is not integrated acceptance |
 | Quarantine selected activation | `ops/venue-install-inert.py --quarantine-start` | Fences runtime authority, cancels selected late jobs and stops exact native units/sockets while retaining data; never retries |
 
@@ -35,6 +36,11 @@ precedes readiness/authority and every queue acknowledgement. Authority writing,
 controller mutations and quarantine share the same private lifecycle lock.
 Readiness observes actual startup leaves, not merely successful Wants targets.
 A failed start is fenced and stopped without deleting data or automatic retry.
+
+Bridge publishers require the actual selected gateway to exist. Runtime bridge
+preparation deliberately leaves network autostart **off** until durable fence/boot
+ordering is installed; it is not guest boot readiness. Existing network names,
+routes, interfaces, fence tables or journals are never adopted or retried.
 
 This is not populated-state reset, guest idle/trigger authority or proof of
 operational host/guest coupling, ingress or integrated delivery. Consumers still
