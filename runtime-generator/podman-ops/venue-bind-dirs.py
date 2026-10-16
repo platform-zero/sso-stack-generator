@@ -55,11 +55,15 @@ def checked_stage(bundle,selector,ledger,accepted):
     return ledger,data,paths
 
 def create(bundle,selector,ledger):
-    path,data,paths=checked_stage(bundle,selector,ledger,('managers-ready',))
+    path,data,paths=checked_stage(bundle,selector,ledger,('managers-ready','huly-volumes-inert','units-staged'))
+    if data['status']!='managers-ready' and data.get('venueCompositeVersion')!=2:
+        raise Refusal('composite data-bind phase requires versioned installer')
     if data.get('venueDataBindDirs') or data.get('pendingVenueDataDir'):
         raise Refusal('data bind stage already selected')
     if any(os.path.lexists(name) for name in paths):raise Refusal('actual data bind path already exists')
-    data['venueDataBindDirs']=[];data['status']='data-binds-creating';stage.write_ledger(path,data)
+    data['venueDataBindDirs']=[]
+    if data.get('venueCompositeVersion')==2:data['preVenueDataStatus']=data['status']
+    data['status']='data-binds-creating';stage.write_ledger(path,data)
     for name,info in sorted(paths.items()):
         data['pendingVenueDataDir']=name;stage.write_ledger(path,data)
         p=Path(name);p.mkdir(mode=0o700);os.chown(p,info['owner'],info['owner']);os.chmod(p,0o700)
@@ -74,6 +78,8 @@ def retire(bundle,selector,ledger):
     path,data,paths=checked_stage(bundle,selector,ledger,('data-binds-creating','data-binds-inert','data-binds-retiring'))
     if data.get('crossDomainAclStatus') not in (None,'retired'):
         raise Refusal('cross-domain ACL must be exactly restored before empty data-bind retirement')
+    if data.get('venueCompositeVersion')==2 and data.get('preVenueDataStatus') not in ('managers-ready','huly-volumes-inert','units-staged'):
+        raise Refusal('composite data-bind parent phase differs')
     rows=list(data.get('venueDataBindDirs',[]));pending=data.get('pendingVenueDataDir')
     if pending and pending not in {x['path'] for x in rows} and os.path.lexists(pending):
         st=Path(pending).lstat();info=paths[pending]
@@ -97,7 +103,8 @@ def retire(bundle,selector,ledger):
         if row['path'] in retired:continue
         Path(row['path']).rmdir()
         data.setdefault('retiredDataBindDirs',[]).append(row['path']);stage.write_ledger(path,data)
-    data.pop('pendingVenueDataDir',None);data['status']='managers-ready';stage.write_ledger(path,data)
+    data.pop('pendingVenueDataDir',None)
+    data['status']=data.pop('preVenueDataStatus','managers-ready');stage.write_ledger(path,data)
     return {'status':data['status'],'retiredEmptyDataBindDirs':len(rows),
             'activationAuthorized':False,'acceptedIntegratedInstalls':0}
 

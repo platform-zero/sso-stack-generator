@@ -100,7 +100,8 @@ def units_idle(plan):
 
 def install(bundle,selector,ledger):
     path,state,plan=verified(bundle,selector,ledger)
-    if state['status']!='managers-ready' or state.get('unitFiles'):
+    allowed=('managers-ready','data-binds-inert','huly-volumes-inert') if state.get('venueCompositeVersion')==2 else ('managers-ready',)
+    if state['status'] not in allowed or state.get('unitFiles'):
         raise Refusal('unit stage already selected or has ambiguous progress')
     files=manifest(bundle,plan)
     for dest,row in files.items():
@@ -121,6 +122,7 @@ def install(bundle,selector,ledger):
                 all_dirs.append(str(parent))
     all_dirs=sorted(all_dirs,key=lambda p:(len(Path(p).parts),p))
     state['unitFiles']=files;state['unitDirs']=all_dirs;state['installedUnits']=[];state['installedUnitDirs']=[]
+    if state.get('venueCompositeVersion')==2:state['preVenueUnitStatus']=state['status']
     state['status']='units-installing';stage.write_ledger(path,state)
     for name in all_dirs:
         p=Path(name);owner=next(a for a in plan['accounts'] if name.startswith(a['home']+'/'))
@@ -148,7 +150,8 @@ def retire(bundle,selector,ledger):
     if state['status'] not in ('units-staged','units-installing','units-retiring'):
         raise Refusal('no exact selected unit stage to retire')
     files=manifest(bundle,plan)
-    if state.get('unitFiles')!=files or len(state.get('installedUnits',[]))>194:
+    if (state.get('unitFiles')!=files or len(state.get('installedUnits',[]))>194 or
+            (state.get('venueCompositeVersion')==2 and state.get('preVenueUnitStatus') not in ('managers-ready','data-binds-inert','huly-volumes-inert'))):
         raise Refusal('unit source/ledger CAS drift')
     units_idle(plan)
     # No untracked destination is removed. Pending install is recognized only
@@ -190,7 +193,7 @@ def retire(bundle,selector,ledger):
         if name in state.get('retiredUnitDirs',[]):continue
         Path(name).rmdir();state.setdefault('retiredUnitDirs',[]).append(name);stage.write_ledger(path,state)
     reload(plan)
-    state['status']='managers-ready';stage.write_ledger(path,state)
+    state['status']=state.pop('preVenueUnitStatus','managers-ready');stage.write_ledger(path,state)
     return state
 
 def main():

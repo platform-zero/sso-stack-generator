@@ -54,7 +54,8 @@ def context(bundle,selector,ledger):
     if path.is_symlink() or not path.is_file() or path.stat().st_uid!=0 or stat.S_IMODE(path.stat().st_mode)!=0o600:
         raise Refusal('protected stage ledger required')
     data=json.loads(path.read_text());plan=stage.owned_plan(bundle,selector)
-    if (data.get('plan')!=plan or data.get('status')!='managers-ready' or
+    if (data.get('plan')!=plan or
+            data.get('status') not in (('managers-ready','data-binds-inert','units-staged') if data.get('venueCompositeVersion')==2 else ('managers-ready',)) or
             data.get('managerStarted')!=[a['name'] for a in plan['accounts']] or data.get('managerStopped')):
         raise Refusal('seven selected active managers and empty-stage authority required')
     apps=next(a for a in plan['accounts'] if a['name']==plan['prefix']+'-apps')
@@ -85,7 +86,9 @@ def create(bundle,selector,ledger):
     if data.get('venueHulyVolumes') or data.get('pendingVenueHulyVolume'):
         raise Refusal('named volumes already selected or interrupted')
     if inventory(apps):raise Refusal('unexpected existing volume in exclusive fresh apps graph')
-    data['venueHulyVolumes']=[];data['status']='huly-volumes-creating';stage.write_ledger(path,data)
+    data['venueHulyVolumes']=[]
+    if data.get('venueCompositeVersion')==2:data['preVenueHulyStatus']=data['status']
+    data['status']='huly-volumes-creating';stage.write_ledger(path,data)
     for name in NAMES:
         data['pendingVenueHulyVolume']=name;stage.write_ledger(path,data)
         if run(apps,'volume','create',name)!=name:raise Refusal('selected volume create returned wrong identity')
@@ -109,6 +112,8 @@ def retire(bundle,selector,ledger):
         raise Refusal('no selected Huly volume preparation to retire')
     apps=next(a for a in plan['accounts'] if a['name']==plan['prefix']+'-apps')
     check_apps(data,plan,apps)
+    if data.get('venueCompositeVersion')==2 and data.get('preVenueHulyStatus') not in ('managers-ready','data-binds-inert','units-staged'):
+        raise Refusal('composite named-volume parent phase differs')
     rows=data.get('venueHulyVolumes',[]);pending=data.get('pendingVenueHulyVolume')
     expected={row['name'] for row in rows}
     if pending and pending not in expected:expected.add(pending)
@@ -128,7 +133,8 @@ def retire(bundle,selector,ledger):
         run(apps,'volume','rm',name)
         data.setdefault('retiredHulyVolumes',[]).append(name);stage.write_ledger(path,data)
     if inventory(apps):raise Refusal('named Huly volumes remained')
-    data.pop('pendingVenueHulyVolume',None);data['status']='managers-ready';stage.write_ledger(path,data)
+    data.pop('pendingVenueHulyVolume',None)
+    data['status']=data.pop('preVenueHulyStatus','managers-ready');stage.write_ledger(path,data)
     return {'status':data['status'],'retired':len(data['retiredHulyVolumes']),
             'activationAuthorized':False,'acceptedIntegratedInstalls':0}
 

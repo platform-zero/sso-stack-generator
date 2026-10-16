@@ -54,6 +54,17 @@ class BindFixture(unittest.TestCase):
         self.assertTrue((self.rootful/'caddy_ca').is_dir())
         self.assertTrue((self.apps/'bookstack_data').is_dir())
         self.assertEqual(json.loads(self.ledger.read_text())['status'],'data-binds-inert')
+    def test_versioned_phase_stack_returns_exact_previous_status(self):
+        self.data['venueCompositeVersion']=2;self.data['status']='huly-volumes-inert'
+        binds.stage.write_ledger(self.ledger,self.data)
+        binds.create(None,None,self.ledger)
+        after=json.loads(self.ledger.read_text())
+        self.assertEqual(after['status'],'data-binds-inert')
+        self.assertEqual(after['preVenueDataStatus'],'huly-volumes-inert')
+        binds.retire(None,None,self.ledger)
+        restored=json.loads(self.ledger.read_text())
+        self.assertEqual(restored['status'],'huly-volumes-inert')
+        self.assertNotIn('preVenueDataStatus',restored)
     def test_existing_path_refuses_without_touching_other_path(self):
         occupied=self.apps/'bookstack_data';occupied.mkdir();(occupied/'data').write_text('keep')
         with self.assertRaises(binds.Refusal):binds.create(None,None,self.ledger)

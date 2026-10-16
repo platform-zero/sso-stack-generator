@@ -54,6 +54,17 @@ class FourVolumes(unittest.TestCase):
             self.assertEqual(vol.retire(self.bundle,None,self.ledger)['retired'],4)
             self.assertFalse(self.present)
             self.assertEqual(json.loads(self.ledger.read_text())['status'],'managers-ready')
+    def test_versioned_volume_phase_preserves_existing_data_bind_phase(self):
+        self.bundle=self.root/'bundle';q=self.bundle/'quadlet/rootless-apps';q.mkdir(parents=True)
+        for name in vol.NAMES:(q/(name+'.container')).write_text('Volume='+name+':/data\n')
+        self.data['venueCompositeVersion']=2;self.data['status']='data-binds-inert'
+        vol.stage.write_ledger(self.ledger,self.data)
+        with self.patch()[0],self.patch()[1],self.patch()[2],self.patch()[3],self.patch()[4]:
+            self.assertEqual(vol.create(self.bundle,None,self.ledger)['status'],'huly-volumes-inert')
+            after=json.loads(self.ledger.read_text())
+            self.assertEqual(after['preVenueHulyStatus'],'data-binds-inert')
+            self.assertEqual(vol.retire(self.bundle,None,self.ledger)['status'],'data-binds-inert')
+        self.assertNotIn('preVenueHulyStatus',json.loads(self.ledger.read_text()))
     def test_foreign_existing_volume_blocks_all_creation(self):
         self.bundle=self.root/'bundle';q=self.bundle/'quadlet/rootless-apps';q.mkdir(parents=True)
         for name in vol.NAMES:(q/(name+'.container')).write_text('Volume='+name+':/data\n')
