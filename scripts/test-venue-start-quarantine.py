@@ -66,6 +66,19 @@ class StartQuarantine(unittest.TestCase):
         self.assertEqual(json.loads(self.ledger.read_text())['venueStartPhase'],'failed-quarantining')
         self.assertEqual(len(calls),2)
         self.assertTrue(all('start' not in command for command in calls))
+    def test_real_manifest_mapping_preserves_native_target_suffix(self):
+        manifest={};records=[]
+        for index in range(194):
+            name='p0test-r1.target' if index==0 else 'p0test-r1-fixture-'+str(index)+'.container'
+            path=self.root/name;path.write_text('[Unit]\n');info=path.stat()
+            manifest[str(path)]={'uid':0,'sha256':q.units.hashlib.sha256(path.read_bytes()).hexdigest()}
+            records.append({'path':str(path),'dev':info.st_dev,'ino':info.st_ino})
+        state={'unitFiles':manifest,'installedUnits':records}
+        with patch.object(q.units,'manifest',return_value=manifest):
+            names=q.targets(self.root,self.plan,state)[None]
+        self.assertIn('p0test-r1.target',names)
+        self.assertNotIn('p0test-r1',names)
+        self.assertIn('p0test-r1-fixture-1.service',names)
     def test_shared_lifecycle_lock_refuses_competing_stop(self):
         records=[]
         with q.lifecycle(self.context):

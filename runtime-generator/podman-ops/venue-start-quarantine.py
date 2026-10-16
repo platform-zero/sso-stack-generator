@@ -50,7 +50,7 @@ def targets(bundle,plan,state):
         owner=account['name'] if account else None
         if entry['uid'] and account is None:raise Refusal('unit UID not selected account')
         if p.suffix in ('.container','.build','.network','.target'):
-            commands[owner].append(p.stem+('' if p.suffix=='.target' else
+            commands[owner].append(p.name if p.suffix=='.target' else p.stem+(
                               '-build.service' if p.suffix=='.build' else
                               '-network.service' if p.suffix=='.network' else '.service'))
     api=api_owners(bundle,plan)
