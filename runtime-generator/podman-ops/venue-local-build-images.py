@@ -81,6 +81,8 @@ def selected_unit(command,unit,tag,source_path=None,offline=True):
     if (cat.returncode or len(starts)!=1 or
             (source_path is not None and cat.stdout.splitlines().count('SourcePath='+str(source_path))!=1)):
         raise Refusal('generated selected local build unit unavailable or source path changed')
+    if not offline and cat.stdout.splitlines().count('TimeoutStartSec=1800')!=1:
+        raise Refusal('network-fetching selected build lacks bounded systemd start timeout')
     start=starts[0];words=start.split()
     network=('--network=none' in words or any(words[i:i+2]==['--network','none'] for i in range(len(words)-1)))
     any_network=any(word.startswith('--network') for word in words)

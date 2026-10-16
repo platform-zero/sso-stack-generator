@@ -52,14 +52,21 @@ class LocalBuildFixtures(unittest.TestCase):
             with self.assertRaisesRegex(local.Refusal,'pull/network/tag authority differs'):
                 local.selected_unit(['selected-user'],unit,tag)
         with patch.object(local.graph,'run',side_effect=checked):
-            with self.assertRaisesRegex(local.Refusal,'pull/network/tag authority differs'):
+            with self.assertRaisesRegex(local.Refusal,'lacks bounded systemd start timeout'):
                 local.selected_unit(['selected-user'],unit,tag,offline=False)
         def network_default(command,**kwargs):
             if 'cat' in command:return SimpleNamespace(returncode=0,stdout=
-                'ExecStart=/usr/bin/podman build --pull=never --tag '+tag+' --file Containerfile /build\n')
+                'TimeoutStartSec=1800\nExecStart=/usr/bin/podman build --pull=never --tag '+tag+' --file Containerfile /build\n')
             return SimpleNamespace(returncode=0,stdout='LoadState=loaded\nActiveState=inactive\n')
         with patch.object(local.graph,'run',side_effect=network_default):
             self.assertEqual(local.selected_unit(['selected-user'],unit,tag,offline=False)['ActiveState'],'inactive')
+        def missing_timeout(command,**kwargs):
+            row=network_default(command,**kwargs)
+            row.stdout=row.stdout.replace('TimeoutStartSec=1800\n','')
+            return row
+        with patch.object(local.graph,'run',side_effect=missing_timeout):
+            with self.assertRaisesRegex(local.Refusal,'lacks bounded systemd start timeout'):
+                local.selected_unit(['selected-user'],unit,tag,offline=False)
     def test_unloaded_oneshot_needs_exact_post_ledger_journal_pair(self):
         ledger=self.bundle/'ledger';ledger.write_text('{}')
         ts=ledger.stat().st_mtime_ns//1000
