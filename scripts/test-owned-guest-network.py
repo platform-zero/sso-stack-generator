@@ -40,6 +40,8 @@ class Owned(unittest.TestCase):
     def output(self,command,**kwargs):
         self.commands.append(command)
         if command[0]=='nft':return b'{"nftables":[]}' if not kwargs.get('text') else '{"nftables":[]}'
+        if command[0]=='ip':return '[]'
+        if 'net-list' in command:return self.uuid+'\n' if self.created else ''
         if 'list' in command:return ''
         if 'net-uuid' in command:return self.uuid+'\n'
         if 'net-dumpxml' in command:return self.xml
@@ -55,6 +57,11 @@ class Owned(unittest.TestCase):
         if 'net-define' in command:
             self.assertTrue(self.created)
             body=Path(command[-1]).read_text();self.assertIn(self.uuid,body)
+        if 'net-destroy' in command:
+            self.assertTrue(self.fenced);self.assertEqual(state['phase'],'network-retire-intended');self.assertEqual(command[-1],self.uuid)
+        if 'net-undefine' in command:self.created=False
+        if command[:2]==['nft','delete']:
+            self.assertFalse(self.created);self.assertEqual(state['phase'],'network-undefined-fence-held');self.fenced=False
         return NS(returncode=0)
     def test_fence_and_intent_precede_atomic_create_then_persist_exact_uuid(self):
         result=net.prepare_owned(self.root,self.selector,self.journal)
@@ -62,6 +69,25 @@ class Owned(unittest.TestCase):
         self.assertFalse(result['guestCreated']);self.assertFalse(result['activationAuthorized'])
         self.assertEqual(json.loads(self.journal.read_text())['networkUuid'],self.uuid)
         self.assertFalse(any('net-start' in c or 'destroy' in c for c in self.commands))
+    def test_exact_uuid_destroy_and_undefine_precede_own_fence_removal(self):
+        net.prepare_owned(self.root,self.selector,self.journal);self.commands=[]
+        result=net.retire_owned(self.root,self.selector,self.journal,net.hashlib.sha256(self.journal.read_bytes()).hexdigest())
+        self.assertEqual(result['status'],'network-retired');self.assertFalse(result['guestDataTouched'])
+        self.assertFalse(self.fenced);self.assertFalse(self.created)
+    def test_wrong_retirement_cas_refuses_before_native_mutation(self):
+        net.prepare_owned(self.root,self.selector,self.journal);self.commands=[]
+        with self.assertRaises(net.Refusal):net.retire_owned(self.root,self.selector,self.journal,'0'*64)
+        self.assertFalse(self.commands);self.assertTrue(self.fenced)
+    def test_any_domain_reference_blocks_even_if_not_selected_guest_name(self):
+        net.prepare_owned(self.root,self.selector,self.journal);self.commands=[];query=self.output
+        def busy(command,**kwargs):
+            if command[0]=='virsh' and 'list' in command:return 'foreign-domain-uuid\n'
+            if 'dumpxml' in command:return '<domain><devices><interface><source network="p0-venue-r1"/></interface></devices></domain>'
+            return query(command,**kwargs)
+        with patch.object(net.subprocess,'check_output',side_effect=busy):
+            with self.assertRaisesRegex(net.Refusal,'a domain references'):
+                net.retire_owned(self.root,self.selector,self.journal,net.hashlib.sha256(self.journal.read_bytes()).hexdigest())
+        self.assertFalse(any('net-destroy' in command or command[:2]==['nft','delete'] for command in self.commands))
     def test_existing_receipt_is_not_adopted_or_replayed(self):
         self.journal.write_text('{}');self.journal.chmod(0o600)
         with self.assertRaisesRegex(net.Refusal,'inspect before retry'):

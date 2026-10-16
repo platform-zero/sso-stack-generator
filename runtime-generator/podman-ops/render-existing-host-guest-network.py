@@ -202,19 +202,76 @@ def prepare_owned(bundle,selector,journal):
                 'bridge':network['bridge'],'guestCreated':False,'activationAuthorized':False}
 
 
+def retire_owned(bundle,selector,journal,expected_sha):
+    lifecycle,_=owned_helpers();stage=lifecycle.stage;journal=Path(journal);info=journal.lstat()
+    if (os.geteuid()!=0 or journal.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid or
+            info.st_nlink!=1 or stat.S_IMODE(info.st_mode)!=0o600 or stage.sha(journal)!=expected_sha):
+        raise Refusal('exact protected owned-network journal SHA review required')
+    plan=stage.owned_plan(bundle,selector);context=lifecycle.host_context(bundle,plan)
+    with lifecycle.lifecycle(context):
+        data=strict_json(journal)
+        if (data.get('phase')!='network-runtime-ready' or data.get('namespace')!=plan['prefix'] or
+                data.get('selectorSha256')!=plan['selectorSha256'] or data.get('bundleIrSha256')!=plan['bundleIrSha256'] or
+                data.get('hostContextSha256')!=context.digest or data.get('guestCreated') is not False):
+            raise Refusal('only exact never-guest owned runtime network may be retired here')
+        runtime=context.runtime/'runtime-authority.json'
+        if os.path.lexists(runtime):
+            st=runtime.lstat();receipt=strict_json(runtime)
+            if (runtime.is_symlink() or not stat.S_ISREG(st.st_mode) or st.st_uid or st.st_nlink!=1 or
+                    stat.S_IMODE(st.st_mode)!=0o600 or receipt.get('schemaVersion')!=2 or
+                    receipt.get('hostContextSha256')!=context.digest or receipt.get('activationAuthorized') is not False or
+                    receipt.get('phase')!='failed-quarantined'):
+                raise Refusal('runtime authority not exactly fenced before network retirement')
+        lifecycle.units.units_idle(plan)
+        _,network=render(bundle,strict_json(selector));uuid=data['networkUuid'];table=data['fenceTable']
+        actual=subprocess.check_output(['virsh','-c','qemu:///system','net-uuid',network['network']],text=True,timeout=20).strip()
+        live=subprocess.check_output(['virsh','-c','qemu:///system','net-dumpxml',uuid],text=True,timeout=20)
+        native=subprocess.check_output(['nft','-j','list','table','inet',table],timeout=20)
+        if (actual!=uuid or hashlib.sha256(live.encode()).hexdigest()!=data['nativeXmlSha256'] or
+                hashlib.sha256(native).hexdigest()!=data['nativeFenceSha256']):
+            raise Refusal('owned native network/fence ID or bytes changed')
+        links=json.loads(subprocess.check_output(['ip','-j','link','show','master',network['bridge']],text=True,timeout=20))
+        if links:raise Refusal('selected bridge has attached interfaces; no unreviewed peer teardown')
+        guests=subprocess.check_output(['virsh','-c','qemu:///system','list','--all','--uuid'],text=True,timeout=20).splitlines()
+        for guest in guests:
+            root=ET.fromstring(subprocess.check_output(['virsh','-c','qemu:///system','dumpxml',guest],text=True,timeout=20))
+            if any(source.get('network')==network['network'] or source.get('bridge')==network['bridge']
+                   for source in root.findall('./devices/interface/source')):
+                raise Refusal('a domain references the selected network/bridge; no guest adoption or teardown')
+        data['phase']='network-retire-intended';data['retirerSha256']=stage.sha(__file__);stage.write_ledger(journal,data)
+        subprocess.run(['virsh','-c','qemu:///system','net-destroy',uuid],check=True,timeout=30,capture_output=True)
+        data['phase']='network-destroyed';stage.write_ledger(journal,data)
+        subprocess.run(['virsh','-c','qemu:///system','net-undefine',uuid],check=True,timeout=30,capture_output=True)
+        remaining=subprocess.check_output(['virsh','-c','qemu:///system','net-list','--all','--uuid'],text=True,timeout=20).splitlines()
+        if uuid in remaining:raise Refusal('owned network still defined; fence retained')
+        data['phase']='network-undefined-fence-held';stage.write_ledger(journal,data)
+        current=subprocess.check_output(['nft','-j','list','table','inet',table],timeout=20)
+        if hashlib.sha256(current).hexdigest()!=data['nativeFenceSha256']:raise Refusal('fence changed during native network retirement')
+        subprocess.run(['nft','delete','table','inet',table],check=True,timeout=30,capture_output=True)
+        data['phase']='network-retired';stage.write_ledger(journal,data)
+        return {'status':'network-retired','retiredNetworkUuid':uuid,'guestDataTouched':False,'activationAuthorized':False}
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bundle',type=Path,required=True)
     parser.add_argument('--selector',type=Path,required=True)
     parser.add_argument('--inspect-host',action='store_true',help='Read-only route/name/link collision check')
-    parser.add_argument('--prepare-owned',action='store_true',help='Explicit new fenced bridge creation, no guest or stack activation')
+    mode=parser.add_mutually_exclusive_group()
+    mode.add_argument('--prepare-owned',action='store_true',help='Explicit new fenced bridge creation, no guest or stack activation')
+    mode.add_argument('--retire-owned',action='store_true',help='Explicit exact never-guest network/fence retirement')
     parser.add_argument('--journal',type=Path)
+    parser.add_argument('--expected-journal-sha')
     args=parser.parse_args()
     try:
+        if args.retire_owned:
+            if args.journal is None or not args.expected_journal_sha or args.inspect_host:raise Refusal('exact owned journal SHA and one retirement operation required')
+            print(json.dumps(retire_owned(args.bundle,args.selector,args.journal,args.expected_journal_sha),sort_keys=True));return
+        if args.expected_journal_sha is not None:raise Refusal('journal SHA only belongs to explicit retirement')
         if args.prepare_owned:
             if args.journal is None or args.inspect_host:raise Refusal('exact new journal and one operation required')
             print(json.dumps(prepare_owned(args.bundle,args.selector,args.journal),sort_keys=True));return
-        if args.journal is not None:raise Refusal('journal only belongs to explicit network preparation')
+        if args.journal is not None:raise Refusal('journal only belongs to explicit owned network operations')
         xml,info=render(args.bundle,strict_json(args.selector))
         if args.inspect_host:
             info.update(screen_host(ipaddress.ip_network(info['subnet']),info['network'],info['bridge']))
