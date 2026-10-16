@@ -38,7 +38,11 @@ def domains(bundle,plan):
                     parts=Path(source.removeprefix('./configs/')).parts
                     if not parts or any(x in ('','.','..') for x in parts):raise Refusal('invalid rootless config source')
                     config.add(parts[0])
-        result[name]={'uid':a['uid'],'state':a['state'],'domain':domain,'configs':sorted(config)}
+        build_units=sorted(x.name for x in (bundle/'quadlet'/('rootless-'+domain)).glob('*.build'))
+        if any((bundle/'quadlet'/('rootless-'+domain)/x).is_symlink() for x in build_units):
+            raise Refusal('selected build unit source changed')
+        result[name]={'uid':a['uid'],'state':a['state'],'domain':domain,
+                      'configs':sorted(config),'buildUnits':build_units}
     if len(result)!=7:raise Refusal('generated domain account count differs')
     return result
 
@@ -73,7 +77,11 @@ def prepare(bundle,selector,ledger):
     b,p,data,plan,selected,original=context(bundle,selector,ledger)
     if data.get('venueDomainRuntimePhase') or data.get('managerStarted'):
         raise Refusal('domain copies require fresh pre-manager stage')
-    root_configs=original/'runtime/configs';records={}
+    root_configs=original/'runtime/configs';root_build=original/'build';records={}
+    if any(domain['buildUnits'] for domain in selected.values()):
+        if (root_build.is_symlink() or not root_build.is_dir() or
+                any(x.is_symlink() or (not x.is_dir() and not x.is_file()) for x in root_build.rglob('*'))):
+            raise Refusal('rendered selected build tree unsafe')
     for name,domain in selected.items():
         state_root=Path(domain['state'])
         assert_parent(state_root,data['pathIdentities'].get(str(state_root),{}),domain['uid'])
@@ -86,7 +94,7 @@ def prepare(bundle,selector,ledger):
                                     not str(source.resolve()).startswith(str(root_configs.resolve())+'/')):
                 raise Refusal('rootless generated config root changed')
         records[name]={'state':str(state_root),'uid':domain['uid'],'configs':domain['configs'],
-                       'releaseRoot':str(slot),'current':str(current)}
+                       'buildUnits':domain['buildUnits'],'releaseRoot':str(slot),'current':str(current)}
     data['venueDomainRuntimePhase']='preparing';data['venueDomainRuntimePlan']=records
     stage.write_ledger(p,data)
     for name,row in records.items():
@@ -95,6 +103,8 @@ def prepare(bundle,selector,ledger):
         slot.mkdir(mode=0o700);slot.chmod(0o700)
         (slot/'runtime/configs').mkdir(parents=True)
         (slot/'repos').mkdir()
+        if row['buildUnits']:
+            shutil.copytree(root_build,slot/'build',symlinks=False)
         for config in row['configs']:
             source=root_configs/config
             if source.is_dir():shutil.copytree(source,slot/'runtime/configs'/config,symlinks=False)
@@ -141,6 +151,7 @@ def retire(bundle,selector,ledger):
         parent=state_root/'releases';slot=Path(row['releaseRoot']);current=Path(row['current'])
         staged_children={Path(x).name for x in data['createdPaths'] if Path(x).parent==state_root}
         if (uid!=domain['uid'] or row['configs']!=domain['configs'] or
+                row.get('buildUnits')!=domain['buildUnits'] or
                 slot!=parent/original.name or current!=state_root/'current' or
                 root_record(parent)!=row['parentIdentity'] or root_record(slot)!=row['releaseIdentity'] or
                 {x.name for x in parent.iterdir()}!={slot.name} or
