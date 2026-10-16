@@ -91,6 +91,34 @@ def journaled_build_base_ids(bundle,selector,state,source=None):
         result[user].add(value)
     return result
 
+def remove_exact_dual_named_base(bundle,selector,state,path,user,image,command,source=None):
+    """Never force an image: untag only its frozen site-owned mutable alias."""
+    spec=importlib.util.spec_from_file_location('venue_image_authority',HERE/'venue-image-authority.py')
+    authority=importlib.util.module_from_spec(spec);spec.loader.exec_module(authority)
+    if source is None:source=authority.authority(bundle,selector)
+    matches=[row for key,row in source['buildBaseImages'].items()
+             if key.startswith(user+'|') and row['configId']==image and
+             state.get('venueBuildBaseVerified',{}).get(key)==image]
+    if len(matches)!=1:raise Refusal('multi-name image lacks unique frozen selected build-base alias')
+    row=matches[0];tag=row['registryReference'];digest=tag.rsplit(':',1)[0]+'@'+row['linuxAmd64ManifestDigest']
+    details=run(command+['image','inspect','--format','{{json .RepoTags}}|{{json .RepoDigests}}',image],timeout=35)
+    if details.returncode or details.stdout.count('|')!=1:
+        raise Refusal('selected dual-name image metadata unavailable')
+    tagged,digested=details.stdout.strip().split('|',1)
+    if (set(json.loads(tagged))!={tag} or set(json.loads(digested))!={digest}):
+        raise Refusal('selected base image has foreign alias/digest; no untag')
+    state['pendingGraphImageUntag']={'user':user,'image':image,'tag':tag,'digest':digest}
+    stage.write_ledger(path,state)
+    result=run(command+['image','untag',image,tag],timeout=35)
+    if result.returncode:raise Refusal('exact selected base alias untag failed')
+    state.setdefault('graphUntaggedSelectedBases',[]).append(state.pop('pendingGraphImageUntag'))
+    stage.write_ledger(path,state)
+    result=run(command+['image','rm',image],timeout=180)
+    if result.returncode:
+        remaining=run(command+['image','inspect','--format','{{.Id}}',image],timeout=35)
+        if remaining.returncode==0:
+            raise Refusal('exact selected base image removal after untag failed')
+
 def inspect_graph(command):
     observations={}
     for label,args in (('containers',['ps','-aq']),('pods',['pod','ps','--quiet']),
@@ -227,7 +255,10 @@ def clear(bundle,selector,ledger):
             stage.write_ledger(path,state)
             removed=run(command+['image','rm',image],timeout=180)
             if removed.returncode:
-                raise Refusal('exact selected image removal failed: '+user+'; '+removed.stderr.strip()[:240])
+                if 'by digest with more than one tag' in removed.stderr:
+                    remove_exact_dual_named_base(bundle,selector,state,path,user,image,command)
+                else:
+                    raise Refusal('exact selected image removal failed: '+user+'; '+removed.stderr.strip()[:240])
             state.pop('pendingGraphImageRemoval');stage.write_ledger(path,state)
         current=inspect_graph(command)
         if current['images'] or any(current[k] for k in ('containers','pods','volumes')):

@@ -38,6 +38,32 @@ class BuildBaseFixtures(unittest.TestCase):
               patch.object(base.graph,'run',side_effect=AssertionError('tag must not run'))):
             with self.assertRaisesRegex(base.Refusal,'config ID differs'):
                 base.fetch_selected(['selected-store'],self.pair,self.source)
+    def test_dual_named_base_removes_only_exact_frozen_alias_without_force(self):
+        graph=base.graph;repo=self.ref.rsplit(':',1)[0];digest=repo+'@'+self.digest
+        state={'venueBuildBaseVerified':{self.pair:self.config}}
+        calls=[]
+        def run(command,**kwargs):
+            calls.append(command)
+            if 'inspect' in command:
+                return SimpleNamespace(returncode=0,stdout='["'+self.ref+'"]|["'+digest+'"]\n')
+            if 'untag' in command:return SimpleNamespace(returncode=0,stdout='')
+            if 'rm' in command:return SimpleNamespace(returncode=0,stdout='')
+            raise AssertionError('unselected mutation')
+        with (patch.object(graph,'run',side_effect=run),
+              patch.object(graph.stage,'write_ledger',return_value=None)):
+            graph.remove_exact_dual_named_base('bundle','selector',state,'ledger',self.user,self.config,
+                                               ['selected-store'],self.source)
+        self.assertEqual([c for c in calls if 'untag' in c],
+                         [['selected-store','image','untag',self.config,self.ref]])
+        self.assertEqual(state['graphUntaggedSelectedBases'][0]['digest'],digest)
+        self.assertFalse(state.get('pendingGraphImageUntag'))
+        def foreign(command,**kwargs):
+            return SimpleNamespace(returncode=0,stdout='["foreign"]|["'+digest+'"]\n')
+        with (patch.object(graph,'run',side_effect=foreign),
+              patch.object(graph.stage,'write_ledger',side_effect=AssertionError('foreign alias must refuse prewrite'))):
+            with self.assertRaisesRegex(graph.Refusal,'foreign alias'):
+                graph.remove_exact_dual_named_base('bundle','selector',state,'ledger',self.user,self.config,
+                                                   ['selected-store'],self.source)
     def test_graph_retirement_checks_from_alias_and_arch_before_image_deletion(self):
         graph=base.graph
         immutable='docker.io/example/base@sha256:'+'3'*64
