@@ -269,15 +269,19 @@ build_derived_render_values() {
   if ! render_has SHADOW_ACCOUNTS_HOST_DIR || [ -z "$(render_get SHADOW_ACCOUNTS_HOST_DIR)" ]; then
     render_set SHADOW_ACCOUNTS_HOST_DIR "$(default_shadow_accounts_host_dir)"
   fi
-  if ! render_has FORGEJO_RUNNER_SSH_DIR || [ -z "$(render_get FORGEJO_RUNNER_SSH_DIR)" ]; then
-    if [ -n "$(render_get CADDY_VENUE_HTTPS_PORT)" ]; then
-      [ -n "${BUNDLE_ROOT:-}" ] || die "venue CI SSH directory requires bound bundle authority"
-      local venue_ci_state
-      venue_ci_state="$(jq -er '[.domains[] | select(.name == "ci-runner")] | if length == 1 then .[0].stateRoot else error("CI domain") end' "$BUNDLE_ROOT/podman-domains.json")"
-      render_set FORGEJO_RUNNER_SSH_DIR "$venue_ci_state/forgejo-runner-ssh"
-    else
-      render_set FORGEJO_RUNNER_SSH_DIR "$(default_forgejo_runner_ssh_dir)"
-    fi
+  if [ -n "$(render_get CADDY_VENUE_HTTPS_PORT)" ]; then
+    [ -n "${BUNDLE_ROOT:-}" ] || die "venue CI SSH directory requires bound bundle authority"
+    local venue_ci_state venue_ci_path explicit_ci_path
+    venue_ci_state="$(jq -er '[.domains[] | select(.name == "ci-runner")] | if length == 1 then .[0].stateRoot else error("CI domain") end' "$BUNDLE_ROOT/podman-domains.json")"
+    venue_ci_path="$venue_ci_state/forgejo-runner-ssh"
+    explicit_ci_path="$(yaml_get_scalar "$site_config_file" 'runtime.forgejo_runner_ssh_dir')"
+    [ -z "$explicit_ci_path" ] || [ "$(normalize_host_path "$explicit_ci_path")" = "$venue_ci_path" ] ||
+      die "venue CI SSH directory conflicts with explicit site authority"
+    # This is a generated HOST PATH, not a credential. The unchanged older
+    # sealed tuple may contain a legacy host path: never materialize/chmod it.
+    render_set FORGEJO_RUNNER_SSH_DIR "$venue_ci_path"
+  elif ! render_has FORGEJO_RUNNER_SSH_DIR || [ -z "$(render_get FORGEJO_RUNNER_SSH_DIR)" ]; then
+    render_set FORGEJO_RUNNER_SSH_DIR "$(default_forgejo_runner_ssh_dir)"
   fi
   render_set SYSTEMD_USER_UID "$(id -u)"
   render_set SYSTEMD_USER_GID "$(id -g)"
