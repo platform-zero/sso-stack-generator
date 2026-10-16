@@ -37,6 +37,24 @@ class Retirement(unittest.TestCase):
   self.capability.unlink()
   with patch.object(m.stage,'boot_observation',return_value={'bootId':'same-boot','monotonicUsec':1000,'runTmpfs':True}):
    with self.assertRaises(m.Refusal):self.retire()
+ def retire_directory(self):return m.retire_runtime_directory(self.root,'selector',self.ledger,m.stage.sha(self.ledger))
+ def test_capability_must_be_retired_before_directory_operation(self):
+  with self.assertRaises(m.Refusal):self.retire_directory()
+  self.assertTrue(self.capability.exists());self.assertTrue(self.runtime.exists())
+ def test_empty_old_control_lease_directory_exactly_retires(self):
+  self.retire();self.assertEqual(self.retire_directory()['status'],'retired-empty-control-runtime');self.assertFalse(self.runtime.exists())
+ def test_unreviewed_control_runtime_content_blocks_all_directory_deletion(self):
+  self.retire();(self.runtime/'human-work').write_text('preserve')
+  with self.assertRaises(m.Refusal):self.retire_directory()
+  self.assertEqual((self.runtime/'human-work').read_text(),'preserve')
+ def test_directory_removal_crash_resumes_only_from_original_intent(self):
+  self.retire();rmdir=Path.rmdir
+  def interrupted(path,*args,**kwargs):
+   rmdir(path,*args,**kwargs)
+   if path==self.runtime:raise OSError('synthetic crash after rmdir')
+  with patch.object(Path,'rmdir',new=interrupted):
+   with self.assertRaises(OSError):self.retire_directory()
+  self.assertFalse(self.runtime.exists());self.assertEqual(self.retire_directory()['status'],'retired-empty-control-runtime')
  def test_live_capability_is_never_removed(self):
   self.receipt['activationAuthorized']=True;self.save_receipt()
   with self.assertRaises(m.Refusal):self.retire()

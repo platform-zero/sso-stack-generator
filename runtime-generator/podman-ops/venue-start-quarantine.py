@@ -562,12 +562,52 @@ def retire_authority(bundle,selector,ledger,expected_sha):
         return {'status':'retired-runtime-authority','activationAuthorized':False,'servicesStarted':False}
 
 
+def retire_runtime_directory(bundle,selector,ledger,expected_sha):
+    """Remove only the old empty control lease directory, never adopt its inode."""
+    path=Path(ledger);info=path.lstat()
+    if (path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid or info.st_nlink!=1 or
+            stat.S_IMODE(info.st_mode)!=0o600 or stage.sha(path)!=expected_sha):raise Refusal('exact protected retired ledger SHA required')
+    state=json.loads(path.read_bytes());plan=stage.owned_plan(bundle,selector);context=host_context(bundle,plan)
+    retired=state.get('venueRuntimeAuthorityRetired',{});runtime=context.runtime
+    if (state.get('plan')!=plan or state.get('status')!='retired-empty' or state.get('venueInstallerPhase')!='retired-inert' or
+            state.get('activationAuthorized') is not False or retired.get('contextSha256')!=context.digest or
+            retired.get('path')!=str(runtime/'runtime-authority.json') or not state.get('createdPaths') or
+            set(state['createdPaths'])!=set(state.get('pathIdentities',{})) or any(os.path.lexists(p) for p in state['createdPaths'])):
+        raise Refusal('complete old scope and false-capability retirement required')
+    for account in plan['accounts']:
+        for lookup,value in ((stage.pwd.getpwnam,account['name']),(stage.pwd.getpwuid,account['uid'])):
+            try:lookup(value)
+            except KeyError:continue
+            raise Refusal('retired namespace account/UID exists or was reused')
+    pending=state.get('venueRuntimeDirectoryRetireIntent')
+    if not os.path.lexists(runtime):
+        if not pending or pending.get('path')!=str(runtime) or pending.get('contextSha256')!=context.digest:
+            raise Refusal('runtime directory missing without exact removal intent')
+    else:
+        with lifecycle(context):
+            if stage.sha(path)!=expected_sha:raise Refusal('runtime directory retirement ledger CAS changed')
+            meta=runtime.lstat();lease=runtime/'lifecycle.lock';lock=lease.lstat()
+            if ({p.name for p in runtime.iterdir()}!={'lifecycle.lock'} or lease.is_symlink() or
+                    not stat.S_ISREG(lock.st_mode) or lock.st_uid or lock.st_nlink!=1 or stat.S_IMODE(lock.st_mode)!=0o600 or lock.st_size!=0):
+                raise Refusal('control runtime contains unreviewed state; no deletion')
+            identity={'path':str(runtime),'contextSha256':context.digest,'dev':meta.st_dev,'ino':meta.st_ino}
+            if pending is not None and pending!=identity:raise Refusal('control runtime directory inode changed')
+            state['venueRuntimeDirectoryRetireIntent']=identity;stage.write_ledger(path,state);pending=identity
+            lease.unlink();runtime.rmdir()
+    fd=os.open(runtime.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:os.fsync(fd)
+    finally:os.close(fd)
+    state['venueRuntimeDirectoryRetired']=state.pop('venueRuntimeDirectoryRetireIntent');stage.write_ledger(path,state)
+    return {'status':'retired-empty-control-runtime','activationAuthorized':False,'servicesStarted':False}
+
+
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     for name in ('bundle','selector','ledger'):ap.add_argument('--'+name,required=True)
     mode=ap.add_mutually_exclusive_group()
     mode.add_argument('--cleanup-stopped-native',metavar='REVIEWED_LEDGER_SHA256')
     mode.add_argument('--retire-runtime-authority',metavar='RETIRED_LEDGER_SHA256')
+    mode.add_argument('--retire-runtime-directory',metavar='RETIRED_LEDGER_SHA256')
     mode.add_argument('--retire-host-role-units',metavar='RETIRING_LEDGER_SHA256')
     mode.add_argument('--review-stale-result-unit',metavar='UNIT')
     ap.add_argument('--reviewed-ledger-sha',metavar='SHA256')
@@ -578,7 +618,8 @@ def main():
             result=review_stale_result(a.bundle,a.selector,a.ledger,a.reviewed_ledger_sha,a.review_stale_result_unit)
         else:
             if a.reviewed_ledger_sha is not None:raise Refusal('ledger SHA is only for explicit stale-result review')
-            if a.retire_host_role_units is not None:result=retire_host_units(a.bundle,a.selector,a.ledger,a.retire_host_role_units)
+            if a.retire_runtime_directory is not None:result=retire_runtime_directory(a.bundle,a.selector,a.ledger,a.retire_runtime_directory)
+            elif a.retire_host_role_units is not None:result=retire_host_units(a.bundle,a.selector,a.ledger,a.retire_host_role_units)
             elif a.retire_runtime_authority is not None:result=retire_authority(a.bundle,a.selector,a.ledger,a.retire_runtime_authority)
             else:result=(cleanup_stopped(a.bundle,a.selector,a.ledger,a.cleanup_stopped_native)
                          if a.cleanup_stopped_native is not None else quarantine(a.bundle,a.selector,a.ledger))
