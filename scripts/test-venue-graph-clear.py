@@ -122,6 +122,34 @@ class GraphClearFixtures(unittest.TestCase):
             self.assertEqual(clear.retire_empty_runroot(self.bundle,self.root/'unused',self.ledger)['retiredRunrootFiles'],4)
         self.assertFalse(any(root.iterdir()))
         self.assertTrue(root.exists())
+    def test_populated_image_runroot_accepts_only_empty_mountpoints_and_exact_lock(self):
+        root=Path(self.plan['roots']['rootful-run']);root.mkdir(mode=0o700);root.chmod(0o700)
+        info=root.lstat();self.identities[str(root)]={'dev':info.st_dev,'ino':info.st_ino,'uid':0,'mode':0o700}
+        layout={'overlay-layers':{'mountpoints.lock','mountpoints.json'},'overlay-locks':set(),
+                'overlay-containers':set(),
+                'overlay':{'native-diff()-true','metacopy()-false','overlay-true','idmapped-lower-dir-true'}}
+        for name,files in layout.items():
+            d=root/name;d.mkdir(mode=0o700)
+            for filename in files:(d/filename).touch(mode=0o644)
+        lock=root/'overlay-layers/mountpoints.lock';lock.write_bytes(b'x'*64)
+        points=root/'overlay-layers/mountpoints.json';points.write_bytes(b'["foreign"]');points.chmod(0o600)
+        self.data.update({'status':'staged-empty',
+                          'managerStopped':[a['name'] for a in reversed(self.plan['accounts'])],
+                          'graphCleared':['root',*(a['name'] for a in self.plan['accounts'])],
+                          'graphNetworkDirRetired':True,'podmanImageCacheRetired':True})
+        self.ledger.write_text(json.dumps(self.data))
+        with (patch.object(clear.stage,'owned_plan',return_value=self.plan),
+              patch.object(clear.stage,'write_ledger',side_effect=lambda path,state:self.data.update(state)),
+              patch.object(clear.os,'geteuid',return_value=0)):
+            with self.assertRaisesRegex(clear.Refusal,'metadata file'):
+                clear.retire_empty_runroot(self.bundle,self.root/'unused',self.ledger)
+            self.assertTrue(points.exists())
+            points.write_bytes(b'[]');lock.write_bytes(b'x'*65)
+            with self.assertRaisesRegex(clear.Refusal,'metadata file'):
+                clear.retire_empty_runroot(self.bundle,self.root/'unused',self.ledger)
+            lock.write_bytes(b'x'*64)
+            self.assertEqual(clear.retire_empty_runroot(self.bundle,self.root/'unused',self.ledger)['retiredRunrootFiles'],6)
+        self.assertFalse(any(root.iterdir()))
     def test_versioned_graph_refuses_selected_but_not_journaled_image(self):
         marker=Path(self.plan['roots']['rootful-graph'])/'keep';marker.write_text('untouched')
         self.data['venueCompositeVersion']=2;self.data['venueCompositeOfflineImages']=[]

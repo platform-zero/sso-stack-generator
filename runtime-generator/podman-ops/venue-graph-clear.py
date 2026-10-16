@@ -245,9 +245,14 @@ def retire_empty_runroot(bundle,selector,ledger):
         if any((mp:=line.split()[4].replace('\\040',' '))==str(root) or mp.startswith(str(root)+'/')
                for line in lines if len(line.split())>=5):
             raise Refusal('live mount in staged Podman runroot')
+    # A fully populated selected image graph (even after exact image removal)
+    # also leaves an empty mountpoint list, a 64-byte lock and the probed
+    # idmapped-lower marker. An unknown file/content still stops retirement.
     allowed={'overlay-layers':{'mountpoints.lock'},'overlay-locks':set(),
              'overlay-containers':set(),'overlay':{'native-diff()-true','metacopy()-false','overlay-true'}}
     if {p.name for p in root.iterdir()}!=set(allowed):raise Refusal('unreviewed Podman runroot directory')
+    if (root/'overlay-layers/mountpoints.json').exists() and (root/'overlay/idmapped-lower-dir-true').exists():
+        allowed['overlay-layers'].add('mountpoints.json');allowed['overlay'].add('idmapped-lower-dir-true')
     files=[];dirs=[]
     for name,names in allowed.items():
         d=root/name;info=d.lstat()
@@ -257,13 +262,25 @@ def retire_empty_runroot(bundle,selector,ledger):
         dirs.append({'path':str(d),'dev':info.st_dev,'ino':info.st_ino})
         for child in d.iterdir():
             info=child.lstat()
+            mode=stat.S_IMODE(info.st_mode)
             if (not stat.S_ISREG(info.st_mode) or child.is_symlink() or info.st_uid!=0 or
-                    info.st_nlink!=1 or stat.S_IMODE(info.st_mode)!=0o644 or info.st_size!=0):
+                    info.st_nlink!=1 or
+                    (child.name=='mountpoints.lock' and (mode!=0o644 or info.st_size not in (0,64))) or
+                    (child.name=='mountpoints.json' and (mode!=0o600 or child.read_bytes()!=b'[]')) or
+                    (child.name not in ('mountpoints.lock','mountpoints.json') and (mode!=0o644 or info.st_size!=0))):
                 raise Refusal('unreviewed Podman runroot metadata file')
-            files.append({'path':str(child),'dev':info.st_dev,'ino':info.st_ino})
-    state['podmanRunrootProof']={'directories':dirs,'zeroByteFiles':files}
+            files.append({'path':str(child),'dev':info.st_dev,'ino':info.st_ino,
+                          'uid':info.st_uid,'mode':mode,'sha256':hashlib.sha256(child.read_bytes()).hexdigest()})
+    state['podmanRunrootProof']={'directories':dirs,'exactFiles':files}
     state['podmanRunrootRetiring']=True;stage.write_ledger(path,state)
-    for item in files:Path(item['path']).unlink()
+    for item in files:
+        file=Path(item['path']);info=file.lstat()
+        if (file.is_symlink() or not stat.S_ISREG(info.st_mode) or
+                (info.st_dev,info.st_ino,info.st_uid,stat.S_IMODE(info.st_mode))!=
+                (item['dev'],item['ino'],item['uid'],item['mode']) or
+                hashlib.sha256(file.read_bytes()).hexdigest()!=item['sha256']):
+            raise Refusal('runroot metadata inode/bytes drift before exact retirement')
+        file.unlink()
     for item in dirs:Path(item['path']).rmdir()
     if any(root.iterdir()):raise Refusal('runroot bookkeeping remained')
     state.pop('podmanRunrootRetiring');state['podmanRunrootRetired']=True;stage.write_ledger(path,state)
