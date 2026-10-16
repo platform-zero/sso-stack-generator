@@ -61,6 +61,32 @@ class ReleaseFixture(unittest.TestCase):
         with self.assertRaises(release.Refusal):release.retire(self.bundle,None,self.ledger)
         self.assertTrue(self.slot.exists());self.assertEqual(os.readlink(self.pointer),'releases/foreign')
 
+    def test_interrupted_renderer_only_known_outputs_recover(self):
+        self.pointer.unlink()
+        source_config=self.bundle/'runtime/configs/caddy/Caddyfile';source_config.parent.mkdir(parents=True)
+        source_config.write_bytes((self.slot/'runtime/configs/caddy/Caddyfile').read_bytes())
+        template=self.bundle/'runtime/configs/caddy/allowed.conf.template';template.write_text('encrypted template')
+        copied_template=self.slot/'runtime/configs/caddy/allowed.conf.template';copied_template.write_text('encrypted template')
+        shutil.copy2(self.bundle/'source-provenance.json',self.slot/'source-provenance.json')
+        self.record['venueReleasePhase']='rendering'
+        self.record['venueReleaseCopiedManifest']=release.inventory(self.slot)
+        self.record['venueReleaseSourceManifest']=release.inventory(self.bundle)
+        self.ledger.write_text(json.dumps(self.record));self.ledger.chmod(0o600)
+        copied_template.unlink()
+        derived=self.slot/'runtime/configs/caddy/allowed.conf';derived.write_text('private rendered output')
+        env=self.slot/'runtime/stack.env';env.write_text('private test value');env.chmod(0o600)
+        (self.slot/'runtime/configs/caddy/Caddyfile').write_text('private rendered Caddyfile')
+        foreign=self.slot/'runtime/configs/caddy/unknown.out';foreign.write_text('foreign')
+        with self.assertRaises(release.Refusal):release.recover_interrupted_render(self.bundle,None,self.ledger)
+        self.assertTrue(foreign.exists());foreign.unlink()
+        original=self.slot/'source-provenance.json';original.write_text('corrupted immutable input')
+        with self.assertRaises(release.Refusal):release.recover_interrupted_render(self.bundle,None,self.ledger)
+        self.assertTrue(env.exists());original.write_bytes((self.bundle/'source-provenance.json').read_bytes())
+        result=release.recover_interrupted_render(self.bundle,None,self.ledger)
+        self.assertEqual(result['status'],'retired-interrupted-render')
+        self.assertFalse(self.slot.exists());self.assertFalse((self.state/'releases').exists())
+        self.assertEqual(json.loads(self.ledger.read_text())['venueReleasePhase'],'retired-interrupted-render')
+
     def test_interrupted_copy_prefix_and_foreign_file_recovery(self):
         self.pointer.unlink();shutil.rmtree(self.slot);(self.state/'releases').rmdir()
         self.record={k:self.record[k] for k in ('plan','status','activationAuthorized','pathIdentities')}

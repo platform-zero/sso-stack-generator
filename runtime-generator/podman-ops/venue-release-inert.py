@@ -92,6 +92,7 @@ def prepare(bundle,selector,ledger,age_key):
             sha(release/'source-provenance.json')!=data['venueReleaseSourceRootSha256'] or
             stage.owned_plan(release,selector)!=plan):
         raise Refusal('private release copy source CAS differs')
+    data['venueReleaseCopiedManifest']=copied
     data['venueReleasePhase']='rendering';stage.write_ledger(p,data)
     command=[str(release/'scripts/deploy/render-runtime.sh'),'--bundle-root',str(release),
              '--deploy-root',str(release),'--runtime-root',str(release/'runtime'),
@@ -234,6 +235,62 @@ def recover_interrupted_copy(bundle,selector,ledger):
     return {'status':'retired-interrupted-copy','sourceEntries':len(saved),'partialEntries':len(found),
             'activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
+def recover_interrupted_render(bundle,selector,ledger):
+    """Retire only a known renderer-output namespace, never unknown files.
+
+    The exact copied 60/95 source tree is journaled before SOPS starts. Any
+    created path must be one of its seven .template derivatives or one of the
+    two explicit runtime metadata/env files. All non-runtime bytes/inodes
+    must be intact. This is not reset authority for an installed release.
+    """
+    b,p,data,plan,state=context(bundle,selector,ledger)
+    if (data.get('venueReleasePhase')!='rendering' or data.get('status')!='staged-empty' or
+            data.get('managerStarted') or data.get('unitFiles') or data.get('venueDataBindDirs') or
+            data.get('venueHulyVolumes') or data.get('crossDomainAclStatus')):
+        raise Refusal('only pre-pointer, pre-asset interrupted renderer is recoverable')
+    releases,release,current=layout(b,plan,state)
+    saved=data.get('venueReleaseCopiedManifest')
+    if (str(release)!=data.get('venueReleaseRoot') or os.path.lexists(current) or
+            not isinstance(saved,dict) or not saved or data.get('venueReleaseSourceManifest')!=inventory(b)):
+        raise Refusal('render input, copy snapshot or selected pointer differs')
+    for path,key in ((releases,'venueReleasesParentIdentity'),(release,'venueReleaseIdentity')):
+        row=data.get(key,{})
+        try:s=path.lstat()
+        except FileNotFoundError as exc:raise Refusal('renderer directory inode missing') from exc
+        if (path.is_symlink() or not stat.S_ISDIR(s.st_mode) or s.st_uid!=0 or
+                (s.st_dev,s.st_ino,stat.S_IMODE(s.st_mode))!=(row.get('dev'),row.get('ino'),0o700)):
+            raise Refusal('renderer parent/release inode or mode differs')
+    if {child.name for child in releases.iterdir()}!={release.name}:
+        raise Refusal('foreign renderer slot')
+    found=inventory(release)
+    expected=set(saved);output={'runtime/stack.env','runtime/build-info.json'}
+    output.update(name[:-9] for name in expected if name.startswith('runtime/configs/') and name.endswith('.template'))
+    if set(found)-expected-output or any(not name.endswith('.template') or not name.startswith('runtime/configs/')
+                                         for name in expected-set(found)):
+        raise Refusal('unrecognized or missing renderer output path')
+    for name,row in found.items():
+        before=saved.get(name)
+        if name in output and before is None:
+            if row['type']!='file' or row['mode'] not in (0o600,0o644,0o700,0o711,0o755):
+                raise Refusal('renderer output file mode/type differs')
+        elif name=='runtime' or name.startswith('runtime/'):
+            if (not before or row['type']!=before['type'] or
+                    row['mode'] not in (before['mode'],0o600,0o644,0o700,0o711,0o755)):
+                raise Refusal('renderer changed runtime inode class/mode')
+        elif row!=before:
+            raise Refusal('non-runtime immutable copied source changed')
+    for proc in Path('/proc').iterdir():
+        if not proc.name.isdigit():continue
+        try:lines=(proc/'mountinfo').read_text().splitlines()
+        except (FileNotFoundError,PermissionError,ProcessLookupError):continue
+        if any((mp:=line.split()[4].replace('\\040',' '))==str(release) or mp.startswith(str(release)+'/') for line in lines if len(line.split())>=5):
+            raise Refusal('interrupted rendered release still mounted')
+    data['venueReleasePhase']='retiring-interrupted-render';stage.write_ledger(p,data)
+    shutil.rmtree(release);releases.rmdir()
+    data['venueReleasePhase']='retired-interrupted-render';stage.write_ledger(p,data)
+    return {'status':'retired-interrupted-render','scopedOutputEntries':len(set(found)-expected),
+            'activationAuthorized':False,'acceptedIntegratedInstalls':0}
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     for key in ('bundle','selector','ledger'):p.add_argument('--'+key,required=True)
@@ -241,13 +298,15 @@ def main():
     mode=p.add_mutually_exclusive_group(required=True)
     mode.add_argument('--prepare',action='store_true');mode.add_argument('--retire',action='store_true')
     mode.add_argument('--recover-interrupted-copy',action='store_true')
+    mode.add_argument('--recover-interrupted-render',action='store_true')
     a=p.parse_args()
     try:
         if (a.prepare and not a.sops_age_key_file) or (a.retire and a.sops_age_key_file):
             raise Refusal('SOPS identity only for fresh private rendering')
         if a.prepare:result=prepare(a.bundle,a.selector,a.ledger,a.sops_age_key_file)
         elif a.retire:result=retire(a.bundle,a.selector,a.ledger)
-        else:result=recover_interrupted_copy(a.bundle,a.selector,a.ledger)
+        elif a.recover_interrupted_copy:result=recover_interrupted_copy(a.bundle,a.selector,a.ledger)
+        else:result=recover_interrupted_render(a.bundle,a.selector,a.ledger)
         print(json.dumps(result,sort_keys=True))
     except (Refusal,KeyError,ValueError,TypeError,OSError,subprocess.SubprocessError,json.JSONDecodeError) as exc:
         raise SystemExit('venue inactive release lifecycle refused: '+str(exc)) from exc
