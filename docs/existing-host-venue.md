@@ -94,8 +94,10 @@ output across a required source/stage change, combine export with `--only-key`:
 this explicitly produces `exported-discovery-subset` and reports one exported
 output separately from the whole composition count. It cannot export a missing
 or skipped key, and **any pending build blocks both export modes**. Existing
-output directories and unsafe parents always refuse. It monitors host reserves plus a
-120-GiB proactive output-filesystem reserve. A failed save retains its exact
+output directories and unsafe parents always refuse. The saver also sets
+`TMPDIR` to its selected private graph, records the exporter code SHA separately
+from the build bundle provenance, and monitors host reserves plus a 120-GiB
+proactive output-filesystem reserve. A failed save retains its exact
 partial filename/inode receipt; it cannot be implicitly retried or imported as
 a complete image. Review and freeze the successful artifact manifest into the
 next site/release inputs before retiring discovery graphs or starting clean

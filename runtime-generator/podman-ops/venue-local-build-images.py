@@ -535,7 +535,8 @@ def export_outputs(bundle,selector,site_source,ledger,destination,only_key=None)
     roots=probe(bundle,selector,plan,data,data['venueLocalBuildOutputs'])
     stage.create_private_directory(root,0,0o700)
     manifest={'schemaVersion':1,'status':'exporting-discovery','activationAuthorized':False,
-              'generatorCommit':plan['sourceCommit'],'selectorSha256':plan['selectorSha256'],
+              'generatorCommit':plan['sourceCommit'],'exporterSha256':stage.sha(Path(__file__)),
+              'selectorSha256':plan['selectorSha256'],
               'quadletTreeSha256':plan['quadletTreeSha256'],
               'sourceProvenanceSha256':stage.sha(Path(bundle)/'source-provenance.json'),
               'compositionBuildOutputs':len(selected),'requestedBuildOutputs':sum(len(row['sourceKeys']) for row in rows),
@@ -555,7 +556,12 @@ def export_outputs(bundle,selector,site_source,ledger,destination,only_key=None)
             stage.write_ledger(receipt,manifest)
             with os.fdopen(fd,'wb') as output:
                 fd=None
-                save_image(roots[user][1],row['image'],output,root)
+                command=roots[user][1]
+                index=command.index('podman')
+                # Saving large layers can otherwise repeat Buildah's host
+                # /var/tmp pressure even though the archive is on another SSD.
+                command=command[:index]+['TMPDIR='+str(roots[user][0])]+command[index:]
+                save_image(command,row['image'],output,root)
                 output.flush();os.fsync(output.fileno())
         finally:
             if fd is not None:os.close(fd)

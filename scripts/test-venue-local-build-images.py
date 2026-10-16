@@ -83,8 +83,10 @@ class LocalBuildFixtures(unittest.TestCase):
         plan={'sourceCommit':'b'*40,'selectorSha256':'c'*64,'quadletTreeSha256':'d'*64}
         (self.bundle/'source-provenance.json').write_text('{}')
         root=self.bundle/'canonical';user=sorted(self.plan)[0].partition('|')[0]
-        roots={user:(self.bundle,['selected-podman'])}
-        def save(command,image,output,root):output.write(b'synthetic image archive fixture')
+        roots={user:(self.bundle,['env','podman'])}
+        def save(command,image,output,root):
+            self.assertEqual(command,['env','TMPDIR='+str(self.bundle),'podman'])
+            output.write(b'synthetic image archive fixture')
         with (patch.object(local.registry,'journal',return_value=(self.bundle/'unused-ledger',data,plan,{})),
               patch.object(local.authority,'authority',return_value=self.source),
               patch.object(local,'probe',return_value=roots),
