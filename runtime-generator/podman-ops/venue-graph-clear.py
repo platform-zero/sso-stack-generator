@@ -187,6 +187,36 @@ def remove_exact_dual_named_base(bundle,selector,state,path,user,image,command,s
         if remaining.returncode==0:
             raise Refusal('exact selected base image removal after untag failed')
 
+def remove_exact_dual_named_output(state,path,user,image,command):
+    rows=state.get('venueLocalBuildOutputs',{})
+    tags={key.partition('|')[2] for key,value in rows.items()
+          if key.startswith(user+'|') and value==image}
+    if len(tags)!=2 or not all(tag.startswith('localhost/webservices/') and tag.endswith(':bundle')
+                               for tag in tags):
+        raise Refusal('multi-name output has no exact two-tag selected authority')
+    details=run(command+['image','inspect','--format','{{json .RepoTags}}|{{json .RepoDigests}}',image],timeout=35)
+    if details.returncode or details.stdout.count('|')!=1:
+        raise Refusal('selected dual-output image metadata unavailable')
+    tagged,digested=details.stdout.strip().split('|',1)
+    try:
+        current=set(json.loads(tagged));digests=set(json.loads(digested))
+    except (ValueError,TypeError):raise Refusal('selected dual-output alias metadata invalid')
+    if (current!=tags or len(digests)!=2 or
+            {item.partition('@')[0]+':bundle' for item in digests}!=tags or
+            len({item.partition('@')[2] for item in digests})!=1 or
+            any(not re.fullmatch(r'sha256:[0-9a-f]{64}',item.partition('@')[2]) for item in digests)):
+        raise Refusal('dual-output image has unreviewed alias or digest')
+    tag=sorted(tags)[0]
+    state['pendingGraphImageUntag']={'user':user,'image':image,'tag':tag,
+                                      'digests':sorted(digests),'output':True}
+    stage.write_ledger(path,state)
+    result=run(command+['image','untag',image,tag],timeout=35)
+    if result.returncode:raise Refusal('exact selected local output alias untag failed')
+    state.setdefault('graphUntaggedSelectedOutputs',[]).append(state.pop('pendingGraphImageUntag'))
+    stage.write_ledger(path,state)
+    result=run(command+['image','rm',image],timeout=180)
+    if result.returncode:raise Refusal('exact selected dual-output image removal failed')
+
 def inspect_graph(command):
     observations={}
     for label,args in (('containers',['ps','-aq']),('pods',['pod','ps','--quiet']),
@@ -352,7 +382,11 @@ def clear(bundle,selector,ledger):
             removed=run(command+['image','rm',image],timeout=180)
             if removed.returncode:
                 if 'by digest with more than one tag' in removed.stderr:
-                    remove_exact_dual_named_base(bundle,selector,state,path,user,image,command)
+                    if len({key for key,value in state.get('venueLocalBuildOutputs',{}).items()
+                            if key.startswith(user+'|') and value==image})==2:
+                        remove_exact_dual_named_output(state,path,user,image,command)
+                    else:
+                        remove_exact_dual_named_base(bundle,selector,state,path,user,image,command)
                 elif 'image not known' in removed.stderr:
                     # Podman can collect a now-unreferenced selected parent
                     # while deleting its last child. This is NOT permission

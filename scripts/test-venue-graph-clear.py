@@ -47,6 +47,29 @@ class GraphClearFixtures(unittest.TestCase):
         if command[-3:]==['network','ls','--format'] or 'network' in command and 'ls' in command:
             return SimpleNamespace(returncode=0,stdout='podman\n')
         raise AssertionError('unexpected selected Podman call '+str(command))
+    def test_only_exact_dual_output_alias_can_be_untagged_without_force(self):
+        image='sha256:'+'d'*64
+        first='localhost/webservices/workload-spawner-api:bundle'
+        second='localhost/webservices/workload-spawner-router:bundle'
+        self.data['venueLocalBuildOutputs']={'p0test-r1-workloads|'+first:image,
+                                              'p0test-r1-workloads|'+second:image}
+        digest='sha256:'+'f'*64
+        details=json.dumps([first,second])+'|'+json.dumps([first.partition(':bundle')[0]+'@'+digest,
+                                                            second.partition(':bundle')[0]+'@'+digest])
+        calls=[]
+        def selected(command,**kwargs):
+            calls.append(command)
+            return SimpleNamespace(returncode=0,stdout=details if 'inspect' in command else '')
+        with patch.object(clear,'run',side_effect=selected),patch.object(clear.stage,'write_ledger'):
+            clear.remove_exact_dual_named_output(self.data,self.ledger,'p0test-r1-workloads',image,['selected'])
+        self.assertEqual(calls[1][-4:],['image','untag',image,first])
+        self.assertEqual(calls[2][-3:],['image','rm',image])
+        self.assertFalse(any('--force' in call for command in calls for call in command))
+        self.data['venueLocalBuildOutputs']['p0test-r1-workloads|localhost/webservices/foreign:bundle']=image
+        with patch.object(clear,'run') as runner:
+            with self.assertRaisesRegex(clear.Refusal,'exact two-tag'):
+                clear.remove_exact_dual_named_output(self.data,self.ledger,'p0test-r1-workloads',image,['selected'])
+            runner.assert_not_called()
     def test_existing_live_mount_refuses_before_any_podman_identity_inspection(self):
         with (patch.object(clear.stage,'owned_plan',return_value=self.plan),
               patch.object(clear,'graph_has_live_mount',return_value=True),
