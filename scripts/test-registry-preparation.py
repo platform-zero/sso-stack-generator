@@ -38,6 +38,41 @@ class RegistryPreparation(unittest.TestCase):
     def run_prepare(self,runner=None):
         with contextlib.redirect_stdout(io.StringIO()):module.prepare_registry(self.bundle,runner=runner or self.runner)
 
+    def test_venue_rootful_registry_preparation_uses_only_bound_store_command(self):
+        rootful=self.bundle/'quadlet/rootful/p0test-r1-caddy.container'
+        rootful.write_text('Image='+IMAGE+'\n')
+        with patch.object(module,'rootful_command',return_value=[
+                'env','CONTAINERS_STORAGE_CONF=/var/lib/p0test-r1/containers-storage.conf',
+                'CONTAINERS_CONF=/var/lib/p0test-r1/containers.conf',
+                'podman','--root','/mnt/stack/p0-existing-host-venue-r1/rootful-graph',
+                '--runroot','/run/p0test-r1-podman','--network-config-dir','/var/lib/p0test-r1/networks']) as bound:
+            self.run_prepare()
+        bound.assert_called_once_with(self.bundle)
+        root_calls=[c for c in self.calls if c[0]=='env']
+        self.assertTrue(root_calls)
+        self.assertTrue(all('--root' in c and '--runroot' in c and '--network-config-dir' in c and
+                            'CONTAINERS_CONF=/var/lib/p0test-r1/containers.conf' in c for c in root_calls))
+        self.assertTrue(all(c[0]=='runuser' for c in self.calls if c not in root_calls))
+
+    def test_missing_venue_rootful_store_refuses_before_registry_calls(self):
+        (self.bundle/'quadlet/rootful/p0test-r1-caddy.container').write_text('Image='+IMAGE+'\n')
+        venue={'schemaVersion':1,'unitPrefix':'p0test-r1','rootfulStateRoot':'/var/lib/p0test-r1',
+               'rootfulRuntimeRoot':'/run/p0test-r1','rootfulGraphRoot':'/var/lib/containers/storage',
+               'rootfulRunRoot':'/run/containers/storage',
+               'rootfulVolumeRoot':'/mnt/stack/p0-existing-host-venue-r1/volumes',
+               'pgSsdRoot':'/mnt/stack/p0-existing-host-venue-r1/pg-ssd',
+               'vectorDbsRoot':'/mnt/stack/p0-existing-host-venue-r1/vector-dbs',
+               'controlSocketRoot':'/run/p0test-r1-control','logRoot':'/var/log/p0test-r1',
+               'portMap':{str(i):56000+i for i in range(51)}}
+        (self.bundle/'podman-domains.json').write_text(json.dumps({'domains':[],'venue':venue}))
+        with self.assertRaises(ValueError):self.run_prepare()
+        self.assertEqual(self.calls,[])
+        venue['rootfulGraphRoot']='/mnt/stack/p0-existing-host-venue-r1/rootful-graph'
+        venue['rootfulRunRoot']='/run/p0test-r1-podman'
+        (self.bundle/'podman-domains.json').write_text(json.dumps({'domains':[],'venue':venue}))
+        with self.assertRaises(OSError):self.run_prepare()
+        self.assertEqual(self.calls,[])
+
     def test_exact_authority_dedup_and_cached_input(self):
         self.path.with_name('b.container').write_text('Image='+IMAGE+'\n')
         self.path.with_name('build.container').write_text('Image=webservices-source.build\n')

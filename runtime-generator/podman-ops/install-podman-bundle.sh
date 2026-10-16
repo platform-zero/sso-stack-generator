@@ -73,6 +73,13 @@ jq -e '.backend == "podman"' "$BUNDLE/bundle.json" >/dev/null
 DOMAINS_FILE="$BUNDLE/podman-domains.json"
 [ -f "$DOMAINS_FILE" ] || { printf 'Podman bundle is missing podman-domains.json\n' >&2; exit 1; }
 jq -e '.schemaVersion == 1 and (.domains | type == "array" and length > 0)' "$DOMAINS_FILE" >/dev/null
+# The legacy installer has no venue role/account/image/graph lifecycle.
+# Refuse before SOPS rendering or modifying even the candidate bundle;
+# the later duplicate gate is deliberate defense in depth.
+if [ "$ACTIVATE" = true ] && jq -e 'has("venue")' "$DOMAINS_FILE" >/dev/null; then
+  printf '[podman-install] isolated venue activation refused: native installer still selects legacy units and graph\n' >&2
+  exit 1
+fi
 mapfile -t ROOTLESS_DOMAIN_NAMES < <(jq -r '.domains[].name' "$DOMAINS_FILE")
 mapfile -t ROOTLESS_DOMAIN_USERS < <(jq -r '.domains[].user' "$DOMAINS_FILE")
 mapfile -t ROOTLESS_DOMAIN_STATE_ROOTS < <(jq -r '.domains[].stateRoot' "$DOMAINS_FILE")
@@ -349,6 +356,13 @@ if [ -n "$IMAGE_INPUTS" ]; then
   python3 "$BUNDLE/ops/install-pinned-images.py" --bundle "$BUNDLE" --inputs "$IMAGE_INPUTS" --validate-only
 elif jq -e '.services | any(.image | startswith("sha256:"))' "$BUNDLE/stack.ir.json" >/dev/null; then
   printf '[podman-install] selected local image requires --image-inputs\n' >&2
+  exit 1
+fi
+# A versioned venue in the bundle is not permission to run this legacy native
+# installer: its rootful store, unit/timer names, image prep, control socket and
+# reset still select the existing stack. Refuse before any host mutation.
+if [ "$ACTIVATE" = true ] && jq -e 'has("venue")' "$DOMAINS_FILE" >/dev/null; then
+  printf '[podman-install] isolated venue activation refused: native installer still selects legacy units and graph\n' >&2
   exit 1
 fi
 # The selected P0 Caddy route mounts the host's private Unix-socket directory.

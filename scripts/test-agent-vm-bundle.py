@@ -32,6 +32,7 @@ class BundlePins(unittest.TestCase):
             'sha256': hashlib.sha256(self.data).hexdigest(),
             'controlCommit': json.loads(self.data)['runtime']['controlCommit']}))
         self.root = self.site.parent
+        (self.root / 'podman-domains.json').write_text(json.dumps({'schemaVersion':1,'domains':[]}))
 
     def test_exact_site_contract(self):
         result = module.verify(self.root)
@@ -71,7 +72,38 @@ class BundlePins(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'checkout differs'): module.verify(
             self.root, Path(__file__).resolve().parents[1])
 
+    def test_guest_port_mapping_requires_generated_venue_metadata(self):
+        import hashlib
+        vm=json.loads(self.data)
+        vm['network']='p0-venue-r1'
+        vm['name']='p0-venue-r1-agents'
+        vm['diskRoot']='/mnt/lab_debian/agent_vm/p0-venue-r1-agents'
+        vm['servicePorts']={'https':56042,'smtp':56044,'imap':56047}
+        self.vm.write_text(json.dumps(vm))
+        meta=json.loads(self.meta.read_text());meta['sha256']=hashlib.sha256(self.vm.read_bytes()).hexdigest()
+        self.meta.write_text(json.dumps(meta))
+        with self.assertRaisesRegex(ValueError,'Legacy guest'):module.verify(self.root)
+        mapping={'443':56042,'587':56044,'993':56047}
+        (self.root/'podman-domains.json').write_text(json.dumps({'schemaVersion':1,'domains':[],
+            'venue':{'portMap':mapping}}))
+        self.assertEqual(module.verify(self.root)['site'],'latium')
+        vm['name']='p0-agents'
+        self.vm.write_text(json.dumps(vm));meta['sha256']=hashlib.sha256(self.vm.read_bytes()).hexdigest()
+        self.meta.write_text(json.dumps(meta))
+        with self.assertRaisesRegex(ValueError,'Guest private service ports'):module.verify(self.root)
+        vm['name']='p0-venue-r1-agents'
+        vm['diskRoot']='/mnt/lab_debian/agent_vm/clean-role'
+        self.vm.write_text(json.dumps(vm));meta['sha256']=hashlib.sha256(self.vm.read_bytes()).hexdigest()
+        self.meta.write_text(json.dumps(meta))
+        with self.assertRaisesRegex(ValueError,'Guest private service ports'):module.verify(self.root)
+        vm['diskRoot']='/mnt/lab_debian/agent_vm/p0-venue-r1-agents'
+        vm['servicePorts']['imap']=56045
+        self.vm.write_text(json.dumps(vm));meta['sha256']=hashlib.sha256(self.vm.read_bytes()).hexdigest()
+        self.meta.write_text(json.dumps(meta))
+        with self.assertRaisesRegex(ValueError,'differ'):module.verify(self.root)
+
     def test_activation_refuses_missing_or_mixed_control_before_state(self):
+        (self.root / 'podman-domains.json').unlink()
         ops = self.root / 'ops'; ops.mkdir()
         shutil.copyfile(SOURCE, ops / SOURCE.name)
         (self.root / 'quadlet').mkdir()

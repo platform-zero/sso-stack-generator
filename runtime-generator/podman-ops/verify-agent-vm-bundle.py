@@ -47,11 +47,29 @@ def verify(bundle, control=None):
             or metadata['path'] != 'agent-vm.json' or metadata['sha256'] != digest
             or not isinstance(pins, dict) or metadata['controlCommit'] != pins.get('controlCommit')):
         raise ValueError('Agent VM bundle provenance mismatch')
-    if (set(vm) != {'schemaVersion', 'name', 'network', 'networkConfig', 'vcpus', 'memoryMiB',
-                    'osGiB', 'workGiB', 'swapGiB', 'cloudImage', 'debianSnapshot', 'packages',
-                    'runtime', 'projectLanes', 'gpuDevices', 'reserves'}
+    required = {'schemaVersion', 'name', 'network', 'networkConfig', 'vcpus', 'memoryMiB',
+                'osGiB', 'workGiB', 'swapGiB', 'cloudImage', 'debianSnapshot', 'packages',
+                'runtime', 'projectLanes', 'gpuDevices', 'reserves'}
+    domains = strict(bundle / 'podman-domains.json')
+    venue = domains.get('venue')
+    port_override = vm.get('servicePorts')
+    if venue is None:
+        if port_override is not None or set(vm) != required:
+            raise ValueError('Legacy guest cannot use unbound service ports')
+    else:
+        mapping = venue.get('portMap') if isinstance(venue, dict) else None
+        if (set(vm) != required | {'servicePorts', 'diskRoot'} or not isinstance(mapping, dict)
+                or vm.get('name') != vm.get('network','') + '-agents'
+                or vm.get('diskRoot') != '/mnt/lab_debian/agent_vm/' + vm.get('name','')
+                or not isinstance(port_override, dict) or set(port_override) != {'https','imap','smtp'}
+                or not re.fullmatch(r'p0-venue-[a-z0-9-]{1,24}', vm.get('network',''))
+                or any(type(port_override[key]) is not int or port_override[key] != mapping.get(source)
+                       for key, source in (('https','443'),('imap','993'),('smtp','587')))):
+            raise ValueError('Guest private service ports differ from venue authority')
+    if (set(vm) not in (required, required | {'servicePorts', 'diskRoot'})
             or type(vm['schemaVersion']) is not int or vm['schemaVersion'] != 1
-            or vm['name'] != 'p0-agents' or vm['projectLanes'] != [] or vm['gpuDevices'] != []
+            or (venue is None and vm['name'] != 'p0-agents')
+            or vm['projectLanes'] != [] or vm['gpuDevices'] != []
             or any(type(vm[k]) is not int or vm[k] != v for k, v in
                    {'vcpus': 8, 'memoryMiB': 12288, 'osGiB': 80, 'workGiB': 100, 'swapGiB': 4}.items())
             or set(pins) != {'controlCommit', 'worklaneCommit', 'manifestSha256', 'image',

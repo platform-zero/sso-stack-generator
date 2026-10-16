@@ -356,7 +356,17 @@ data class PodmanPolicy(
     val crossDomainEndpoints: List<CrossDomainEndpointPolicy>,
     val maintenanceRoot: String,
     val defaultMemory: String?,
-    val defaultCpus: String?
+    val defaultCpus: String?,
+    val unitPrefix: String,
+    val rootfulStateRoot: String,
+    val rootfulGraphRoot: String?,
+    val rootfulRunRoot: String?,
+    val portMap: Map<Int, Int>,
+    val venueVolumeRoot: String?,
+    val venuePgSsdRoot: String?,
+    val venueVectorDbsRoot: String?,
+    val venueControlSocketRoot: String?,
+    val venueLogRoot: String?
 )
 
 lateinit var activePodmanPolicy: PodmanPolicy
@@ -374,7 +384,8 @@ fun readPodmanPolicy(manifestPath: Path): PodmanPolicy {
     val stackConfig = manifest.path("stackConfig").textOrNull()
         ?: fail("site manifest must declare stackConfig for Podman domain policy")
     val configPath = manifestPath.parent.resolve(stackConfig).normalize()
-    val podman = readTree(configPath).path("podman")
+    val siteConfig = readTree(configPath)
+    val podman = siteConfig.path("podman")
     if (!podman.isObject) fail("$configPath must define podman")
     val rootfulModules = stringSet(podman.path("rootful_modules"), "podman.rootful_modules")
     val rootfulServices = podman.path("rootful_services").let {
@@ -455,16 +466,108 @@ fun readPodmanPolicy(manifestPath: Path): PodmanPolicy {
             }
         }
     }
+    val unitPrefix = podman.path("unit_prefix").asText("webservices")
+    if (unitPrefix != "webservices" && !unitPrefix.matches(Regex("p0test-[a-z0-9-]{1,24}"))) {
+        fail("podman.unit_prefix must be a dedicated p0test namespace")
+    }
+    val rootfulStateRoot = podman.path("rootful_state_root").asText("/var/lib/webservices")
+    if (rootfulStateRoot != "/var/lib/webservices" &&
+        !rootfulStateRoot.matches(Regex("/var/lib/p0test-[a-z0-9-]{1,24}"))) {
+        fail("podman.rootful_state_root must be a dedicated /var/lib/p0test namespace")
+    }
+    if ((unitPrefix == "webservices") != (rootfulStateRoot == "/var/lib/webservices")) {
+        fail("podman isolated unit and state roots must be selected together")
+    }
+    val rootfulGraphRoot = podman.path("rootful_graph_root").textOrNull()
+    val rootfulRunRoot = podman.path("rootful_run_root").textOrNull()
+    val mapNode = podman.path("port_map")
+    val portMap = if (mapNode.isMissingNode) emptyMap() else {
+        if (!mapNode.isObject) fail("podman.port_map must map canonical old host ports to isolated ports")
+        mapNode.fieldsMap().associate { (key, value) ->
+            if (!key.matches(Regex("[1-9][0-9]{0,4}")) || !value.isIntegralNumber ||
+                key.toInt() !in 1..65535 || value.asInt() !in 1024..65535) fail("invalid isolated port identity")
+            key.toInt() to value.asInt()
+        }
+    }
+    if (unitPrefix == "webservices") {
+        if (rootfulGraphRoot != null || rootfulRunRoot != null || portMap.isNotEmpty()) fail("legacy Podman authorities cannot be redirected alone")
+    } else if (rootfulGraphRoot == null || rootfulRunRoot != "/run/$unitPrefix-podman" ||
+        !rootfulGraphRoot.matches(Regex("/mnt/stack/p0-existing-host-venue-[a-z0-9-]{1,24}/rootful-graph"))) {
+        fail("isolated rootful graph and run roots must be explicit and dedicated")
+    }
+    val venueParent = rootfulGraphRoot?.removeSuffix("/rootful-graph")
+    val venueVolumeRoot = siteConfig.path("storage").path("volume_root").textOrNull()
+    val venuePgSsdRoot = siteConfig.path("storage").path("pg_ssd_root").textOrNull()
+    val venueVectorDbsRoot = siteConfig.path("storage").path("vector_dbs").textOrNull()
+    val venueControlSocketRoot = podman.path("control_socket_root").textOrNull()
+    val venueLogRoot = podman.path("log_root").textOrNull()
+    if (unitPrefix == "webservices") {
+        if (venueControlSocketRoot != null || venueLogRoot != null) fail("legacy control and log roots cannot be redirected alone")
+    } else if (venueVolumeRoot != "$venueParent/volumes" || venuePgSsdRoot != "$venueParent/pg-ssd" ||
+        venueVectorDbsRoot != "$venueParent/vector-dbs" || venueControlSocketRoot != "/run/$unitPrefix-control" ||
+        venueLogRoot != "/var/log/$unitPrefix") {
+        fail("isolated storage, control-socket and log roots must be explicit and exclusive")
+    }
+    if (unitPrefix != "webservices" && (portMap.size != 51 ||
+        portMap.keys.intersect(portMap.values.toSet()).isNotEmpty() ||
+        portMap.values.toSet().size != 51 ||
+        !portMap.keys.containsAll(setOf(80, 443, 9100, 7880, 7881, 7882)) ||
+        siteConfig.path("runtime").path("livekit_node_ip").asText() != "192.168.140.1")) {
+        fail("isolated port map and private Livekit ICE identity must name 51 distinct original and proposed identities")
+    }
     return PodmanPolicy(
         rootfulModules,
         rootfulServices,
         domains,
         serviceDomains,
-        crossDomainEndpoints,
+        crossDomainEndpoints.map { endpoint ->
+            endpoint.copy(hostPort = if (unitPrefix == "webservices") endpoint.hostPort else
+                portMap[endpoint.hostPort] ?: fail("missing isolated cross-domain port ${endpoint.hostPort}"))
+        },
         podman.path("maintenance_root").asText("/mnt/lab_debian/stack_lab/stack_work"),
         resourceLimit(podman.path("resource_defaults").path("memory"), "memory"),
-        resourceLimit(podman.path("resource_defaults").path("cpus"), "cpus")
+        resourceLimit(podman.path("resource_defaults").path("cpus"), "cpus"),
+        unitPrefix,
+        rootfulStateRoot,
+        rootfulGraphRoot,
+        rootfulRunRoot,
+        portMap,
+        venueVolumeRoot,
+        venuePgSsdRoot,
+        venueVectorDbsRoot,
+        venueControlSocketRoot,
+        venueLogRoot
     )
+}
+
+fun applyVenueBindPolicy(ir: ObjectNode, policy: PodmanPolicy) {
+    if (policy.unitPrefix == "webservices") return
+    val ci = policy.domains.singleOrNull { it.name == "ci-runner" } ?: fail("missing venue CI domain")
+    val tests = policy.domains.singleOrNull { it.name == "test-runners" } ?: fail("missing venue test domain")
+    val ca = ir.path("volumes").path("caddy_ca").path("hostPath").textOrNull()
+        ?: fail("missing venue CA volume")
+    if (ca != policy.venueVolumeRoot + "/caddy_ca") fail("venue CA volume differs from storage root")
+    val sources = mapOf(
+        "/mnt/stack/forgejo-runner-ssh" to "${ci.stateRoot}/forgejo-runner-ssh",
+        "/mnt/stack/podman/test-runners/state/test-runner/results" to "${tests.stateRoot}/test-runner/results",
+        "/mnt/stack/volumes/caddy_ca/caddy-ca.crt" to "$ca/caddy-ca.crt",
+        "/run/p0-control" to (policy.venueControlSocketRoot ?: fail("missing venue control socket")),
+        "/var/log/webservices/caddy" to "${policy.venueLogRoot}/caddy"
+    )
+    val counts = sources.keys.associateWith { 0 }.toMutableMap()
+    ir.path("services").fieldsMap().forEach { (_, service) ->
+        val mounts = service.path("volumes")
+        if (mounts !is ArrayNode) return@forEach
+        for (index in 0 until mounts.size()) {
+            val mount = mounts[index]
+            val source = if (mount.isTextual) mount.asText().substringBefore(':') else mount.path("source").asText()
+            val replacement = sources[source] ?: continue
+            counts[source] = counts.getValue(source) + 1
+            if (mount.isTextual) mounts.set(index, nodes.textNode(replacement + mount.asText().removePrefix(source)))
+            else (mount as? ObjectNode ?: fail("unsupported venue mount authority")).put("source", replacement)
+        }
+    }
+    if (counts.values.any { it == 0 }) fail("expected isolated venue bind input is missing")
 }
 
 fun applyResourceDefaults(ir: ObjectNode, policy: PodmanPolicy) {
@@ -960,8 +1063,23 @@ fun materializeSiteManifest(manifestPath: Path, output: Path) {
         if (key == "agentVmSpec") {
             val vm = readTree(source)
             val pins = vm.path("runtime")
+            val ports = vm.path("servicePorts")
+            if (activePodmanPolicy.unitPrefix != "webservices") {
+                val mapping = activePodmanPolicy.portMap
+                if (!vm.path("network").asText().matches(Regex("p0-venue-[a-z0-9-]{1,24}")) ||
+                    vm.path("name").asText() != vm.path("network").asText() + "-agents" ||
+                    vm.path("diskRoot").asText() != "/mnt/lab_debian/agent_vm/" + vm.path("name").asText() ||
+                    !ports.isObject || ports.size() != 3 ||
+                    !ports.path("https").isIntegralNumber || !ports.path("smtp").isIntegralNumber ||
+                    !ports.path("imap").isIntegralNumber ||
+                    ports.path("https").asInt(-1) != mapping[443] ||
+                    ports.path("smtp").asInt(-1) != mapping[587] ||
+                    ports.path("imap").asInt(-1) != mapping[993]) {
+                    fail("isolated guest service ports/network differ from generated host venue")
+                }
+            } else if (!ports.isMissingNode) fail("legacy site cannot carry unreviewed guest port override")
             if (!vm.path("schemaVersion").isIntegralNumber || vm.path("schemaVersion").asInt() != 1
-                || vm.path("name").asText() != "p0-agents"
+                || (activePodmanPolicy.unitPrefix == "webservices" && vm.path("name").asText() != "p0-agents")
                 || vm.path("projectLanes") !is ArrayNode || vm.path("projectLanes").size() != 0
                 || vm.path("gpuDevices") !is ArrayNode || vm.path("gpuDevices").size() != 0
                 || !Regex("[a-f0-9]{40}").matches(pins.path("controlCommit").asText())
@@ -1111,15 +1229,16 @@ data class PodmanDomain(
     val volumeRoot: String? = null
 )
 
-val rootfulDomain = PodmanDomain(
-    name = "rootful",
-    quadletDir = "quadlet/rootful",
-    stateRoot = "/var/lib/webservices",
-    rootlessUser = null,
-    envFilePrefix = "/run/webservices",
-    targetInstall = "multi-user.target",
-    releaseRoot = "/var/lib/webservices/current"
-)
+val rootfulDomain: PodmanDomain
+    get() = PodmanDomain(
+        name = "rootful",
+        quadletDir = "quadlet/rootful",
+        stateRoot = activePodmanPolicy.rootfulStateRoot,
+        rootlessUser = null,
+        envFilePrefix = "/run/${activePodmanPolicy.unitPrefix}",
+        targetInstall = "multi-user.target",
+        releaseRoot = "${activePodmanPolicy.rootfulStateRoot}/current"
+    )
 
 val rootlessDomains: List<PodmanDomain>
     get() = activePodmanPolicy.domains.map {
@@ -1128,7 +1247,7 @@ val rootlessDomains: List<PodmanDomain>
             quadletDir = "quadlet/rootless-${it.name}",
             stateRoot = it.stateRoot,
             rootlessUser = it.user,
-            envFilePrefix = "%t/webservices",
+            envFilePrefix = "%t/${activePodmanPolicy.unitPrefix}",
             targetInstall = "default.target",
             releaseRoot = "${it.stateRoot}/current",
             graphRoot = it.graphRoot,
@@ -1152,7 +1271,7 @@ data class LoopbackEndpoint(
     val consumers: Set<String> = setOf("rootful")
 )
 fun podmanNetworkName(domain: PodmanDomain, name: String): String =
-    if (domain.name == "rootful") "webservices_$name" else "webservices_${domain.name}_$name"
+    if (domain.name == "rootful") "${activePodmanPolicy.unitPrefix}_$name" else "${activePodmanPolicy.unitPrefix}_${domain.name}_$name"
 
 fun qualifiedImage(image: String, updatePolicy: String): String {
     if (image.matches(Regex("sha256:[0-9a-f]{64}"))) {
@@ -1305,6 +1424,18 @@ fun rewriteCrossDomainConfigs(ir: ObjectNode, output: Path) {
 
 fun loopbackEndpoints(ir: ObjectNode, output: Path): Map<String, List<LoopbackEndpoint>> {
     rewriteCrossDomainConfigs(ir, output)
+    if (activePodmanPolicy.unitPrefix != "webservices") {
+        val livekit = output.resolve("runtime/configs/livekit/livekit.yaml")
+        if (!livekit.isRegularFile()) fail("isolated Livekit config missing")
+        var config = livekit.readText()
+        for ((protocol, oldPort) in listOf("tcp" to 7881, "udp" to 7882)) {
+            val original = "  ${protocol}_port: $oldPort"
+            val mapped = activePodmanPolicy.portMap[oldPort] ?: fail("missing isolated Livekit ICE port")
+            if (config.split(original).size != 2) fail("unreviewed Livekit ICE config")
+            config = config.replace(original, "  ${protocol}_port: $mapped")
+        }
+        livekit.writeText(config)
+    }
     val endpoints = linkedMapOf<Triple<String, String, String>, LoopbackEndpoint>()
     activePodmanPolicy.crossDomainEndpoints.forEach { endpoint ->
         endpoints[Triple(endpoint.service, endpoint.containerPort.toString(), endpoint.protocol)] = LoopbackEndpoint(
@@ -1330,16 +1461,45 @@ fun loopbackEndpoints(ir: ObjectNode, output: Path): Map<String, List<LoopbackEn
                     endpoints[key] = existing.copy(consumers = existing.consumers + "rootful")
                 } else {
                     while (endpoints.values.any { it.hostPort == nextCaddyPort && it.protocol == "tcp" }) nextCaddyPort++
-                    endpoints[key] = LoopbackEndpoint(service, port, nextCaddyPort++)
+                    val originalPort = nextCaddyPort++
+                    val mappedPort = if (activePodmanPolicy.unitPrefix == "webservices") originalPort else
+                        activePodmanPolicy.portMap[originalPort] ?: fail("missing isolated Caddy upstream port $originalPort")
+                    endpoints[key] = LoopbackEndpoint(service, port, mappedPort)
                 }
             }
         }
         var rewritten = caddyFile.readText()
+        if (activePodmanPolicy.unitPrefix != "webservices") {
+            val vm = readTree(output.resolve("site/agent-vm.json"))
+            val network = vm.path("networkConfig")
+            val guestAddress = network.path("address").asText()
+            val gateway = network.path("gateway").asText()
+            if (!guestAddress.matches(Regex("192\\.168\\.140\\.[1-9][0-9]{0,2}/24")) ||
+                guestAddress.substringBefore('/').split('.').last().toInt() !in 2..254 ||
+                gateway != "192.168.140.1") {
+                fail("isolated Caddy device API requires the reviewed private guest network")
+            }
+            val originalDeviceApi = "reverse_proxy 192.168.122.235:24838"
+            if (rewritten.split(originalDeviceApi).size != 2) fail("unreviewed Caddy device API authority")
+            rewritten = rewritten.replace(originalDeviceApi,
+                "reverse_proxy ${guestAddress.substringBefore('/')}:24838")
+            val oldLivekit = "reverse_proxy host.containers.internal:7880"
+            if (rewritten.split(oldLivekit).size != 2) fail("unreviewed Caddy Livekit SFU authority")
+            val mappedLivekit = activePodmanPolicy.portMap[7880] ?: fail("missing isolated Livekit API port")
+            rewritten = rewritten.replace(oldLivekit, "reverse_proxy 127.0.0.1:$mappedLivekit")
+            val key = Triple("livekit", "7880", "tcp")
+            if (key in endpoints) fail("duplicate isolated Livekit API loopback endpoint")
+            endpoints[key] = LoopbackEndpoint("livekit", "7880", mappedLivekit, "tcp", setOf("rootful"))
+        }
         endpoints.values.filter { "rootful" in it.consumers }.forEach { endpoint ->
             rewritten = rewritten.replace(
                 Regex("\\b${Regex.escape(endpoint.service)}:${Regex.escape(endpoint.containerPort)}\\b"),
                 "127.0.0.1:${endpoint.hostPort}"
             )
+        }
+        if (activePodmanPolicy.unitPrefix != "webservices") {
+            if ("http://{\$DOMAIN}" in rewritten) fail("unreviewed Caddy HTTP redirect source")
+            rewritten += "\nhttp://{\$DOMAIN}, http://*.{\$DOMAIN} {\n\tredir https://{host}{uri} 308\n}\n"
         }
         caddyFile.writeText(rewritten)
     }
@@ -1441,7 +1601,12 @@ fun resourceLimit(node: JsonNode, kind: String): String? {
 }
 
 fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, output: Path, domain: PodmanDomain, loopbacks: Map<String, List<LoopbackEndpoint>>) {
-    val quadlet = output.resolve("${domain.quadletDir}/webservices-$name.container")
+    val unitPrefix = activePodmanPolicy.unitPrefix
+    val isolatedVolumeInit = unitPrefix != "webservices" && name == "volume-init"
+    if (isolatedVolumeInit && (domain.name != "rootful" || service.path("lifecycle").asText() != "oneshot"))
+        fail("isolated volume-init requires rootful oneshot authority")
+    val volumeReady = "${domain.stateRoot}/volume-ready-r1.txt"
+    val quadlet = output.resolve("${domain.quadletDir}/$unitPrefix-$name.container")
     quadlet.parent.createDirectories()
     val dependencies = service.path("dependencies").fieldsMap()
         .filter { (dependency, _) ->
@@ -1450,34 +1615,41 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
     val lines = mutableListOf<String>()
     lines += "[Unit]"
     lines += "Description=Webservices container: $name"
+    if (isolatedVolumeInit) lines += "AssertPathIsRegular=$volumeReady"
     dependencies.forEach { (dependency, _) ->
-        lines += "Requires=webservices-$dependency.service"
-        lines += "After=webservices-$dependency.service"
+        lines += "Requires=$unitPrefix-$dependency.service"
+        lines += "After=$unitPrefix-$dependency.service"
     }
-    lines += "PartOf=webservices-${service.path("target").asText("apps")}.target"
+    lines += "PartOf=$unitPrefix-${service.path("target").asText("apps")}.target"
     lines += ""
     lines += "[Container]"
-    service.path("build").takeUnless(JsonNode::isMissingNode)?.let { lines += "Image=webservices-$name.build" }
+    service.path("build").takeUnless(JsonNode::isMissingNode)?.let { lines += "Image=$unitPrefix-$name.build" }
         ?: lines.add("Image=${qualifiedImage(service.path("image").asText(), service.path("updatePolicy").asText("pinned"))}")
-    lines += "ContainerName=$name"
+    lines += "ContainerName=${if (unitPrefix == "webservices") name else "$unitPrefix-$name"}"
     if (service.path("lifecycle").asText() == "daemon" && service.path("updatePolicy").asText() == "registry" && !service.path("image").asText().contains('@')) lines += "AutoUpdate=registry"
     if (service.path("environment").isObject && !service.path("environment").isEmpty) lines += "EnvironmentFile=${domain.envFilePrefix}/$name.env"
-    val hostNetwork = name == "caddy" || service.path("hostNetwork").asBoolean(false)
+    val hostNetwork = name == "caddy" || (service.path("hostNetwork").asBoolean(false) &&
+        !(unitPrefix != "webservices" && name == "livekit"))
     if (hostNetwork) {
         lines += "Network=host"
     } else {
         service.path("networks").let { networkNode ->
-            if (networkNode.isArray) networkNode.forEach { lines += "Network=webservices-${it.asText()}.network" }
+            if (networkNode.isArray) networkNode.forEach { lines += "Network=$unitPrefix-${it.asText()}.network" }
             else networkNode.fieldsMap().forEach { (network, config) ->
-                lines += "Network=webservices-$network.network"
+                lines += "Network=$unitPrefix-$network.network"
                 config.path("aliases").forEach { lines += "NetworkAlias=${it.asText()}" }
             }
         }
         if (domain.name != "rootful" && activePodmanPolicy.crossDomainEndpoints.any { domain.name in it.consumers }) {
-            lines += "Network=webservices-p0-egress.network"
+            lines += "Network=$unitPrefix-p0-egress.network"
         }
     }
-    service.path("volumes").forEach { lines += "Volume=${quadletLiteral(volumeLine(it, ir.path("volumes"), domain))}" }
+    if (isolatedVolumeInit) {
+        // Only the guarded host installer can write this root-private ready
+        // marker after it has checked ACTUAL domain-owned bind paths/ACLs.
+        // Never execute the source module's broad mkdir/chmod/chown shell.
+        lines += "Volume=$volumeReady:/run/p0-venue-volume-ready.txt:ro"
+    } else service.path("volumes").forEach { lines += "Volume=${quadletLiteral(volumeLine(it, ir.path("volumes"), domain))}" }
     val limits = service.path("resources").path("limits")
     val podmanArgs = mutableListOf("--image-volume=ignore")
     resourceLimit(limits.path("memory"), "memory")?.let { podmanArgs += "--memory=$it" }
@@ -1494,7 +1666,23 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
                 val protocol = port.path("protocol").asText("tcp").let { if (it == "tcp") "" else "/$it" }
                 "${port.path("published").asText()}:${port.path("target").asText()}$protocol"
             }
-            lines += "PublishPort=$value"
+            val portMatch = Regex("^((?:127\\.0\\.0\\.1:)?)([0-9]{1,5}):(.+)$").matchEntire(value)
+                ?: fail("unsupported published port shape for '$name'")
+            val oldPort = portMatch.groupValues[2].toInt()
+            val hostPort = if (unitPrefix == "webservices") oldPort else
+                activePodmanPolicy.portMap[oldPort] ?: fail("missing isolated published port $oldPort")
+            // Synthetic mail ingress must not retain the selected public
+            // 0.0.0.0 publishers. A later device-bound TLS relay is the only
+            // permitted guest transport; host-side consumers keep loopback.
+            val bindIp = when {
+                unitPrefix != "webservices" && name == "mailserver" -> "127.0.0.1:"
+                unitPrefix != "webservices" && name == "livekit" && oldPort in setOf(7881, 7882) -> "192.168.140.1:"
+                else -> portMatch.groupValues[1]
+            }
+            val containerTarget = if (unitPrefix != "webservices" && name == "livekit" && oldPort in setOf(7881, 7882)) {
+                "$hostPort${if (portMatch.groupValues[3].endsWith("/udp")) "/udp" else "/tcp"}"
+            } else portMatch.groupValues[3]
+            lines += "PublishPort=$bindIp$hostPort:$containerTarget"
         }
     }
     if (!hostNetwork) {
@@ -1516,14 +1704,22 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
     val entrypoint = service.path("entrypoint")
     val command = service.path("command")
     val execParts = mutableListOf<String>()
-    if (!entrypoint.isMissingNode) {
+    if (isolatedVolumeInit) {
+        lines += "Entrypoint=/bin/sh"
+        execParts += "-ec"
+        execParts += "grep -qx '${unitPrefix}-volume-ready-v1' /run/p0-venue-volume-ready.txt"
+    } else if (!entrypoint.isMissingNode) {
         if (entrypoint.isArray && !entrypoint.isEmpty) {
             lines += "Entrypoint=${systemdQuote(entrypoint.first().asText())}"
             entrypoint.drop(1).forEach { execParts += it.asText() }
         } else lines += "Entrypoint=${systemdQuote(entrypoint.asText())}"
     }
-    if (!command.isMissingNode) {
+    if (!isolatedVolumeInit && !command.isMissingNode) {
         if (command.isArray) command.forEach { execParts += it.asText() } else execParts += shellWords(command.asText())
+    }
+    if (name == "alloy" && unitPrefix != "webservices") {
+        if (execParts != listOf("run", "/etc/alloy/alloy.hcl")) fail("unreviewed isolated Alloy command")
+        execParts.add(1, "--server.http.listen-addr=127.0.0.1:12345")
     }
     if (execParts.isNotEmpty()) lines += "Exec=${execParts.joinToString(" ") { systemdQuote(it) }}"
     stopTimeoutSeconds(service.path("stopGracePeriod"))?.let { lines += "StopTimeout=$it" }
@@ -1532,6 +1728,10 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
     lines += "LogDriver=journald"
     lines += ""
     lines += "[Service]"
+    if (domain.name == "rootful" && unitPrefix != "webservices") {
+        lines += "Environment=CONTAINERS_STORAGE_CONF=${domain.stateRoot}/containers-storage.conf"
+        lines += "Environment=CONTAINERS_CONF=${domain.stateRoot}/containers.conf"
+    }
     if (service.path("lifecycle").asText() == "oneshot") {
         lines += "Type=oneshot"
         lines += "RemainAfterExit=yes"
@@ -1544,7 +1744,7 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
     }
     lines += ""
     lines += "[Install]"
-    if (service.path("lifecycle").asText() != "on-demand") lines += "WantedBy=webservices-${service.path("target").asText("apps")}.target"
+    if (service.path("lifecycle").asText() != "on-demand") lines += "WantedBy=$unitPrefix-${service.path("target").asText("apps")}.target"
     quadlet.writeText(lines.joinToString("\n", postfix = "\n"))
     renderEnvironmentTemplate(name, service, output)
 
@@ -1557,11 +1757,17 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
             buildLines += "SetWorkingDirectory=${systemdQuote(workingDirectory)}"
         }
         build.path("containerfile").textOrNull()?.let { buildLines += "File=${systemdQuote(it)}" }
-        output.resolve("${domain.quadletDir}/webservices-$name.build").writeText(buildLines.joinToString("\n", postfix = "\n"))
+        if (domain.name == "rootful" && unitPrefix != "webservices") {
+            buildLines += "[Service]"
+            buildLines += "Environment=CONTAINERS_STORAGE_CONF=${domain.stateRoot}/containers-storage.conf"
+            buildLines += "Environment=CONTAINERS_CONF=${domain.stateRoot}/containers.conf"
+        }
+        output.resolve("${domain.quadletDir}/$unitPrefix-$name.build").writeText(buildLines.joinToString("\n", postfix = "\n"))
     }
 }
 
 fun renderPodman(ir: ObjectNode, output: Path) {
+    val unitPrefix = activePodmanPolicy.unitPrefix
     val loopbacks = loopbackEndpoints(ir, output)
     (listOf(rootfulDomain) + rootlessDomains).forEach { domain ->
         val usedNetworks = ir.path("services").fieldsMap()
@@ -1574,10 +1780,15 @@ fun renderPodman(ir: ObjectNode, output: Path) {
         ir.path("networks").fieldsMap().filter { it.first in usedNetworks }.forEach { (name, value) ->
             val lines = mutableListOf("[Network]", "NetworkName=${podmanNetworkName(domain, name)}", "Driver=${value.path("driver").asText("bridge")}")
             if (value.path("internal").asBoolean(false)) lines += "Internal=true"
-            output.resolve("${domain.quadletDir}/webservices-$name.network").apply { parent.createDirectories(); writeText(lines.joinToString("\n", postfix = "\n")) }
+            if (domain.name == "rootful" && unitPrefix != "webservices") {
+                lines += "[Service]"
+                lines += "Environment=CONTAINERS_STORAGE_CONF=${domain.stateRoot}/containers-storage.conf"
+                lines += "Environment=CONTAINERS_CONF=${domain.stateRoot}/containers.conf"
+            }
+            output.resolve("${domain.quadletDir}/$unitPrefix-$name.network").apply { parent.createDirectories(); writeText(lines.joinToString("\n", postfix = "\n")) }
         }
         if (domain.name != "rootful" && activePodmanPolicy.crossDomainEndpoints.any { domain.name in it.consumers }) {
-            output.resolve("${domain.quadletDir}/webservices-p0-egress.network").apply {
+            output.resolve("${domain.quadletDir}/$unitPrefix-p0-egress.network").apply {
                 parent.createDirectories()
                 writeText("[Network]\nNetworkName=${podmanNetworkName(domain, "p0-egress")}\nDriver=bridge\n")
             }
@@ -1595,12 +1806,12 @@ fun renderPodman(ir: ObjectNode, output: Path) {
                         service.path("target").asText("apps") == target &&
                         service.path("lifecycle").asText() != "on-demand"
                 }
-                .map { (name, _) -> "webservices-$name.service" }
+                .map { (name, _) -> "$unitPrefix-$name.service" }
                 .sorted()
             val wants = if (targetServices.isEmpty()) "" else "Wants=${targetServices.joinToString(" ")}\n"
-            output.resolve("${domain.quadletDir}/webservices-$target.target").writeText("[Unit]\nDescription=Webservices ${target.replaceFirstChar(Char::uppercase)} (${domain.name})\nPartOf=webservices.target\n${wants}\n[Install]\nWantedBy=webservices.target\n")
+            output.resolve("${domain.quadletDir}/$unitPrefix-$target.target").writeText("[Unit]\nDescription=Webservices ${target.replaceFirstChar(Char::uppercase)} (${domain.name})\nPartOf=$unitPrefix.target\n${wants}\n[Install]\nWantedBy=$unitPrefix.target\n")
         }
-        output.resolve("${domain.quadletDir}/webservices.target").writeText("[Unit]\nDescription=Platform Zero webservices stack (${domain.name})\nWants=webservices-core.target webservices-apps.target webservices-observability.target\n\n[Install]\nWantedBy=${domain.targetInstall}\n")
+        output.resolve("${domain.quadletDir}/$unitPrefix.target").writeText("[Unit]\nDescription=Platform Zero webservices stack (${domain.name})\nWants=$unitPrefix-core.target $unitPrefix-apps.target $unitPrefix-observability.target\n\n[Install]\nWantedBy=${domain.targetInstall}\n")
     }
     val generatorRoot = System.getenv("STACK_GENERATOR_ROOT")?.let(Path::of)
         ?: fail("STACK_GENERATOR_ROOT is not set")
@@ -1682,7 +1893,28 @@ fun writeDomainMetadata(ir: ObjectNode, modules: List<ModuleCheckout>, manifestP
             row.set<ArrayNode>("allowDependencies", arr().addAll(policy.allowDependencies.sorted().map(nodes::textNode)))
         })
     }
-    writeJson(output.resolve("podman-domains.json"), obj().put("schemaVersion", 1).set<ArrayNode>("domains", domainRows))
+    val domainMetadata = obj().also {
+        it.put("schemaVersion", 1)
+        it.set<ArrayNode>("domains", domainRows)
+    }
+    if (activePodmanPolicy.unitPrefix != "webservices") {
+        val venueMetadata = obj().put("schemaVersion", 1)
+            .put("unitPrefix", activePodmanPolicy.unitPrefix)
+            .put("rootfulStateRoot", activePodmanPolicy.rootfulStateRoot)
+            .put("rootfulRuntimeRoot", "/run/${activePodmanPolicy.unitPrefix}")
+            .put("rootfulGraphRoot", activePodmanPolicy.rootfulGraphRoot)
+            .put("rootfulRunRoot", activePodmanPolicy.rootfulRunRoot)
+            .put("rootfulVolumeRoot", activePodmanPolicy.venueVolumeRoot)
+            .put("pgSsdRoot", activePodmanPolicy.venuePgSsdRoot)
+            .put("vectorDbsRoot", activePodmanPolicy.venueVectorDbsRoot)
+            .put("controlSocketRoot", activePodmanPolicy.venueControlSocketRoot)
+            .put("logRoot", activePodmanPolicy.venueLogRoot)
+        venueMetadata.set<ObjectNode>("portMap", obj().also { mapping ->
+            activePodmanPolicy.portMap.toSortedMap().forEach { (original, proposed) -> mapping.put(original.toString(), proposed) }
+        })
+        domainMetadata.set<ObjectNode>("venue", venueMetadata)
+    }
+    writeJson(output.resolve("podman-domains.json"), domainMetadata)
 
     val dependencyRows = arr()
     ir.path("services").fieldsMap().forEach { (consumer, service) ->
@@ -1886,6 +2118,7 @@ fun commandGenerate(options: Map<String, String>) {
         val (ir, modules) = buildIr(manifest, modulesDir)
         applyPodmanPlacementPolicy(ir, activePodmanPolicy)
         applyResourceDefaults(ir, activePodmanPolicy)
+        applyVenueBindPolicy(ir, activePodmanPolicy)
         applyCrossDomainEndpointPolicy(ir, activePodmanPolicy)
         writeJson(staging.resolve("stack.ir.json"), ir)
         materializeSiteManifest(manifest, staging)

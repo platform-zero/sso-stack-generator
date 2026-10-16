@@ -18,6 +18,17 @@ build_caddy_global_options() {
   local context="$1"
   local tls_mode="$2"
   local storage_line=$'\tstorage file_system /certs'
+  local venue_https venue_http
+  venue_https="$(render_get CADDY_VENUE_HTTPS_PORT)"
+  venue_http="$(render_get CADDY_VENUE_HTTP_PORT)"
+  if [ -n "$venue_https" ] || [ -n "$venue_http" ]; then
+    [ "$tls_mode" = local ] && [[ $venue_https =~ ^[1-9][0-9]{3,4}$ ]] &&
+      [[ $venue_http =~ ^[1-9][0-9]{3,4}$ ]] &&
+      [ "$venue_https" -ge 1024 ] && [ "$venue_http" -ge 1024 ] &&
+      [ "$venue_https" -le 65535 ] && [ "$venue_http" -le 65535 ] &&
+      [ "$venue_https" != "$venue_http" ] || die 'unsafe isolated Caddy listener ports or TLS mode'
+    printf '\tadmin off\n\tdefault_bind 127.0.0.1\n\thttp_port %s\n\thttps_port %s\n\tauto_https disable_redirects\n\tservers {\n\t\tprotocols h1 h2\n\t}\n' "$venue_http" "$venue_https"
+  fi
 
   case "$tls_mode" in
     local)
@@ -82,6 +93,10 @@ load_secret_store() {
   trap 'rm -f "$decrypted_secret_store"' RETURN
   sops --decrypt "$secret_store" > "$decrypted_secret_store"
   while IFS= read -r -d '' key && IFS= read -r -d '' value; do
+    case "$key" in
+      CADDY_VENUE_HTTPS_PORT|CADDY_VENUE_HTTP_PORT)
+        die 'sealed inputs cannot replace site-owned Caddy listener authority' ;;
+    esac
     render_set "$key" "$value"
   done < <(jq -j 'to_entries[] | .key, "\u0000", ((.value // "") | tostring), "\u0000"' "$decrypted_secret_store")
 }
@@ -153,6 +168,17 @@ load_site_values() {
 
   render_set CADDY_TLS_MODE "$(yaml_get_scalar "$site_config_file" 'runtime.caddy_tls_mode')"
   [ -n "$(render_get CADDY_TLS_MODE)" ] || render_set CADDY_TLS_MODE "local"
+  local venue_prefix venue_https venue_http
+  render_set CADDY_VENUE_HTTPS_PORT ''
+  render_set CADDY_VENUE_HTTP_PORT ''
+  venue_prefix="$(yaml_get_scalar "$site_config_file" 'podman.unit_prefix')"
+  venue_https="$(yaml_get_scalar "$site_config_file" 'podman.port_map."443"')"
+  venue_http="$(yaml_get_scalar "$site_config_file" 'podman.port_map."80"')"
+  if [ -n "$venue_prefix" ] || [ -n "$venue_https" ] || [ -n "$venue_http" ]; then
+    [[ $venue_prefix =~ ^p0test-[a-z0-9-]{1,24}$ ]] || die 'unreviewed isolated Caddy site namespace'
+    render_set CADDY_VENUE_HTTPS_PORT "$venue_https"
+    render_set CADDY_VENUE_HTTP_PORT "$venue_http"
+  fi
 
   render_set TRUSTED_PROXY_SOURCE_RANGES "$(yaml_get_scalar "$site_config_file" 'runtime.trusted_proxy_source_ranges')"
   render_set LIVEKIT_NODE_IP "$(yaml_get_scalar "$site_config_file" 'runtime.livekit_node_ip')"

@@ -13,6 +13,24 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 }
 
 bash "$ROOT_DIR/scripts/test-runtime-input-duplicates.sh"
+bash "$ROOT_DIR/scripts/test-caddy-private-ingress-render.sh"
+python3 -B "$ROOT_DIR/scripts/test-caddy-venue-guest-binding.py"
+python3 -B "$ROOT_DIR/scripts/test-livekit-private-ice-binding.py"
+python3 -B "$ROOT_DIR/scripts/test-existing-host-venue.py"
+python3 -B "$ROOT_DIR/scripts/test-venue-owned-stage.py"
+python3 -B "$ROOT_DIR/scripts/test-venue-user-managers.py"
+python3 -B "$ROOT_DIR/scripts/test-venue-unit-stage.py"
+python3 -B "$ROOT_DIR/scripts/test-venue-graph-clear.py"
+python3 -B "$ROOT_DIR/scripts/test-venue-caddy-live.py"
+python3 -B "$ROOT_DIR/scripts/test-venue-control-source.py"
+python3 -B "$ROOT_DIR/scripts/test-venue-huly-volumes.py"
+python3 -B "$ROOT_DIR/scripts/test-venue-volume-authority.py"
+python3 -B "$ROOT_DIR/scripts/test-venue-bind-dirs.py"
+python3 -B "$ROOT_DIR/scripts/test-existing-host-guest-network.py"
+python3 -B "$ROOT_DIR/scripts/test-existing-host-ingress.py"
+python3 -B "$ROOT_DIR/scripts/test-existing-host-listener-intent.py"
+python3 -B "$ROOT_DIR/scripts/test-pinned-images.py"
+python3 -B "$ROOT_DIR/scripts/test-registry-preparation.py"
 
 # Cached dist JARs must be seeded before compilation, never replace selected-source output.
 python3 - "$ROOT_DIR/runtime-generator/stack-generator.main.kts" <<'PY'

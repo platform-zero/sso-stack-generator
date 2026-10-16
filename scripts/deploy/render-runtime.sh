@@ -101,6 +101,12 @@ build_derived_render_values
 prepare_host_runtime_dirs
 prepare_runtime_dir "$runtime_root"
 render_config_tree "$BUNDLE_ROOT/stack.config" "$runtime_configs_dir"
+if [ -n "$(render_get CADDY_VENUE_HTTPS_PORT)" ]; then
+  python3 -B "$BUNDLE_ROOT/ops/bind-caddy-venue-guest.py" \
+    --bundle "$BUNDLE_ROOT" --caddyfile "$runtime_configs_dir/caddy/Caddyfile" >/dev/null
+  python3 -B "$BUNDLE_ROOT/ops/bind-livekit-venue-ports.py" \
+    --bundle "$BUNDLE_ROOT" --config "$runtime_configs_dir/livekit/livekit.yaml" >/dev/null
+fi
 component_selection_filter_contracts_file "$runtime_configs_dir/service-contracts.json"
 mapfile -t runtime_env_keys < <(collect_runtime_env_keys "$runtime_configs_dir" "$BUNDLE_ROOT/global.settings" "$BUNDLE_ROOT/runtime-model.yml" "$BUNDLE_ROOT/runtime-env")
 extra_runtime_env_keys=(

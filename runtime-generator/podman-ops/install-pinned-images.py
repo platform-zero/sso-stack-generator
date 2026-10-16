@@ -60,16 +60,68 @@ def validate(bundle, inputs):
     return rows
 
 
-def install(rows):
+def rootful_command(bundle):
+    """Never import/pull a venue's rootful image through the shared store."""
+    metadata = json.loads((bundle / 'podman-domains.json').read_text())
+    venue = metadata.get('venue')
+    if venue is None:
+        return ['podman']
+    if not isinstance(venue, dict) or set(venue) != {
+            'schemaVersion', 'unitPrefix', 'rootfulStateRoot', 'rootfulRuntimeRoot',
+            'rootfulGraphRoot', 'rootfulRunRoot', 'rootfulVolumeRoot',
+            'pgSsdRoot', 'vectorDbsRoot', 'controlSocketRoot', 'logRoot', 'portMap'} or type(venue['schemaVersion']) is not int or venue['schemaVersion'] != 1:
+        raise ValueError('Invalid isolated image-store authority')
+    prefix = venue['unitPrefix']
+    if not isinstance(prefix, str) or not re.fullmatch(r'p0test-[a-z0-9-]{1,24}', prefix):
+        raise ValueError('Invalid isolated image-store namespace')
+    state, graph, run = (venue[k] for k in ('rootfulStateRoot', 'rootfulGraphRoot', 'rootfulRunRoot'))
+    if (venue['rootfulRuntimeRoot'] != '/run/' + prefix or
+            venue['controlSocketRoot'] != '/run/' + prefix + '-control' or
+            not isinstance(venue['portMap'], dict) or len(venue['portMap']) != 51 or
+            state != '/var/lib/' + prefix or run != '/run/' + prefix + '-podman'
+            or not isinstance(graph, str) or not re.fullmatch(
+                r'/mnt/stack/p0-existing-host-venue-[a-z0-9-]{1,24}/rootful-graph', graph)):
+        raise ValueError('Isolated rootful store roots differ from declared venue')
+    for value in (state, graph, run):
+        path = Path(value)
+        if any(parent.is_symlink() for parent in path.parents) or path.is_symlink():
+            raise ValueError('Linked rootful store ancestor')
+        info = path.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
+            raise ValueError('Rootful store directory not exclusively owned')
+    config = Path(state) / 'containers-storage.conf'
+    protected(config)
+    info = config.lstat()
+    expected = (f'[storage]\ndriver = "overlay"\nrunroot = "{run}"\n'
+                f'graphroot = "{graph}"\n').encode()
+    if info.st_nlink != 1 or info.st_mode & 0o077 or config.read_bytes() != expected:
+        raise ValueError('Rootful storage configuration does not bind exact isolated graph')
+    network_dir=Path(state)/'networks'
+    network_conf=Path(state)/'containers.conf'
+    protected(network_conf)
+    if network_dir.is_symlink():raise ValueError('Linked rootful netavark directory')
+    info=network_dir.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid!=0 or info.st_mode & 0o077:
+        raise ValueError('Isolated rootful netavark directory missing')
+    info=network_conf.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_uid!=0 or info.st_mode & 0o077 or
+            network_conf.read_bytes()!=('[network]\nnetwork_config_dir = "'+str(network_dir)+'"\n').encode()):
+        raise ValueError('Isolated rootful netavark configuration differs')
+    return ['env', 'CONTAINERS_STORAGE_CONF=' + str(config),
+            'CONTAINERS_CONF=' + str(network_conf), 'podman',
+            '--root', graph, '--runroot', run, '--network-config-dir', str(network_dir)]
+
+
+def install(rows, bundle=None):
     os.chdir('/')
     for image, archive, authorities in rows:
         for user in authorities:
             if user == 'root':
-                command = ['podman']
+                command = rootful_command(bundle) if bundle is not None else ['podman']
             else:
                 account = pwd.getpwnam(user)
-                command = ['runuser', '-u', user, '--', 'env',
-                           f'XDG_RUNTIME_DIR=/run/user/{account.pw_uid}',
+                command = ['runuser', '-u', user, '--', 'env', '-u', 'CONTAINERS_STORAGE_CONF',
+                           f'HOME={account.pw_dir}', f'XDG_RUNTIME_DIR=/run/user/{account.pw_uid}',
                            f'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{account.pw_uid}/bus', 'podman']
             def inspect():
                 result = subprocess.run(command + ['image', 'inspect', image, '--format', '{{.Id}}'],
@@ -128,10 +180,10 @@ def prepare_registry(bundle, *, runner=subprocess.run):
                 raise ValueError('Registry preparation refuses implicit/latest or invalid references')
             images.add(image)
         if user == 'root':
-            command = ['podman']
+            command = rootful_command(bundle)
         else:
             account = pwd.getpwnam(user)
-            command = ['runuser', '-u', user, '--', 'env', f'HOME={account.pw_dir}',
+            command = ['runuser', '-u', user, '--', 'env', '-u', 'CONTAINERS_STORAGE_CONF', f'HOME={account.pw_dir}',
                        f'XDG_RUNTIME_DIR=/run/user/{account.pw_uid}',
                        f'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{account.pw_uid}/bus', 'podman']
         for image in sorted(images):
@@ -185,7 +237,7 @@ def main():
             raise ValueError('Protected release image inputs required')
         rows = validate(args.bundle, args.inputs) if args.inputs else []
         if not args.validate_only:
-            install(rows)
+            install(rows, args.bundle)
             if args.prepare_registry:
                 prepare_registry(args.bundle)
     except (ValueError, KeyError, OSError, subprocess.SubprocessError) as exc:

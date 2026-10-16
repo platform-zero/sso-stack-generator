@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""Eight-store exact-image graph-reset fixtures; no real Podman touched."""
+import importlib.util
+import json
+import os
+from pathlib import Path
+import stat
+import tempfile
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+
+src=Path(__file__).resolve().parents[1]/'runtime-generator/podman-ops/venue-graph-clear.py'
+spec=importlib.util.spec_from_file_location('graph_clear',src)
+clear=importlib.util.module_from_spec(spec);spec.loader.exec_module(clear)
+
+@unittest.skipUnless(os.geteuid()==0,'protected ledger fixture requires root')
+class GraphClearFixtures(unittest.TestCase):
+    def setUp(self):
+        temp=tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup)
+        self.root=Path(temp.name);self.bundle=self.root/'bundle'
+        (self.bundle/'site/global.settings').mkdir(parents=True)
+        self.allowed='sha256:'+'a'*64
+        (self.bundle/'site/global.settings/registry-image-ids.json').write_text(json.dumps({'root|pinned':self.allowed}))
+        accounts=[];roots={'rootful-graph':str(self.root/'graph-root'),'rootful-run':str(self.root/'run-root'),
+                           'rootful-state':str(self.root/'state-root')}
+        for i,name in enumerate(('platform','apps','homeassistant','vaultwarden','ci-runner','workloads','test-runners')):
+            accounts.append({'name':'p0test-r1-'+name,'uid':3200+i,'home':'/home/p0test-r1-'+name,
+                             'graph':str(self.root/('graph-'+name))})
+        self.plan={'accounts':accounts,'roots':roots}
+        self.identities={}
+        for path in [roots['rootful-state'],roots['rootful-graph'],*(a['graph'] for a in accounts)]:
+            p=Path(path);p.mkdir()
+            info=p.lstat();self.identities[path]={'dev':info.st_dev,'ino':info.st_ino,'uid':info.st_uid,
+                                                    'mode':stat.S_IMODE(info.st_mode)}
+        self.ledger=self.root/'ledger.json'
+        self.data={'plan':self.plan,'status':'managers-ready','managerStarted':[a['name'] for a in accounts],
+                   'managerStopped':[],'pathIdentities':self.identities}
+        self.ledger.write_text(json.dumps(self.data));self.ledger.chmod(0o600)
+    def runner(self,command,**kwargs):
+        if command[-2:]==['ps','-aq'] or command[-3:]==['pod','ps','--quiet'] or command[-3:]==['volume','ls','-q']:
+            return SimpleNamespace(returncode=0,stdout='')
+        if command[-4:]==['image','ls','--no-trunc','--format'] or 'image' in command and 'ls' in command:
+            return SimpleNamespace(returncode=0,stdout='')
+        if command[-3:]==['network','ls','--format'] or 'network' in command and 'ls' in command:
+            return SimpleNamespace(returncode=0,stdout='podman\n')
+        raise AssertionError('unexpected selected Podman call '+str(command))
+    def test_empty_test_only_metadata_is_removed_without_deleting_graph_root(self):
+        child=Path(self.plan['roots']['rootful-graph'])/'metadata';child.mkdir();(child/'runtime.json').write_text('{}')
+        with (patch.object(clear.stage,'owned_plan',return_value=self.plan),
+              patch.object(clear.stage,'write_ledger',side_effect=lambda path,state:self.data.update(state)),
+              patch.object(clear,'run',side_effect=self.runner),
+              patch.object(clear.os,'geteuid',return_value=0)):
+            result=clear.clear(self.bundle,self.root/'unused',self.ledger)
+        self.assertEqual(result['graphRootsCleared'],8)
+        self.assertTrue(Path(self.plan['roots']['rootful-graph']).is_dir())
+        self.assertFalse(any(Path(self.plan['roots']['rootful-graph']).iterdir()))
+        self.assertEqual(self.data['status'],'managers-ready')
+        self.assertTrue(self.data['graphNetworkDirRetired'])
+        self.assertFalse((Path(self.plan['roots']['rootful-state'])/'networks').exists())
+    def test_only_exact_pinned_image_id_removed_from_exclusive_root_graph(self):
+        commands=[];removed=False
+        def selected(command,**kwargs):
+            nonlocal removed
+            commands.append(command)
+            if command[-2:]==['image','rm'] or 'image' in command and 'rm' in command:
+                self.assertEqual(command[-1],self.allowed)
+                removed=True
+                return SimpleNamespace(returncode=0,stdout='')
+            if 'image' in command and 'ls' in command:
+                return SimpleNamespace(returncode=0,stdout='' if removed or 'runuser' in command else self.allowed+'\n')
+            return self.runner(command,**kwargs)
+        with (patch.object(clear.stage,'owned_plan',return_value=self.plan),
+              patch.object(clear.stage,'write_ledger',side_effect=lambda path,state:self.data.update(state)),
+              patch.object(clear,'run',side_effect=selected),
+              patch.object(clear.os,'geteuid',return_value=0)):
+            self.assertEqual(clear.clear(self.bundle,self.root/'unused',self.ledger)['graphRootsCleared'],8)
+        self.assertTrue(removed)
+        self.assertEqual(len([c for c in commands if 'rm' in c]),1)
+    def test_exact_owned_blob_cache_retired_and_hostile_extra_refused(self):
+        for entry in self.plan['accounts']:
+            created=self.root/('fresh-home-'+entry['name']);created.mkdir();os.chown(created,entry['uid'],entry['uid'])
+            entry['home']=str(created);info=created.lstat()
+            self.identities[str(created)]={'dev':info.st_dev,'ino':info.st_ino,'uid':entry['uid'],'mode':stat.S_IMODE(info.st_mode)}
+        account=self.plan['accounts'][1];home=Path(account['home'])
+        cache=home/'.local/share/containers/cache';cache.mkdir(parents=True)
+        for d in (home/'.local',home/'.local/share',home/'.local/share/containers',cache):
+            d.chmod(0o700);os.chown(d,account['uid'],account['uid'])
+        file=cache/'blob-info-cache-v1.sqlite';file.write_bytes(b'test-only blob cache');file.chmod(0o644);os.chown(file,account['uid'],account['uid'])
+        self.data['graphCleared']=['root',*(a['name'] for a in self.plan['accounts'])]
+        self.data['graphNetworkDirRetired']=True
+        self.ledger.write_text(json.dumps(self.data))
+        with (patch.object(clear.stage,'owned_plan',return_value=self.plan),
+              patch.object(clear.stage,'write_ledger',side_effect=lambda path,state:self.data.update(state)),
+              patch.object(clear.os,'geteuid',return_value=0)):
+            extra=cache/'foreign';extra.write_text('preserve')
+            with self.assertRaises(clear.Refusal):clear.retire_image_cache(self.bundle,self.root/'unused',self.ledger)
+            self.assertTrue(file.exists());self.assertEqual(extra.read_text(),'preserve')
+            extra.unlink()
+            self.assertEqual(clear.retire_image_cache(self.bundle,self.root/'unused',self.ledger)['retiredExactImageCaches'],1)
+        self.assertFalse((home/'.local').exists())
+        self.assertTrue(home.is_dir())
+    def test_runroot_exact_metadata_removed_only_after_stopped_graph_proof(self):
+        root=Path(self.plan['roots']['rootful-run']);root.mkdir(mode=0o700);root.chmod(0o700)
+        info=root.lstat();self.identities[str(root)]={'dev':info.st_dev,'ino':info.st_ino,'uid':0,'mode':0o700}
+        layout={'overlay-layers':{'mountpoints.lock'},'overlay-locks':set(),
+                'overlay-containers':set(),'overlay':{'native-diff()-true','metacopy()-false','overlay-true'}}
+        for name,files in layout.items():
+            d=root/name;d.mkdir(mode=0o700)
+            for filename in files:(d/filename).touch(mode=0o644)
+        self.data.update({'status':'staged-empty',
+                          'managerStopped':[a['name'] for a in reversed(self.plan['accounts'])],
+                          'graphCleared':['root',*(a['name'] for a in self.plan['accounts'])],
+                          'graphNetworkDirRetired':True,'podmanImageCacheRetired':True})
+        self.ledger.write_text(json.dumps(self.data))
+        with (patch.object(clear.stage,'owned_plan',return_value=self.plan),
+              patch.object(clear.stage,'write_ledger',side_effect=lambda path,state:self.data.update(state)),
+              patch.object(clear.os,'geteuid',return_value=0)):
+            extra=root/'unreviewed';extra.write_text('preserve')
+            with self.assertRaises(clear.Refusal):clear.retire_empty_runroot(self.bundle,self.root/'unused',self.ledger)
+            self.assertEqual(extra.read_text(),'preserve');extra.unlink()
+            self.assertEqual(clear.retire_empty_runroot(self.bundle,self.root/'unused',self.ledger)['retiredRunrootFiles'],4)
+        self.assertFalse(any(root.iterdir()))
+        self.assertTrue(root.exists())
+    def test_unselected_image_refuses_before_deletion(self):
+        marker=Path(self.plan['roots']['rootful-graph'])/'keep';marker.write_text('untouched')
+        def foreign(command,**kwargs):
+            if 'image' in command and 'ls' in command:
+                return SimpleNamespace(returncode=0,stdout='sha256:'+'b'*64+'\n')
+            return self.runner(command,**kwargs)
+        with (patch.object(clear.stage,'owned_plan',return_value=self.plan),
+              patch.object(clear.stage,'write_ledger',side_effect=lambda path,state:self.data.update(state)),
+              patch.object(clear,'run',side_effect=foreign),
+              patch.object(clear.os,'geteuid',return_value=0)):
+            with self.assertRaises(clear.Refusal):clear.clear(self.bundle,self.root/'unused',self.ledger)
+        self.assertEqual(marker.read_text(),'untouched')
+        self.assertEqual(self.data['status'],'managers-ready')
+        self.assertTrue((Path(self.plan['roots']['rootful-state'])/'networks').is_dir())
+
+if __name__=='__main__':unittest.main()
