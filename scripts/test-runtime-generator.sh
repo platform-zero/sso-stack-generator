@@ -646,4 +646,8 @@ if rg -n '\$\{[A-Z_][A-Z0-9_]*:\?' "$WORK_DIR/podman-a/runtime/stack.env"; then
   exit 1
 fi
 
+python3 -B "$ROOT_DIR/scripts/test-frozen-build-images.py" \
+  --site "$SITE" --modules-dir "$MODULES_DIR" \
+  --baseline-bundle "$WORK_DIR/podman-a" --work-dir "$WORK_DIR/frozen-image-tests"
+
 printf '[runtime-test] dual-backend validation passed (%s services)\n' "$(wc -l < "$WORK_DIR/ir-services")"

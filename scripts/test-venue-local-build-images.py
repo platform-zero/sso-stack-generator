@@ -131,6 +131,11 @@ class LocalBuildFixtures(unittest.TestCase):
         p.write_text(p.read_text()+'Network=host\n')
         with self.assertRaisesRegex(local.Refusal,'pull/network authority differs'):
             local.plan_for(self.bundle,self.source)
+    def test_frozen_recipe_refuses_discovery_before_any_build(self):
+        p=self.bundle/'quadlet/rootless-platform/p0test-r1-keycloak.build'
+        p.write_text('[Unit]\nRefuseManualStart=yes\n'+p.read_text())
+        with self.assertRaisesRegex(local.Refusal,'frozen installed image recipes'):
+            local.plan_for(self.bundle,self.source)
     def test_installed_quadlet_exec_must_disable_pull_and_network(self):
         tag='localhost/webservices/keycloak:bundle';unit='p0test-r1-keycloak-build.service'
         def checked(command,**kwargs):

@@ -104,6 +104,34 @@ next site/release inputs before retiring discovery graphs or starting clean
 acceptance runs. Do not discard successful outputs and repeat network builds
 merely to cross an installer phase boundary.
 
+## Freeze discovery outputs before running integration
+
+A site can declare `localBuildImagePinsPath` with the exact relative path
+`global.settings/local-build-image-ids.json`. This file has `schemaVersion: 1`
+and an `images` object mapping **every selected Quadlet build-service name** to its
+`sha256:<64 hex>` configuration ID. Missing/extra services, mutable references,
+boolean schemas, duplicate keys and alternate paths refuse atomically.
+
+This is an existing-generator profile, not another launcher. It retains every
+recipe and build-unit identity for source review, sets those build units to
+`RefuseManualStart=yes`, and removes their implicit container startup edges.
+Both managed build services and other consumers of their exact generated local
+tags use the frozen ID; their runtime-model entries contain no executable builds.
+The two unmanaged per-project on-demand recipe entries remain untouched; they
+are not host Quadlet startup units. `quadletBuildImagesFrozen` is therefore an
+explicitly scoped IR marker, not a claim to freeze future user project builds.
+The normal pinned-image importer must receive hash-bound OCI inputs covering all
+selected IDs and imports each image only into the selected authority stores.
+It uses the private selected graph for scratch and restores each exact producer
+tag for dynamic consumers too, refusing existing wrong-ID aliases or failed
+inventory rather than overwriting them. Frozen containers use `Pull=never`.
+An image manifest alone does not prove that this installed import happened.
+
+Use actual reviewed canonical artifacts, never the synthetic IDs exercised by
+`scripts/test-frozen-build-images.py`. The discovery helper refuses these
+frozen recipes before any build attempt. Unfrozen discovery is unchanged and
+remains incapable of authorizing an integrated start.
+
 ## Running-integration acceptance
 
 Before activation, prove actual installed ownership, recovery/stop authority,

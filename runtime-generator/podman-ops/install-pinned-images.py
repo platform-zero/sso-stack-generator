@@ -107,24 +107,58 @@ def rootful_command(bundle):
     if (not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_uid!=0 or info.st_mode & 0o077 or
             network_conf.read_bytes()!=('[network]\nnetwork_config_dir = "'+str(network_dir)+'"\n').encode()):
         raise ValueError('Isolated rootful netavark configuration differs')
-    return ['env', 'CONTAINERS_STORAGE_CONF=' + str(config),
+    return ['env', 'TMPDIR=' + graph, 'CONTAINERS_STORAGE_CONF=' + str(config),
             'CONTAINERS_CONF=' + str(network_conf), 'podman',
             '--root', graph, '--runroot', run, '--network-config-dir', str(network_dir)]
 
 
+def frozen_aliases(bundle, metadata):
+    """Retain exact producer tags used by dynamic, non-Quadlet consumers too."""
+    if bundle is None:
+        return {}
+    ir = json.loads((bundle / 'stack.ir.json').read_text())
+    domains = {d['name']: d['user'] for d in metadata['domains']}
+    result = {}
+    for name, service in ir['services'].items():
+        if 'build' not in service or 'frozenBuildImage' not in service:
+            continue
+        image = service.get('image')
+        if (ir.get('quadletBuildImagesFrozen') is not True or
+                not isinstance(image, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', image) or
+                service['frozenBuildImage'] != image or service.get('updatePolicy') != 'pinned' or
+                not re.fullmatch(r'[a-z0-9][a-z0-9_.-]*', name)):
+            raise ValueError('Invalid frozen build image/tag authority')
+        user = domains[service['rootlessDomain']] if service.get('placement') == 'rootless' else 'root'
+        result.setdefault((image, user), set()).add('localhost/webservices/' + name + ':bundle')
+    return result
+
+
 def install(rows, bundle=None):
     os.chdir('/')
+    metadata = json.loads((bundle / 'podman-domains.json').read_text()) if bundle is not None else {}
+    aliases = frozen_aliases(bundle, metadata)
+    domains = {d['user']: d for d in metadata.get('domains', [])}
+    root_command = rootful_command(bundle) if bundle is not None else ['podman']
     for image, archive, authorities in rows:
         for user in authorities:
             if user == 'root':
-                command = rootful_command(bundle) if bundle is not None else ['podman']
+                command = root_command
             else:
                 account = pwd.getpwnam(user)
                 command = ['runuser', '-u', user, '--', 'env', '-u', 'CONTAINERS_STORAGE_CONF',
                            f'HOME={account.pw_dir}', f'XDG_RUNTIME_DIR=/run/user/{account.pw_uid}',
                            f'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{account.pw_uid}/bus', 'podman']
-            def inspect():
-                result = subprocess.run(command + ['image', 'inspect', image, '--format', '{{.Id}}'],
+                if bundle is not None:
+                    if user not in domains:
+                        raise ValueError('Unselected rootless image authority')
+                    graph = Path(domains[user]['graphRoot'])
+                    info = graph.lstat()
+                    if (not graph.is_absolute() or graph.is_symlink() or any(p.is_symlink() for p in graph.parents) or
+                            not stat.S_ISDIR(info.st_mode) or info.st_uid != account.pw_uid or info.st_mode & 0o077):
+                        raise ValueError('Image import scratch must be the private selected graph')
+                    command.insert(command.index('podman'), 'TMPDIR=' + str(graph))
+            def inspect(ref=image):
+                result = subprocess.run(command + ['image', 'inspect', ref, '--format', '{{.Id}}'],
                                         capture_output=True, text=True, timeout=30)
                 return result.returncode == 0 and result.stdout.strip().removeprefix('sha256:') == image[7:]
             if not inspect():
@@ -132,6 +166,17 @@ def install(rows, bundle=None):
                     subprocess.run(command + ['load'], stdin=source, capture_output=True, check=True, timeout=300)
                 if not inspect():
                     raise ValueError('Imported image differs from the pinned configuration ID')
+            for alias in sorted(aliases.get((image, user), ())):
+                present = subprocess.run(command + ['image', 'exists', alias], capture_output=True, timeout=30)
+                if present.returncode == 0:
+                    if not inspect(alias):
+                        raise ValueError('Frozen local tag collision; refusing to replace another image')
+                elif present.returncode == 1:
+                    subprocess.run(command + ['tag', image, alias], capture_output=True, check=True, timeout=30)
+                    if not inspect(alias):
+                        raise ValueError('Frozen local tag differs after exact import')
+                else:
+                    raise ValueError('Frozen local tag inventory unavailable; no tag mutation')
             print(json.dumps({'image': image, 'authority': user, 'verified': True}))
 
 

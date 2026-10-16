@@ -47,6 +47,8 @@ def plan_for(bundle,source):
             if not entry or entry['user']!=user or path.is_symlink():
                 raise Refusal('selected offline build unit/source missing')
             text=path.read_text().splitlines()
+            if 'RefuseManualStart=yes' in text:
+                raise Refusal('frozen installed image recipes cannot be rediscovered or rebuilt')
             tag='localhost/webservices/'+name+':bundle'
             offline=name in OFFLINE.get(user,())
             if (text.count('ImageTag='+tag)!=1 or text.count('Pull=never')!=1 or

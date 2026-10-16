@@ -826,6 +826,51 @@ fun buildIr(manifestPath: Path, modulesDir: Path): Pair<ObjectNode, List<ModuleC
     return ir to modules
 }
 
+fun quadletManaged(service: JsonNode): Boolean =
+    service.path("lifecycle").asText() != "on-demand" || service.path("quadletManaged").asBoolean(false)
+
+fun freezeLocalBuildImages(ir: ObjectNode, manifestPath: Path) {
+    val services = ir.path("services") as ObjectNode
+    if (services.fieldsMap().any { (_, service) -> service.has("frozenBuildImage") })
+        fail("frozenBuildImage is generator-owned, not a module override")
+    val manifest = readTree(manifestPath)
+    if (!manifest.has("localBuildImagePinsPath")) return
+    val relative = manifest.path("localBuildImagePinsPath")
+    if (!relative.isTextual || relative.asText() != "global.settings/local-build-image-ids.json")
+        fail("local build identities require exact site-owned global.settings/local-build-image-ids.json")
+    val source = manifestPath.parent.resolve(relative.asText())
+    if (!source.isRegularFile() || source.isSymbolicLink() ||
+        !source.toRealPath().startsWith(manifestPath.parent.toRealPath()))
+        fail("local build identity pins are missing or linked outside site")
+    val pins = readTree(source)
+    if (pins.fieldsMap().map { it.first }.toSet() != setOf("schemaVersion", "images") ||
+        !pins.path("schemaVersion").isInt || pins.path("schemaVersion").asInt() != 1 ||
+        !pins.path("images").isObject)
+        fail("invalid local build identity pins schema")
+    val builds = services.fieldsMap().filter { (_, service) -> service.has("build") && quadletManaged(service) }
+        .map { it.first }.toSet()
+    val images = pins.path("images").fieldsMap().associate { (name, value) ->
+        if (!value.isTextual || !value.asText().matches(Regex("sha256:[0-9a-f]{64}")))
+            fail("local build identity must be an immutable configuration ID: $name")
+        name to value.asText()
+    }
+    if (builds.isEmpty() || images.keys != builds)
+        fail("local build identities must cover every selected Quadlet build exactly, without extras")
+    val tags = images.mapKeys { (name, _) -> "localhost/webservices/$name:bundle" }
+    services.fieldsMap().forEach { (name, raw) ->
+        val service = raw as ObjectNode
+        val digest = if (service.has("build")) images[name] else tags[service.path("image").asText()]
+        if (digest != null) {
+            service.put("image", digest)
+            service.put("updatePolicy", "pinned")
+            service.put("frozenBuildImage", digest)
+        } else if (!service.has("build") && service.path("image").asText().startsWith("localhost/webservices/")) {
+            fail("unresolved local build image consumer: $name")
+        }
+    }
+    ir.put("quadletBuildImagesFrozen", true)
+}
+
 fun materializeModules(modules: List<ModuleCheckout>, output: Path) {
     val owners = mutableMapOf<Path, String>()
     modules.forEach { module ->
@@ -1055,6 +1100,7 @@ fun materializeSiteManifest(manifestPath: Path, output: Path) {
     (listOf("stackConfig", "secretStore") + listOfNotNull(
         "imageIdentityPinsPath".takeIf { manifest.has(it) },
         "buildBaseIdentityPinsPath".takeIf { manifest.has(it) },
+        "localBuildImagePinsPath".takeIf { manifest.has(it) },
         "agentVmSpec".takeIf { manifest.has(it) })).forEach { key ->
         val relative = manifest.path(key).textOrNull() ?: fail("site manifest missing $key")
         if (relative.startsWith("/")) fail("site manifest $key must be relative: $relative")
@@ -1127,7 +1173,7 @@ fun runtimeModelService(service: ObjectNode): ObjectNode {
             }
         }
     }
-    service.get("build")?.let { raw ->
+    service.get("build")?.takeUnless { service.has("frozenBuildImage") }?.let { raw ->
         val build = raw.deepCopy<ObjectNode>()
         build.remove("containerfile")?.let { build.set<JsonNode>("dockerfile", it) }
         build.remove("arguments")?.let { build.set<JsonNode>("args", it) }
@@ -1628,8 +1674,10 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
     lines += "PartOf=$unitPrefix-${service.path("target").asText("apps")}.target"
     lines += ""
     lines += "[Container]"
-    service.path("build").takeUnless(JsonNode::isMissingNode)?.let { lines += "Image=$unitPrefix-$name.build" }
+    service.path("build").takeUnless { it.isMissingNode || service.has("frozenBuildImage") }
+        ?.let { lines += "Image=$unitPrefix-$name.build" }
         ?: lines.add("Image=${qualifiedImage(service.path("image").asText(), service.path("updatePolicy").asText("pinned"))}")
+    if (service.path("image").asText().matches(Regex("sha256:[0-9a-f]{64}"))) lines += "Pull=never"
     lines += "ContainerName=${if (unitPrefix == "webservices") name else "$unitPrefix-$name"}"
     if (service.path("lifecycle").asText() == "daemon" && service.path("updatePolicy").asText() == "registry" && !service.path("image").asText().contains('@')) lines += "AutoUpdate=registry"
     if (service.path("environment").isObject && !service.path("environment").isEmpty) lines += "EnvironmentFile=${domain.envFilePrefix}/$name.env"
@@ -1754,7 +1802,13 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
     renderEnvironmentTemplate(name, service, output)
 
     service.path("build").takeUnless(JsonNode::isMissingNode)?.let { build ->
-        val buildLines = mutableListOf("[Build]")
+        val buildLines = mutableListOf<String>()
+        if (service.has("frozenBuildImage")) {
+            // Retain reviewed recipe/unit identity, but never run a mutable
+            // network build as part of an immutable installed release.
+            buildLines += listOf("[Unit]", "RefuseManualStart=yes", "")
+        }
+        buildLines += "[Build]"
         buildLines += "ImageTag=localhost/webservices/$name:bundle"
         build.path("context").textOrNull()?.let {
             val relativeContext = it.removePrefix("./").let { context -> if (context == "." || context == "build") "" else context }
@@ -1824,7 +1878,7 @@ fun renderPodman(ir: ObjectNode, output: Path) {
         ir.path("services").fieldsMap()
             .filter { (_, service) ->
                 podmanDomainForService(service).name == domain.name &&
-                    (service.path("lifecycle").asText() != "on-demand" || service.path("quadletManaged").asBoolean(false))
+                    quadletManaged(service)
             }
             .forEach { (name, service) -> renderQuadletService(name, service as ObjectNode, ir, output, domain, loopbacks) }
         listOf("core", "apps", "observability").forEach { target ->
@@ -2148,6 +2202,7 @@ fun commandGenerate(options: Map<String, String>) {
         applyResourceDefaults(ir, activePodmanPolicy)
         applyVenueBindPolicy(ir, activePodmanPolicy)
         applyCrossDomainEndpointPolicy(ir, activePodmanPolicy)
+        freezeLocalBuildImages(ir, manifest)
         writeJson(staging.resolve("stack.ir.json"), ir)
         materializeSiteManifest(manifest, staging)
         materializeModules(modules, staging)

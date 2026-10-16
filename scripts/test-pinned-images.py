@@ -92,7 +92,7 @@ class PinnedImages(unittest.TestCase):
             return real_read_bytes(path)
         with patch.object(Path,'lstat',staged_lstat),patch.object(Path,'read_bytes',staged_bytes):
             command=mod.rootful_command(self.root)
-            self.assertEqual(command,['env','CONTAINERS_STORAGE_CONF='+state+'/containers-storage.conf',
+            self.assertEqual(command,['env','TMPDIR='+graph,'CONTAINERS_STORAGE_CONF='+state+'/containers-storage.conf',
                                       'CONTAINERS_CONF='+state+'/containers.conf',
                                       'podman','--root',graph,'--runroot',run,'--network-config-dir',state+'/networks'])
             venue['controlSocketRoot']='/run/p0-control'
@@ -116,6 +116,56 @@ class PinnedImages(unittest.TestCase):
         self.assertIn('HOME=/home/p0test-r1-apps',calls[0])
         self.assertIn('XDG_RUNTIME_DIR=/run/user/3201',calls[0])
         self.assertEqual(calls[0][:7],['runuser','-u','p0test-r1-apps','--','env','-u','CONTAINERS_STORAGE_CONF'])
+
+    def frozen_fixture(self):
+        self.ir['quadletBuildImagesFrozen']=True
+        self.ir['services']['selected'].update({'build':{},'frozenBuildImage':self.image})
+        (self.root/'stack.ir.json').write_text(json.dumps(self.ir))
+        graph=self.root/'graph';graph.mkdir(mode=0o700);os.chown(graph,3201,3201)
+        (self.root/'podman-domains.json').write_text(json.dumps({'domains':[
+            {'name':'apps','user':'service-apps','graphRoot':str(graph)}]}))
+        return graph,'localhost/webservices/selected:bundle'
+
+    def test_frozen_import_restores_only_exact_selected_alias_with_private_scratch(self):
+        graph,alias=self.frozen_fixture();calls=[];tags={}
+        def run(command,**kwargs):
+            calls.append(command)
+            if 'exists' in command:return SimpleNamespace(returncode=int(alias not in tags))
+            if 'tag' in command:
+                self.assertEqual(command[-3:],['tag',self.image,alias]);tags[alias]=self.image
+                return SimpleNamespace(returncode=0)
+            self.assertIn('inspect',command)
+            ref=command[command.index('inspect')+1]
+            return SimpleNamespace(returncode=0,stdout=self.image if ref==self.image else tags[ref])
+        with (patch.object(mod.pwd,'getpwnam',return_value=SimpleNamespace(pw_uid=3201,pw_dir='/home/service-apps')),
+              patch.object(mod.subprocess,'run',side_effect=run),contextlib.redirect_stdout(io.StringIO())):
+            mod.install(mod.validate(self.root,self.inputs),self.root)
+        self.assertEqual(tags,{alias:self.image})
+        self.assertTrue(all('TMPDIR='+str(graph) in command for command in calls))
+
+    def test_frozen_alias_collision_and_inventory_failure_never_retag(self):
+        _,alias=self.frozen_fixture()
+        for code in (0,125):
+            calls=[]
+            def run(command,**kwargs):
+                calls.append(command)
+                if 'exists' in command:return SimpleNamespace(returncode=code)
+                self.assertNotIn('tag',command)
+                ref=command[command.index('inspect')+1]
+                return SimpleNamespace(returncode=0,stdout=self.image if ref==self.image else 'sha256:'+'b'*64)
+            with (patch.object(mod.pwd,'getpwnam',return_value=SimpleNamespace(pw_uid=3201,pw_dir='/home/service-apps')),
+                  patch.object(mod.subprocess,'run',side_effect=run),contextlib.redirect_stdout(io.StringIO())):
+                with self.assertRaises(ValueError):mod.install(mod.validate(self.root,self.inputs),self.root)
+            self.assertFalse(any('tag' in command for command in calls))
+
+    def test_frozen_alias_requires_explicit_ir_scope_and_matching_id(self):
+        self.frozen_fixture();metadata=json.loads((self.root/'podman-domains.json').read_text())
+        for flag in (False,1,'true'):
+            ir={**self.ir,'quadletBuildImagesFrozen':flag};(self.root/'stack.ir.json').write_text(json.dumps(ir))
+            with self.assertRaises(ValueError):mod.frozen_aliases(self.root,metadata)
+        self.ir['services']['selected']['frozenBuildImage']='sha256:'+'b'*64
+        (self.root/'stack.ir.json').write_text(json.dumps(self.ir))
+        with self.assertRaises(ValueError):mod.frozen_aliases(self.root,metadata)
 
     def test_registry_update_refused(self):
         self.ir['services']['selected']['updatePolicy'] = 'registry'
