@@ -29,6 +29,23 @@ SKIP_RUNTIME_MODEL_VALIDATE=0
 prepare_host_runtime_dirs() {
   local forgejo_runner_ssh_dir
   forgejo_runner_ssh_dir="$(render_get FORGEJO_RUNNER_SSH_DIR)"
+  if [ -n "$(render_get CADDY_VENUE_HTTPS_PORT)" ]; then
+    # The legacy renderer's default is under $HOME. That is not a
+    # venue-owned path and may contain existing authored host material.
+    # The isolated installer must first journal/create an exact dedicated
+    # CI-runner path; rendering may read it but must not mkdir/chmod it.
+    local ci_state ci_uid expected
+    ci_state="$(jq -er '[.domains[] | select(.name == "ci-runner")] | if length == 1 then .[0].stateRoot else error("CI domain") end' "$BUNDLE_ROOT/podman-domains.json")"
+    ci_uid="$(jq -er '[.domains[] | select(.name == "ci-runner")] | if length == 1 then .[0].uid else error("CI domain") end' "$BUNDLE_ROOT/podman-domains.json")"
+    expected="$ci_state/forgejo-runner-ssh"
+    if [ "$forgejo_runner_ssh_dir" != "$expected" ] ||
+       [ ! -d "$expected" ] || [ -L "$expected" ] ||
+       [ "$(stat -c '%u:%g:%a' "$expected" 2>/dev/null)" != "$ci_uid:$ci_uid:700" ]; then
+      printf 'venue runtime render refused: CI runner SSH directory requires installed dedicated authority\n' >&2
+      return 1
+    fi
+    return 0
+  fi
   if [ -n "$forgejo_runner_ssh_dir" ]; then
     mkdir -p "$forgejo_runner_ssh_dir"
     chmod 700 "$forgejo_runner_ssh_dir"
