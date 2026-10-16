@@ -84,8 +84,12 @@ exported once with all source keys retained. This publishes **canonical image
 inputs**, not backups of guest/project/service state. It does not approve a
 release, activate services, or silently replace the site's pins.
 
-The exporter refuses incomplete, skipped or pending builds, existing output
-directories and unsafe parents. It monitors existing host reserves plus a
+Full export refuses incomplete or skipped builds. To preserve one completed
+output across a required source/stage change, combine export with `--only-key`:
+this explicitly produces `exported-discovery-subset` and reports one exported
+output separately from the whole composition count. It cannot export a missing
+or skipped key, and **any pending build blocks both export modes**. Existing
+output directories and unsafe parents always refuse. It monitors host reserves plus a
 120-GiB proactive output-filesystem reserve. A failed save retains its exact
 partial filename/inode receipt; it cannot be implicitly retried or imported as
 a complete image. Review and freeze the successful artifact manifest into the

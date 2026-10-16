@@ -463,16 +463,24 @@ def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,aba
     return {'status':data['venueLocalBuildPhase'],'builtOutputIds':len(outputs),
             'remaining':len(selected)-len(outputs),'activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
-def export_plan(data,selected):
+def export_plan(data,selected,only_key=None):
     outputs=data.get('venueLocalBuildOutputs',{})
-    if (data.get('venueLocalBuildPhase')!='inert-ready' or data.get('venueLocalBuildPlan')!=selected or
-            set(outputs)!=set(selected) or
-            data.get('venueLocalBuildPending') or data.get('venueLocalBuildSkipped') or
+    if (data.get('venueLocalBuildPlan')!=selected or data.get('venueLocalBuildPending') or
+            not isinstance(outputs,dict) or not set(outputs)<=set(selected) or
+            set(outputs)&set(data.get('venueLocalBuildSkipped',[])) or
             any(not isinstance(value,str) or not re.fullmatch(r'sha256:[0-9a-f]{64}',value)
                 for value in outputs.values())):
-        raise Refusal('export requires every selected build complete without pending or skipped outputs')
+        raise Refusal('export requires exact completed output identities and no pending build')
+    if only_key is None:
+        if (data.get('venueLocalBuildPhase')!='inert-ready' or set(outputs)!=set(selected) or
+                data.get('venueLocalBuildSkipped')):
+            raise Refusal('full export requires every selected build complete without skipped outputs')
+    elif (only_key not in outputs or only_key in data.get('venueLocalBuildSkipped',[]) or
+            data.get('venueLocalBuildPhase') not in ('preparing','inert-ready','abandoned-inert')):
+        raise Refusal('subset export requires one exact completed non-skipped output')
     grouped={}
     for key,image in sorted(outputs.items()):
+        if only_key is not None and key!=only_key:continue
         grouped.setdefault(image,[]).append(key)
     return [{'image':image,'archiveFilename':image[7:]+'.oci.tar','sourceKeys':keys,
              'buildQuadletSha256':{key:selected[key]['quadletSha256'] for key in keys}}
@@ -506,7 +514,7 @@ def save_image(command,image,output,root):
                 os.killpg(process.pid,signal.SIGKILL);process.wait(timeout=12)
 
 
-def export_outputs(bundle,selector,site_source,ledger,destination):
+def export_outputs(bundle,selector,site_source,ledger,destination,only_key=None):
     """Publish canonical build inputs, not guest/data backups or release approval.
 
     A fresh private output directory holds an independent manifest. Failures
@@ -514,7 +522,7 @@ def export_outputs(bundle,selector,site_source,ledger,destination):
     """
     p,data,plan,_=registry.journal(bundle,selector,site_source,ledger)
     source=authority.authority(bundle,selector,site_source,require_pinned_bases=True)
-    selected=plan_for(bundle,source);rows=export_plan(data,selected)
+    selected=plan_for(bundle,source);rows=export_plan(data,selected,only_key)
     root=Path(destination)
     if (not root.is_absolute() or '..' in root.parts or root.name in ('','.','..') or
             os.path.lexists(root) or root.parent.is_symlink() or not root.parent.is_dir()):
@@ -530,6 +538,7 @@ def export_outputs(bundle,selector,site_source,ledger,destination):
               'generatorCommit':plan['sourceCommit'],'selectorSha256':plan['selectorSha256'],
               'quadletTreeSha256':plan['quadletTreeSha256'],
               'sourceProvenanceSha256':stage.sha(Path(bundle)/'source-provenance.json'),
+              'compositionBuildOutputs':len(selected),'requestedBuildOutputs':sum(len(row['sourceKeys']) for row in rows),
               'images':[]}
     receipt=root/'manifest.json';stage.write_ledger(receipt,manifest,create=True)
     for row in rows:
@@ -562,8 +571,10 @@ def export_outputs(bundle,selector,site_source,ledger,destination):
         temporary.unlink()
         manifest['images'].append({**row,'archiveSha256':digest.hexdigest(),'archiveBytes':current.st_size})
         manifest.pop('pending');stage.write_ledger(receipt,manifest)
-    manifest['status']='exported-discovery';stage.write_ledger(receipt,manifest)
-    return {'status':manifest['status'],'selectedBuildOutputs':len(selected),'imageArchives':len(rows),
+    manifest['status']='exported-discovery-subset' if only_key is not None else 'exported-discovery'
+    stage.write_ledger(receipt,manifest)
+    return {'status':manifest['status'],'selectedBuildOutputs':manifest['requestedBuildOutputs'],
+            'compositionBuildOutputs':len(selected),'imageArchives':len(rows),
             'manifest':str(receipt),'activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
 
@@ -582,8 +593,8 @@ def main():
     args=a.parse_args()
     try:
         if args.export_built_images:
-            if args.only_key or args.max_new!=1:raise Refusal('export cannot combine with build selection')
-            result=export_outputs(args.bundle,args.selector,args.site_source,args.ledger,args.export_built_images)
+            if args.max_new!=1:raise Refusal('export cannot combine with a build batch')
+            result=export_outputs(args.bundle,args.selector,args.site_source,args.ledger,args.export_built_images,args.only_key)
         else:
             result=prepare(args.bundle,args.selector,args.site_source,args.ledger,args.max_new,
                            args.recover_pending_only,args.abandon_failed_pending_only,

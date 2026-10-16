@@ -47,6 +47,15 @@ class LocalBuildFixtures(unittest.TestCase):
         self.assertEqual(len(rows),1)
         self.assertEqual(rows[0]['sourceKeys'],sorted(self.plan))
         self.assertEqual(rows[0]['archiveFilename'],'a'*64+'.oci.tar')
+        key,failed=sorted(self.plan)[:2]
+        partial={**data,'venueLocalBuildPhase':'preparing','venueLocalBuildOutputs':{key:image},
+                 'venueLocalBuildSkipped':[failed]}
+        self.assertEqual(local.export_plan(partial,self.plan,key)[0]['sourceKeys'],[key])
+        for wrong in (failed,'foreign|image'):
+            with self.subTest(wrong=wrong),self.assertRaises(local.Refusal):
+                local.export_plan(partial,self.plan,wrong)
+        with self.assertRaises(local.Refusal):local.export_plan(partial,self.plan)
+        with self.assertRaises(local.Refusal):local.export_plan({**partial,'venueLocalBuildPending':failed},self.plan,key)
         for update in ({'venueLocalBuildPhase':'preparing'},{'venueLocalBuildPlan':{}},
                        {'venueLocalBuildPending':next(iter(self.plan))},
                        {'venueLocalBuildSkipped':[next(iter(self.plan))]},
@@ -101,6 +110,13 @@ class LocalBuildFixtures(unittest.TestCase):
             self.assertEqual(partial.read_bytes(),b'partial')
             self.assertFalse((failed/pending['archiveFilename']).exists())
             with self.assertRaises(local.Refusal):local.export_outputs(self.bundle,'selector','site','ledger',failed)
+            key=sorted(self.plan)[0]
+            data['venueLocalBuildPhase']='preparing';data['venueLocalBuildOutputs']={key:image}
+            subset=self.bundle/'subset'
+            result=local.export_outputs(self.bundle,'selector','site','ledger',subset,key)
+            self.assertEqual(result['status'],'exported-discovery-subset')
+            self.assertEqual(result['selectedBuildOutputs'],1)
+            self.assertEqual(result['compositionBuildOutputs'],14)
 
     def test_fourteen_selected_source_builds_and_hostile_egress_refusal(self):
         self.assertEqual(len(self.plan),14)
