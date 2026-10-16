@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import stat
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -47,6 +48,34 @@ class Journal(unittest.TestCase):
         with self.assertRaisesRegex(composite.Refusal,'readiness marker'):
             composite.prepare(None,None,self.ledger)
         self.assertEqual(self.ledger.read_bytes(),original)
+    def test_interrupted_image_import_recovery_refuses_foreign_and_records_absent(self):
+        image='sha256:'+'a'*64
+        self.update(status='units-staged',venueCompositeVersion=2,venueCompositeMode='images-importing',
+                    venueCompositeImageInputSha256='b'*64,
+                    venueCompositeOfflineImages=[{'image':image,'authorities':['p0test-r1-apps']}])
+        def runner(command,**kwargs):
+            user=command[0]
+            if command[-3:]==['volume','ls','-q']:
+                text='\\n'.join(composite.huly.NAMES)+'\\n' if user=='podman-apps' else ''
+            elif 'network' in command and 'ls' in command:text='podman\\n'
+            elif 'image' in command and 'ls' in command:text=(('sha256:'+'c'*64+'\\n') if foreign else '')
+            else:text=''
+            return SimpleNamespace(returncode=0,stdout=text.replace('\\n','\n'))
+        foreign=True
+        with patch.object(composite.graph,'selected_images',return_value={'p0test-r1-apps':{image}}),patch.object(
+                composite.graph,'stores',return_value=[('root','',['podman-root']),('p0test-r1-apps','',['podman-apps'])]),patch.object(
+                composite.graph,'run',side_effect=runner),patch.object(composite,'retire',return_value={'status':'retired-inert'}) as retire:
+            with self.assertRaisesRegex(composite.Refusal,'unjournaled image'):
+                composite.recover_failed_import(None,None,self.ledger)
+            retire.assert_not_called()
+            self.assertEqual(json.loads(self.ledger.read_text())['venueCompositeMode'],'images-importing')
+            foreign=False
+            self.assertEqual(composite.recover_failed_import(None,None,self.ledger)['status'],'retired-inert')
+            retire.assert_called_once()
+        data=json.loads(self.ledger.read_text())
+        self.assertEqual(data['venueCompositeMode'],'inert-ready')
+        self.assertEqual(data['venueCompositeOfflineImages'],[])
+        self.assertEqual(data['venueCompositeFailedImagePlan'][0]['image'],image)
     def test_unselected_phase_refuses_before_asset_operation(self):
         self.update(status='huly-volumes-inert')
         original=self.ledger.read_bytes()

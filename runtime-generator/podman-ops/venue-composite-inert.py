@@ -68,6 +68,41 @@ def prepare(bundle,selector,ledger,image_inputs=None):
     return {'status':'inert-ready','actualBindDirectories':61,'namedVolumes':4,'installedInactiveUnits':194,
             'activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
+def recover_failed_import(bundle,selector,ledger):
+    """Recover only an interrupted one-image import, never unknown content."""
+    path,data,plan=context(bundle,selector,ledger)
+    proposed=data.get('venueCompositeOfflineImages',[])
+    if (data.get('venueCompositeVersion')!=2 or data.get('venueCompositeMode')!='images-importing' or
+            data.get('status')!='units-staged' or len(proposed)!=1 or
+            not data.get('venueCompositeImageInputSha256')):
+        raise Refusal('no exact single-image interrupted import authority')
+    row=proposed[0]
+    selected=graph.selected_images(bundle)
+    if (not isinstance(row,dict) or row.get('authorities')!=[plan['prefix']+'-apps'] or
+            row.get('image') not in selected.get(row['authorities'][0],set())):
+        raise Refusal('interrupted import does not match selected apps image')
+    observed={}
+    for user,_,command in graph.stores(bundle,plan):
+        def listing(args):
+            result=graph.run(command+args)
+            if result.returncode:raise Refusal('interrupted import graph cannot be inventoried')
+            return set(result.stdout.splitlines())
+        if listing(['ps','-aq']) or listing(['pod','ps','--quiet']):
+            raise Refusal('interrupted import graph contains container or pod')
+        if listing(['volume','ls','-q'])!=(set(huly.NAMES) if user==row['authorities'][0] else set()):
+            raise Refusal('interrupted import graph has foreign named volume')
+        if listing(['network','ls','--format','{{.Name}}'])-{'podman'}:
+            raise Refusal('interrupted import graph has foreign network')
+        found={('sha256:'+v.removeprefix('sha256:')) for v in listing(['image','ls','--no-trunc','--format','{{.ID}}'])}
+        if found-(set([row['image']]) if user==row['authorities'][0] else set()):
+            raise Refusal('interrupted import graph has unjournaled image')
+        observed[user]=found
+    if not observed[row['authorities'][0]]:
+        data['venueCompositeFailedImagePlan']=proposed
+        data['venueCompositeOfflineImages']=[]
+    data['venueCompositeMode']='inert-ready';stage.write_ledger(path,data)
+    return retire(bundle,selector,ledger)
+
 def retire(bundle,selector,ledger):
     path,data,plan=context(bundle,selector,ledger)
     if (data.get('venueCompositeVersion')!=2 or data.get('venueCompositeMode') not in ('inert-ready','retiring') or
@@ -153,10 +188,13 @@ def main():
     p.add_argument('--image-inputs')
     mode=p.add_mutually_exclusive_group(required=True)
     mode.add_argument('--prepare',action='store_true');mode.add_argument('--retire',action='store_true')
+    mode.add_argument('--recover-failed-import',action='store_true')
     a=p.parse_args()
     try:
-        if a.retire and a.image_inputs:raise Refusal('retirement takes image authority only from durable journal')
-        result=prepare(a.bundle,a.selector,a.ledger,a.image_inputs) if a.prepare else retire(a.bundle,a.selector,a.ledger)
+        if not a.prepare and a.image_inputs:raise Refusal('retirement takes image authority only from durable journal')
+        result=(prepare(a.bundle,a.selector,a.ledger,a.image_inputs) if a.prepare else
+                recover_failed_import(a.bundle,a.selector,a.ledger) if a.recover_failed_import else
+                retire(a.bundle,a.selector,a.ledger))
         print(json.dumps(result,sort_keys=True))
     except (Refusal,KeyError,ValueError,TypeError,OSError,IndexError) as exc:
         raise SystemExit('inert composite venue refused: '+str(exc)) from exc
