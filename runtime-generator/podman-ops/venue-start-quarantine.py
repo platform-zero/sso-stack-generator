@@ -82,7 +82,7 @@ def host_context(bundle,plan):
     context=module.current(source=file)
     if (context is None or context.namespace!=plan['prefix'] or
             context.data['sourceProvenanceSha256']!=stage.sha(Path(bundle)/'source-provenance.json') or
-            context.data['siteVmSpecSha256']!=stage.sha(Path(bundle)/'site/global.settings/agent-vm.json')):
+            context.data['siteVmSpecSha256']!=stage.sha(Path(bundle)/'site/agent-vm.json')):
         raise Refusal('host context does not bind this exact installed bundle/site')
     return context
 
