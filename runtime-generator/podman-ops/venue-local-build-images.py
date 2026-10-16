@@ -83,6 +83,29 @@ def selected_unit(command,unit,tag,source_path=None):
     if status.get('LoadState')!='loaded':raise Refusal('selected local build unit not loaded')
     return status
 
+def journaled_unloaded_success(ledger,uid,unit):
+    """User oneshot units unload and erase ExecMain timestamps; prove one exact
+    start/finish pair AFTER the pending CAS write in the current boot instead.
+    """
+    since=str(max(0,int(Path(ledger).stat().st_mtime)-1))
+    result=graph.run(['journalctl','--boot','--no-pager','--output=json','--since=@'+since,
+                      '_UID='+str(uid),'USER_UNIT='+unit],timeout=30)
+    if result.returncode or len(result.stdout)>131072:
+        raise Refusal('selected user build journal unavailable or unbounded')
+    starts=set();finishes=set();floor=Path(ledger).stat().st_mtime_ns//1000
+    for line in result.stdout.splitlines():
+        row=json.loads(line)
+        if (row.get('_UID')!=str(uid) or row.get('USER_UNIT')!=unit or
+                int(row.get('__REALTIME_TIMESTAMP','0'))<=floor):continue
+        job=row.get('JOB_ID')
+        if not job:continue
+        if row.get('MESSAGE_ID')=='7d4958e842da4a758f6c1cdc7b36dcc5' and row.get('JOB_TYPE')=='start':
+            starts.add(job)
+        elif (row.get('MESSAGE_ID')=='39f53479d3a045ac8e11786248231fbf' and
+              row.get('JOB_TYPE')=='start' and row.get('JOB_RESULT')=='done'):
+            finishes.add(job)
+    return len(starts)==1 and starts==finishes
+
 def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,abandon_failed_pending=False):
     p,data,plan,_=registry.journal(bundle,selector,site_source,ledger)
     source=authority.authority(bundle,selector,site_source,require_pinned_bases=True)
@@ -133,9 +156,11 @@ def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,aba
             data['venueLocalBuildPhase']='abandoned-inert';stage.write_ledger(p,data)
             return {'status':'abandoned-inert','builtOutputIds':len(outputs),
                     'remaining':len(selected)-len(outputs),'activationAuthorized':False,'acceptedIntegratedInstalls':0}
+        unloaded=(started==0 and exited==0 and state.get('Job') in (None,'','0') and
+                  journaled_unloaded_success(p,account['uid'],unit))
         if (type(prior) is not int or state.get('ActiveState')!='inactive' or
                 state.get('Result')!='success' or state.get('ExecMainStatus')!='0' or
-                started<=prior or exited<started):
+                not ((started>prior and exited>=started) or unloaded)):
             raise Refusal('interrupted local image build not proved successful and idle')
         roots=registry.command_graphs(bundle,plan)
         image=registry.pulled(roots[user][1],tag)
@@ -184,7 +209,10 @@ def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,aba
             exited=int(state.get('ExecMainExitTimestampMonotonic','0'))
             if state.get('ActiveState')=='failed':
                 raise Refusal('selected offline build failed; output and pending ledger retained')
-            if state.get('ActiveState')=='inactive' and started>prior and exited>=started:
+            unloaded=(state.get('ActiveState')=='inactive' and started==0 and exited==0 and
+                      state.get('Job') in (None,'','0') and
+                      journaled_unloaded_success(p,account['uid'],unit))
+            if state.get('ActiveState')=='inactive' and ((started>prior and exited>=started) or unloaded):
                 if state.get('Result')!='success' or state.get('ExecMainStatus')!='0':
                     raise Refusal('selected offline build failed; output and pending ledger retained')
                 break

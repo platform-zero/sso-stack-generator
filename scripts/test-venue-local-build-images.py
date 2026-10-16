@@ -2,6 +2,7 @@
 """Only three no-pull/no-network generated image-build units may run."""
 import hashlib
 import json
+from types import SimpleNamespace
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
@@ -44,6 +45,21 @@ class LocalBuildFixtures(unittest.TestCase):
         with patch.object(local.graph,'run',side_effect=unsafe):
             with self.assertRaisesRegex(local.Refusal,'reach network'):
                 local.selected_unit(['selected-user'],unit,tag)
+    def test_unloaded_oneshot_needs_exact_post_ledger_journal_pair(self):
+        ledger=self.bundle/'ledger';ledger.write_text('{}')
+        ts=ledger.stat().st_mtime_ns//1000
+        start={'_UID':'3201','USER_UNIT':'selected-build.service','JOB_ID':'42','JOB_TYPE':'start',
+               'MESSAGE_ID':'7d4958e842da4a758f6c1cdc7b36dcc5','__REALTIME_TIMESTAMP':str(ts+1)}
+        done={**start,'MESSAGE_ID':'39f53479d3a045ac8e11786248231fbf','JOB_RESULT':'done',
+              '__REALTIME_TIMESTAMP':str(ts+2)}
+        with patch.object(local.graph,'run',return_value=SimpleNamespace(returncode=0,stdout='\n'.join(map(json.dumps,(start,done))))):
+            self.assertTrue(local.journaled_unloaded_success(ledger,3201,'selected-build.service'))
+            done['JOB_ID']='another'
+            with patch.object(local.graph,'run',return_value=SimpleNamespace(returncode=0,stdout='\n'.join(map(json.dumps,(start,done))))):
+                self.assertFalse(local.journaled_unloaded_success(ledger,3201,'selected-build.service'))
+            done['JOB_ID']='42';done['__REALTIME_TIMESTAMP']=str(ts-1)
+            with patch.object(local.graph,'run',return_value=SimpleNamespace(returncode=0,stdout='\n'.join(map(json.dumps,(start,done))))):
+                self.assertFalse(local.journaled_unloaded_success(ledger,3201,'selected-build.service'))
     def test_explicit_pending_recovery_checks_unit_invocation_and_all_graphs_prewrite(self):
         key='p0test-r1-platform|localhost/webservices/keycloak:bundle';user='p0test-r1-platform'
         home=self.bundle/'home';source=home/'.config/containers/systemd/p0test-r1-keycloak.build'
@@ -79,7 +95,8 @@ class LocalBuildFixtures(unittest.TestCase):
         data['venueLocalBuildPriorStartTimestamp']=6
         with (patch.object(local.registry,'journal',return_value=(ledger,data,plan,None)),
               patch.object(local.authority,'authority',return_value=result),
-              patch.object(local,'selected_unit',return_value=state)):
+              patch.object(local,'selected_unit',return_value=state),
+              patch.object(local,'journaled_unloaded_success',return_value=False)):
             with self.assertRaisesRegex(local.Refusal,'not proved successful'):
                 local.prepare(self.bundle,'selector','site',ledger,1,True)
         failed={**state,'ActiveState':'failed','Result':'exit-code','ExecMainStatus':'1','Job':''}
