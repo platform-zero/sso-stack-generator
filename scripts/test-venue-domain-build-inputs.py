@@ -56,6 +56,39 @@ class DomainBuildInputs(unittest.TestCase):
         foreign.unlink()
         self.assertEqual(domain.retire(self.bundle,'unused',self.ledger)['status'],'retired-inert')
         for row in self.data['venueDomainRuntimePlan'].values():self.assertFalse(Path(row['current']).exists())
+    def runtime_logs(self):
+        config=self.original/'runtime/configs/homepage';config.mkdir();(config/'settings.yaml').write_text('title: synthetic\n')
+        self.selected['p0test-r1-apps']['configs']=['homepage'];self.bundle.mkdir()
+        (self.bundle/'stack.ir.json').write_text(json.dumps({'services':{'portal':{'image':'ghcr.io/gethomepage/homepage:v1.13.2','placement':'rootless','rootlessDomain':'apps','volumes':['./configs/homepage:/app/config']}}}))
+        domain.prepare(self.bundle,'unused',self.ledger)
+        self.data.update(venueInstallerVersion=2,venueInstallerPhase='retiring',venueOwnedReset={'phase':'empty-owned'},managerStopped=[a['name'] for a in reversed(self.plan['accounts'])])
+        self.ledger.write_text(json.dumps(self.data));row=self.data['venueDomainRuntimePlan']['p0test-r1-apps'];root=Path(row['releaseRoot'])/'runtime/configs/homepage'
+        logs=root/'logs';logs.mkdir();(logs/'homepage.log').write_text('[2026-10-17] info: synthetic\n')
+        for item in (logs,logs/'homepage.log'):os.chown(item,row['uid'],row['uid'])
+        p=patch.object(domain,'no_runtime_writers',return_value=None);p.start();self.addCleanup(p.stop)
+        return root,logs
+    def review_logs(self):return domain.retire_runtime_logs(self.bundle,'unused',self.ledger,domain.stage.sha(self.ledger))
+    def test_only_two_new_homepage_log_paths_are_removed_before_normal_retirement(self):
+        root,logs=self.runtime_logs();self.assertEqual(self.review_logs()['exactNewRuntimeLogPathsRemoved'],2)
+        self.assertFalse(logs.exists());self.assertTrue((root/'settings.yaml').exists())
+        self.assertEqual(domain.retire(self.bundle,'unused',self.ledger)['status'],'retired-inert')
+    def test_unknown_runtime_file_blocks_log_deletion(self):
+        root,logs=self.runtime_logs();extra=root/'human-notes';extra.write_text('preserve');os.chown(extra,3200,3200)
+        with self.assertRaises(domain.Refusal):self.review_logs()
+        self.assertTrue((logs/'homepage.log').exists());self.assertEqual(extra.read_text(),'preserve')
+    def test_changed_original_config_blocks_log_deletion(self):
+        root,logs=self.runtime_logs();(root/'settings.yaml').write_text('authored change')
+        with self.assertRaises(domain.Refusal):self.review_logs()
+        self.assertTrue((logs/'homepage.log').exists())
+    def test_log_unlink_interruption_resumes_only_from_saved_intent(self):
+        root,logs=self.runtime_logs();unlink=Path.unlink
+        def interrupted(path,*args,**kwargs):
+            unlink(path,*args,**kwargs)
+            if path==logs/'homepage.log':raise OSError('synthetic crash after unlink')
+        with patch.object(Path,'unlink',new=interrupted):
+            with self.assertRaises(OSError):self.review_logs()
+        self.assertTrue(logs.exists());self.assertFalse((logs/'homepage.log').exists())
+        self.assertEqual(self.review_logs()['status'],'retired-runtime-logs');self.assertFalse(logs.exists())
     def test_linked_build_source_refuses_before_domain_mutation(self):
         (self.original/'build/link').symlink_to('/etc/passwd')
         with self.assertRaises(domain.Refusal):domain.prepare(self.bundle,'unused',self.ledger)

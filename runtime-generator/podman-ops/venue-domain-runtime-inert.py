@@ -179,13 +179,87 @@ def retire(bundle,selector,ledger):
     data['venueDomainRuntimePhase']='retired-inert';stage.write_ledger(p,data)
     return {'status':'retired-inert','rootlessCurrentTrees':7,'activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
+def no_runtime_writers(plan):
+    uids={a['uid'] for a in plan['accounts']}
+    for proc in Path('/proc').iterdir():
+        if not proc.name.isdigit():continue
+        try:status=(proc/'status').read_text()
+        except (FileNotFoundError,ProcessLookupError):continue
+        if any(line.startswith('Uid:') and set(map(int,line.split()[1:]))&uids for line in status.splitlines()):
+            raise Refusal('selected runtime UID still has a process; no log deletion')
+
+
+def retire_runtime_logs(bundle,selector,ledger,expected_sha):
+    """Reviewed deletion of only Homepage's two newly created config log paths."""
+    b,p,data,plan,selected,original=context(bundle,selector,ledger)
+    if (stage.sha(p)!=expected_sha or data.get('venueInstallerVersion')!=2 or data.get('venueInstallerPhase')!='retiring' or
+            data.get('venueOwnedReset',{}).get('phase')!='empty-owned' or data.get('venueDomainRuntimePhase')!='inert-ready' or
+            data.get('managerStopped')!=[a['name'] for a in reversed(plan['accounts'])]):
+        raise Refusal('exact reset/stopped-manager retiring ledger SHA required')
+    service=json.loads((b/'stack.ir.json').read_text())['services']['portal']
+    if (not service.get('image','').startswith('ghcr.io/gethomepage/homepage:') or service.get('placement')!='rootless' or
+            './configs/homepage:/app/config' not in service.get('volumes',[])):
+        raise Refusal('canonical Homepage writable config mount not selected')
+    owner=plan['prefix']+'-'+service['rootlessDomain'];keys={'runtime/configs/homepage/logs','runtime/configs/homepage/logs/homepage.log'}
+    entries=data['venueDomainRuntimePlan']
+    if set(entries)!=set(selected):raise Refusal('all seven original domain records required')
+    no_runtime_writers(plan);observed={}
+    for name,row in entries.items():
+        domain=selected[name];slot=Path(row['releaseRoot']);current=Path(row['current']);state=Path(row['state'])
+        assert_parent(state,data['pathIdentities'].get(str(state),{}),domain['uid'])
+        info=current.lstat();ptr=row['pointer']
+        if (row['uid']!=domain['uid'] or slot!=state/'releases'/original.name or current!=state/'current' or
+                root_record(slot)!=row['releaseIdentity'] or root_record(slot.parent)!=row['parentIdentity'] or
+                not current.is_symlink() or (info.st_dev,info.st_ino,os.readlink(current))!=(ptr['dev'],ptr['ino'],ptr['target']) or current.resolve()!=slot):
+            raise Refusal('original domain release/pointer identity changed')
+        actual=domain_inventory(slot,row['uid']);extra=set(actual)-set(row['files'])
+        if (any(actual.get(key)!=value for key,value in row['files'].items()) or
+                (extra and (name!=owner or not extra<=keys))):
+            raise Refusal('runtime changes exceed the two canonical new Homepage log paths')
+        if name==owner:observed={key:actual[key] for key in extra}
+    guard_spec=importlib.util.spec_from_file_location('runtime_log_mount_guard',HERE/'venue-install-inert.py')
+    guard=importlib.util.module_from_spec(guard_spec);guard_spec.loader.exec_module(guard)
+    try:guard.no_data_mounts([{'path':row['releaseRoot'],'dev':row['releaseIdentity']['dev']} for row in entries.values()])
+    except guard.Refusal as exc:raise Refusal(str(exc)) from exc
+    row=entries[owner];slot=Path(row['releaseRoot']);saved=data.get('venueRuntimeLogsRetirement')
+    if saved is None:
+        if set(observed)!=keys or observed['runtime/configs/homepage/logs']['type']!='dir' or observed['runtime/configs/homepage/logs/homepage.log']['type']!='file':
+            raise Refusal('both newly created canonical Homepage log inodes required')
+        saved={'owner':owner,'releaseRoot':str(slot),'paths':observed,'removed':[],'phase':'intended'}
+    if saved['owner']!=owner or saved['releaseRoot']!=str(slot) or set(saved['paths'])!=keys:
+        raise Refusal('interrupted runtime-log deletion authority differs')
+    for key,value in observed.items():
+        if value!=saved['paths'][key] or key in saved['removed']:raise Refusal('runtime log inode/bytes changed or repopulated')
+    for key in keys-set(observed):
+        if key not in saved['removed'] and saved.get('pending')!=key:raise Refusal('runtime log disappeared without exact intent')
+    data['venueRuntimeLogsRetirement']=saved;stage.write_ledger(p,data)
+    for key in sorted(keys,reverse=True):
+        if key in saved['removed']:continue
+        saved['pending']=key;stage.write_ledger(p,data);target=slot/key
+        if os.path.lexists(target):
+            if domain_inventory(slot,row['uid']).get(key)!=saved['paths'][key]:raise Refusal('runtime log changed before unlink')
+            if saved['paths'][key]['type']=='file':target.unlink()
+            else:target.rmdir()
+        saved['removed'].append(key);saved.pop('pending');stage.write_ledger(p,data)
+    fd=os.open(slot/'runtime/configs/homepage',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:os.fsync(fd)
+    finally:os.close(fd)
+    if domain_inventory(slot,row['uid'])!=row['files']:raise Refusal('original domain inventory not restored after log retirement')
+    saved['phase']='retired';stage.write_ledger(p,data)
+    return {'status':'retired-runtime-logs','exactNewRuntimeLogPathsRemoved':2,'backupsCreated':False,'servicesStarted':False}
+
+
 def main():
     a=argparse.ArgumentParser(description=__doc__)
     for name in ('bundle','selector','ledger'):a.add_argument('--'+name,required=True)
     mode=a.add_mutually_exclusive_group(required=True)
     mode.add_argument('--prepare',action='store_true');mode.add_argument('--retire',action='store_true')
+    mode.add_argument('--retire-reviewed-runtime-logs',metavar='LEDGER_SHA256')
     args=a.parse_args()
-    try:print(json.dumps(prepare(args.bundle,args.selector,args.ledger) if args.prepare else retire(args.bundle,args.selector,args.ledger),sort_keys=True))
+    try:
+        result=(retire_runtime_logs(args.bundle,args.selector,args.ledger,args.retire_reviewed_runtime_logs) if args.retire_reviewed_runtime_logs is not None else
+                prepare(args.bundle,args.selector,args.ledger) if args.prepare else retire(args.bundle,args.selector,args.ledger))
+        print(json.dumps(result,sort_keys=True))
     except (Refusal,KeyError,ValueError,OSError,TypeError) as exc:
         raise SystemExit('venue rootless runtime lifecycle refused: '+str(exc)) from exc
 if __name__=='__main__':main()
