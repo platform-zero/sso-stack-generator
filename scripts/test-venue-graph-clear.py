@@ -47,6 +47,15 @@ class GraphClearFixtures(unittest.TestCase):
         if command[-3:]==['network','ls','--format'] or 'network' in command and 'ls' in command:
             return SimpleNamespace(returncode=0,stdout='podman\n')
         raise AssertionError('unexpected selected Podman call '+str(command))
+    def test_existing_live_mount_refuses_before_any_podman_identity_inspection(self):
+        with (patch.object(clear.stage,'owned_plan',return_value=self.plan),
+              patch.object(clear,'graph_has_live_mount',return_value=True),
+              patch.object(clear,'journaled_build_base_ids') as image_inspect,
+              patch.object(clear,'run') as podman,
+              patch.object(clear.os,'geteuid',return_value=0)):
+            with self.assertRaisesRegex(clear.Refusal,'live mount'):
+                clear.clear(self.bundle,self.root/'unused',self.ledger)
+            image_inspect.assert_not_called();podman.assert_not_called()
     def test_build_parent_image_retirement_is_child_first(self):
         base='sha256:'+'a'*64;parent='sha256:'+'b'*64;output='sha256:'+'c'*64
         def hierarchy(command,**kwargs):

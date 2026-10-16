@@ -224,6 +224,15 @@ def removal_order(command,images):
         order.extend(leaves);remaining.difference_update(leaves)
     return order
 
+def graph_has_live_mount(graph_paths):
+    mountpoints=[row.split()[4].replace('\\040',' ') for row in Path('/proc/self/mountinfo').read_text().splitlines()]
+    for process in Path('/proc').iterdir():
+        if not process.name.isdigit():continue
+        try: lines=(process/'mountinfo').read_text().splitlines()
+        except (FileNotFoundError,PermissionError,ProcessLookupError):continue
+        mountpoints.extend(row.split()[4].replace('\\040',' ') for row in lines if len(row.split())>=5)
+    return any(mp==g or mp.startswith(g.rstrip('/')+'/') for mp in mountpoints for g in graph_paths)
+
 def clear(bundle,selector,ledger):
     if os.geteuid()!=0 or not shutil.rmtree.avoids_symlink_attacks:
         raise Refusal('root and fd-safe recursive deletion support required')
@@ -234,6 +243,11 @@ def clear(bundle,selector,ledger):
     if (state.get('plan')!=plan or state.get('status') not in ('managers-ready','graphs-clearing') or
             state.get('managerStarted')!=[a['name'] for a in plan['accounts']] or state.get('managerStopped')):
         raise Refusal('graph stage/manager authority differs')
+    # Inspect foreign/live mounts BEFORE any of our own Podman image-inspect
+    # calls: rootless Podman creates its managed pause namespace on first use.
+    graph_paths=[g for _,g,_ in stores(bundle,plan)]
+    if graph_has_live_mount(graph_paths):
+        raise Refusal('Podman graph has a live mount')
     allowed=selected_images(bundle)
     if state.get('venueCompositeVersion')==2:
         imported=state.get('venueCompositeOfflineImages',[])
@@ -297,20 +311,12 @@ def clear(bundle,selector,ledger):
     if any(netdir.iterdir()):raise Refusal('private graph inspection network dir not empty')
     graph_entries=stores(bundle,plan)
     if len(graph_entries)!=8:raise Refusal('incomplete eight-graph authority')
-    mountpoints=[row.split()[4].replace('\\040',' ') for row in Path('/proc/self/mountinfo').read_text().splitlines()]
-    for process in Path('/proc').iterdir():
-        if not process.name.isdigit():continue
-        try: lines=(process/'mountinfo').read_text().splitlines()
-        except (FileNotFoundError,PermissionError,ProcessLookupError):continue
-        mountpoints.extend(row.split()[4].replace('\\040',' ') for row in lines if len(row.split())>=5)
     observations=[]
     for user,graph,command in graph_entries:
         g=Path(graph);st=g.lstat();record=state['pathIdentities'].get(graph)
         if (not record or not stat.S_ISDIR(st.st_mode) or g.is_symlink() or
                 (st.st_dev,st.st_ino,st.st_uid,stat.S_IMODE(st.st_mode))!=(record['dev'],record['ino'],record['uid'],record['mode'])):
             raise Refusal('graph root identity differs from exclusive fresh stage')
-        if any(mp==graph or mp.startswith(graph.rstrip('/')+'/') for mp in mountpoints):
-            raise Refusal('Podman graph has a live mount')
         if user in state.get('graphCleared',[]):
             # Podman inventory itself initializes a cleared graph. Preserve
             # its proven empty inode instead of recreating metadata to query.
