@@ -31,7 +31,7 @@ class BuildahFixture(unittest.TestCase):
         calls=[]
         def run(command,**kw):
             calls.append(command)
-            if 'containers' in command:return SimpleNamespace(returncode=0,stdout=json.dumps(self.rows))
+            if 'containers' in command:return SimpleNamespace(returncode=0,stdout=json.dumps(self.rows or None))
             if 'rm' in command:
                 self.rows[:]=[r for r in self.rows if r['id']!=command[-1]]
                 return SimpleNamespace(returncode=0,stdout='')

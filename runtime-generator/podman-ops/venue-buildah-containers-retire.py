@@ -33,6 +33,7 @@ def retire(bundle,selector,ledger):
         rows=graph.run(command[:command.index('podman')]+['buildah','containers','--all','--json'],timeout=40)
         if rows.returncode:raise Refusal('selected Buildah container inventory unavailable')
         parsed=json.loads(rows.stdout)
+        if parsed is None:parsed=[]  # Buildah serializes an empty list as null.
         if not isinstance(parsed,list):raise Refusal('selected Buildah inventory malformed')
         return parsed
     failed=state['venueFailedBuildIntermediates'][user+'|localhost/webservices/android-test-runner-api34:bundle']
