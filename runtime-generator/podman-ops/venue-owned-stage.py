@@ -67,7 +67,9 @@ def owned_plan(bundle,selector):
     for account in accounts:
         for kind in ('home','state','graph','volume'):
             roots[account['name']+'-'+kind]=account[kind]
-    if len(set(roots.values()))!=37 or any(not Path(p).is_absolute() or '..' in Path(p).parts for p in roots.values()):
+        if account['name']==s['unitPrefix']+'-ci-runner':
+            roots['ci-runner-ssh']=account['state']+'/forgejo-runner-ssh'
+    if len(set(roots.values()))!=38 or any(not Path(p).is_absolute() or '..' in Path(p).parts for p in roots.values()):
         raise Refusal('duplicate or unsafe stage root')
     conf='[storage]\ndriver = "overlay"\nrunroot = "'+r['runRoot']+'"\ngraphroot = "'+r['graphRoot']+'"\n'
     configs={r['stateRoot']+'/containers-storage.conf':conf,
@@ -174,7 +176,7 @@ def stage(bundle,selector,inventory,ledger,*,mutate=False):
             output.pop('pending');persist()
         def owned_by(name):
             for account in plan['accounts']:
-                if name==account['home'] or name.startswith(account['home']+'/') or name in (account['state'],account['graph'],account['volume']):
+                if name==account['home'] or name.startswith(account['home']+'/') or name in (account['state'],account['graph'],account['volume']) or (account['name']==plan['prefix']+'-ci-runner' and name==roots['ci-runner-ssh']):
                     return account
             return None
         for name in roots:

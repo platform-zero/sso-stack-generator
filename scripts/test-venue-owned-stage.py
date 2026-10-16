@@ -36,7 +36,8 @@ class EmptyStageTests(unittest.TestCase):
     def test_all_seven_and_rootful_stores_have_exact_new_identities(self):
         p=stage.owned_plan(self.bundle,self.selector)
         self.assertEqual(len(p['accounts']),7)
-        self.assertEqual(len(p['roots']),37)
+        self.assertEqual(len(p['roots']),38)
+        self.assertEqual(p['roots']['ci-runner-ssh'],p['roots']['p0test-r1-ci-runner-state']+'/forgejo-runner-ssh')
         self.assertEqual(len(p['configs']),16)
         self.assertEqual(p['configs']['/var/lib/p0test-r1/containers.conf'],
                          '[network]\nnetwork_config_dir = "/var/lib/p0test-r1/networks"\n')

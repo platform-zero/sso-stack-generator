@@ -270,7 +270,14 @@ build_derived_render_values() {
     render_set SHADOW_ACCOUNTS_HOST_DIR "$(default_shadow_accounts_host_dir)"
   fi
   if ! render_has FORGEJO_RUNNER_SSH_DIR || [ -z "$(render_get FORGEJO_RUNNER_SSH_DIR)" ]; then
-    render_set FORGEJO_RUNNER_SSH_DIR "$(default_forgejo_runner_ssh_dir)"
+    if [ -n "$(render_get CADDY_VENUE_HTTPS_PORT)" ]; then
+      [ -n "${BUNDLE_ROOT:-}" ] || die "venue CI SSH directory requires bound bundle authority"
+      local venue_ci_state
+      venue_ci_state="$(jq -er '[.domains[] | select(.name == "ci-runner")] | if length == 1 then .[0].stateRoot else error("CI domain") end' "$BUNDLE_ROOT/podman-domains.json")"
+      render_set FORGEJO_RUNNER_SSH_DIR "$venue_ci_state/forgejo-runner-ssh"
+    else
+      render_set FORGEJO_RUNNER_SSH_DIR "$(default_forgejo_runner_ssh_dir)"
+    fi
   fi
   render_set SYSTEMD_USER_UID "$(id -u)"
   render_set SYSTEMD_USER_GID "$(id -g)"
