@@ -234,6 +234,7 @@ def retire_owned(bundle,selector,journal,expected_sha):
         if links:raise Refusal('selected bridge has attached interfaces; no unreviewed peer teardown')
         guests=subprocess.check_output(['virsh','-c','qemu:///system','list','--all','--uuid'],text=True,timeout=20).splitlines()
         for guest in guests:
+            if not guest.strip():continue  # virsh appends a blank separator line
             root=ET.fromstring(subprocess.check_output(['virsh','-c','qemu:///system','dumpxml',guest],text=True,timeout=20))
             if any(source.get('network')==network['network'] or source.get('bridge')==network['bridge']
                    for source in root.findall('./devices/interface/source')):

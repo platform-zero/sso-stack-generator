@@ -74,6 +74,13 @@ class Owned(unittest.TestCase):
         result=net.retire_owned(self.root,self.selector,self.journal,net.hashlib.sha256(self.journal.read_bytes()).hexdigest())
         self.assertEqual(result['status'],'network-retired');self.assertFalse(result['guestDataTouched'])
         self.assertFalse(self.fenced);self.assertFalse(self.created)
+    def test_native_blank_domain_separator_is_not_an_empty_domain_argument(self):
+        net.prepare_owned(self.root,self.selector,self.journal);query=self.output
+        def blank(command,**kwargs):
+            if command[0]=='virsh' and 'list' in command:return '\n'
+            return query(command,**kwargs)
+        with patch.object(net.subprocess,'check_output',side_effect=blank):
+            self.assertEqual(net.retire_owned(self.root,self.selector,self.journal,net.hashlib.sha256(self.journal.read_bytes()).hexdigest())['status'],'network-retired')
     def test_wrong_retirement_cas_refuses_before_native_mutation(self):
         net.prepare_owned(self.root,self.selector,self.journal);self.commands=[]
         with self.assertRaises(net.Refusal):net.retire_owned(self.root,self.selector,self.journal,'0'*64)
