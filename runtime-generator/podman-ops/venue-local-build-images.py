@@ -164,7 +164,8 @@ def classify_intermediates(bundle,selector,plan,data,key,image,outputs,recorded)
     if ended<began:raise Refusal('selected build job clock reversed')
     logs=journal('_SYSTEMD_USER_UNIT',8388608)
     steps={m.group(1) for r in logs if began<=int(r.get('__REALTIME_TIMESTAMP','0'))<=ended+2000000
-           if (m:=re.fullmatch(r'--> ([0-9a-f]{12,64})',r.get('MESSAGE','')))}
+           if isinstance(r.get('MESSAGE'),str)
+           if (m:=re.fullmatch(r'--> ([0-9a-f]{12,64})',r['MESSAGE']))}
     if not any(image.removeprefix('sha256:').startswith(short) for short in steps):
         raise Refusal('built output ID absent from selected build job transcript')
     roots=registry.command_graphs(bundle,plan);command=roots[user][1]

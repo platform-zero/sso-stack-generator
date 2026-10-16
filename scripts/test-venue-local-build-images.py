@@ -79,7 +79,8 @@ class LocalBuildFixtures(unittest.TestCase):
                '__REALTIME_TIMESTAMP':str(begin)}
         done={**start,'MESSAGE_ID':'39f53479d3a045ac8e11786248231fbf',
               'JOB_RESULT':'done','__REALTIME_TIMESTAMP':str(end)}
-        logs=[{'MESSAGE':'--> '+extra[7:19],'__REALTIME_TIMESTAMP':str(begin+200000)},
+        logs=[{'MESSAGE':[1,2,3],'__REALTIME_TIMESTAMP':str(begin+100000)},
+              {'MESSAGE':'--> '+extra[7:19],'__REALTIME_TIMESTAMP':str(begin+200000)},
               {'MESSAGE':'--> '+output[7:19],'__REALTIME_TIMESTAMP':str(end-200000)}]
         created=datetime.fromtimestamp((begin+700000)/1_000_000,timezone.utc).isoformat()
         def seen(command,**kwargs):
@@ -98,7 +99,7 @@ class LocalBuildFixtures(unittest.TestCase):
               patch.object(local.graph,'run',side_effect=seen),
               patch.object(local,'probe',return_value={})):
             self.assertEqual(local.classify_intermediates(self.bundle,'selector',plan,data,key,output,{},{}),[extra])
-            logs[0]['MESSAGE']='--> '+'f'*12
+            logs[1]['MESSAGE']='--> '+'f'*12
             with self.assertRaisesRegex(local.Refusal,'absent from exact step transcript'):
                 local.classify_intermediates(self.bundle,'selector',plan,data,key,output,{}, {})
     def test_unloaded_oneshot_needs_exact_post_ledger_journal_pair(self):
