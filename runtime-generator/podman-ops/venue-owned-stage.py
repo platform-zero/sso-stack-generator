@@ -176,7 +176,7 @@ def stage(bundle,selector,inventory,ledger,*,mutate=False):
             output.pop('pending');persist()
         def owned_by(name):
             for account in plan['accounts']:
-                if name==account['home'] or name.startswith(account['home']+'/') or name in (account['state'],account['graph'],account['volume']) or (account['name']==plan['prefix']+'-ci-runner' and name==roots['ci-runner-ssh']):
+                if name==account['home'] or name.startswith(account['home']+'/') or name in (account['state'],account['graph'],account['volume']) or (account['name']==plan['prefix']+'-ci-runner' and name==plan['roots']['ci-runner-ssh']):
                     return account
             return None
         for name in roots:
@@ -300,15 +300,98 @@ def retire_empty(bundle,selector,ledger):
     return state
 
 
+def retire_partial(bundle,selector,ledger):
+    """Retire only a journaled, interrupted PRE-DATA stage, never installed assets."""
+    if os.geteuid()!=0:raise Refusal('partial stage retirement requires root')
+    path=Path(ledger)
+    if (path.is_symlink() or not path.is_file() or path.stat().st_uid!=0 or
+            stat.S_IMODE(path.stat().st_mode)!=0o600):
+        raise Refusal('protected interrupted-stage journal required')
+    state=json.loads(path.read_text());plan=owned_plan(bundle,selector)
+    if (state.get('plan')!=plan or state.get('status') not in ('preparing','retiring-partial') or
+            state.get('pending') or state.get('createdConfigs') or
+            any(state.get(k) for k in ('managerStarted','unitFiles','venueDataBindDirs',
+                                      'venueHulyVolumes','crossDomainAclStatus','venueCompositeVersion')) or
+            state.get('createdGroups')!=[a['name'] for a in plan['accounts']] or
+            state.get('createdAccounts')!=state['createdGroups']):
+        raise Refusal('interrupted stage crossed the empty identity/path-only boundary')
+    created=state.get('createdPaths',[]);full=state.get('createPaths',[])
+    retired=state.get('retiredPaths',[]);retired_accounts=state.get('retiredAccounts',[])
+    names=[a['name'] for a in plan['accounts']]
+    if (not created or len(created)>=len(full) or created!=full[:len(created)] or
+            len(state.get('pathIdentities',{}))!=len(created) or
+            set(state['pathIdentities'])!=set(created) or
+            retired!=list(reversed(created))[:len(retired)] or
+            retired_accounts!=list(reversed(names))[:len(retired_accounts)]):
+        raise Refusal('partial directory/account journal differs from ordered stage')
+    for parent in (Path('/etc/containers/systemd'),Path('/etc/systemd/system'),Path('/run/systemd/system')):
+        if parent.exists() and any(p.name.startswith(plan['prefix']) for p in parent.iterdir()):
+            raise Refusal('venue unit appeared during interrupted empty stage')
+    for a in plan['accounts']:
+        name=a['name']
+        if name in retired_accounts:continue
+        user=pwd.getpwnam(name);group=grp.getgrnam(name)
+        if ((user.pw_uid,user.pw_gid,user.pw_dir,user.pw_shell)!=(a['uid'],a['uid'],a['home'],'/usr/sbin/nologin') or
+                group.gr_gid!=a['uid'] or group.gr_mem or
+                (Path('/var/lib/systemd/linger')/name).exists() or
+                subprocess.run(['systemctl','is-active','--quiet','user@'+str(a['uid'])+'.service'],
+                               capture_output=True,timeout=15,cwd='/').returncode==0):
+            raise Refusal('partial stage account, group or manager changed')
+        for filename in ('/etc/subuid','/etc/subgid'):
+            if [line for line in Path(filename).read_text().splitlines() if line.startswith(name+':')] != [f"{name}:{a['subuid']}:65536"]:
+                raise Refusal('partial stage subordinate identity changed')
+    active_uids={str(a['uid']) for a in plan['accounts'] if a['name'] not in retired_accounts}
+    for proc in Path('/proc').iterdir():
+        if not proc.name.isdigit():continue
+        try:
+            lines=(proc/'status').read_text().splitlines()
+            uids=next(line for line in lines if line.startswith('Uid:')).split()[1:]
+        except (FileNotFoundError,PermissionError,StopIteration):continue
+        if active_uids.intersection(uids):raise Refusal('interrupted test account has a live process')
+    mountpoints=[]
+    for proc in Path('/proc').iterdir():
+        if not proc.name.isdigit():continue
+        try:lines=(proc/'mountinfo').read_text().splitlines()
+        except (FileNotFoundError,PermissionError,ProcessLookupError):continue
+        mountpoints.extend(line.split()[4].replace('\\040',' ') for line in lines if len(line.split())>=5)
+    remaining=[name for name in created if name not in retired]
+    for name in remaining:
+        p=Path(name);info=p.lstat();row=state['pathIdentities'][name]
+        children={Path(child).name for child in remaining if Path(child).parent==p}
+        if (p.is_symlink() or not stat.S_ISDIR(info.st_mode) or
+                (info.st_dev,info.st_ino,info.st_uid,stat.S_IMODE(info.st_mode))!=
+                (row['dev'],row['ino'],row['uid'],row['mode']) or
+                {child.name for child in p.iterdir()}!=children or
+                any(mp==name or mp.startswith(name.rstrip('/')+'/') for mp in mountpoints)):
+            raise Refusal('interrupted stage directory altered, populated or mounted')
+    state['status']='retiring-partial';write_ledger(path,state)
+    for name in reversed(created):
+        if name in retired:continue
+        Path(name).rmdir();state.setdefault('retiredPaths',[]).append(name);write_ledger(path,state)
+    for a in reversed(plan['accounts']):
+        name=a['name']
+        if name in retired_accounts:continue
+        subprocess.run(['userdel',name],check=True,timeout=25,cwd='/')
+        try:group=grp.getgrnam(name)
+        except KeyError:group=None
+        if group is not None:
+            if group.gr_gid!=a['uid'] or group.gr_mem:raise Refusal('test group changed after user removal')
+            subprocess.run(['groupdel',name],check=True,timeout=25,cwd='/')
+        state.setdefault('retiredAccounts',[]).append(name);write_ledger(path,state)
+    state['status']='retired-empty';write_ledger(path,state)
+    return state
+
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     for key in ('bundle','selector','protected-inventory','ledger'):ap.add_argument('--'+key,required=True)
     mode=ap.add_mutually_exclusive_group()
     mode.add_argument('--stage-empty',action='store_true')
     mode.add_argument('--retire-empty-stage',action='store_true')
+    mode.add_argument('--retire-partial-stage',action='store_true')
     a=ap.parse_args()
     try:
-        result=(retire_empty(a.bundle,a.selector,a.ledger) if a.retire_empty_stage else
+        result=(retire_partial(a.bundle,a.selector,a.ledger) if a.retire_partial_stage else
+                retire_empty(a.bundle,a.selector,a.ledger) if a.retire_empty_stage else
                 stage(a.bundle,a.selector,a.protected_inventory,a.ledger,mutate=a.stage_empty))
         print(json.dumps({'schemaVersion':1,'status':result['status'],'accounts':len(result['plan']['accounts']),
                           'freshPaths':len(result['createPaths']),'activationAuthorized':False},sort_keys=True))
