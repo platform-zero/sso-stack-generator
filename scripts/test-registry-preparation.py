@@ -123,6 +123,36 @@ class RegistryPreparation(unittest.TestCase):
         self.run_prepare()
         self.assertEqual(json.loads((self.bundle/'.registry-image-ids.json').read_text())['actor|'+image],'sha256:'+'c'*64)
 
+    def test_frozen_imported_producer_and_cross_store_consumer_never_pull(self):
+        image='sha256:'+'b'*64
+        folder=self.bundle/'site/global.settings';folder.mkdir(parents=True)
+        (folder/'registry-image-ids.json').write_text(json.dumps({'actor|'+IMAGE:'sha256:'+'c'*64}))
+        service={'image':image,'frozenBuildImage':image,'updatePolicy':'pinned',
+                 'placement':'rootless','rootlessDomain':'apps','build':{}}
+        consumer={k:v for k,v in service.items() if k not in ('build','rootlessDomain')}
+        consumer['placement']='rootful'
+        ir={'quadletBuildImagesFrozen':True,'services':{'producer':service,'consumer':consumer}}
+        (self.bundle/'stack.ir.json').write_text(json.dumps(ir))
+        (self.path.parent/'producer.container').write_text('Image='+image+'\n')
+        (self.bundle/'quadlet/rootful/consumer.container').write_text('Image='+image+'\n')
+        self.present.add(image)
+        def runner(command,**kwargs):
+            if 'inspect' in command and command[-1]==image:
+                self.calls.append(command);return SimpleNamespace(returncode=0,stdout=image)
+            return self.runner(command,**kwargs)
+        self.run_prepare(runner)
+        ledger=json.loads((self.bundle/'.registry-image-ids.json').read_text())
+        self.assertEqual(ledger,{'actor|'+IMAGE:'sha256:'+'c'*64,'actor|'+image:image,'root|'+image:image})
+        self.assertFalse(any(c[-2:]==['pull',image] for c in self.calls))
+        self.present.remove(image);self.calls.clear()
+        with self.assertRaisesRegex(ValueError,'Offline selected image missing'):self.run_prepare(runner)
+        self.assertFalse(any('pull' in c for c in self.calls))
+        self.assertEqual(json.loads((self.bundle/'.registry-image-ids.json').read_text()),ledger)
+        ir['quadletBuildImagesFrozen']=1
+        (self.bundle/'stack.ir.json').write_text(json.dumps(ir));self.calls.clear()
+        with self.assertRaises(ValueError):self.run_prepare(runner)
+        self.assertEqual(self.calls,[])
+
     def test_inventory_and_pull_failure_do_not_fallback(self):
         with self.assertRaises(ValueError):self.run_prepare(lambda *a,**k:SimpleNamespace(returncode=125))
         def fail(command,**kwargs):

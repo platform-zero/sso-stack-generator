@@ -42,10 +42,12 @@ def main():
     assert builds
     images = {name: 'sha256:' + hashlib.sha256(('synthetic-only-' + name).encode()).hexdigest()
               for name in builds}
-    shared_sdk = ('android-test-runner-api34', 'android-test-runner-api36')
-    assert all(name in images for name in shared_sdk)
-    images[shared_sdk[0]] = images[shared_sdk[1]]
-    assert len(set(images.values())) == len(images) - 1
+    shared_pairs = (('android-test-runner-api34', 'android-test-runner-api36'),
+                    ('workload-spawner-api', 'workload-spawner-router'))
+    for first, second in shared_pairs:
+        assert first in images and second in images
+        images[first] = images[second]
+    assert len(set(images.values())) == len(images) - len(shared_pairs)
     pins = {'schemaVersion': 1, 'images': images}
     pins_path = site_root / manifest['localBuildImagePinsPath']
     pins_path.parent.mkdir(parents=True, exist_ok=True)
@@ -126,7 +128,7 @@ def main():
     result = subprocess.run(command, capture_output=True, text=True, timeout=120)
     assert result.returncode != 0 and snapshot(output) == before
     print('[frozen-build-test] synthetic immutable IDs cover', len(builds), 'recipes and',
-          frozen_consumers, 'consumers (shared SDK ID); no startup builds; six hostile cases preserve complete bundle')
+          frozen_consumers, 'consumers (shared SDK/spawner IDs); no startup builds; six hostile cases preserve complete bundle')
 
 
 if __name__ == '__main__':

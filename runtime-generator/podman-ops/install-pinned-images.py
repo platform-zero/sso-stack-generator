@@ -183,7 +183,8 @@ def install(rows, bundle=None):
 def prepare_registry(bundle, *, runner=subprocess.run):
     """Populate exact selected registry references serially before service startup."""
     os.chdir('/')
-    domains = json.loads((bundle / 'podman-domains.json').read_text())['domains']
+    metadata = json.loads((bundle / 'podman-domains.json').read_text())
+    domains = metadata['domains']
     authorities = [('rootful', 'root')] + [('rootless-' + d['name'], d['user']) for d in domains]
     ledger_path = bundle / '.registry-image-ids.json'
     expected_path = bundle / 'site/global.settings/registry-image-ids.json'
@@ -202,6 +203,26 @@ def prepare_registry(bundle, *, runner=subprocess.run):
                 or any(not isinstance(k, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', v)
                        for k, v in expected_ids.items())):
             raise ValueError('Invalid site image identity pins')
+    ir_path = bundle / 'stack.ir.json'
+    if ir_path.exists():
+        ir = json.loads(ir_path.read_text())
+        selected = [s for s in ir['services'].values() if 'frozenBuildImage' in s]
+        if selected:
+            # Imported frozen outputs are mandatory offline inputs, not registry
+            # substitutions. Include consumers in every selected authority store.
+            frozen_aliases(bundle, metadata)
+            domain_users = {d['name']: d['user'] for d in domains}
+            for service in selected:
+                image = service.get('image')
+                if (ir.get('quadletBuildImagesFrozen') is not True or
+                        not isinstance(image, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', image) or
+                        image != service['frozenBuildImage'] or service.get('updatePolicy') != 'pinned'):
+                    raise ValueError('Invalid frozen imported image authority')
+                domain = service.get('rootlessDomain') if service.get('placement') == 'rootless' else None
+                if domain is not None and domain not in domain_users:
+                    raise ValueError('Unselected frozen image consumer authority')
+                user = domain_users[domain] if domain is not None else 'root'
+                expected_ids[user + '|' + image] = image
     if ledger_path.exists() or ledger_path.is_symlink():
         protected(ledger_path)
         ledger = json.loads(ledger_path.read_text())
