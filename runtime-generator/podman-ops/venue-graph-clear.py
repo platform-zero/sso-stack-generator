@@ -423,7 +423,7 @@ def clear(bundle,selector,ledger):
             removed=run(command+['image','rm',image],timeout=180)
             if removed.returncode:
                 if 'by digest with more than one tag' in removed.stderr:
-                    if approved_pairs.get(user+'|'+image)==image and state.get('venueRegistryPhase')=='inert-ready':
+                    if state.get('venueRegistryPhase')=='inert-ready' and state.get('venueRegistryVerified',{}).get(user+'|'+image)==image:
                         remove_exact_frozen_import(bundle,state,path,user,image,command)
                     elif len({key for key,value in state.get('venueLocalBuildOutputs',{}).items()
                             if key.startswith(user+'|') and value==image})==2:

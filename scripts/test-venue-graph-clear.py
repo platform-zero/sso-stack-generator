@@ -237,6 +237,23 @@ class GraphClearFixtures(unittest.TestCase):
     def test_frozen_archive_tag_and_seeded_identity_alias_exactly_retire(self):self.frozen_import_aliases()
     def test_frozen_shared_producer_aliases_retire_without_force(self):self.frozen_import_aliases(shared=True)
     def test_frozen_foreign_alias_is_never_untagged(self):self.frozen_import_aliases(foreign=True)
+    def test_verified_frozen_identity_dispatches_exact_alias_cleanup(self):
+        approved={'root|'+self.allowed:self.allowed};remaining=True
+        self.data.update(venueCompositeVersion=2,venueCompositeOfflineImages=[{'authorities':['root'],'image':self.allowed}],
+                         venueRegistryPhase='inert-ready',venueRegistryVerified=approved,venueRegistryPlan=approved)
+        self.ledger.write_text(json.dumps(self.data))
+        def selected(command,**kwargs):
+            if 'image' in command and 'rm' in command:return SimpleNamespace(returncode=125,stdout='',stderr='cannot remove by digest with more than one tag')
+            if 'image' in command and 'ls' in command:return SimpleNamespace(returncode=0,stdout=self.allowed if remaining and '--root' in command else '')
+            return self.runner(command,**kwargs)
+        def cleanup(*args):
+            nonlocal remaining
+            self.assertEqual(args[3:5],('root',self.allowed));remaining=False
+        with (patch.object(clear.stage,'owned_plan',return_value=self.plan),patch.object(clear,'selected_images',return_value={'root':{self.allowed}}),
+              patch.object(clear,'selected_pairs',return_value=approved),patch.object(clear,'run',side_effect=selected),
+              patch.object(clear,'remove_exact_frozen_import',side_effect=cleanup) as invoked):
+            self.assertEqual(clear.clear(self.bundle,self.root/'unused',self.ledger)['graphRootsCleared'],8)
+            invoked.assert_called_once()
     def test_complete_selected_frozen_catalogue_retirement_keeps_legacy_bound(self):
         identities={'sha256:'+format(i,'064x') for i in range(1,14)};remaining=set(identities)
         self.data.update(venueCompositeVersion=2,venueCompositeOfflineImages=[{'authorities':['root'],'image':value} for value in sorted(identities)])
