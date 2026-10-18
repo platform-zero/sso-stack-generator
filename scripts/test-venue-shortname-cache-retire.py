@@ -69,4 +69,47 @@ class SelectedCache(unittest.TestCase):
         self.assertEqual(cache.retire(self.bundle,'unused',self.ledger)['status'],'retired-inert')
         self.assertEqual(len(json.loads(self.ledger.read_text())['venueShortnameCacheRetiredPaths']),6)
 
+    def vault_fixture(self):
+        for a in self.plan['accounts']:
+            folder=Path(a['home'])/'.cache/containers';(folder/'short-name-aliases.conf.lock').unlink();folder.rmdir();folder.parent.rmdir()
+        name='p0test-r1-vaultwarden';uid=3203;home=self.root/name;home.mkdir(mode=0o700);os.chown(home,uid,uid)
+        s=home.stat();self.plan['accounts'].append({'name':name,'uid':uid,'home':str(home)})
+        self.data['pathIdentities'][str(home)]={'dev':s.st_dev,'ino':s.st_ino,'uid':uid,'mode':0o700}
+        for folder in (home/'.config',home/'.cache',home/'.cache/containers'):
+            folder.mkdir(mode=0o700);os.chown(folder,uid,uid)
+        lock=home/'.cache/containers/short-name-aliases.conf.lock';lock.touch(mode=0o644);os.chown(lock,uid,uid)
+        ref=cache.INSPECT_NAMES[name];(self.bundle/'stack.ir.json').write_text(json.dumps({'services':{'vaultwarden':{'image':ref}}}))
+        self.data.update(venueInstallerVersion=2,activationAuthorized=False,venueOwnedReset={'phase':'empty-owned'},venueRegistryVerified={name+'|docker.io/'+ref:'sha256:'+'b'*64},graphCleared=['root']+[a['name'] for a in self.plan['accounts']],managerStopped=[a['name'] for a in reversed(self.plan['accounts'])])
+        cache.stage.write_ledger(self.ledger,self.data)
+        return home,lock
+
+    def test_inspection_mode_requires_exact_cas_and_preserves_foreign_bytes(self):
+        home,lock=self.vault_fixture()
+        with self.assertRaises(cache.Refusal):cache.retire(self.bundle,'unused',self.ledger,selection='vaultwarden-inspect')
+        with self.assertRaises(cache.Refusal):cache.retire(self.bundle,'unused',self.ledger,selection='vaultwarden-inspect',expected_sha='0'*64)
+        lock.write_bytes(b'authored')
+        with self.assertRaises(cache.Refusal):cache.retire(self.bundle,'unused',self.ledger,selection='vaultwarden-inspect',expected_sha=cache.stage.sha(self.ledger))
+        self.assertEqual(lock.read_bytes(),b'authored');self.assertIsNone(json.loads(self.ledger.read_bytes()).get('venueShortnameCachePhase'))
+
+    def test_inspection_mode_removes_only_three_exact_inodes_not_config(self):
+        home,lock=self.vault_fixture();config=home/'.config/keep';config.write_bytes(b'preserve')
+        result=cache.retire(self.bundle,'unused',self.ledger,selection='vaultwarden-inspect',expected_sha=cache.stage.sha(self.ledger))
+        self.assertEqual(result['retiredExactCacheInodes'],3);self.assertFalse((home/'.cache').exists());self.assertEqual(config.read_bytes(),b'preserve')
+        self.assertEqual(json.loads(self.ledger.read_text())['venueShortnameCacheSelection'],'vaultwarden-inspect')
+
+    def test_inspection_mode_refuses_wrong_authority_or_selection(self):
+        home,lock=self.vault_fixture()
+        for field,value in [('venueRegistryVerified',{}),('venueOwnedReset',{'phase':'intent'}),('venueShortnameCacheSelection','build-bases')]:
+            data=dict(self.data);data[field]=value;cache.stage.write_ledger(self.ledger,data)
+            with self.assertRaises(cache.Refusal):cache.retire(self.bundle,'unused',self.ledger,selection='vaultwarden-inspect',expected_sha=cache.stage.sha(self.ledger))
+            self.assertTrue(lock.exists())
+
+
+class UnknownProcessNamespace(unittest.TestCase):
+    def test_permission_error_is_not_an_absent_process(self):
+        with patch.object(Path,'iterdir',return_value=iter([Path('/fake/123')])),patch.object(Path,'read_text',side_effect=['Uid:\t1\t1\t1\t1\n',PermissionError('unknown mount namespace')]):
+            with self.assertRaisesRegex(cache.Refusal,'unknown process namespace'):
+                cache.process_and_mount_check({'accounts':[]})
+
+
 if __name__=='__main__':unittest.main()

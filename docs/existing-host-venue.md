@@ -12,6 +12,19 @@ venue refusal remains intentional. Do not patch generated bundles, replace a
 shared graph, issue a global prune, change protected bind contents, or relax a
 listener/capacity gate to get an installation attempt.
 
+## Exact diagnostic-cache retirement
+
+Even a Podman image inspection by a short name may create a zero-byte alias lock
+in the selected account home. After the experimental graphs/managers are fully
+retired, `venue-shortname-cache-retire.py --selection vaultwarden-inspect
+--expected-ledger-sha SHA256` accepts only the declared Vaultwarden image's
+verified registry receipt and a completed exact owned reset. It journals only
+that account's empty lock and two private parent inodes; authored bytes, other
+children, wrong ownership, changed CAS, live processes or unknown mount namespaces
+refuse before deletion. No Podman command is run against a cleared graph.
+The historical build-base mode remains separately scoped to its two accounts.
+Neither mode removes application data or grants activation.
+
 ## Supported lifecycle today
 
 | Operation | Versioned implementation | What it proves |
