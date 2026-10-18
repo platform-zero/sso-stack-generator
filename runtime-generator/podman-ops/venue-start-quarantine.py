@@ -111,6 +111,9 @@ def targets(bundle,plan,state,*,selector=None,ledger=None):
     if 'venueIngressPhase' in state:
         if selector is None or ledger is None:raise Refusal('private ingress needs exact selector/journal authority')
         commands[None].extend(Path(file).name for file in ingress.checked(bundle,selector,ledger))
+    if 'venueRootHealthPhase' in state:
+        if selector is None or ledger is None:raise Refusal('root health needs exact selector/journal authority')
+        commands[None].extend(Path(file).name for file in load('venue_root_health','venue-root-health.py').checked(bundle,selector,ledger))
     api=api_owners(bundle,plan)
     if 'venueStartApiSockets' in state:
         if state['venueStartApiSockets']!=api:raise Refusal('API socket intent differs from exact native mounts')
@@ -250,6 +253,7 @@ def start(bundle,selector,ledger,timeout=900,*,reviewed_failed_sha=None):
     context=host_context(bundle,plan)
     selected=targets(bundle,plan,state,selector=selector,ledger=ledger)
     ingress.checked(bundle,selector,ledger)
+    load('venue_root_health','venue-root-health.py').checked(bundle,selector,ledger)
     batches=activation_batches(bundle,plan)
     marker=Path(plan['roots']['rootful-state'])/'volume-ready-r1.txt'
     with lifecycle(context):

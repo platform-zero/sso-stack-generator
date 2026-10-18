@@ -230,6 +230,8 @@ def queue(bundle,selector,ledger,controller,deadline,names):
         b,p,data,plan=starting(bundle,selector,ledger,controller,deadline)
         if 'venueIngressStartPending' in data:raise Refusal('indeterminate private ingress intent; no replay')
         allowed={Path(file).name for file in checked(b,selector,p) if file.endswith('.socket')}|{plan['prefix']+'-caddy.service'}
+        health=load('relay_root_health','venue-root-health.py')
+        allowed.update(Path(file).name for file in health.checked(b,selector,p) if file.endswith('.timer'))
         if not names or len(names)!=len(set(names)) or not set(names)<=allowed:
             raise Refusal('private ingress start escaped exact socket/Caddy unit set')
         native_network(controller,b);registry.reserve()
@@ -278,7 +280,7 @@ def bootstrap_tls(bundle,selector,ledger,controller,deadline):
     native_network(controller,b)
     for host in hosts:
         dns_addresses(host,str(gateway));dns_addresses(host,str(gateway),ipv6=True)
-    queue(b,selector,p,controller,deadline,[plan['prefix']+'-caddy.service'])
+    queue(b,selector,p,controller,deadline,[plan['prefix']+'-root-health.timer',plan['prefix']+'-caddy.service'])
     def upstream(b,data,plan):
         lifecycle=load('relay_caddy_observer','venue-start-quarantine.py')
         name=plan['prefix']+'-caddy.service'

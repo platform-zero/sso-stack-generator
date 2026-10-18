@@ -12,6 +12,30 @@ venue refusal remains intentional. Do not patch generated bundles, replace a
 shared graph, issue a global prune, change protected bind contents, or relax a
 listener/capacity gate to get an installation attempt.
 
+## Scoped native rootful health scheduling
+
+Podman5.4's generated transient health units forward PATH only. They do not retain
+an isolated root store's storage configuration or CLI flags. Isolated rootful
+container services therefore set host-side `DISABLE_HC_SYSTEMD=true`; default
+profile and rootless services retain their normal native scheduling. This does
+not disable declared probes or replace `--sdnotify=healthy` producer readiness.
+
+Inactive installation receipts two namespace-native root-health service/timer
+files separately from the eight private relays. The guarded dispatcher queues
+that timer before Caddy bootstrap; it cannot start any application backend. Each
+cadence invokes `venue-root-health.py` against the exact explicit private store
+and original native health command. Current-boot lifecycle authority/exclusion,
+unit file CAS/no overrides, container CID/image, native activation epoch and
+supervisor cgroup ownership are required. Native logs retain declared intervals,
+start periods and retries. Unknown native ACK retains intent and refuses replay.
+No global manager environment, default store, original unit or shared graph is
+configured. Quarantine stops these exact two units; inactive retirement requires
+idle/disabled states and journaled file identities before unlinking them.
+
+Source/parser/synthetic tests do not prove this adapter's installed readiness.
+Only actual native healthy producers and dependent application/guest checks can
+satisfy the corresponding integrated-install evidence.
+
 ## Exact diagnostic-cache retirement
 
 Even a Podman image inspection by a short name may create a zero-byte alias lock

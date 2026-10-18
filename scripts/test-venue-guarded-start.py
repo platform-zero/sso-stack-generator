@@ -53,7 +53,7 @@ class Start(unittest.TestCase):
         registry=NS(authority=NS(authority=lambda *a:{'frozenLocalImagePairs':12,'imageIds':self.ids},
                               pinned_images=NS(frozen_aliases=lambda *a:{})),
                     reserve=lambda:None,probe=lambda *a:None)
-        fake={'venue_registry':registry,'venue_screen':NS(port_screen=lambda *a:None),
+        fake={'venue_root_health':NS(checked=lambda *a:{}),'venue_registry':registry,'venue_screen':NS(port_screen=lambda *a:None),
               'venue_binds':NS(checked_stage=lambda *a:(None,None,sources),checked_fixtures=lambda *a:[],log_sources=lambda *a:{})}
         self.ingress_events=[]
         def tls(*args):

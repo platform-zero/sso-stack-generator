@@ -1880,6 +1880,9 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
     if (domain.name == "rootful" && unitPrefix != "webservices") {
         lines += "Environment=CONTAINERS_STORAGE_CONF=${domain.stateRoot}/containers-storage.conf"
         lines += "Environment=CONTAINERS_CONF=${domain.stateRoot}/containers.conf"
+        // Podman5.4 transient health timers forward PATH only and would open the
+        // original/default root store. The scoped native adapter owns this cadence.
+        lines += "Environment=DISABLE_HC_SYSTEMD=true"
     }
     if (service.path("lifecycle").asText() == "oneshot") {
         lines += "Type=oneshot"

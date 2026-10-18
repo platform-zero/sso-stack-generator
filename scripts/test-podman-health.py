@@ -40,6 +40,8 @@ def check(bundle, generated):
             native_argv = shlex.split(values(native.read_text(), "ExecStart")[0])
             assert native_argv[native_argv.index("--dns") + 1] == "192.168.140.1", name
             assert native_argv.count("--dns") == 1, name
+        isolated_root = prefix != "webservices" and unit.parent.name == "rootful"
+        assert ("Environment=DISABLE_HC_SYSTEMD=true" in text) == isolated_root, name
         config = service.get("health", {})
         test = config.get("test", [])
         enabled = bool(test) and test != ["NONE"] and not config.get("disable", False)

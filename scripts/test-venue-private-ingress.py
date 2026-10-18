@@ -94,7 +94,7 @@ class PrivateIngress(unittest.TestCase):
         self.assertEqual(list(self.unitdir.iterdir()),[foreign]);data=json.loads(self.p.read_text());self.assertEqual(len(data['venueIngressRetired']),8)
         self.assertEqual(data['venueIngressPhase'],'retired-inert');self.assertFalse(any('stop' in row or 'reset-failed' in row for row in self.commands))
     def fake_runtime(self,lease=contextlib.nullcontext):
-        return patch.object(m,'load',side_effect=lambda name,file:SimpleNamespace(lifecycle=lambda context:lease()) if file=='venue-start-quarantine.py' else SimpleNamespace(reserve=Mock()))
+        return patch.object(m,'load',side_effect=lambda name,file:SimpleNamespace(lifecycle=lambda context:lease()) if file=='venue-start-quarantine.py' else SimpleNamespace(checked=lambda *a:{}) if file=='venue-root-health.py' else SimpleNamespace(reserve=Mock()))
     def test_fenced_or_expired_queue_never_checks_network_or_starts(self):
         self.starting();self.data['activationAuthorized']=False;self.save();self.commands.clear()
         with self.fake_runtime(),patch.object(m,'native_network') as native:

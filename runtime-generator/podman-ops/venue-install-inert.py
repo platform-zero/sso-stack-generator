@@ -34,6 +34,7 @@ envs=load('venue_envs','venue-runtime-env-inert.py')
 composite=load('venue_composite','venue-composite-inert.py')
 graph=load('venue_graph','venue-graph-clear.py')
 ingress=load('venue_private_ingress','venue-private-ingress.py')
+root_health=load('venue_root_health','venue-root-health.py')
 Refusal=stage.Refusal
 
 def receipt(ledger):
@@ -77,18 +78,19 @@ def prepare(bundle,selector,inventory,ledger,age_key,image_inputs):
     composite.binds.prepare_logs(b,selector,p)
     composite.binds.prepare_fixtures(b,selector,p)
     ingress.prepare(b,selector,p)
+    root_health.prepare(b,selector,p)
     data=receipt(p)
     marker=Path(plan['roots']['rootful-state'])/'volume-ready-r1.txt'
     if (data.get('venueReleasePhase')!='inert-ready' or data.get('venueDomainRuntimePhase')!='inert-ready' or
             data.get('venueRuntimeEnvPhase')!='inert-ready' or data.get('venueCompositeMode')!='inert-ready' or
-            data.get('status')!='units-staged' or data.get('venueIngressPhase')!='inert-ready' or marker.exists() or
+            data.get('status')!='units-staged' or data.get('venueIngressPhase')!='inert-ready' or data.get('venueRootHealthPhase')!='inert-ready' or marker.exists() or
             len(data.get('venueRuntimeEnvFiles',{}))!=75 or len(data.get('installedUnits',[]))!=194 or
             len(data.get('venueDataBindDirs',[]))!=61 or len(data.get('venueHulyVolumes',[]))!=4 or
             data.get('venueCompositeOfflineImages')!=offline):
         raise Refusal('inert installer co-presence invariants not met')
     data['venueInstallerPhase']='inert-ready';stage.write_ledger(p,data)
     return {'status':'inert-ready','rootlessCurrentTrees':7,'privateEnvFiles':75,
-            'actualBindDirectories':61,'namedVolumes':4,'installedInactiveUnits':194,'privateInactiveRelayUnits':8,
+            'actualBindDirectories':61,'namedVolumes':4,'installedInactiveUnits':194,'privateInactiveRelayUnits':8,'privateInactiveHealthUnits':2,
             'activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
 def retire(bundle,selector,inventory,ledger):
@@ -126,6 +128,7 @@ def retire(bundle,selector,inventory,ledger):
             raise Refusal('all 194 units and private inputs must coexist before initial retirement')
         data['venueInstallerPhase']='retiring';stage.write_ledger(p,data)
     current=receipt(p)
+    if current.get('venueRootHealthPhase') and current['venueRootHealthPhase']!='retired-inert':root_health.retire(b,selector,p)
     if current.get('venueIngressPhase') and current['venueIngressPhase']!='retired-inert':ingress.retire(b,selector,p)
     current=receipt(p)
     if current.get('venueFixtureBindDirs') and {r['path'] for r in current['venueFixtureBindDirs']}!=set(current.get('retiredFixtureBindDirs',[])):
