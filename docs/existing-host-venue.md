@@ -92,6 +92,37 @@ unit receipts, false authority and no startup/registry fields at all. The normal
 exact store/config-ID inventory and canonical alias/digest checks still apply;
 foreign names, partial registry state and active/native histories do not qualify.
 
+### Canonical private SSO transport
+
+The isolated compiler gives every managed native container exactly the selected
+bridge resolver (`192.168.140.1`), without a host/public fallback. Conflicting
+explicit DNS refuses compilation; default-profile resolver choices are unchanged.
+Canonical HTTPS/OIDC/mail identities retain standard ports. The existing private
+ingress renderers supply four socket/proxy pairs on the exact private gateway,
+not public/wildcard/loopback port443 and never arbitrary internal publishers.
+
+The existing inert installer receipts all eight inactive relay files separately
+from the194 native files, without enablement. The existing dispatcher verifies the
+installed controller's current-boot native XML/NFT proof and private DNS answers,
+queues only Caddy first, waits for its published scoped CA and hostname-verified
+TLS, then starts HTTP/HTTPS relays and proves standard/mapped TLS plus the canonical
+HTTP redirect before other managers queue. The isolated Caddy probe checks its
+CA/process/configuration instead of calling its deliberately disabled admin API;
+admin stays off. SMTP STARTTLS/IMAPS upstream and private-relay proof follow core
+startup before RUNNING authority. Trust probes accept ONLY this scope's local root,
+not a public/original certificate, and never authenticate or submit mail.
+
+Exact gateway binding plus the already mandatory native bridge/lo-only NFT fence
+allows authorized host containers as well as the guest; device-only socket binding
+would exclude host-loopback clients. Relays are target-owned passive transports:
+they do not implicitly start a stopped backend and remain useful across backend
+restarts. No host resolver/global trust changes are made. Every queue rechecks
+fencing/deadline/reserves/network under exclusion; read-only TLS waits release it,
+then recheck epoch/fencing before accepting proof. Unknown native ACK intent remains
+fenced, without replay. Quarantine cancels/stops the eight exact extra unit names;
+retirement validates all file/inode/hash, inactive, disabled/static and job gates
+before exact unlink, before the unchanged manager empty-unit gate.
+
 Bridge publishers require the actual selected gateway to exist. Runtime bridge
 preparation deliberately leaves network autostart **off** until durable fence/boot
 ordering is installed; it is not guest boot readiness. The two explicit boot-fence

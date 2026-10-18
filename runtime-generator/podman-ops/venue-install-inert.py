@@ -19,7 +19,9 @@ import os
 import shutil
 from pathlib import Path
 import stat
+import sys
 
+sys.dont_write_bytecode=True
 HERE=Path(__file__).resolve().parent
 def load(name,file):
     spec=importlib.util.spec_from_file_location(name,HERE/file)
@@ -31,6 +33,7 @@ managers=load('venue_managers','venue-user-managers.py')
 envs=load('venue_envs','venue-runtime-env-inert.py')
 composite=load('venue_composite','venue-composite-inert.py')
 graph=load('venue_graph','venue-graph-clear.py')
+ingress=load('venue_private_ingress','venue-private-ingress.py')
 Refusal=stage.Refusal
 
 def receipt(ledger):
@@ -73,18 +76,19 @@ def prepare(bundle,selector,inventory,ledger,age_key,image_inputs):
     composite.prepare(b,selector,p,input_manifest)
     composite.binds.prepare_logs(b,selector,p)
     composite.binds.prepare_fixtures(b,selector,p)
+    ingress.prepare(b,selector,p)
     data=receipt(p)
     marker=Path(plan['roots']['rootful-state'])/'volume-ready-r1.txt'
     if (data.get('venueReleasePhase')!='inert-ready' or data.get('venueDomainRuntimePhase')!='inert-ready' or
             data.get('venueRuntimeEnvPhase')!='inert-ready' or data.get('venueCompositeMode')!='inert-ready' or
-            data.get('status')!='units-staged' or marker.exists() or
+            data.get('status')!='units-staged' or data.get('venueIngressPhase')!='inert-ready' or marker.exists() or
             len(data.get('venueRuntimeEnvFiles',{}))!=75 or len(data.get('installedUnits',[]))!=194 or
             len(data.get('venueDataBindDirs',[]))!=61 or len(data.get('venueHulyVolumes',[]))!=4 or
             data.get('venueCompositeOfflineImages')!=offline):
         raise Refusal('inert installer co-presence invariants not met')
     data['venueInstallerPhase']='inert-ready';stage.write_ledger(p,data)
     return {'status':'inert-ready','rootlessCurrentTrees':7,'privateEnvFiles':75,
-            'actualBindDirectories':61,'namedVolumes':4,'installedInactiveUnits':194,
+            'actualBindDirectories':61,'namedVolumes':4,'installedInactiveUnits':194,'privateInactiveRelayUnits':8,
             'activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
 def retire(bundle,selector,inventory,ledger):
@@ -121,6 +125,8 @@ def retire(bundle,selector,inventory,ledger):
         else:
             raise Refusal('all 194 units and private inputs must coexist before initial retirement')
         data['venueInstallerPhase']='retiring';stage.write_ledger(p,data)
+    current=receipt(p)
+    if current.get('venueIngressPhase') and current['venueIngressPhase']!='retired-inert':ingress.retire(b,selector,p)
     current=receipt(p)
     if current.get('venueFixtureBindDirs') and {r['path'] for r in current['venueFixtureBindDirs']}!=set(current.get('retiredFixtureBindDirs',[])):
         composite.binds.retire_fixtures(b,selector,p)
@@ -199,7 +205,7 @@ def reset_owned(bundle,selector,inventory,ledger,reviewed_sha):
     with lifecycle.lifecycle(controller):
         if stage.sha(p)!=reviewed_sha:raise Refusal('experimental reset ledger SHA CAS changed')
         data=receipt(p);lifecycle.reviewed_retry(data,plan,controller,require_repair=False)
-        lifecycle.targets(b,plan,data);lifecycle.units.units_idle(plan)
+        lifecycle.targets(b,plan,data,selector=selector,ledger=ledger);lifecycle.units.units_idle(plan)
         vm=json.loads((b/'site/agent-vm.json').read_text())
         listed=graph.run(['virsh','-c','qemu:///system','list','--all','--name'],timeout=30)
         if listed.returncode or vm['name'] in listed.stdout.splitlines():

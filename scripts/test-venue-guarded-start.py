@@ -55,8 +55,19 @@ class Start(unittest.TestCase):
                     reserve=lambda:None,probe=lambda *a:None)
         fake={'venue_registry':registry,'venue_screen':NS(port_screen=lambda *a:None),
               'venue_binds':NS(checked_stage=lambda *a:(None,None,sources),checked_fixtures=lambda *a:[],log_sources=lambda *a:{})}
+        self.ingress_events=[]
+        def tls(*args):
+            self.assertEqual(json.loads(self.ledger.read_text())['venueStartPhase'],'starting')
+            self.assertEqual(json.loads((self.runtime/'runtime-authority.json').read_text())['phase'],'starting')
+            self.assertEqual(sum('start' in c for c in self.commands),0)
+            self.ingress_events.append('tls')
+        def mail(*args):
+            self.assertEqual(sum('start' in c for c in self.commands),2)
+            self.ingress_events.append('mail')
         real_load=q.load
-        patches=[patch.object(q,'load',side_effect=lambda name,file:fake[name] if name in fake else real_load(name,file)),
+        patches=[patch.object(q.ingress,'checked',return_value={}),
+                 patch.object(q.ingress,'bootstrap_tls',side_effect=tls),
+                 patch.object(q.ingress,'finish_mail',side_effect=mail),patch.object(q,'load',side_effect=lambda name,file:fake[name] if name in fake else real_load(name,file)),
                  patch.object(q,'host_context',return_value=self.context),
                  patch.object(q.stage,'owned_plan',return_value=self.plan),
                  patch.object(q,'targets',return_value=selected),
@@ -86,8 +97,19 @@ class Start(unittest.TestCase):
             result=installer.activate(self.bundle,self.selector,self.ledger)
         self.assertEqual(result['status'],'running')
         self.assertEqual(result['acceptedIntegratedInstalls'],0)
+        self.assertEqual(self.ingress_events,['tls','mail'])
         self.assertEqual(sum('start' in c for c in self.commands),2)
         self.assertEqual(json.loads((self.runtime/'runtime-authority.json').read_text())['schemaVersion'],2)
+    def test_missing_ingress_receipt_refuses_before_intent_or_native_queue(self):
+        with patch.object(q.ingress,'checked',side_effect=ValueError('missing private ingress')),patch.object(q.graph,'run',side_effect=self.native):
+            with self.assertRaisesRegex(ValueError,'missing private ingress'):installer.activate(self.bundle,self.selector,self.ledger)
+        self.assertEqual(self.commands,[]);self.assertEqual(json.loads(self.ledger.read_text())['venueInstallerVersion'],1)
+        self.assertFalse((self.runtime/'runtime-authority.json').exists())
+    def test_private_tls_bootstrap_failure_quarantines_without_queuing_consumers(self):
+        with patch.object(q.ingress,'bootstrap_tls',side_effect=ValueError('wrong scoped CA')),patch.object(q.graph,'run',side_effect=self.native):
+            with self.assertRaisesRegex(ValueError,'wrong scoped CA'):installer.activate(self.bundle,self.selector,self.ledger)
+        self.assertFalse(any('start' in c for c in self.commands));self.assertEqual(sum('stop' in c for c in self.commands),2)
+        self.assertEqual(json.loads(self.ledger.read_text())['venueStartPhase'],'failed-quarantined')
     def test_failed_leaf_fences_and_stops_without_retry_or_data_deletion(self):
         self.fail=True
         with patch.object(q.graph,'run',side_effect=self.native):

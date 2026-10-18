@@ -34,6 +34,12 @@ def check(bundle, generated):
             continue
         unit = files[unit_name]
         text = unit.read_text()
+        if prefix != "webservices":
+            assert values(text, "DNS") == ["192.168.140.1"], (name, "private DNS without public fallback")
+            native = generated / unit.parent.name / (unit_name + ".service")
+            native_argv = shlex.split(values(native.read_text(), "ExecStart")[0])
+            assert native_argv[native_argv.index("--dns") + 1] == "192.168.140.1", name
+            assert native_argv.count("--dns") == 1, name
         config = service.get("health", {})
         test = config.get("test", [])
         enabled = bool(test) and test != ["NONE"] and not config.get("disable", False)

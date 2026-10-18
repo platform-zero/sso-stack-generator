@@ -568,6 +568,10 @@ fun applyVenueBindPolicy(ir: ObjectNode, policy: PodmanPolicy) {
         }
     }
     if (counts.values.any { it == 0 }) fail("expected isolated venue bind input is missing")
+    val caddyProbe = ir.path("services").path("caddy").path("health").path("test")
+    if (caddyProbe !is ArrayNode || caddyProbe.size() != 2 || caddyProbe[0].asText() != "CMD-SHELL")
+        fail("isolated Caddy requires its declared shell health contract")
+    caddyProbe.set(1, nodes.textNode(isolatedCaddyProbe(caddyProbe[1].asText())))
 }
 
 fun applyResourceDefaults(ir: ObjectNode, policy: PodmanPolicy) {
@@ -1457,6 +1461,39 @@ fun podmanHealth(service: JsonNode): PodmanHealth {
     return PodmanHealth(json.writer().without(SerializationFeature.INDENT_OUTPUT).writeValueAsString(arguments), inputs)
 }
 
+fun isolatedCaddyProbe(raw: String): String {
+    val first = "wget --quiet --tries=1 --spider --timeout=5"
+    val config = "http://127.0.0.1:2019/config/"
+    val upstreams = "http://127.0.0.1:2019/reverse_proxy/upstreams"
+    val validate = "caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile"
+    if (raw.split(config).size != 2 || raw.split(upstreams).size != 2 ||
+        raw.split(first).size != 3 || raw.indexOf(validate) <= raw.indexOf(upstreams) ||
+        !raw.substringBefore(first).contains("test -s /ca/caddy-ca.crt"))
+        fail("unsupported isolated Caddy health source; admin API must remain off")
+    // The isolated Caddy has admin off. Its dispatcher separately verifies a
+    // hostname/trust-checked TLS handshake before other managers can start.
+    return raw.substringBefore(first) +
+        "test -s /certs/pki/authorities/local/root.crt && pidof caddy >/dev/null && " +
+        raw.substring(raw.indexOf(validate))
+}
+
+fun podmanDns(service: JsonNode, isolated: Boolean): List<String> {
+    val value = service.path("dns")
+    val configured = when {
+        value.isMissingNode || value.isNull -> emptyList()
+        value.isTextual -> listOf(value.asText())
+        value.isArray -> value.map { if (!it.isTextual) fail("dns must contain resolver strings") else it.asText() }
+        else -> fail("dns must be a resolver string or array")
+    }
+    if (!isolated) return configured
+    // The isolated selector/network authority already binds virbr140 and this
+    // gateway. Preserve canonical OIDC :443 through its private TLS relay, not
+    // the host/public resolver or an original deployment. Never add fallback.
+    val gateway = "192.168.140.1"
+    if (configured.any { it != gateway }) fail("isolated DNS cannot escape its private ingress authority")
+    return listOf(gateway)
+}
+
 fun renderEnvironmentTemplate(name: String, service: ObjectNode, output: Path) {
     val environment = service.path("environment").fieldsMap().toMap().toMutableMap()
     podmanHealth(service).inputs.forEach { (key, value) -> environment[key] = nodes.textNode(value) }
@@ -1785,7 +1822,7 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
         }
     }
     service.path("extraHosts").forEach { lines += "AddHost=${it.asText().replace("host-gateway", "host-gateway")}" }
-    service.path("dns").let { if (it.isArray) it.forEach { dns -> lines += "DNS=${dns.asText()}" } else if (it.isTextual) lines += "DNS=${it.asText()}" }
+    podmanDns(service, unitPrefix != "webservices").forEach { lines += "DNS=$it" }
     service.path("tmpfs").forEach { lines += "Tmpfs=${it.asText()}" }
     service.path("capAdd").forEach { lines += "AddCapability=${it.asText()}" }
     service.path("capDrop").forEach { lines += "DropCapability=${it.asText()}" }

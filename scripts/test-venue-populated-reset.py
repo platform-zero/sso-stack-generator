@@ -51,8 +51,10 @@ class Reset(unittest.TestCase):
                 data['venueRecoveryContainers']={};data['venueRecoveryNetworks']={'root|p0test-r1_net':{'id':identity,'unit':'selected-network.service'}}
             return {'root':(self.root,['podman'])},{}
         registry=NS(authority=NS(authority=lambda *a:{'imageIds':{}}),probe=probe)
+        def targets(*args,**kwargs):
+            self.assertEqual(args[:2],(bundle,plan));self.assertEqual(kwargs,{'selector':'selector','ledger':ledger})
         lifecycle=NS(host_context=lambda *a:NS(digest='d'*64),lifecycle=lambda *a:nullcontext(),reviewed_retry=lambda *a,**k:None,
-                     targets=lambda *a:None,units=NS(units_idle=lambda *a:None),selected_commands=lambda *a:[])
+                     targets=targets,units=NS(units_idle=lambda *a:None),selected_commands=lambda *a:[])
         def native(command,**kwargs):
             events.append(command)
             if command[0]=='virsh':return NS(returncode=0,stdout='fresh-guest\n' if guest_present else '')

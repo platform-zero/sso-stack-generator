@@ -14,8 +14,10 @@ import json
 import os
 from pathlib import Path
 import stat
+import sys
 import time
 
+sys.dont_write_bytecode=True
 HERE=Path(__file__).resolve().parent
 HOST_UNIT_DIRECTORY=Path('/etc/systemd/system')
 def load(name,file):
@@ -24,6 +26,7 @@ def load(name,file):
 stage=load('venue_stage','venue-owned-stage.py')
 units=load('venue_units','venue-unit-stage.py')
 graph=load('venue_graph','venue-graph-clear.py')
+ingress=load('venue_private_ingress','venue-private-ingress.py')
 Refusal=stage.Refusal
 
 def selected_commands(plan):
@@ -84,7 +87,7 @@ def startup_observations(bundle,plan,state,selected):
             observations[owner,name]=observed_ready(row,state['venueStartMonotonicUsec'],name)
     return observations
 
-def targets(bundle,plan,state):
+def targets(bundle,plan,state,*,selector=None,ledger=None):
     selected=units.manifest(bundle,plan)
     if (selected!=state.get('unitFiles') or len(selected)!=194 or
             len(state.get('installedUnits',[]))!=194):
@@ -105,6 +108,9 @@ def targets(bundle,plan,state):
             commands[owner].append(p.name if p.suffix=='.target' else p.stem+(
                               '-build.service' if p.suffix=='.build' else
                               '-network.service' if p.suffix=='.network' else '.service'))
+    if 'venueIngressPhase' in state:
+        if selector is None or ledger is None:raise Refusal('private ingress needs exact selector/journal authority')
+        commands[None].extend(Path(file).name for file in ingress.checked(bundle,selector,ledger))
     api=api_owners(bundle,plan)
     if 'venueStartApiSockets' in state:
         if state['venueStartApiSockets']!=api:raise Refusal('API socket intent differs from exact native mounts')
@@ -242,7 +248,8 @@ def start(bundle,selector,ledger,timeout=900,*,reviewed_failed_sha=None):
         raise Refusal('root0600 installed preparation journal required')
     state=json.loads(p.read_text());plan=stage.owned_plan(bundle,selector)
     context=host_context(bundle,plan)
-    selected=targets(bundle,plan,state)
+    selected=targets(bundle,plan,state,selector=selector,ledger=ledger)
+    ingress.checked(bundle,selector,ledger)
     batches=activation_batches(bundle,plan)
     marker=Path(plan['roots']['rootful-state'])/'volume-ready-r1.txt'
     with lifecycle(context):
@@ -253,6 +260,7 @@ def start(bundle,selector,ledger,timeout=900,*,reviewed_failed_sha=None):
         if not recovering and (state.get('plan')!=plan or state.get('venueInstallerVersion')!=1 or
                 state.get('venueInstallerPhase')!='inert-ready' or state.get('status')!='units-staged' or
                 state.get('activationAuthorized') is not False or state.get('venueStartPhase') is not None or
+                any(key in state for key in ('venueIngressStartPending','venueIngressQueued','venueIngressTlsProof','venueIngressMailProof')) or
                 state.get('venueRegistryPhase')!='inert-ready' or state.get('managerStopped') or
                 state.get('managerStarted')!=[a['name'] for a in plan['accounts']] or
                 os.path.lexists(marker) or os.path.lexists(context.runtime/'runtime-authority.json')):
@@ -314,7 +322,10 @@ def start(bundle,selector,ledger,timeout=900,*,reviewed_failed_sha=None):
             state.setdefault('venueStartAttempts',[]).append({key:state.get(key) for key in
                   ('venueStartPhase','venueStartIntent','venueStartMonotonicUsec','venueStartRepair',
                    'venueStartQuarantineUnits','venueRecoveryNetworks','venueRecoveryContainers',
-                   'venueStartLifecycleSha256','venueStartFailure','venueStartFenceMonotonicUsec')})
+                   'venueStartLifecycleSha256','venueStartFailure','venueStartFenceMonotonicUsec',
+                   'venueIngressStartPending','venueIngressQueued','venueIngressTlsProof','venueIngressMailProof')})
+            for key in ('venueIngressStartPending','venueIngressQueued','venueIngressTlsProof','venueIngressMailProof'):
+                state.pop(key,None)  # Only after exact quarantined/idle reviewed recovery; preserve the prior attempt above.
         state.update(venueInstallerVersion=2,venueInstallerPhase='starting',status='installed-starting',
                      venueStartPhase='starting',venueStartIntent=plan['quadletTreeSha256'],
                      venueStartHostContextSha256=context.digest,venueStartLifecycleSha256=stage.sha(__file__),activationAuthorized=True,
@@ -337,6 +348,7 @@ def start(bundle,selector,ledger,timeout=900,*,reviewed_failed_sha=None):
             runtime_receipt(context,'failed-quarantining',False)
             raise  # caller performs the same exact journaled stop below
     deadline=time.monotonic()+timeout
+    ingress.bootstrap_tls(bundle,selector,p,context,deadline)
     for account,command,required in batches:
         while True:
             registry.reserve();context.physical_reserves()
@@ -371,6 +383,7 @@ def start(bundle,selector,ledger,timeout=900,*,reviewed_failed_sha=None):
         if state.get('venueStartPhase')!='starting':raise Refusal('activation was fenced during observation')
         pending=[name for (_,name),ready in startup_observations(bundle,plan,state,selected).items() if not ready]
         if not pending:
+            ingress.finish_mail(bundle,selector,p,context,deadline)
             with lifecycle(context):
                 state=json.loads(p.read_text())
                 if state.get('venueStartPhase')!='starting':raise Refusal('activation was fenced during observation')
@@ -396,7 +409,7 @@ def quarantine_locked(bundle,selector,ledger,context,*,failure_reason=None):
             state.get('managerStopped') or state.get('activationAuthorized') is not True or
             state.get('venueStartIntent')!=plan['quadletTreeSha256']):
         raise Refusal('no exact version-2 failed activation intent; never stop an inert or other venue')
-    selected=targets(bundle,plan,state)
+    selected=targets(bundle,plan,state,selector=selector,ledger=ledger)
     marker=Path(plan['roots']['rootful-state'])/'volume-ready-r1.txt'
     if marker.is_symlink() or (marker.exists() and
             (not marker.is_file() or marker.stat().st_uid!=0 or stat.S_IMODE(marker.stat().st_mode)!=0o600)):
@@ -454,7 +467,7 @@ def review_stale_result(bundle,selector,ledger,reviewed_failed_sha,unit):
     with lifecycle(context):
         if stage.sha(p)!=reviewed_failed_sha:raise Refusal('stale observation review ledger CAS changed')
         state=json.loads(p.read_text());reviewed_retry(state,plan,context,require_repair=False)
-        units.units_idle(plan);selected=targets(bundle,plan,state)
+        units.units_idle(plan);selected=targets(bundle,plan,state,selector=selector,ledger=ledger)
         matches=[cmd for account,cmd in selected_commands(plan) if unit in selected[account['name'] if account else None]]
         if len(matches)!=1:raise Refusal('failed native observation must identify one exact selected owner/unit')
         result=graph.run(matches[0]+['show',unit,'-p','ActiveState','-p','Result','-p','ExecMainStartTimestampMonotonic',

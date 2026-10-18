@@ -60,28 +60,32 @@ def render(bundle, selector):
     # Two sockets are deliberately the only guest-facing Caddy endpoints:
     # 443 preserves standard-port OIDC URLs; the mapped port serves a separate
     # reviewed broker transport. Internal publishers remain on 127.0.0.1 only.
+    # Exact private-address listeners also serve host containers via lo. The
+    # installer MUST verify the native bridge/lo-only NFT fence before listening;
+    # SO_BINDTODEVICE would exclude those authorized host clients. Relays never
+    # start a backend implicitly; scoped TLS verification remains mandatory.
     bind=net['gateway']; https=ports['443']; http=ports.get('80'); unit=f'{prefix}-ingress-https'
     if type(http) is not int or http not in range(1024,65536) or http==https:
         raise Refusal('Unbound isolated Caddy HTTP redirect port')
     socket=(f'[Unit]\nDescription=Private {prefix} guest TLS ingress (Caddy only)\n'
-            f'BindsTo={prefix}-caddy.service\nAfter={prefix}-caddy.service\n'
+            f'PartOf={prefix}.target\nAfter={prefix}-caddy.service\n'
             f'[Socket]\nListenStream={bind}:443\nListenStream={bind}:{https}\n'
-            f'BindToDevice={net["bridge"]}\nService={unit}.service\n'
+            f'Service={unit}.service\n'
             f'Accept=no\n[Install]\nWantedBy={prefix}.target\n')
     service=(f'[Unit]\nDescription=Private {prefix} guest TLS relay to loopback Caddy\n'
-             f'Requires={prefix}-caddy.service\nBindsTo={prefix}-caddy.service\nAfter={prefix}-caddy.service\n'
+             f'PartOf={prefix}.target\nAfter={prefix}-caddy.service\n'
              '[Service]\nType=notify\n'
              f'ExecStart=/usr/lib/systemd/systemd-socket-proxyd --exit-idle-time=5min 127.0.0.1:{https}\n'
              'NoNewPrivileges=yes\nPrivateTmp=yes\nProtectHome=yes\nProtectSystem=strict\n'
              'RestrictAddressFamilies=AF_INET AF_UNIX\n')
     http_unit=f'{prefix}-ingress-http'
     http_socket=(f'[Unit]\nDescription=Private {prefix} guest HTTP redirect ingress\n'
-                 f'BindsTo={prefix}-caddy.service\nAfter={prefix}-caddy.service\n'
+                 f'PartOf={prefix}.target\nAfter={prefix}-caddy.service\n'
                  f'[Socket]\nListenStream={bind}:80\nListenStream={bind}:{http}\n'
-                 f'BindToDevice={net["bridge"]}\nService={http_unit}.service\n'
+                 f'Service={http_unit}.service\n'
                  f'Accept=no\n[Install]\nWantedBy={prefix}.target\n')
     http_service=(f'[Unit]\nDescription=Private {prefix} HTTP redirect relay to loopback Caddy\n'
-                  f'Requires={prefix}-caddy.service\nBindsTo={prefix}-caddy.service\nAfter={prefix}-caddy.service\n'
+                  f'PartOf={prefix}.target\nAfter={prefix}-caddy.service\n'
                   '[Service]\nType=notify\n'
                   f'ExecStart=/usr/lib/systemd/systemd-socket-proxyd --exit-idle-time=5min 127.0.0.1:{http}\n'
                   'NoNewPrivileges=yes\nPrivateTmp=yes\nProtectHome=yes\nProtectSystem=strict\n'

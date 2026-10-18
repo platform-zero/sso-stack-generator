@@ -36,12 +36,12 @@ def render(bundle,selector):
     for protocol,default,port in (('smtp',587,mapped['587']),('imap',993,mapped['993'])):
         unit=f'{prefix}-ingress-{protocol}'
         socket=(f'[Unit]\nDescription=Private {prefix} guest {protocol.upper()} transport\n'
-                f'BindsTo={prefix}-mailserver.service\nAfter={prefix}-mailserver.service\n'
+                f'PartOf={prefix}.target\nAfter={prefix}-mailserver.service\n'
                 f'[Socket]\nListenStream={gateway}:{default}\nListenStream={gateway}:{port}\n'
-                f'BindToDevice={bridge}\nService={unit}.service\nAccept=no\n'
+                f'Service={unit}.service\nAccept=no\n'
                 f'[Install]\nWantedBy={prefix}.target\n')
         service=(f'[Unit]\nDescription=Private {prefix} guest {protocol.upper()} relay to loopback Mailserver\n'
-                 f'Requires={prefix}-mailserver.service\nBindsTo={prefix}-mailserver.service\n'
+                 f'PartOf={prefix}.target\n'
                  f'After={prefix}-mailserver.service\n[Service]\nType=notify\n'
                  f'ExecStart=/usr/lib/systemd/systemd-socket-proxyd --exit-idle-time=5min 127.0.0.1:{port}\n'
                  'NoNewPrivileges=yes\nPrivateTmp=yes\nProtectHome=yes\nProtectSystem=strict\n'

@@ -63,6 +63,29 @@ for (case in cases) {
     }
 }
 println("[health-input-test] ${cases.size()} actual-translator cases passed")
+val dnsGood = listOf(
+    Triple("{}", false, emptyList<String>()),
+    Triple("""{"dns":null}""", false, emptyList<String>()),
+    Triple("""{"dns":"9.9.9.9"}""", false, listOf("9.9.9.9")),
+    Triple("""{"dns":["9.9.9.9","1.1.1.1"]}""", false, listOf("9.9.9.9", "1.1.1.1")),
+    Triple("{}", true, listOf("192.168.140.1")),
+    Triple("""{"dns":[]}""", true, listOf("192.168.140.1")),
+    Triple("""{"dns":"192.168.140.1"}""", true, listOf("192.168.140.1")),
+    Triple("""{"dns":["192.168.140.1"]}""", true, listOf("192.168.140.1")))
+for ((raw, isolated, expected) in dnsGood) check(podmanDns(json.readTree(raw), isolated) == expected)
+val dnsBad = listOf("""{"dns":"1.1.1.1"}""", """{"dns":["192.168.140.1","1.1.1.1"]}""",
+    """{"dns":[42]}""", """{"dns":42}""")
+for (raw in dnsBad) check(runCatching { podmanDns(json.readTree(raw), true) }.isFailure)
+println("[scope-dns-test] ${dnsGood.size + dnsBad.size} actual-translator cases passed")
+val caddySource = "prefix && test -s /ca/caddy-ca.crt && wget --quiet --tries=1 --spider --timeout=5 http://127.0.0.1:2019/config/ && wget --quiet --tries=1 --spider --timeout=5 http://127.0.0.1:2019/reverse_proxy/upstreams && caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile | grep Valid"
+val caddyScoped = isolatedCaddyProbe(caddySource)
+check(!caddyScoped.contains(":2019") && caddyScoped.startsWith("prefix && test -s /ca/caddy-ca.crt"))
+check(caddyScoped.contains("test -s /certs/pki/authorities/local/root.crt && pidof caddy"))
+check(caddyScoped.contains("caddy validate --config"))
+for (badSource in listOf("true", caddySource.replace("2019/config/", "2018/config/"),
+    caddySource.replace("test -s /ca/caddy-ca.crt", "true"), caddySource + " http://127.0.0.1:2019/config/"))
+    check(runCatching { isolatedCaddyProbe(badSource) }.isFailure)
+println("[scope-caddy-health-test] 5 actual-translator cases passed; admin API remains off")
 '''
     cp = (ROOT / 'runtime-generator/build/generator-classpath.txt').read_text().strip()
     with tempfile.TemporaryDirectory(prefix='p0-health-input-test-') as directory:

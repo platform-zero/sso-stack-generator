@@ -66,8 +66,9 @@ class PrivateIngressTests(unittest.TestCase):
         self.assertIn('ListenStream=192.168.140.1:443\n',result['socket'])
         self.assertIn('ListenStream=192.168.140.1:56042\n',result['socket'])
         self.assertEqual(result['socket'].count('ListenStream='),2)
-        self.assertIn('BindToDevice=virbr140',result['socket'])
-        self.assertIn('BindsTo=p0test-r1-caddy.service',result['socket'])
+        self.assertNotIn('BindToDevice=',result['socket'])  # Native lo clients use the same strictly fenced private IP.
+        self.assertIn('PartOf=p0test-r1.target',result['socket'])
+        self.assertNotIn('Requires=',result['service'])  # No late connection may implicitly start a stopped backend.
         self.assertIn('WantedBy=p0test-r1.target',result['socket'])
         self.assertNotIn('WantedBy=sockets.target',result['socket'])
         self.assertIn('127.0.0.1:56042',result['service'])
@@ -116,7 +117,9 @@ class PrivateIngressTests(unittest.TestCase):
         for name,expected_port in (('smtp',56044),('imap',56047)):
             item=next(row for row in result['units'] if row['unit'].endswith(name))
             self.assertEqual(item['upstream'],f'127.0.0.1:{expected_port}')
-            self.assertIn('BindToDevice=virbr140',item['socket'])
+            self.assertNotIn('BindToDevice=',item['socket'])
+            self.assertIn('PartOf=p0test-r1.target',item['socket'])
+            self.assertNotIn('Requires=',item['service'])
             self.assertIn('WantedBy=p0test-r1.target',item['socket'])
             self.assertEqual(item['socket'].count('ListenStream='),2)
         for bad in ('wildcard','extra','hostnet','wrong-port','missing'):
