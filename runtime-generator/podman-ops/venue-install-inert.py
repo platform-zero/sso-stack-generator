@@ -127,7 +127,16 @@ def retire(bundle,selector,inventory,ledger):
     if receipt(p).get('venueLogBindDirs'):composite.binds.retire_logs(b,selector,p)
     if receipt(p).get('venueCompositeMode')!='retired-inert':composite.retire(b,selector,p)
     if receipt(p).get('venueRuntimeEnvPhase')!='retired-inert':envs.retire(b,selector,p)
-    if receipt(p).get('status')!='staged-empty':managers.act(b,selector,p,stop=True)
+    current=receipt(p)
+    if current.get('status')!='staged-empty':
+        # A native run installed three separately receipted host control units.
+        # Retire them only after graph/unit/env retirement, before the unchanged
+        # manager empty-unit gate. Never make that gate ignore installed units.
+        if (current.get('venueInstallerVersion')==2 and
+                current.get('venueHostUnitsRetirement',{}).get('phase')!='retired'):
+            lifecycle=load('venue_retire_lifecycle','venue-start-quarantine.py')
+            lifecycle.retire_host_units(b,selector,p,stage.sha(p))
+        managers.act(b,selector,p,stop=True)
     if receipt(p).get('venueCompositeVersion') and not receipt(p).get('podmanRunrootRetired'):
         graph.retire_empty_runroot(b,selector,p)
     if receipt(p).get('venueDomainRuntimePhase')!='retired-inert':domains.retire(b,selector,p)

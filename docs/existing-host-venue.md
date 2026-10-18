@@ -76,6 +76,9 @@ started. Podman 5.4 requires this flag through `PodmanArgs` (after the generated
 conmon default), not the boolean-only Quadlet `Notify=` key. Startup remains
 bounded by the service timeout and installer quarantine. Native parser/argv and
 translator tests are source proof, not deployed application-health acceptance.
+Native version-2 retirement invokes the existing exact host-unit retirement
+helper after graph/unit/env disposal and before manager retirement. A foreign or
+changed host unit stops this sequence; the manager empty-unit gate is unchanged.
 
 Bridge publishers require the actual selected gateway to exist. Runtime bridge
 preparation deliberately leaves network autostart **off** until durable fence/boot
