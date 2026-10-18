@@ -76,6 +76,13 @@ started. Podman 5.4 requires this flag through `PodmanArgs` (after the generated
 conmon default), not the boolean-only Quadlet `Notify=` key. Startup remains
 bounded by the service timeout and installer quarantine. Native parser/argv and
 translator tests are source proof, not deployed application-health acceptance.
+Cross-manager healthy edges cannot be expressed by user-manager `After=`. The
+existing versioned activation dispatcher derives manager batches from those exact
+IR edges, rejects cycles/missing native probes before intent, and waits for
+current-epoch producer readiness before queuing each dependent manager. It checks
+all already-queued mandatory leaves during these bounded waits, releases lifecycle
+exclusion while waiting so quarantine remains available, and rechecks fencing under
+the lease immediately before each native queue. No fixed tier list or new daemon.
 Native version-2 retirement invokes the existing exact host-unit retirement
 helper after graph/unit/env disposal and before manager retirement. A foreign or
 changed host unit stops this sequence; the manager empty-unit gate is unchanged.

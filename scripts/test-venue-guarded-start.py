@@ -33,6 +33,9 @@ class Start(unittest.TestCase):
         for scope,service in (('rootful','root'),('rootless-apps','app')):
             directory=self.bundle/'quadlet'/scope;directory.mkdir(parents=True)
             (directory/'p0test-r1.target').write_text('[Unit]\nWants=p0test-r1-'+service+'.service\n')
+            (directory/('p0test-r1-'+service+'.container')).write_text('[Container]\nPodmanArgs=--sdnotify=healthy\nHealthCmd=["true","ready"]\n')
+        (self.bundle/'stack.ir.json').write_text(json.dumps({'services':{
+            'root':{'dependencies':{}},'app':{'dependencies':{'root':'healthy'}}}}))
         sources={};rows=[]
         for index in range(61):
             path=self.root/('bind-'+str(index));path.mkdir();info=path.stat()
@@ -95,5 +98,85 @@ class Start(unittest.TestCase):
         self.assertEqual(sum('start' in c for c in self.commands),2)
         self.assertEqual(sum('stop' in c for c in self.commands),2)
         self.assertEqual(len(list(self.root.glob('bind-*'))),61)
+
+    def test_upstream_observation_precedes_downstream_queue(self):
+        with patch.object(q.graph,'run',side_effect=self.native):
+            installer.activate(self.bundle,self.selector,self.ledger)
+        starts=[i for i,c in enumerate(self.commands) if 'start' in c]
+        root_observations=[i for i,c in enumerate(self.commands) if 'show' in c and 'p0test-r1-root.service' in c]
+        self.assertTrue(any(starts[0]<i<starts[1] for i in root_observations))
+    def test_failed_upstream_never_queues_downstream(self):
+        def native(command,**kwargs):
+            result=self.native(command,**kwargs)
+            if 'show' in command and 'p0test-r1-root.service' in command:
+                result.stdout=result.stdout.replace('ActiveState=active','ActiveState=failed')
+            return result
+        with patch.object(q.graph,'run',side_effect=native):
+            with self.assertRaisesRegex(ValueError,'native selected service failed'):
+                installer.activate(self.bundle,self.selector,self.ledger)
+        self.assertEqual(sum('start' in c for c in self.commands),1)
+        self.assertEqual(json.loads(self.ledger.read_text())['venueStartPhase'],'failed-quarantined')
+    def test_unready_upstream_deadline_never_queues_downstream(self):
+        clock=[0]
+        def native(command,**kwargs):
+            result=self.native(command,**kwargs)
+            if 'show' in command and 'p0test-r1-root.service' in command:
+                result.stdout=result.stdout.replace('ActiveState=active','ActiveState=activating');clock[0]=1000
+            return result
+        with patch.object(q.graph,'run',side_effect=native),patch.object(q.time,'monotonic',side_effect=lambda:clock[0]):
+            with self.assertRaisesRegex(ValueError,'cross-manager healthy startup deadline'):
+                installer.activate(self.bundle,self.selector,self.ledger)
+        self.assertEqual(sum('start' in c for c in self.commands),1)
+        self.assertEqual(json.loads(self.ledger.read_text())['venueStartPhase'],'failed-quarantined')
+    def test_operator_fence_between_observation_and_queue_wins(self):
+        fenced=[False]
+        def native(command,**kwargs):
+            result=self.native(command,**kwargs)
+            if not fenced[0] and 'show' in command and 'p0test-r1-root.service' in command:
+                fenced[0]=True
+                state=json.loads(self.ledger.read_text());state.update(venueStartPhase='failed-quarantined',activationAuthorized=False)
+                self.ledger.write_text(json.dumps(state))
+                q.runtime_receipt(self.context,'failed-quarantined',False)
+            return result
+        with patch.object(q.graph,'run',side_effect=native):
+            with self.assertRaisesRegex(ValueError,'activation was fenced'):
+                installer.activate(self.bundle,self.selector,self.ledger)
+        self.assertEqual(sum('start' in c for c in self.commands),1)
+        self.assertFalse(json.loads(self.ledger.read_text())['activationAuthorized'])
+
+class Batches(unittest.TestCase):
+    def setUp(self):
+        temp=tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup);self.bundle=Path(temp.name)
+        self.plan={'prefix':'p0test-r1','accounts':[{'name':'p0test-r1-'+n,'uid':i+3200,'home':'/fixture'} for i,n in enumerate(('apps','platform'))]}
+        self.paths={}
+        for owner,name in (('rootful','root'),('rootless-apps','app'),('rootless-platform','db')):
+            p=self.bundle/'quadlet'/owner/('p0test-r1-'+name+'.container');p.parent.mkdir(parents=True,exist_ok=True)
+            p.write_text('[Container]\nPodmanArgs=--sdnotify=healthy\nHealthCmd=["true","ready"]\n');self.paths[name]=p
+        self.services={'root':{'dependencies':{}},'db':{'dependencies':{'root':'healthy'}},'app':{'dependencies':{'db':'healthy'}}}
+    def invoke(self):
+        (self.bundle/'stack.ir.json').write_text(json.dumps({'services':self.services}))
+        with patch.object(q.graph,'run') as native:
+            try:return q.activation_batches(self.bundle,self.plan)
+            finally:native.assert_not_called()
+    def test_actual_edges_override_input_manager_order(self):
+        result=self.invoke()
+        self.assertEqual([a['name'] if a else None for a,_,_ in result],[None,'p0test-r1-platform','p0test-r1-apps'])
+        self.assertEqual(result[-1][2],{('p0test-r1-platform','p0test-r1-db.service')})
+    def test_missing_producer_refuses_before_any_native_call(self):
+        self.services['app']['dependencies']={'missing':'healthy'}
+        with self.assertRaisesRegex(q.Refusal,'no managed native service'):self.invoke()
+    def test_missing_native_health_flag_or_probe_refuses(self):
+        original=self.paths['db'].read_text()
+        for text in (original.replace('--sdnotify=healthy',''),original.replace('HealthCmd=','NotHealthCmd=')):
+            self.paths['db'].write_text(text)
+            with self.assertRaisesRegex(q.Refusal,'native readiness notification'):self.invoke()
+    def test_cross_manager_cycle_refuses_before_queue(self):
+        self.services['db']['dependencies']['app']='healthy'
+        with self.assertRaisesRegex(q.Refusal,'dependency cycle'):self.invoke()
+    def test_same_manager_edge_needs_no_cross_manager_barrier(self):
+        p=self.paths['app'].with_name('p0test-r1-peer.container');p.write_text(self.paths['app'].read_text())
+        self.services['peer']={'dependencies':{}};self.services['app']['dependencies']={'peer':'healthy'}
+        result=self.invoke();app=next(row for row in result if row[0] and row[0]['name']=='p0test-r1-apps')
+        self.assertEqual(app[2],set())
 
 if __name__=='__main__':unittest.main()

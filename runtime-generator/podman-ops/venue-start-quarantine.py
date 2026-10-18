@@ -33,6 +33,57 @@ def selected_commands(plan):
                 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/'+str(a['uid'])+'/bus',
                 'systemctl','--user']) for a in plan['accounts']]
 
+def activation_batches(bundle,plan):
+    """Order managers by actual cross-manager healthy edges, never fixed tiers."""
+    commands=selected_commands(plan)
+    owners={a['name'] if a else None:(a,command) for a,command in commands}
+    services={};texts={}
+    for file in (Path(bundle)/'quadlet').glob('*/*.container'):
+        owner=None if file.parent.name=='rootful' else plan['prefix']+'-'+file.parent.name.removeprefix('rootless-')
+        name=file.stem.removeprefix(plan['prefix']+'-')
+        if owner not in owners or name in services:raise Refusal('ambiguous startup service owner')
+        services[name]=owner;texts[name]=file.read_text()
+    ir=json.loads((Path(bundle)/'stack.ir.json').read_text())
+    requires={owner:set() for owner in owners};dependencies={owner:set() for owner in owners}
+    for consumer,service in ir['services'].items():
+        for producer,condition in service.get('dependencies',{}).items():
+            if condition!='healthy':continue
+            if consumer not in services or producer not in services:raise Refusal('healthy edge has no managed native service')
+            if ('--sdnotify=healthy' not in texts[producer] or
+                    not any(line.startswith('HealthCmd=') for line in texts[producer].splitlines())):
+                raise Refusal('healthy producer lacks native readiness notification')
+            owner,upstream=services[consumer],services[producer]
+            if owner!=upstream:
+                dependencies[owner].add(upstream)
+                requires[owner].add((upstream,plan['prefix']+'-'+producer+'.service'))
+    remaining=list(owners);ordered=[];done=set()
+    while remaining:
+        ready=next((owner for owner in remaining if dependencies[owner]<=done),...)
+        if ready is ...:raise Refusal('cross-manager healthy dependency cycle; no startup queued')
+        remaining.remove(ready);done.add(ready)
+        account,command=owners[ready];ordered.append((account,command,requires[ready]))
+    return ordered
+
+def startup_observations(bundle,plan,state,selected):
+    """Observe only queued managers, including every mandatory startup leaf."""
+    observations={}
+    for account,command in selected_commands(plan):
+        owner=account['name'] if account else None
+        if (owner or 'root') not in state['venueStartQueued']:continue
+        directory=Path(bundle)/'quadlet'/('rootless-'+account['name'].removeprefix(plan['prefix']+'-') if account else 'rootful')
+        wanted=set()
+        for file in directory.glob('*.target'):
+            for line in file.read_text().splitlines():
+                if line.startswith(('Wants=','Requires=')):
+                    wanted.update(x for x in line.split('=',1)[1].split() if x.endswith('.service'))
+        if not wanted<=set(selected[owner]):raise Refusal('startup dependency escaped selected unit set')
+        for name in sorted(wanted|{plan['prefix']+'.target'}):
+            result=graph.run(command+['show',name,'-p','ActiveState','-p','Result','-p','ExecMainStatus','-p','ExecMainStartTimestampMonotonic','-p','InactiveExitTimestampMonotonic'],timeout=30)
+            if result.returncode:raise Refusal('cannot inspect selected startup state')
+            row=dict(line.split('=',1) for line in result.stdout.splitlines() if '=' in line)
+            observations[owner,name]=observed_ready(row,state['venueStartMonotonicUsec'],name)
+    return observations
+
 def targets(bundle,plan,state):
     selected=units.manifest(bundle,plan)
     if (selected!=state.get('unitFiles') or len(selected)!=194 or
@@ -192,6 +243,7 @@ def start(bundle,selector,ledger,timeout=900,*,reviewed_failed_sha=None):
     state=json.loads(p.read_text());plan=stage.owned_plan(bundle,selector)
     context=host_context(bundle,plan)
     selected=targets(bundle,plan,state)
+    batches=activation_batches(bundle,plan)
     marker=Path(plan['roots']['rootful-state'])/'volume-ready-r1.txt'
     with lifecycle(context):
         recovering=reviewed_failed_sha is not None
@@ -281,38 +333,43 @@ def start(bundle,selector,ledger,timeout=900,*,reviewed_failed_sha=None):
                 socket=Path('/run/user/'+str(account['uid'])+'/podman/podman.sock');info=socket.lstat()
                 if socket.is_symlink() or not stat.S_ISSOCK(info.st_mode) or info.st_uid!=account['uid']:
                     raise Refusal('selected API socket identity differs')
-            for account,command in selected_commands(plan):
-                registry.reserve()
-                owner=account['name'] if account else 'root'
-                state['venueStartPending']=owner;stage.write_ledger(p,state)
-                result=graph.run(command+['start','--job-mode=fail','--no-block',plan['prefix']+'.target'],timeout=30)
-                if result.returncode:raise Refusal('selected native start request failed: '+owner)
-                state['venueStartQueued'].append(owner);state.pop('venueStartPending');stage.write_ledger(p,state)
         except Exception:
             runtime_receipt(context,'failed-quarantining',False)
             raise  # caller performs the same exact journaled stop below
     deadline=time.monotonic()+timeout
+    for account,command,required in batches:
+        while True:
+            registry.reserve();context.physical_reserves()
+            if time.monotonic()>=deadline:raise Refusal('cross-manager healthy startup deadline')
+            state=json.loads(p.read_text())
+            if state.get('venueStartPhase')!='starting' or state.get('activationAuthorized') is not True:
+                raise Refusal('activation was fenced before manager queue')
+            observed=startup_observations(bundle,plan,state,selected)
+            if all(observed.get(edge) is True for edge in required):break
+            if time.monotonic()>=deadline:raise Refusal('cross-manager healthy startup deadline')
+            time.sleep(2)
+        # Release exclusion while waiting so an operator can quarantine; check
+        # again under the lease immediately before every native side effect.
+        with lifecycle(context):
+            state=json.loads(p.read_text())
+            if time.monotonic()>=deadline:raise Refusal('cross-manager healthy startup deadline')
+            if state.get('venueStartPhase')!='starting' or state.get('activationAuthorized') is not True:
+                raise Refusal('activation was fenced before manager queue')
+            registry.reserve();context.physical_reserves()
+            owner=account['name'] if account else 'root'
+            state['venueStartPending']=owner;stage.write_ledger(p,state)
+            try:
+                result=graph.run(command+['start','--job-mode=fail','--no-block',plan['prefix']+'.target'],timeout=30)
+                if result.returncode:raise Refusal('selected native start request failed: '+owner)
+                state['venueStartQueued'].append(owner);state.pop('venueStartPending');stage.write_ledger(p,state)
+            except Exception:
+                runtime_receipt(context,'failed-quarantining',False)
+                raise
     while True:
         registry.reserve();context.physical_reserves()
-        pending=[]
-        for account,command in selected_commands(plan):
-            owner=account['name'] if account else None
-            # Build recipes and on-demand Android services are intentionally not
-            # boot targets. Inspect actual declared startup leaves, not target
-            # ActiveState (Wants failures do not fail a target).
-            directory=Path(bundle)/'quadlet'/('rootless-'+account['name'].removeprefix(plan['prefix']+'-') if account else 'rootful')
-            wanted=set()
-            for file in directory.glob('*.target'):
-                for line in file.read_text().splitlines():
-                    if line.startswith(('Wants=','Requires=')):
-                        wanted.update(x for x in line.split('=',1)[1].split() if x.endswith('.service'))
-            if not wanted<=set(selected[owner]):raise Refusal('startup dependency escaped selected unit set')
-            for name in sorted(wanted|{plan['prefix']+'.target'}):
-                registry.reserve()
-                result=graph.run(command+['show',name,'-p','ActiveState','-p','Result','-p','ExecMainStatus','-p','ExecMainStartTimestampMonotonic','-p','InactiveExitTimestampMonotonic'],timeout=30)
-                if result.returncode:raise Refusal('cannot inspect selected startup state')
-                row=dict(line.split('=',1) for line in result.stdout.splitlines() if '=' in line)
-                if not observed_ready(row,state['venueStartMonotonicUsec'],name):pending.append(name)
+        state=json.loads(p.read_text())
+        if state.get('venueStartPhase')!='starting':raise Refusal('activation was fenced during observation')
+        pending=[name for (_,name),ready in startup_observations(bundle,plan,state,selected).items() if not ready]
         if not pending:
             with lifecycle(context):
                 state=json.loads(p.read_text())

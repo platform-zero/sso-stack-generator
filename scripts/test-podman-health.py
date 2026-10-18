@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check real generated probes and native readiness argv without starting containers."""
 import json
+import importlib.util
 import re
 import shlex
 import sys
@@ -80,7 +81,27 @@ def check(bundle, generated):
     kvs = files[prefix + "-huly-kvs"].read_text()
     assert values(kvs, "After") and prefix + "-huly-cockroach.service" in values(kvs, "After")
     assert "--sdnotify=healthy" in files[prefix + "-huly-cockroach"].read_text()
-    print(f"[health-contract] {probes} probes / {gated} health-ready producers; native argv verified")
+    spec = importlib.util.spec_from_file_location('bundle_health_batches', bundle / 'ops/venue-start-quarantine.py')
+    dispatcher = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dispatcher)
+    directories = sorted(p for p in (bundle / 'quadlet').iterdir() if p.name.startswith('rootless-'))
+    plan = {'prefix': prefix, 'accounts': [{'name': prefix + '-' + p.name.removeprefix('rootless-'),
+            'uid': 3200 + i, 'home': '/nonexistent-fixture'} for i, p in enumerate(directories)]}
+    batches = dispatcher.activation_batches(bundle, plan)
+    order = {account['name'] if account else None: i for i, (account, _, _) in enumerate(batches)}
+    barriers = {account['name'] if account else None: required for account, _, required in batches}
+    owners = {name.removeprefix(prefix + '-'): (None if path.parent.name == 'rootful' else
+              prefix + '-' + path.parent.name.removeprefix('rootless-')) for name, path in files.items()}
+    cross_edges = 0
+    for consumer, service in services.items():
+        for producer, condition in service.get('dependencies', {}).items():
+            if condition != 'healthy' or owners[consumer] == owners[producer]:
+                continue
+            owner, upstream = owners[consumer], owners[producer]
+            assert order[upstream] < order[owner], (consumer, producer)
+            assert (upstream, prefix + '-' + producer + '.service') in barriers[owner], (consumer, producer)
+            cross_edges += 1
+    print(f"[health-contract] {probes} probes / {gated} health-ready producers; native argv verified; {cross_edges} cross-manager healthy edges gated")
 
 
 if __name__ == "__main__":
