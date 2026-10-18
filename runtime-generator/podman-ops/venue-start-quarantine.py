@@ -161,10 +161,11 @@ def reviewed_retry(state,plan,context,*,require_repair=True):
         raise Refusal('exact quarantined intent required')
     if require_repair:
         kind=repair.get('kind');source={'missing-owned-log-bind':HERE/'venue-bind-dirs.py',
+                                     'missing-owned-media-fixture':HERE/'venue-bind-dirs.py',
                                      'stale-native-result':Path(__file__)}.get(kind)
         if (source is None or repair.get('sourceSha256')!=stage.sha(source) or
                 repair.get('appliesToStartMonotonicUsec')!=state.get('venueStartMonotonicUsec') or
-                (kind=='missing-owned-log-bind' and not repair.get('paths')) or
+                (kind in ('missing-owned-log-bind','missing-owned-media-fixture') and not repair.get('paths')) or
                 (kind=='stale-native-result' and (not repair.get('unit') or
                     max(int(repair.get('observed',{}).get('ExecMainStartTimestampMonotonic','0')),
                         int(repair.get('observed',{}).get('InactiveExitTimestampMonotonic','0')))>=state['venueStartMonotonicUsec']))):
@@ -221,6 +222,7 @@ def start(bundle,selector,ledger,timeout=900,*,reviewed_failed_sha=None):
         binds=load('venue_binds','venue-bind-dirs.py')
         _,_,sources=binds.checked_stage(bundle,selector,ledger,('units-staged','installed-starting') if recovering else ('units-staged',))
         logs=binds.log_sources(bundle,plan)
+        binds.checked_fixtures(bundle,plan,state)
         if {row['path']:row['consumers'] for row in state.get('venueLogBindDirs',[])}!=logs:
             raise Refusal('actual namespace log binds were not prepared/receipted')
         for row in state.get('venueLogBindDirs',[]):

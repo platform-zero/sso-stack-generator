@@ -25,6 +25,8 @@ listener/capacity gate to get an installation attempt.
 | Prepare required runtime bridge | `ops/render-existing-host-guest-network.py --prepare-owned --journal ...` | Applies only the exact new guest fence before atomic network creation; journals UUID and persists only its own native XML; no guest or autostart |
 | Stage owned native boot fence | `ops/render-existing-host-guest-network.py --stage-owned-boot-fence --journal ... --expected-journal-sha SHA256` | Preactivation/never-guest context, idle units, exact live XML/fence CAS; installs one root-owned immutable network-specific libvirt hook; no daemon restart or autostart |
 | Prove native boot fence before autostart | `ops/render-existing-host-guest-network.py --prove-owned-boot-fence --journal ... --expected-journal-sha SHA256` | Requires active libvirtd, all domains stopped with autostart disabled, no stopped autostart networks and no attached interfaces; refreshes daemon, cycles only the owned bridge with fence retained, requires fresh native hook proof before enabling only its network autostart; no host reboot or VM start |
+| Prepare two synthetic media inputs | `ops/venue-bind-dirs.py --prepare-fixtures` | Exact Jellyfin readonly/qBittorrent writable selected fixture bindings; creates only two absent owned leaves and two new parents, records original inodes/UIDs/modes; no media/data import or service start |
+| Repair missing selected media inputs after failure | `ops/venue-bind-dirs.py --repair-failed-fixtures LEDGER_SHA256` | Exact failed-consumer/current-boot quarantine, ledger CAS and lifecycle lease; refuses any existing path rather than adopting it; source/epoch-bound specific repair, not automatic restart |
 | Repair a missing owned log bind | `ops/venue-bind-dirs.py --repair-failed-logs ...` | Only after completed selected failed-start quarantine; creates absent immediate rootful log children under exact receipted parent, never adopts or resets data |
 | Clean exact stopped native bootstrap metadata | `ops/venue-start-quarantine.py --cleanup-stopped-native SHA256 ...` | Under the same fenced lease/failed-ledger CAS and specific repair; journals exact source/image/unit/epoch-owned exited IDs before non-force cleanup/rm; no volumes or data reset |
 | Review a proven stale prior-result observation | `ops/venue-start-quarantine.py --review-stale-result-unit UNIT --reviewed-ledger-sha SHA256 ...` | One selected owner/unit, failed result whose activation/exec timestamps precede this attempt, changed lifecycle source, fenced current-boot context; no start or data reset |
@@ -64,6 +66,15 @@ guest lifecycle acceptance or a reason to enable VM autostart. Exact never-guest
 network retirement removes only its unchanged receipted hook/proof after network
 undefinition and before its own fence table deletion. Existing network names,
 routes, interfaces, fence tables or journals are never adopted or retried.
+
+The two media fixtures are separate from the 61 data binds. Initial inert
+preparation materializes their actual source paths; activation requires the
+original receipted nodes, not just an accepted static substitution. Empty source
+directories are not playback/download functionality proof. Populated experimental
+reset includes only those original fixture leaf inodes, restoring recorded modes;
+empty retirement removes only their four unchanged, empty nodes before the
+original stage parents. Existing/authored fixture paths are never adopted or
+recursively removed by preparation/empty retirement.
 
 Cross-domain ACL namespace inspection fails closed on unreadable/invalid procfs
 mountinfo, including permission denial; it never interprets an unknown namespace

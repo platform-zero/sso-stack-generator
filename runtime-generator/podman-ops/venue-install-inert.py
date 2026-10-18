@@ -72,6 +72,7 @@ def prepare(bundle,selector,inventory,ledger,age_key,image_inputs):
     envs.prepare(b,selector,p)
     composite.prepare(b,selector,p,input_manifest)
     composite.binds.prepare_logs(b,selector,p)
+    composite.binds.prepare_fixtures(b,selector,p)
     data=receipt(p)
     marker=Path(plan['roots']['rootful-state'])/'volume-ready-r1.txt'
     if (data.get('venueReleasePhase')!='inert-ready' or data.get('venueDomainRuntimePhase')!='inert-ready' or
@@ -120,6 +121,9 @@ def retire(bundle,selector,inventory,ledger):
         else:
             raise Refusal('all 194 units and private inputs must coexist before initial retirement')
         data['venueInstallerPhase']='retiring';stage.write_ledger(p,data)
+    current=receipt(p)
+    if current.get('venueFixtureBindDirs') and {r['path'] for r in current['venueFixtureBindDirs']}!=set(current.get('retiredFixtureBindDirs',[])):
+        composite.binds.retire_fixtures(b,selector,p)
     if receipt(p).get('venueLogBindDirs'):composite.binds.retire_logs(b,selector,p)
     if receipt(p).get('venueCompositeMode')!='retired-inert':composite.retire(b,selector,p)
     if receipt(p).get('venueRuntimeEnvPhase')!='retired-inert':envs.retire(b,selector,p)
@@ -150,7 +154,7 @@ def empty_owned_directory(row):
                 if child.st_dev!=opened.st_dev:raise Refusal('nested filesystem in selected reset directory')
                 shutil.rmtree(name,dir_fd=fd)
             else:os.unlink(name,dir_fd=fd)
-        os.fchown(fd,row['restoreUid'],row.get('restoreGid',row['restoreUid']));os.fchmod(fd,0o700)
+        os.fchown(fd,row['restoreUid'],row.get('restoreGid',row['restoreUid']));os.fchmod(fd,row.get('restoreMode',0o700))
         if os.listdir(fd):raise Refusal('selected reset directory repopulated')
         os.fsync(fd)
     finally:os.close(fd)
@@ -210,6 +214,8 @@ def reset_owned(bundle,selector,inventory,ledger,reviewed_sha):
         logs=composite.binds.log_sources(b,plan)
         if logs!={row['path']:row['consumers'] for row in data.get('venueLogBindDirs',[])}:raise Refusal('actual owned log set differs')
         rows.extend({**row,'restoreUid':0,'restoreGid':0} for row in data.get('venueLogBindDirs',[]))
+        fixtures=composite.binds.checked_fixtures(b,plan,data)
+        rows.extend({**row,'restoreUid':row['uid'],'restoreGid':row['uid'],'restoreMode':row['mode']} for row in fixtures if row['kind']=='fixture')
         apps=next(a for a in plan['accounts'] if a['name']==plan['prefix']+'-apps')
         if composite.huly.inventory(apps)!=set(composite.huly.NAMES) or len(data.get('venueHulyVolumes',[]))!=4:
             raise Refusal('four exact original named volumes required')

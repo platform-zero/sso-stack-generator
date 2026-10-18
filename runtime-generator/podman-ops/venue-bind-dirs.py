@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Materialize/retire ONLY 61 EMPTY actual-Quadlet data bind directories.
+"""Materialize/retire exact empty data, log and synthetic fixture bind nodes.
 
-No ACL, chown recursion, volume-init service, populated-data reset, image or
-service activation. Cross-domain consumers are recorded, not granted access.
+No existing-tree ACL/chown recursion, volume-init service, populated-data reset,
+image or service activation. Cross-domain consumers are recorded, not granted
+access. The 61 data binds and two source-derived media fixtures stay distinct.
 """
 import argparse
+from contextlib import nullcontext
 import importlib.util
 import json
 import os
@@ -108,6 +110,91 @@ def retire(bundle,selector,ledger):
     return {'status':data['status'],'retiredEmptyDataBindDirs':len(rows),
             'activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
+def fixture_sources(bundle,plan):
+    found={}
+    for directory in (Path(bundle)/'quadlet').iterdir():
+        if not directory.is_dir():continue
+        for file in directory.glob('*.container'):
+            for line in file.read_text().splitlines():
+                if not line.startswith('Volume=') or '/fixtures/' not in line:continue
+                parts=line.split('=',1)[1].split(':');source=parts[0]
+                found.setdefault(source,[]).append((directory.name,file.name,parts[1:]))
+    if not found:return {}
+    base=Path(plan['roots']['rootful-graph']).parent/'fixtures/media'
+    expected={str(base/'jellyfin-media'):[('rootless-apps',plan['prefix']+'-jellyfin.container',['/media','ro'])],
+              str(base/'qbittorrent'):[('rootless-apps',plan['prefix']+'-qbittorrent.container',['/downloads'])]}
+    if found!=expected:raise Refusal('fixture binds differ from exact selected synthetic media inputs')
+    return {name:{'consumer':rows[0][1],'readOnly':rows[0][2]==['/media','ro']} for name,rows in found.items()}
+
+
+def fixture_nodes(plan,sources):
+    if not sources:return []
+    base=Path(plan['roots']['rootful-graph']).parent;apps=next(a for a in plan['accounts'] if a['name']==plan['prefix']+'-apps')
+    nodes=[{'path':str(base/'fixtures'),'uid':0,'mode':0o711,'kind':'parent'},
+           {'path':str(base/'fixtures/media'),'uid':0,'mode':0o711,'kind':'parent'}]
+    return nodes+[{'path':name,'uid':apps['uid'],'mode':0o755,'kind':'fixture',**info} for name,info in sorted(sources.items())]
+
+
+def checked_fixtures(bundle,plan,data):
+    sources=fixture_sources(bundle,plan);nodes=fixture_nodes(plan,sources);rows=data.get('venueFixtureBindDirs',[])
+    if len(rows)!=len(nodes) or any(any(row.get(k)!=value for k,value in node.items()) for node,row in zip(nodes,rows)):
+        raise Refusal('exact original fixture node inventory required')
+    if rows:
+        base=Path(plan['roots']['rootful-graph']).parent;info=base.lstat();original=data['pathIdentities'].get(str(base),{})
+        if base.is_symlink() or (info.st_dev,info.st_ino,info.st_uid)!=(original.get('dev'),original.get('ino'),0):raise Refusal('owned fixture ancestor changed')
+    for row in rows:
+        path=Path(row['path']);info=path.lstat()
+        if path.is_symlink() or not stat.S_ISDIR(info.st_mode) or (info.st_dev,info.st_ino)!=(row['dev'],row['ino']):raise Refusal('original fixture inode changed')
+        if row['kind']=='parent' and (info.st_uid,stat.S_IMODE(info.st_mode))!=(0,row['mode']):raise Refusal('fixture parent ownership/mode changed')
+    return rows
+
+
+def prepare_fixtures(bundle,selector,ledger,*,repair_sha=None):
+    lifecycle=load('fixture_lifecycle','venue-start-quarantine.py');plan=stage.owned_plan(bundle,selector)
+    context=lifecycle.host_context(bundle,plan) if repair_sha is not None else None
+    with lifecycle.lifecycle(context) if context is not None else nullcontext():
+        p,data,_=checked_stage(bundle,selector,ledger,('units-staged','installed-starting'))
+        lifecycle.units.units_idle(plan)
+        if repair_sha is not None:
+            if stage.sha(p)!=repair_sha:raise Refusal('reviewed failed fixture ledger SHA changed')
+            lifecycle.reviewed_retry(data,plan,context,require_repair=False)
+            if data.get('venueStartFailure',{}).get('reason') not in ['native selected service failed: '+plan['prefix']+'-'+name+'.service' for name in ('jellyfin','qbittorrent')]:
+                raise Refusal('no matching failed selected fixture consumer')
+        elif data.get('venueInstallerVersion')!=1:raise Refusal('initial fixture preparation is inert only')
+        sources=fixture_sources(bundle,plan);nodes=fixture_nodes(plan,sources)
+        if not nodes:
+            if repair_sha:raise Refusal('no selected missing fixture inputs')
+            return {'status':'inert-ready','fixtureDirectories':0,'activationAuthorized':False}
+        if data.get('venueFixtureBindDirs') or data.get('pendingVenueFixtureDir') or any(os.path.lexists(row['path']) for row in nodes):
+            raise Refusal('fixture path/intent already exists; never adopt authored or partial contents')
+        base=Path(plan['roots']['rootful-graph']).parent;record=data['pathIdentities'].get(str(base),{});info=base.lstat()
+        if base.is_symlink() or (info.st_dev,info.st_ino,info.st_uid)!=(record.get('dev'),record.get('ino'),0):raise Refusal('owned fixture ancestor changed')
+        data['venueFixtureBindDirs']=[];stage.write_ledger(p,data)
+        for row in nodes:
+            data['pendingVenueFixtureDir']=row['path'];stage.write_ledger(p,data)
+            info=stage.create_private_directory(row['path'],row['uid'],row['mode'])
+            data['venueFixtureBindDirs'].append({**row,'dev':info.st_dev,'ino':info.st_ino});data.pop('pendingVenueFixtureDir');stage.write_ledger(p,data)
+        if repair_sha is not None:
+            data['venueStartRepair']={'kind':'missing-owned-media-fixture','sourceSha256':stage.sha(__file__),
+                'appliesToStartMonotonicUsec':data['venueStartMonotonicUsec'],'paths':sorted(sources),'reviewedLedgerSha256':repair_sha}
+            stage.write_ledger(p,data)
+        return {'status':'inert-ready','fixtureDirectories':len(sources),'newParentDirectories':2,'activationAuthorized':False,'servicesStarted':False}
+
+
+def retire_fixtures(bundle,selector,ledger):
+    p,data,_=checked_stage(bundle,selector,ledger,('units-staged','installed-starting'));plan=stage.owned_plan(bundle,selector)
+    rows=checked_fixtures(bundle,plan,data);done=set(data.get('retiredFixtureBindDirs',[]))
+    for row in rows:
+        if row['path'] in done:continue
+        path=Path(row['path']);info=path.lstat()
+        expected={Path(r['path']).name for r in rows if Path(r['path']).parent==path and r['path'] not in done}
+        if (info.st_uid,stat.S_IMODE(info.st_mode))!=(row['uid'],row['mode']) or {child.name for child in path.iterdir()}!=expected:
+            raise Refusal('changed or populated fixture; no empty retirement')
+    for row in reversed(rows):
+        if row['path'] in done:continue
+        Path(row['path']).rmdir();data.setdefault('retiredFixtureBindDirs',[]).append(row['path']);done.add(row['path']);stage.write_ledger(p,data)
+
+
 def log_sources(bundle,plan):
     root=Path(plan['roots']['log']);result={}
     for directory in (Path(bundle)/'quadlet').iterdir():
@@ -185,9 +272,11 @@ def main():
     mode=p.add_mutually_exclusive_group(required=True)
     mode.add_argument('--create-empty',action='store_true');mode.add_argument('--retire-empty',action='store_true')
     mode.add_argument('--prepare-logs',action='store_true');mode.add_argument('--repair-failed-logs',action='store_true')
+    mode.add_argument('--prepare-fixtures',action='store_true');mode.add_argument('--repair-failed-fixtures',metavar='LEDGER_SHA256')
     a=p.parse_args()
     try:
-        if a.prepare_logs or a.repair_failed_logs:result=prepare_logs(a.bundle,a.selector,a.ledger,repair=a.repair_failed_logs)
+        if a.prepare_fixtures or a.repair_failed_fixtures is not None:result=prepare_fixtures(a.bundle,a.selector,a.ledger,repair_sha=a.repair_failed_fixtures)
+        elif a.prepare_logs or a.repair_failed_logs:result=prepare_logs(a.bundle,a.selector,a.ledger,repair=a.repair_failed_logs)
         else:result=(create if a.create_empty else retire)(a.bundle,a.selector,a.ledger)
         print(json.dumps(result,sort_keys=True))
     except (Refusal,KeyError,ValueError,TypeError,OSError,json.JSONDecodeError) as exc:

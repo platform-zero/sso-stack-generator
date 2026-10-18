@@ -58,7 +58,7 @@ class Reset(unittest.TestCase):
             if command[0]=='virsh':return NS(returncode=0,stdout='fresh-guest\n' if guest_present else '')
             self.assertEqual(command,['podman','network','rm',identity]);self.assertEqual(json.loads(ledger.read_text())['venueOwnedResetPending'],{'network':identity})
             return NS(returncode=1 if network_failure else 0,stdout='')
-        fake_binds=NS(inventory=lambda *a:sources,log_sources=lambda *a:{str(log/'caddy'):['caddy.container']})
+        fake_binds=NS(inventory=lambda *a:sources,checked_fixtures=lambda *a:[],log_sources=lambda *a:{str(log/'caddy'):['caddy.container']})
         fake_huly=NS(NAMES=names,inventory=lambda *a:set(names),mountpoint=lambda apps,name:named/name)
         return bundle,ledger,plan,events,registry,lifecycle,native,fake_binds,fake_huly,rows,marker
     def run_fixture(self,*,network_failure=False,guest_present=False):
