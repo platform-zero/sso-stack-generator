@@ -218,13 +218,19 @@ class GraphClearFixtures(unittest.TestCase):
               patch.object(clear.os,'geteuid',return_value=0)):
             self.assertEqual(clear.clear(self.bundle,self.root/'unused',self.ledger)['graphRootsCleared'],8)
         self.assertTrue(removed)
-    def frozen_import_aliases(self,*,shared=False,foreign=False):
+    def offline_state(self):
+        return {'venueInstallerVersion':1,'venueInstallerPhase':'retiring','venueCompositeVersion':2,
+                'venueCompositeMode':'retiring','status':'graphs-clearing','activationAuthorized':False,
+                'venueCompositeImageInputSha256':'c'*64,'retiredUnits':[{}]*194}
+    def frozen_import_aliases(self,*,shared=False,foreign=False,offline=False):
         image='sha256:'+'b'*64;user='p0test-r1-platform';aliases={'localhost/webservices/selected:bundle'}
         if shared:aliases.add('localhost/webservices/selected-twin:bundle')
         tags=aliases|{'localhost/sha256:'+image.removeprefix('sha256:')}
         if foreign:tags.add('localhost/unowned:latest')
         digest='sha256:'+'f'*64;details=json.dumps(sorted(tags))+'|'+json.dumps(sorted(tag.rsplit(':',1)[0]+'@'+digest for tag in tags))
         self.data.update(venueRegistryPhase='inert-ready',venueRegistryVerified={user+'|'+image:image},venueCompositeOfflineImages=[{'image':image,'authorities':[user]}])
+        if offline:
+            self.data.pop('venueRegistryPhase');self.data.pop('venueRegistryVerified');self.data.update(self.offline_state())
         commands=[]
         def selected(command,**kwargs):
             commands.append(command);self.assertNotIn('--force',command)
@@ -241,10 +247,26 @@ class GraphClearFixtures(unittest.TestCase):
     def test_frozen_archive_tag_and_seeded_identity_alias_exactly_retire(self):self.frozen_import_aliases()
     def test_frozen_shared_producer_aliases_retire_without_force(self):self.frozen_import_aliases(shared=True)
     def test_frozen_foreign_alias_is_never_untagged(self):self.frozen_import_aliases(foreign=True)
-    def test_verified_frozen_identity_dispatches_exact_alias_cleanup(self):
+    def test_offline_only_frozen_aliases_retire_without_registry_claim(self):self.frozen_import_aliases(offline=True)
+    def test_offline_only_foreign_alias_still_refuses_before_untag(self):self.frozen_import_aliases(offline=True,foreign=True)
+    def test_offline_retirement_scope_rejects_partial_active_or_registry_state(self):
+        state=self.offline_state();self.assertTrue(clear.offline_frozen_retirement(state))
+        for key,value in [('venueInstallerVersion',2),('venueInstallerPhase','preparing'),
+                ('venueCompositeVersion',1),('venueCompositeMode','images-importing'),('status','units-staged'),
+                ('activationAuthorized',True),('venueStartPhase','starting'),('venueStartIntent','partial'),
+                ('venueRegistryPhase','preparing'),('venueRegistryPending','partial'),('venueRegistryVerified',{}),
+                ('retiredUnits',[{}]*193),('venueCompositeImageInputSha256','invalid'),('venueInstallerVersion',True)]:
+            with self.subTest(key=key):self.assertFalse(clear.offline_frozen_retirement({**state,key:value}))
+    def test_verified_frozen_identity_dispatches_exact_alias_cleanup(self):self.frozen_identity_dispatch()
+    def test_offline_only_frozen_identity_dispatches_exact_alias_cleanup(self):self.frozen_identity_dispatch(offline=True)
+    def frozen_identity_dispatch(self,offline=False):
         approved={'root|'+self.allowed:self.allowed};remaining=True
         self.data.update(venueCompositeVersion=2,venueCompositeOfflineImages=[{'authorities':['root'],'image':self.allowed}],
                          venueRegistryPhase='inert-ready',venueRegistryVerified=approved,venueRegistryPlan=approved)
+        if offline:
+            self.data.pop('venueRegistryPhase');self.data.pop('venueRegistryVerified');self.data.pop('venueRegistryPlan')
+            self.data.update(self.offline_state());self.data['status']='managers-ready'
+            (self.bundle/'stack.ir.json').write_text('{"quadletBuildImagesFrozen":true}')
         self.ledger.write_text(json.dumps(self.data))
         def selected(command,**kwargs):
             if 'image' in command and 'rm' in command:return SimpleNamespace(returncode=125,stdout='',stderr='cannot remove by digest with more than one tag')

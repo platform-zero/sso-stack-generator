@@ -86,6 +86,11 @@ the lease immediately before each native queue. No fixed tier list or new daemon
 Native version-2 retirement invokes the existing exact host-unit retirement
 helper after graph/unit/env disposal and before manager retirement. A foreign or
 changed host unit stops this sequence; the manager empty-unit gate is unchanged.
+A never-activated version-1 installer may retire its frozen offline imports before
+registry preparation. This requires the input-manifest receipt, all194 retired
+unit receipts, false authority and no startup/registry fields at all. The normal
+exact store/config-ID inventory and canonical alias/digest checks still apply;
+foreign names, partial registry state and active/native histories do not qualify.
 
 Bridge publishers require the actual selected gateway to exist. Runtime bridge
 preparation deliberately leaves network autostart **off** until durable fence/boot
