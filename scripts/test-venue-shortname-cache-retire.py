@@ -77,7 +77,7 @@ class SelectedCache(unittest.TestCase):
         self.data['pathIdentities'][str(home)]={'dev':s.st_dev,'ino':s.st_ino,'uid':uid,'mode':0o700}
         for folder in (home/'.config',home/'.cache',home/'.cache/containers'):
             folder.mkdir(mode=0o700);os.chown(folder,uid,uid)
-        lock=home/'.cache/containers/short-name-aliases.conf.lock';lock.touch(mode=0o644);os.chown(lock,uid,uid)
+        lock=home/'.cache/containers/short-name-aliases.conf.lock';lock.touch(mode=0o644);lock.chmod(0o644);os.chown(lock,uid,uid)
         ref=cache.INSPECT_NAMES[name];(self.bundle/'stack.ir.json').write_text(json.dumps({'services':{'vaultwarden':{'image':ref}}}))
         self.data.update(venueInstallerVersion=2,activationAuthorized=False,venueOwnedReset={'phase':'empty-owned'},venueRegistryVerified={name+'|docker.io/'+ref:'sha256:'+'b'*64},graphCleared=['root']+[a['name'] for a in self.plan['accounts']],managerStopped=[a['name'] for a in reversed(self.plan['accounts'])])
         cache.stage.write_ledger(self.ledger,self.data)
