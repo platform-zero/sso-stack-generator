@@ -7,6 +7,7 @@ IMAGE_INPUTS=""
 CONTROL_CHECKOUT=""
 ACTIVATE=false
 INSPECT=false
+REWRITE_CONFIGS_ONLY=false
 RESUME_INTENT=""
 RETIRE_FAILED=""
 QUARANTINE_FAILED=""
@@ -24,7 +25,7 @@ declare -a ROOTLESS_DOMAIN_UIDS=()
 declare -a ROOTLESS_DOMAIN_SUBUID_STARTS=()
 
 usage() {
-  printf 'Usage: %s --bundle DIR [--env-dir DIR] [--image-inputs FILE] [--activate] [--resume-intent EXACT_SHA256] | --inspect | --quarantine-failed-intent EXACT_SHA256 --reviewed-data-state | --retire-failed-intent EXACT_SHA256 --reviewed-data-state\n' "${0##*/}" >&2
+  printf 'Usage: %s --bundle DIR [--env-dir DIR] [--image-inputs FILE] [--activate] | --bundle DIR --rewrite-rendered-configs (unpublished build-only) [--resume-intent EXACT_SHA256] | --inspect | --quarantine-failed-intent EXACT_SHA256 --reviewed-data-state | --retire-failed-intent EXACT_SHA256 --reviewed-data-state\n' "${0##*/}" >&2
 }
 
 while [ "$#" -gt 0 ]; do
@@ -35,6 +36,7 @@ while [ "$#" -gt 0 ]; do
     --control-checkout) CONTROL_CHECKOUT="$2"; shift 2 ;;
     --activate) ACTIVATE=true; shift ;;
     --inspect) INSPECT=true; shift ;;
+    --rewrite-rendered-configs) REWRITE_CONFIGS_ONLY=true; shift ;;
     --resume-intent) RESUME_INTENT="$2"; shift 2 ;;
     --retire-failed-intent) RETIRE_FAILED="$2"; shift 2 ;;
     --quarantine-failed-intent) QUARANTINE_FAILED="$2"; shift 2 ;;
@@ -44,6 +46,13 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+# Build-only post-render pass. It must never reach SOPS, account, unit, image,
+# journal or activation code; use only on a new unpublished candidate copy.
+if [ "$REWRITE_CONFIGS_ONLY" = true ]; then
+  [ "$ACTIVATE" = false ] && [ "$INSPECT" = false ] && [ -z "$RESUME_INTENT" ] &&
+    [ -z "$RETIRE_FAILED" ] && [ -z "$QUARANTINE_FAILED" ] && [ "$REVIEWED_DATA_STATE" = false ] &&
+    [ -z "$ENV_DIR" ] && [ -z "$IMAGE_INPUTS" ] && [ -z "$CONTROL_CHECKOUT" ] || { usage; exit 2; }
+fi
 if [ -n "$RETIRE_FAILED" ] || [ -n "$QUARANTINE_FAILED" ]; then
   [ "$REVIEWED_DATA_STATE" = true ] && [ "$ACTIVATE" = false ] && [ "$INSPECT" = false ] &&
     [ -z "$RESUME_INTENT" ] && [ -z "$BUNDLE" ] && [ -z "$ENV_DIR" ] &&
@@ -223,6 +232,12 @@ for path in config_root.rglob("*"):
         path.write_text(content)
 PY
 }
+
+if [ "$REWRITE_CONFIGS_ONLY" = true ]; then
+  apply_loopback_rewrites
+  printf '[podman-render] selected config endpoints rewritten; no installation or activation\n'
+  exit 0
+fi
 
 if [ -z "$ENV_DIR" ]; then
   if [ "$ACTIVATE" = true ] && [ "$(id -u)" -eq 0 ] && ! root_has_sops_key_material; then

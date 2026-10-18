@@ -103,6 +103,16 @@ def prepare(bundle,selector,ledger,age_key):
         # Never print private render stdout/stderr or remove unknown partial
         # plaintext on an interrupted renderer. Retain the root0700 slot.
         raise Refusal('selected private SOPS runtime render failed; retain exact journal and slot')
+    # render-runtime rebuilds files from stack.config, so the compiler's routed
+    # runtime/configs can otherwise be silently reverted to cross-UID DNS names.
+    # Apply the same build-only pass as the native installer BEFORE snapshot or
+    # pointer publication. Never rewrite an installed/generated immutable slot.
+    rewrite=HERE/'install-podman-bundle.sh'
+    if not (release/'podman-loopback-endpoints.json').is_file():raise Refusal('source endpoint authority missing before private render publication')
+    result=subprocess.run(['bash',str(rewrite),'--bundle',str(release),'--rewrite-rendered-configs'],
+                          env=env,cwd='/',capture_output=True,timeout=60)
+    if result.returncode:raise Refusal('private post-render endpoint rewrite failed; retain unpublished slot')
+    data['venueReleaseEndpointRewriteSourceSha256']=sha(rewrite)
     config=release/'runtime/configs/caddy/Caddyfile';caddy=config.read_text()
     if (caddy.count('admin off')!=1 or caddy.count('default_bind 127.0.0.1')!=1 or
             caddy.count('http_port 56045')!=1 or caddy.count('https_port 56042')!=1 or

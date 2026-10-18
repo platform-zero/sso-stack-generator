@@ -76,6 +76,15 @@ empty retirement removes only their four unchanged, empty nodes before the
 original stage parents. Existing/authored fixture paths are never adopted or
 recursively removed by preparation/empty retirement.
 
+The private release builder must reapply `podman-loopback-endpoints.json` after
+SOPS/template rendering and BEFORE its immutable manifest/current pointer is
+published. Otherwise raw `stack.config` templates silently restore names such as
+`postgres:5432` that do not resolve across separate rootless stores. The existing
+installer's `--rewrite-rendered-configs` build-only mode shares its normal routing
+pass and refuses activation/inspection/installation options. The inert builder
+records that pass's source hash. Use only on a new unpublished copy; an installed
+immutable release is never patched to recover this producer defect.
+
 Cross-domain ACL namespace inspection fails closed on unreadable/invalid procfs
 mountinfo, including permission denial; it never interprets an unknown namespace
 as unmounted. Only a disappeared process is skipped. POSIX ACL metadata fixtures
