@@ -248,9 +248,131 @@ def retire_owned(bundle,selector,journal,expected_sha):
         data['phase']='network-undefined-fence-held';stage.write_ledger(journal,data)
         current=subprocess.check_output(['nft','-j','list','table','inet',table],timeout=20)
         if hashlib.sha256(current).hexdigest()!=data['nativeFenceSha256']:raise Refusal('fence changed during native network retirement')
+        boot=data.get('bootFence')
+        if boot:
+            hook=hook_helpers();hook_path=Path(boot['path']);info=hook_path.lstat();hook.protected_file(hook_path,0o755)
+            if (info.st_dev,info.st_ino)!=(boot['dev'],boot['ino']) or stage.sha(hook_path)!=boot['sha256']:raise Refusal('installed boot hook changed; fence retained')
+            proof=Path(boot['policy']['proofPath'])
+            if os.path.lexists(proof):
+                hook.protected_file(proof,0o600);document=strict_json(proof)
+                if document.get('networkUuid')!=uuid or document.get('hookSha256')!=boot['sha256']:raise Refusal('foreign boot proof; no deletion')
+            boot['phase']='hook-retirement-intended';stage.write_ledger(journal,data);hook_path.unlink()
+            if os.path.lexists(proof):proof.unlink()
+            fd=os.open(hook_path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+            try:os.fsync(fd)
+            finally:os.close(fd)
+            boot['phase']='retired';stage.write_ledger(journal,data)
         subprocess.run(['nft','delete','table','inet',table],check=True,timeout=30,capture_output=True)
         data['phase']='network-retired';stage.write_ledger(journal,data)
         return {'status':'network-retired','retiredNetworkUuid':uuid,'guestDataTouched':False,'activationAuthorized':False}
+
+
+HOOK_DIRECTORY=Path('/etc/libvirt/hooks/network.d')
+
+
+def hook_helpers():
+    spec=importlib.util.spec_from_file_location('owned_guest_fence_hook',Path(__file__).with_name('venue-guest-fence-hook.py'))
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
+
+
+def boot_context(bundle,selector,journal,expected_sha):
+    lifecycle,fence=owned_helpers();stage=lifecycle.stage;journal=Path(journal);info=journal.lstat()
+    if (os.geteuid()!=0 or journal.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid or info.st_nlink!=1 or
+            stat.S_IMODE(info.st_mode)!=0o600 or stage.sha(journal)!=expected_sha):raise Refusal('exact protected network journal SHA required')
+    plan=stage.owned_plan(bundle,selector);context=lifecycle.host_context(bundle,plan);data=strict_json(journal)
+    if (data.get('phase')!='network-runtime-ready' or data.get('hostContextSha256')!=context.digest or
+            data.get('selectorSha256')!=plan['selectorSha256'] or data.get('bundleIrSha256')!=plan['bundleIrSha256'] or
+            data.get('guestCreated') is not False):raise Refusal('exact never-guest runtime network required for boot policy')
+    return lifecycle,fence,plan,context,data
+
+
+def stage_boot_fence(bundle,selector,journal,expected_sha):
+    lifecycle,fence,plan,context,data=boot_context(bundle,selector,journal,expected_sha);stage=lifecycle.stage;hook=hook_helpers()
+    with lifecycle.lifecycle(context):
+        if stage.sha(journal)!=expected_sha or data.get('bootFence'):raise Refusal('boot-fence intent already exists or CAS changed; inspect before retry')
+        lifecycle.units.units_idle(plan);context.physical_reserves()
+        if os.path.lexists(context.runtime/'runtime-authority.json'):raise Refusal('boot policy staging requires preactivation context')
+        _,network=render(bundle,strict_json(selector));uuid=data['networkUuid']
+        actual=subprocess.check_output(['virsh','-c','qemu:///system','net-uuid',network['network']],text=True,timeout=20).strip()
+        xml=subprocess.check_output(['virsh','-c','qemu:///system','net-dumpxml',uuid],text=True,timeout=20)
+        native=subprocess.check_output(['nft','-j','list','table','inet',data['fenceTable']],timeout=20)
+        status=subprocess.check_output(['virsh','-c','qemu:///system','net-info',uuid],text=True,timeout=20)
+        if (actual!=uuid or hashlib.sha256(xml.encode()).hexdigest()!=data['nativeXmlSha256'] or hashlib.sha256(native).hexdigest()!=data['nativeFenceSha256'] or
+                not re.search(r'(?m)^Autostart:\s+no\s*$',status)):raise Refusal('runtime network/fence/policy differs; no boot hook adoption')
+        policy=fence.render(bundle,strict_json(selector))
+        if policy['table']!=data['fenceTable'] or hashlib.sha256(policy['nftables'].encode()).hexdigest()!=data['fenceSha256']:
+            raise Refusal('boot fence source differs from exact runtime fence')
+        embedded={'namespace':plan['prefix'],'network':network['network'],'uuid':uuid,'table':policy['table'],
+                  'nftables':policy['nftables'],'nftablesSha256':data['fenceSha256'],
+                  'networkXmlFingerprint':hook.xml_fingerprint(ET.fromstring(xml)),
+                  'nativeFenceFingerprint':hook.json_fingerprint(json.loads(native)),
+                  'proofPath':str(context.runtime/'network-fence-boot-proof.json')}
+        destination=HOOK_DIRECTORY/(plan['prefix']+'-fence');source=Path(hook.__file__).read_text()
+        if source.count('POLICY = None')!=1 or os.path.lexists(destination):raise Refusal('boot hook source/destination not fresh')
+        body=source.replace('POLICY = None','POLICY = '+repr(embedded),1).encode()
+        data['bootFence']={'phase':'install-intended','path':str(destination),'sha256':hashlib.sha256(body).hexdigest(),
+                          'policy':embedded,'sourceSha256':stage.sha(__file__),'networkAutostartEnabled':False}
+        stage.write_ledger(journal,data)
+        for directory in reversed([HOOK_DIRECTORY,*HOOK_DIRECTORY.parents]):
+            if not directory.exists():directory.mkdir(mode=0o755)
+            st=directory.lstat()
+            if directory.is_symlink() or not stat.S_ISDIR(st.st_mode) or st.st_uid or st.st_mode&0o022:raise Refusal('unprotected libvirt hook directory')
+        fd=os.open(destination,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o755);os.fchmod(fd,0o755)
+        with os.fdopen(fd,'wb') as out:out.write(body);out.flush();os.fsync(out.fileno())
+        fd=os.open(HOOK_DIRECTORY,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        try:os.fsync(fd)
+        finally:os.close(fd)
+        info=destination.lstat();data['bootFence'].update(phase='hook-staged',dev=info.st_dev,ino=info.st_ino)
+        stage.write_ledger(journal,data)
+        return {'status':'owned-boot-hook-staged','daemonRefreshAndNativeProofRequired':True,'networkAutostartEnabled':False,'guestCreated':False}
+
+
+def prove_boot_fence(bundle,selector,journal,expected_sha):
+    lifecycle,_,plan,context,data=boot_context(bundle,selector,journal,expected_sha);stage=lifecycle.stage;hook=hook_helpers()
+    with lifecycle.lifecycle(context):
+        boot=data.get('bootFence',{});path=Path(boot.get('path',''));info=path.lstat();hook.protected_file(path,0o755)
+        if (stage.sha(journal)!=expected_sha or boot.get('phase')!='hook-staged' or
+                (info.st_dev,info.st_ino)!=(boot['dev'],boot['ino']) or stage.sha(path)!=boot['sha256']):raise Refusal('exact staged boot hook CAS required')
+        lifecycle.units.units_idle(plan);context.physical_reserves()
+        if os.path.lexists(context.runtime/'runtime-authority.json'):raise Refusal('native boot policy proof requires preactivation context')
+        # A libvirt restart is permitted only with ALL domains stopped and no
+        # domain autostart that could restart old production or authored work.
+        guests=subprocess.check_output(['virsh','-c','qemu:///system','list','--all','--uuid'],text=True,timeout=20).splitlines()
+        for guest in filter(str.strip,guests):
+            state=subprocess.check_output(['virsh','-c','qemu:///system','domstate',guest],text=True,timeout=20).strip()
+            detail=subprocess.check_output(['virsh','-c','qemu:///system','dominfo',guest],text=True,timeout=20)
+            if state!='shut off' or not re.search(r'(?m)^Autostart:\s+(?:disable|no)\s*$',detail):raise Refusal('domain live/autostart; no libvirt restart')
+        networks=subprocess.check_output(['virsh','-c','qemu:///system','net-list','--all','--uuid'],text=True,timeout=20).splitlines()
+        for existing in filter(str.strip,networks):
+            detail=subprocess.check_output(['virsh','-c','qemu:///system','net-info',existing],text=True,timeout=20)
+            if re.search(r'(?m)^Autostart:\s+yes\s*$',detail) and not re.search(r'(?m)^Active:\s+yes\s*$',detail):
+                raise Refusal('stopped autostart network; no libvirt restart')
+        uuid=data['networkUuid'];network=data['network'];actual=subprocess.check_output(['virsh','-c','qemu:///system','net-uuid',network['network']],text=True,timeout=20).strip()
+        xml=subprocess.check_output(['virsh','-c','qemu:///system','net-dumpxml',uuid],text=True,timeout=20)
+        native=subprocess.check_output(['nft','-j','list','table','inet',data['fenceTable']],timeout=20)
+        links=json.loads(subprocess.check_output(['ip','-j','link','show','master',network['bridge']],text=True,timeout=20))
+        if actual!=uuid or links or hashlib.sha256(xml.encode()).hexdigest()!=data['nativeXmlSha256'] or hashlib.sha256(native).hexdigest()!=data['nativeFenceSha256']:
+            raise Refusal('network/fence/attached interface changed before native hook proof')
+        if subprocess.check_output(['systemctl','is-active','libvirtd.service'],text=True,timeout=20).strip()!='active':
+            raise Refusal('libvirt daemon is not active; no stopped/failed production restart')
+        proof_path=Path(boot['policy']['proofPath'])
+        if os.path.lexists(proof_path):raise Refusal('native boot proof path already exists; no stale proof reuse')
+        boot['phase']='native-proof-intended';stage.write_ledger(journal,data)
+        subprocess.run(['systemctl','restart','libvirtd.service'],check=True,timeout=60,capture_output=True)
+        subprocess.run(['virsh','-c','qemu:///system','net-destroy',uuid],check=True,timeout=30,capture_output=True)
+        subprocess.run(['virsh','-c','qemu:///system','net-start',uuid],check=True,timeout=30,capture_output=True)
+        hook.protected_file(proof_path,0o600);proof=strict_json(proof_path)
+        if (proof.get('schemaVersion')!=1 or proof.get('activationAuthorized') is not False or proof.get('network')!=network['network'] or
+                proof.get('networkUuid')!=uuid or proof.get('namespace')!=plan['prefix'] or proof.get('hookSha256')!=boot['sha256'] or
+                proof.get('bootId')!=Path('/proc/sys/kernel/random/boot_id').read_text().strip() or proof.get('event')!='start/begin' or
+                proof.get('networkXmlFingerprint')!=boot['policy']['networkXmlFingerprint'] or
+                proof.get('nativeFenceFingerprint')!=boot['policy']['nativeFenceFingerprint']):raise Refusal('native libvirt invocation proof missing or changed; autostart remains off')
+        subprocess.run(['virsh','-c','qemu:///system','net-autostart',uuid],check=True,timeout=30,capture_output=True)
+        status=subprocess.check_output(['virsh','-c','qemu:///system','net-info',uuid],text=True,timeout=20)
+        if any(not re.search(r'(?m)^'+key+r':\s+yes\s*$',status) for key in ('Active','Persistent','Autostart')):raise Refusal('native network boot policy not ready')
+        boot.update(phase='native-hook-proven',networkAutostartEnabled=True,proofSha256=stage.sha(proof_path));data['networkAutostart']=True
+        stage.write_ledger(journal,data)
+        return {'status':'owned-network-native-boot-fence-proven','networkAutostartEnabled':True,'hostRebootPerformed':False,'guestCreated':False,'activationAuthorized':False}
 
 
 def main():
@@ -261,14 +383,20 @@ def main():
     mode=parser.add_mutually_exclusive_group()
     mode.add_argument('--prepare-owned',action='store_true',help='Explicit new fenced bridge creation, no guest or stack activation')
     mode.add_argument('--retire-owned',action='store_true',help='Explicit exact never-guest network/fence retirement')
+    mode.add_argument('--stage-owned-boot-fence',action='store_true')
+    mode.add_argument('--prove-owned-boot-fence',action='store_true')
     parser.add_argument('--journal',type=Path)
-    parser.add_argument('--expected-journal-sha')
+    parser.add_argument('--expected-journal-sha',help='Reviewed protected journal SHA for owned boot policy or exact never-guest retirement')
     args=parser.parse_args()
     try:
+        if args.stage_owned_boot_fence or args.prove_owned_boot_fence:
+            if args.journal is None or not args.expected_journal_sha or args.inspect_host:raise Refusal('exact network journal SHA and one boot operation required')
+            operation=stage_boot_fence if args.stage_owned_boot_fence else prove_boot_fence
+            print(json.dumps(operation(args.bundle,args.selector,args.journal,args.expected_journal_sha),sort_keys=True));return
         if args.retire_owned:
             if args.journal is None or not args.expected_journal_sha or args.inspect_host:raise Refusal('exact owned journal SHA and one retirement operation required')
             print(json.dumps(retire_owned(args.bundle,args.selector,args.journal,args.expected_journal_sha),sort_keys=True));return
-        if args.expected_journal_sha is not None:raise Refusal('journal SHA only belongs to explicit retirement')
+        if args.expected_journal_sha is not None:raise Refusal('journal SHA requires an explicit owned boot/retirement operation')
         if args.prepare_owned:
             if args.journal is None or args.inspect_host:raise Refusal('exact new journal and one operation required')
             print(json.dumps(prepare_owned(args.bundle,args.selector,args.journal),sort_keys=True));return

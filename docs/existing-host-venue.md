@@ -23,6 +23,8 @@ listener/capacity gate to get an installation attempt.
 | Discover local build outputs | `ops/venue-local-build-images.py` | Bounded selected builds and output/intermediate receipts; not frozen release inputs |
 | Retire inactive release | `ops/venue-install-inert.py --retire-inactive` | Guarded reverse-order retirement of the exact inactive installation, not populated-data reset |
 | Prepare required runtime bridge | `ops/render-existing-host-guest-network.py --prepare-owned --journal ...` | Applies only the exact new guest fence before atomic network creation; journals UUID and persists only its own native XML; no guest or autostart |
+| Stage owned native boot fence | `ops/render-existing-host-guest-network.py --stage-owned-boot-fence --journal ... --expected-journal-sha SHA256` | Preactivation/never-guest context, idle units, exact live XML/fence CAS; installs one root-owned immutable network-specific libvirt hook; no daemon restart or autostart |
+| Prove native boot fence before autostart | `ops/render-existing-host-guest-network.py --prove-owned-boot-fence --journal ... --expected-journal-sha SHA256` | Requires active libvirtd, all domains stopped with autostart disabled, no stopped autostart networks and no attached interfaces; refreshes daemon, cycles only the owned bridge with fence retained, requires fresh native hook proof before enabling only its network autostart; no host reboot or VM start |
 | Repair a missing owned log bind | `ops/venue-bind-dirs.py --repair-failed-logs ...` | Only after completed selected failed-start quarantine; creates absent immediate rootful log children under exact receipted parent, never adopts or resets data |
 | Clean exact stopped native bootstrap metadata | `ops/venue-start-quarantine.py --cleanup-stopped-native SHA256 ...` | Under the same fenced lease/failed-ledger CAS and specific repair; journals exact source/image/unit/epoch-owned exited IDs before non-force cleanup/rm; no volumes or data reset |
 | Review a proven stale prior-result observation | `ops/venue-start-quarantine.py --review-stale-result-unit UNIT --reviewed-ledger-sha SHA256 ...` | One selected owner/unit, failed result whose activation/exec timestamps precede this attempt, changed lifecycle source, fenced current-boot context; no start or data reset |
@@ -49,7 +51,18 @@ A failed start is fenced and stopped without deleting data or automatic retry.
 
 Bridge publishers require the actual selected gateway to exist. Runtime bridge
 preparation deliberately leaves network autostart **off** until durable fence/boot
-ordering is installed; it is not guest boot readiness. Existing network names,
+ordering is installed; it is not guest boot readiness. The two explicit boot-fence
+operations install and natively exercise a synchronous libvirt `start/begin` hook
+before enabling only this network's autostart. The hook is a self-contained,
+root-owned immutable executable with an embedded policy: exact network UUID and
+semantic XML, source fence bytes and native nft rule fingerprint (excluding only
+kernel handles/version metadata). It never calls libvirt, flushes tables, replaces
+foreign rules, starts a VM or grants application runtime authority. Other network
+names and stop events pass through unchanged. A fresh current-boot receipt proves
+libvirt invoked the hook before the bridge start; it is NOT a host cold-boot test,
+guest lifecycle acceptance or a reason to enable VM autostart. Exact never-guest
+network retirement removes only its unchanged receipted hook/proof after network
+undefinition and before its own fence table deletion. Existing network names,
 routes, interfaces, fence tables or journals are never adopted or retried.
 
 Readiness checks correlate both native activation and exec timestamps to the
