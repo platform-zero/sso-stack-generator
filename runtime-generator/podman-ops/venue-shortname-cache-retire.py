@@ -27,9 +27,16 @@ def check_ledger(bundle,selector,ledger,*,names=NAMES):
     if path.is_symlink() or not stat.S_ISREG(s.st_mode) or s.st_uid!=0 or stat.S_IMODE(s.st_mode)!=0o600:
         raise Refusal('protected selected stage ledger required')
     data=json.loads(path.read_text());plan=stage.owned_plan(bundle,selector)
-    if (data.get('plan')!=plan or data.get('status')!='staged-empty' or
+    # Fully frozen OCI installs never prepared native build bases. This absence
+    # is applicable ONLY to the explicit inspection mode and frozen source IR,
+    # never forgiveness of a partial/failed build-base retirement.
+    ir=json.loads((Path(bundle)/'stack.ir.json').read_bytes()) if names==INSPECT_NAMES else None
+    base_safe=(data.get('venueBuildBasePhase')=='retired-inert' or
+               (names==INSPECT_NAMES and ir.get('quadletBuildImagesFrozen') is True and
+                not any(key.startswith('venueBuildBase') for key in data)))
+    if (data.get('plan')!=plan or not base_safe or data.get('status')!='staged-empty' or
             data.get('venueInstallerPhase')!='retiring' or
-            any(data.get(k)!='retired-inert' for k in ('venueCompositeMode','venueRegistryPhase','venueBuildBasePhase')) or
+            any(data.get(k)!='retired-inert' for k in ('venueCompositeMode','venueRegistryPhase')) or
             data.get('graphCleared')!=['root']+[a['name'] for a in plan['accounts']] or
             data.get('managerStopped')!=[a['name'] for a in reversed(plan['accounts'])] or
             not data.get('podmanImageCacheRetired') or not data.get('podmanRunrootRetired') or
@@ -40,7 +47,7 @@ def check_ledger(bundle,selector,ledger,*,names=NAMES):
             set(names)-{a['name'] for a in plan['accounts']}):
         raise Refusal('active marker or unexpected short-name account')
     if names==INSPECT_NAMES:
-        ref=INSPECT_NAMES['p0test-r1-vaultwarden'];ir=json.loads((Path(bundle)/'stack.ir.json').read_bytes())
+        ref=INSPECT_NAMES['p0test-r1-vaultwarden']
         image=ir['services']['vaultwarden']['image'].removeprefix('docker.io/')
         verified=data.get('venueRegistryVerified',{}).get('p0test-r1-vaultwarden|docker.io/'+ref)
         if (image!=ref or not isinstance(verified,str) or not verified.startswith('sha256:') or len(verified)!=71 or

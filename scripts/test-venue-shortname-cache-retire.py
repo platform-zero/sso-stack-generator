@@ -97,6 +97,20 @@ class SelectedCache(unittest.TestCase):
         self.assertEqual(result['retiredExactCacheInodes'],3);self.assertFalse((home/'.cache').exists());self.assertEqual(config.read_bytes(),b'preserve')
         self.assertEqual(json.loads(self.ledger.read_text())['venueShortnameCacheSelection'],'vaultwarden-inspect')
 
+    def test_frozen_inspection_absent_bases_is_not_partial_base_forgiveness(self):
+        home,lock=self.vault_fixture()
+        for key in list(self.data):
+            if key.startswith('venueBuildBase'):del self.data[key]
+        ir=self.bundle/'stack.ir.json';source=json.loads(ir.read_bytes());source['quadletBuildImagesFrozen']=True;ir.write_text(json.dumps(source))
+        partial=dict(self.data);partial['venueBuildBasePhase']='preparing';cache.stage.write_ledger(self.ledger,partial)
+        with self.assertRaises(cache.Refusal):cache.retire(self.bundle,'unused',self.ledger,selection='vaultwarden-inspect',expected_sha=cache.stage.sha(self.ledger))
+        self.assertTrue(lock.exists())
+        source['quadletBuildImagesFrozen']=False;ir.write_text(json.dumps(source));cache.stage.write_ledger(self.ledger,self.data)
+        with self.assertRaises(cache.Refusal):cache.retire(self.bundle,'unused',self.ledger,selection='vaultwarden-inspect',expected_sha=cache.stage.sha(self.ledger))
+        self.assertTrue(lock.exists())
+        source['quadletBuildImagesFrozen']=True;ir.write_text(json.dumps(source))
+        self.assertEqual(cache.retire(self.bundle,'unused',self.ledger,selection='vaultwarden-inspect',expected_sha=cache.stage.sha(self.ledger))['retiredExactCacheInodes'],3)
+
     def test_inspection_mode_refuses_wrong_authority_or_selection(self):
         home,lock=self.vault_fixture()
         for field,value in [('venueRegistryVerified',{}),('venueOwnedReset',{'phase':'intent'}),('venueShortnameCacheSelection','build-bases')]:
