@@ -40,9 +40,9 @@ class Health(unittest.TestCase):
    return NS(returncode=0,stdout='')
   patches=[patch.object(m,'UNIT_DIRECTORY',self.units),patch.object(m,'RUNTIME_DIRECTORY',self.run),patch.object(m,'PROC_DIRECTORY',self.proc),patch.object(m.lifecycle.ingress,'context',side_effect=context),patch.object(m.lifecycle.ingress,'checked',return_value={}),
    patch.object(m.lifecycle.stage,'owned_plan',return_value=self.plan),patch.object(m.lifecycle,'host_context',return_value=self.controller),patch.object(m.lifecycle,'lifecycle',side_effect=lease),patch.object(m.lifecycle.graph,'run',side_effect=run),
-   patch.object(m.lifecycle.graph,'stores',return_value=[('root','/exclusive',['podman','--root','/exclusive','--runroot','/exclusive-run'])])]
+   patch.object(m.lifecycle.graph,'stores',return_value=[('root','/exclusive',['podman','--root','/exclusive','--runroot','/exclusive-run'])]),patch.object(m.lifecycle.graph,'selected_pairs',return_value={'root|sha256:'+'c'*64:'sha256:'+'c'*64})]
   for p in patches:p.start();self.addCleanup(p.stop)
-  directory=self.b/'quadlet/rootful';directory.mkdir(parents=True);(directory/'p0test-r1-caddy.container').write_text('[Container]\n')
+  directory=self.b/'quadlet/rootful';directory.mkdir(parents=True);(directory/'p0test-r1-caddy.container').write_text('[Container]\nImage=sha256:'+'c'*64+'\n')
   (self.b/'stack.ir.json').write_text(json.dumps({'services':{'caddy':{'health':{'test':['CMD','true']}}}}))
  def save(self):self.p.write_text(json.dumps(self.data));self.p.chmod(0o600)
  def ready(self):m.prepare(self.b,self.selector,self.p);self.data=json.loads(self.p.read_text())
@@ -99,6 +99,19 @@ class Health(unittest.TestCase):
   self.starting();self.epoch=999
   with self.assertRaises(m.Refusal):m.tick(self.b,self.selector,self.p)
   self.assertFalse(any('healthcheck' in c for c in self.native))
+ def test_frozen_custom_image_not_in_registry_receipts_uses_exact_unit_pin(self):
+  self.starting();self.data['venueRegistryVerified']={'root|other-registry-image':'sha256:'+'d'*64};self.save()
+  self.assertEqual(m.tick(self.b,self.selector,self.p)['checked'],1)
+ def test_native_bare_config_id_normalizes_without_changing_identity(self):
+  self.starting();self.row['Image']='c'*64;self.assertEqual(m.tick(self.b,self.selector,self.p)['checked'],1)
+ def test_other_valid_root_registry_image_cannot_substitute_for_unit_pin(self):
+  self.starting();self.row['Image']='sha256:'+'d'*64;self.data['venueRegistryVerified']['root|other']='sha256:'+'d'*64;self.save()
+  with self.assertRaises(m.Refusal):m.tick(self.b,self.selector,self.p)
+  self.assertFalse(any('healthcheck' in c for c in self.native))
+ def test_unit_without_exact_frozen_or_registry_image_authority_refuses(self):
+  self.starting();m.lifecycle.graph.selected_pairs.return_value={}
+  with self.assertRaises(m.Refusal):m.tick(self.b,self.selector,self.p)
+  self.assertFalse(self.native)
  def test_recent_native_history_respects_declared_interval(self):
   self.starting();self.row['State']['Health']['Log']=[{'End':datetime.datetime.now(datetime.timezone.utc).isoformat()}];self.assertEqual(m.tick(self.b,self.selector,self.p)['checked'],0)
  def test_unknown_or_failed_native_ack_retains_intent_no_replay(self):

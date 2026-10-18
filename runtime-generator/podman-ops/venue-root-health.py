@@ -133,9 +133,13 @@ def native_owner(row,name,data):
 def tick(bundle,selector,ledger):
     b=Path(bundle);plan=lifecycle.stage.owned_plan(b,selector);controller=lifecycle.host_context(b,plan)
     services=json.loads((b/'stack.ir.json').read_text())['services'];selected={}
+    identities=lifecycle.graph.selected_pairs(b)
     for file in (b/'quadlet/rootful').glob('*.container'):
         name=file.stem.removeprefix(plan['prefix']+'-');health=services[name].get('health',{})
-        if health.get('test') and health['test']!=['NONE'] and not health.get('disable',False):selected[file.stem]=name
+        if health.get('test') and health['test']!=['NONE'] and not health.get('disable',False):
+            images=[line.partition('=')[2] for line in file.read_text().splitlines() if line.startswith('Image=')]
+            if len(images)!=1 or 'root|'+images[0] not in identities:raise Refusal('missing exact unit native health image authority')
+            selected[file.stem]=identities['root|'+images[0]]
     if plan['prefix']+'-caddy' not in selected:raise Refusal('missing declared root health producers')
     command=lifecycle.graph.stores(b,plan)[0][2]
     with lifecycle.lifecycle(controller):
@@ -159,8 +163,9 @@ def tick(bundle,selector,ledger):
             result=lifecycle.graph.run(command+['container','inspect',identity],timeout=30)
             if result.returncode:raise Refusal('scoped health container changed during observation')
             row=json.loads(result.stdout)[0]
-            if (row['Id']!=identity or row['Name']!=name or
-                    row['Image'] not in {v for k,v in data['venueRegistryVerified'].items() if k.startswith('root|')}):
+            image=row['Image']
+            if isinstance(image,str) and len(image)==64 and all(c in '0123456789abcdef' for c in image):image='sha256:'+image
+            if (row['Id']!=identity or row['Name']!=name or image!=selected[name]):
                 raise Refusal('scoped health container identity/image/owner differs')
             if not row['State']['Running']:continue
             native_owner(row,name,data)
@@ -180,4 +185,5 @@ if __name__=='__main__':
     for name in ('bundle','selector','ledger'):parser.add_argument('--'+name,required=True)
     args=parser.parse_args()
     try:print(json.dumps(tick(args.bundle,args.selector,args.ledger),sort_keys=True))
-    except (ValueError,OSError,KeyError,TypeError):raise SystemExit('scoped root health tick refused; no fallback')
+    except Refusal as exc:raise SystemExit(str(exc)+'; no fallback')
+    except (ValueError,OSError,KeyError,TypeError) as exc:raise SystemExit('scoped root health tick refused ('+type(exc).__name__+'); no fallback')
