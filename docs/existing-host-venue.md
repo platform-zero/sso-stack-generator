@@ -64,6 +64,19 @@ controller mutations and quarantine share the same private lifecycle lock.
 Readiness observes actual startup leaves, not merely successful Wants targets.
 A failed start is fenced and stopped without deleting data or automatic retry.
 
+Declared health probes are translated into native Podman health argv, preserving
+exec-form argument boundaries and shell-form container-dollar escaping. Only
+referenced deployment inputs enter the existing private per-service environment;
+public Quadlets/argv contain aliases, never their sealed values. Exec-form probes
+with deployment-variable interpolation refuse until a rendered-argv contract is
+available; the selected composition uses literal exec probes. A daemon referenced
+by a `healthy` dependency must have an enabled probe and uses Podman's native
+`--sdnotify=healthy`, so its ordered consumers cannot start merely because conmon
+started. Podman 5.4 requires this flag through `PodmanArgs` (after the generated
+conmon default), not the boolean-only Quadlet `Notify=` key. Startup remains
+bounded by the service timeout and installer quarantine. Native parser/argv and
+translator tests are source proof, not deployed application-health acceptance.
+
 Bridge publishers require the actual selected gateway to exist. Runtime bridge
 preparation deliberately leaves network autostart **off** until durable fence/boot
 ordering is installed; it is not guest boot readiness. The two explicit boot-fence

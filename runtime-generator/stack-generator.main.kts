@@ -1419,22 +1419,49 @@ fun shellWords(value: String): List<String> {
     return words
 }
 
-fun healthCommand(health: JsonNode): String? {
+// Compose expands unescaped variables from the sealed deployment environment;
+// escaped dollars belong to the container shell. Keep values out of public
+// Quadlets/argv by passing only referenced inputs through the private env file.
+val healthInput = Regex("(?<!\\$)\\$(?:\\{([A-Z_][A-Z0-9_]*)|([A-Z_][A-Z0-9_]*))")
+data class PodmanHealth(val command: String?, val inputs: Map<String, String>)
+fun podmanHealth(service: JsonNode): PodmanHealth {
+    val health = service.path("health")
+    if (health.isMissingNode || health.isNull || health.isEmpty || health.path("disable").asBoolean(false))
+        return PodmanHealth(null, emptyMap())
     val test = health.path("test")
-    if (!test.isArray || test.isEmpty) return null
+    if (!test.isArray || test.isEmpty || test.any { !it.isTextual }) fail("health.test must be a nonempty string array")
     val parts = test.map(JsonNode::asText)
-    return when (parts.first()) {
-        "NONE" -> null
-        "CMD-SHELL" -> parts.drop(1).joinToString(" ")
-        "CMD" -> parts.drop(1).joinToString(" ")
-        else -> parts.joinToString(" ")
+    if (parts == listOf("NONE")) return PodmanHealth(null, emptyMap())
+    if (parts.size < 2) fail("health.test requires a command")
+    val inputs = linkedMapOf<String, String>()
+    val arguments = when (parts.first()) {
+        "CMD-SHELL" -> {
+            if (parts.size != 2) fail("CMD-SHELL health.test requires exactly one shell fragment")
+            val command = healthInput.replace(parts[1]) { match ->
+                val key = match.groupValues[1].ifEmpty { match.groupValues[2] }
+                val alias = "P0_HEALTH_INPUT_$key"
+                if (service.path("environment").has(alias)) fail("reserved health input collision: $alias")
+                inputs[alias] = "\${$key}"
+                if (match.groupValues[1].isNotEmpty()) "\${$alias" else "$$alias"
+            }
+            listOf("/bin/sh", "-c", command)
+        }
+        "CMD" -> {
+            // No shell may be silently introduced into exec-form probes.
+            if (parts.drop(1).any { healthInput.containsMatchIn(it) })
+                fail("exec-form health input interpolation requires a rendered argv contract")
+            parts.drop(1)
+        }
+        else -> fail("unsupported health.test mode '${parts.first()}'")
     }
+    return PodmanHealth(json.writer().without(SerializationFeature.INDENT_OUTPUT).writeValueAsString(arguments), inputs)
 }
 
 fun renderEnvironmentTemplate(name: String, service: ObjectNode, output: Path) {
-    val environment = service.path("environment")
-    if (!environment.isObject || environment.isEmpty) return
-    val lines = environment.fieldsMap().sortedBy { it.first }.joinToString("\n") { (key, value) ->
+    val environment = service.path("environment").fieldsMap().toMap().toMutableMap()
+    podmanHealth(service).inputs.forEach { (key, value) -> environment[key] = nodes.textNode(value) }
+    if (environment.isEmpty()) return
+    val lines = environment.toSortedMap().entries.joinToString("\n") { (key, value) ->
         val rendered = if (value.isNull) "\${$key}" else value.asText().replace("\n", "\\n")
         "$key=$rendered"
     }
@@ -1653,6 +1680,12 @@ fun resourceLimit(node: JsonNode, kind: String): String? {
 
 fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, output: Path, domain: PodmanDomain, loopbacks: Map<String, List<LoopbackEndpoint>>) {
     val unitPrefix = activePodmanPolicy.unitPrefix
+    val health = podmanHealth(service)
+    val notifyHealthy = ir.path("services").fieldsMap().any { (_, consumer) ->
+        consumer.path("dependencies").path(name).asText() == "healthy"
+    }
+    if (notifyHealthy && (health.command == null || service.path("lifecycle").asText() != "daemon"))
+        fail("healthy dependency '$name' requires an enabled daemon healthcheck")
     val isolatedVolumeInit = unitPrefix != "webservices" && name == "volume-init"
     if (isolatedVolumeInit && (domain.name != "rootful" || service.path("lifecycle").asText() != "oneshot"))
         fail("isolated volume-init requires rootful oneshot authority")
@@ -1680,7 +1713,8 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
     if (service.path("image").asText().matches(Regex("sha256:[0-9a-f]{64}"))) lines += "Pull=never"
     lines += "ContainerName=${if (unitPrefix == "webservices") name else "$unitPrefix-$name"}"
     if (service.path("lifecycle").asText() == "daemon" && service.path("updatePolicy").asText() == "registry" && !service.path("image").asText().contains('@')) lines += "AutoUpdate=registry"
-    if (service.path("environment").isObject && !service.path("environment").isEmpty) lines += "EnvironmentFile=${domain.envFilePrefix}/$name.env"
+    if ((service.path("environment").isObject && !service.path("environment").isEmpty) || health.inputs.isNotEmpty())
+        lines += "EnvironmentFile=${domain.envFilePrefix}/$name.env"
     val hostNetwork = name == "caddy" || (service.path("hostNetwork").asBoolean(false) &&
         !(unitPrefix != "webservices" && name == "livekit"))
     if (hostNetwork) {
@@ -1708,6 +1742,9 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
     } else service.path("volumes").forEach { lines += "Volume=${quadletLiteral(volumeLine(it, ir.path("volumes"), domain))}" }
     val limits = service.path("resources").path("limits")
     val podmanArgs = mutableListOf("--image-volume=ignore")
+    // Podman 5.4 Quadlet Notify= accepts booleans only. PodmanArgs follows its
+    // default --sdnotify=conmon, so the last flag selects native health readiness.
+    if (notifyHealthy) podmanArgs += "--sdnotify=healthy"
     resourceLimit(limits.path("memory"), "memory")?.let { podmanArgs += "--memory=$it" }
     resourceLimit(limits.path("cpus"), "cpus")?.let { podmanArgs += "--cpus=$it" }
     lines += "PodmanArgs=${podmanArgs.joinToString(" ")}"
@@ -1779,8 +1816,23 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
     }
     if (execParts.isNotEmpty()) lines += "Exec=${execParts.joinToString(" ") { systemdQuote(it) }}"
     stopTimeoutSeconds(service.path("stopGracePeriod"))?.let { lines += "StopTimeout=$it" }
-    // Shell healthcheck fragments need a dedicated Podman translation pass.
-    // For the rootful cutover, systemd owns process liveness and does not gate startup on container health.
+    health.command?.let { command ->
+        // HealthCmd is a raw string, not a Quadlet argument list. JSON already
+        // preserves argv/newlines; an outer systemdQuote would corrupt the JSON.
+        val literal = command.replace("\$\$", "\$").replace("$", "\$\$").replace("%", "%%")
+        lines += "HealthCmd=$literal"
+        val config = service.path("health")
+        mapOf("interval" to "HealthInterval", "timeout" to "HealthTimeout", "start_period" to "HealthStartPeriod").forEach { (key, option) ->
+            config.get(key)?.let { value ->
+                stopTimeoutSeconds(value) // Reject invalid durations before producing unit syntax.
+                lines += "$option=${value.asText()}"
+            }
+        }
+        config.get("retries")?.let { value ->
+            if (!value.isIntegralNumber || value.asLong() < 1) fail("health.retries must be a positive integer")
+            lines += "HealthRetries=${value.asLong()}"
+        }
+    }
     lines += "LogDriver=journald"
     lines += ""
     lines += "[Service]"
