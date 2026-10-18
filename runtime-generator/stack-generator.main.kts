@@ -1477,7 +1477,7 @@ fun isolatedCaddyProbe(raw: String): String {
         raw.substring(raw.indexOf(validate))
 }
 
-fun podmanDns(service: JsonNode, isolated: Boolean): List<String> {
+fun podmanDns(service: JsonNode, isolated: Boolean, serviceName: String = ""): List<String> {
     val value = service.path("dns")
     val configured = when {
         value.isMissingNode || value.isNull -> emptyList()
@@ -1490,6 +1490,10 @@ fun podmanDns(service: JsonNode, isolated: Boolean): List<String> {
     // gateway. Preserve canonical OIDC :443 through its private TLS relay, not
     // the host/public resolver or an original deployment. Never add fallback.
     val gateway = "192.168.140.1"
+    // Translate only the selected mail producer's exact upstream defaults, just
+    // as this profile translates its publishers/binds. Never retain them as a
+    // fallback, change default-profile choices, or admit arbitrary overrides.
+    if (serviceName == "mailserver" && configured == listOf("8.8.8.8", "8.8.4.4")) return listOf(gateway)
     if (configured.any { it != gateway }) fail("isolated DNS cannot escape its private ingress authority")
     return listOf(gateway)
 }
@@ -1822,7 +1826,7 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
         }
     }
     service.path("extraHosts").forEach { lines += "AddHost=${it.asText().replace("host-gateway", "host-gateway")}" }
-    podmanDns(service, unitPrefix != "webservices").forEach { lines += "DNS=$it" }
+    podmanDns(service, unitPrefix != "webservices", name).forEach { lines += "DNS=$it" }
     service.path("tmpfs").forEach { lines += "Tmpfs=${it.asText()}" }
     service.path("capAdd").forEach { lines += "AddCapability=${it.asText()}" }
     service.path("capDrop").forEach { lines += "DropCapability=${it.asText()}" }

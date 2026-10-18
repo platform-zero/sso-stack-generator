@@ -95,8 +95,9 @@ foreign names, partial registry state and active/native histories do not qualify
 ### Canonical private SSO transport
 
 The isolated compiler gives every managed native container exactly the selected
-bridge resolver (`192.168.140.1`), without a host/public fallback. Conflicting
-explicit DNS refuses compilation; default-profile resolver choices are unchanged.
+bridge resolver (`192.168.140.1`), without a host/public fallback. The selected
+mailserver's exact declared Google resolver pair is translated only in this profile;
+other conflicting explicit DNS refuses compilation. Default-profile choices stay unchanged.
 Canonical HTTPS/OIDC/mail identities retain standard ports. The existing private
 ingress renderers supply four socket/proxy pairs on the exact private gateway,
 not public/wildcard/loopback port443 and never arbitrary internal publishers.

@@ -76,7 +76,12 @@ for ((raw, isolated, expected) in dnsGood) check(podmanDns(json.readTree(raw), i
 val dnsBad = listOf("""{"dns":"1.1.1.1"}""", """{"dns":["192.168.140.1","1.1.1.1"]}""",
     """{"dns":[42]}""", """{"dns":42}""")
 for (raw in dnsBad) check(runCatching { podmanDns(json.readTree(raw), true) }.isFailure)
-println("[scope-dns-test] ${dnsGood.size + dnsBad.size} actual-translator cases passed")
+val mailDns = json.readTree("""{"dns":["8.8.8.8","8.8.4.4"]}""")
+check(podmanDns(mailDns, false, "mailserver") == listOf("8.8.8.8", "8.8.4.4"))
+check(podmanDns(mailDns, true, "mailserver") == listOf("192.168.140.1"))
+for (name in listOf("", "caddy")) check(runCatching { podmanDns(mailDns, true, name) }.isFailure)
+check(runCatching { podmanDns(json.readTree("""{"dns":["8.8.8.8","1.1.1.1"]}"""), true, "mailserver") }.isFailure)
+println("[scope-dns-test] ${dnsGood.size + dnsBad.size + 5} actual-translator cases passed; exact mail defaults scoped without fallback")
 val caddySource = "prefix && test -s /ca/caddy-ca.crt && wget --quiet --tries=1 --spider --timeout=5 http://127.0.0.1:2019/config/ && wget --quiet --tries=1 --spider --timeout=5 http://127.0.0.1:2019/reverse_proxy/upstreams && caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile | grep Valid"
 val caddyScoped = isolatedCaddyProbe(caddySource)
 check(!caddyScoped.contains(":2019") && caddyScoped.startsWith("prefix && test -s /ca/caddy-ca.crt"))
