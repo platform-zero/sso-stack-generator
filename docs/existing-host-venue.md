@@ -32,6 +32,13 @@ No global manager environment, default store, original unit or shared graph is
 configured. Quarantine stops these exact two units; inactive retirement requires
 idle/disabled states and journaled file identities before unlinking them.
 
+Preparation never uses `reset-failed` to erase prior evidence. A retained failed
+service record is quiescent only when its fragment and overrides are absent,
+MainPID is explicitly zero, ControlGroup explicitly empty and native jobs are
+positively absent. A process, cgroup, fragment, override or pending/unreadable job
+refuses before writing either file. A later changed-source/current-epoch native
+execution is separate from that retained old result, not a false readiness pass.
+
 Source/parser/synthetic tests do not prove this adapter's installed readiness.
 Only actual native healthy producers and dependent application/guest checks can
 satisfy the corresponding integrated-install evidence.

@@ -37,12 +37,22 @@ def files(bundle,selector,ledger,plan):
     return {str(UNIT_DIRECTORY/(name+'.'+suffix)):body for suffix,body in [('service',service),('timer',timer)]}
 
 def native_files(rows,*,fresh=False):
+    if fresh:
+        jobs=lifecycle.graph.run(['systemctl','list-jobs','--no-legend','--no-pager'],timeout=30)
+        names={Path(path).name for path in rows};pending=[line.split() for line in jobs.stdout.splitlines()]
+        if jobs.returncode or any(len(row)<4 or row[1] in names for row in pending):raise Refusal('scoped health native jobs pending or unreadable')
     for path in rows:
-        result=lifecycle.graph.run(['systemctl','show',Path(path).name,'-p','LoadState','-p','FragmentPath','-p','DropInPaths','-p','ActiveState','-p','UnitFileState'],timeout=30)
+        result=lifecycle.graph.run(['systemctl','show',Path(path).name,'-p','LoadState','-p','FragmentPath','-p','DropInPaths','-p','ActiveState','-p','UnitFileState','-p','MainPID','-p','ControlGroup'],timeout=30)
         props=dict(line.split('=',1) for line in result.stdout.splitlines() if '=' in line)
         if result.returncode or props.get('DropInPaths')!='':raise Refusal('unobservable/overridden scoped health unit')
         if fresh:
-            if props.get('LoadState')!='not-found' or props.get('ActiveState')!='inactive' or props.get('FragmentPath')!='':raise Refusal('foreign scoped health native unit exists')
+            # A retained failed result is not a live unit. Never reset it to make
+            # preparation pass: require no fragment/override/job and no process or
+            # cgroup instead. New source/epoch execution retains historical proof.
+            service=path.endswith('.service')
+            if (props.get('LoadState')!='not-found' or props.get('ActiveState') not in (('inactive','failed') if service else ('inactive',)) or
+                    props.get('FragmentPath')!='' or service and (props.get('MainPID')!='0' or props.get('ControlGroup')!='')):
+                raise Refusal('foreign/live scoped health native unit exists')
         elif props.get('LoadState')!='loaded' or props.get('FragmentPath')!=path or props.get('UnitFileState')!='static':raise Refusal('scoped health native fragment/enabling differs')
 
 def checked(bundle,selector,ledger):

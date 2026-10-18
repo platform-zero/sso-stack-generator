@@ -14,7 +14,7 @@ class Health(unittest.TestCase):
   tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup);self.root=Path(tmp.name);self.b=self.root/'bundle';self.b.mkdir();self.p=self.root/'journal';self.selector=self.root/'selector';self.selector.write_text('{}');self.units=self.root/'units';self.units.mkdir()
   self.plan={'prefix':'p0test-r1'};self.data={'plan':self.plan,'venueInstallerVersion':1,'venueInstallerPhase':'preparing','activationAuthorized':False};self.save()
   self.controller=NS(digest='a'*64,require_runtime=lambda:{'phase':'starting'})
-  self.native=[];self.held=[];self.returncode=0;self.dropins='';self.epoch=1000;self.unitstate='static'
+  self.native=[];self.held=[];self.returncode=0;self.dropins='';self.epoch=1000;self.unitstate='static';self.previousFailure=False;self.nativeMainPID=0;self.nativeGroup='';self.jobs=''
   self.run=self.root/'run';self.run.mkdir();(self.run/'p0test-r1-caddy.cid').write_text('b'*64);(self.run/'p0test-r1-caddy.cid').chmod(0o644)
   self.proc=self.root/'proc';(self.proc/'12345').mkdir(parents=True);(self.proc/'12345/cgroup').write_text('0::/system.slice/p0test-r1-caddy.service/supervisor\n')
   self.row={'Id':'b'*64,'Name':'p0test-r1-caddy','Image':'sha256:'+'c'*64,'Config':{'Labels':{'io.containers.systemd.unit':'p0test-r1-caddy.service'},'Healthcheck':{'Interval':5000000000}},'State':{'Running':True,'ConmonPid':12345,'Health':{'Log':None}}}
@@ -31,11 +31,12 @@ class Health(unittest.TestCase):
    if 'healthcheck' in cmd:
     self.assertTrue(self.held);self.assertIn('venueRootHealthPending',json.loads(self.p.read_text()));self.assertEqual(cmd[:5],['podman','--root','/exclusive','--runroot','/exclusive-run'])
     return NS(returncode=self.returncode,stdout='')
+   if 'list-jobs' in cmd:return NS(returncode=0,stdout=self.jobs)
    if 'show' in cmd:
-    if 'MainPID' in cmd:return NS(returncode=0,stdout=f'MainPID=67890\nActiveState=activating\nControlGroup=/system.slice/p0test-r1-caddy.service\nExecMainStartTimestampMonotonic={self.epoch}\nDropInPaths={self.dropins}\n')
+    if 'ExecMainStartTimestampMonotonic' in cmd:return NS(returncode=0,stdout=f'MainPID=67890\nActiveState=activating\nControlGroup=/system.slice/p0test-r1-caddy.service\nExecMainStartTimestampMonotonic={self.epoch}\nDropInPaths={self.dropins}\n')
     if 'LoadState' in cmd:
      path=self.units/cmd[2];present=path.exists()
-     return NS(returncode=0,stdout=f'LoadState={"loaded" if present else "not-found"}\nActiveState=inactive\nFragmentPath={str(path) if present else ""}\nDropInPaths={self.dropins}\nUnitFileState={self.unitstate if present else ""}\n')
+     return NS(returncode=0,stdout=f'LoadState={"loaded" if present else "not-found"}\nActiveState={"failed" if self.previousFailure and path.suffix==".service" else "inactive"}\nFragmentPath={str(path) if present else ""}\nDropInPaths={self.dropins}\nUnitFileState={self.unitstate if present else ""}\nMainPID={self.nativeMainPID}\nControlGroup={self.nativeGroup}\n')
     return NS(returncode=0,stdout='ActiveState=inactive\nUnitFileState=static\n'*2)
    return NS(returncode=0,stdout='')
   patches=[patch.object(m,'UNIT_DIRECTORY',self.units),patch.object(m,'RUNTIME_DIRECTORY',self.run),patch.object(m,'PROC_DIRECTORY',self.proc),patch.object(m.lifecycle.ingress,'context',side_effect=context),patch.object(m.lifecycle.ingress,'checked',return_value={}),
@@ -52,6 +53,21 @@ class Health(unittest.TestCase):
   self.ready();self.assertEqual(len(m.checked(self.b,self.selector,self.p)),2)
   self.assertFalse(any(any(x in c for x in ('start','enable','set-environment','reset-failed')) for c in self.native))
   self.assertIn('MemoryMax=4G',(self.units/'p0test-r1-root-health.service').read_text())
+ def test_retained_failed_result_without_fragment_pid_group_or_job_is_not_reset(self):
+  self.previousFailure=True;self.ready();self.assertEqual(len(m.checked(self.b,self.selector,self.p)),2)
+  self.assertFalse(any('reset-failed' in c or 'start' in c for c in self.native))
+ def test_retained_failed_native_with_process_refuses(self):
+  self.previousFailure=True;self.nativeMainPID=234
+  with self.assertRaises(m.Refusal):m.prepare(self.b,self.selector,self.p)
+  self.assertFalse(list(self.units.iterdir()))
+ def test_retained_failed_native_with_cgroup_refuses(self):
+  self.previousFailure=True;self.nativeGroup='/system.slice/still-owned.service'
+  with self.assertRaises(m.Refusal):m.prepare(self.b,self.selector,self.p)
+  self.assertFalse(list(self.units.iterdir()))
+ def test_pending_health_native_job_refuses_before_file_creation(self):
+  self.jobs='42 p0test-r1-root-health.service start waiting'
+  with self.assertRaises(m.Refusal):m.prepare(self.b,self.selector,self.p)
+  self.assertFalse(list(self.units.iterdir()))
  def test_existing_foreign_destination_refuses_untouched(self):
   p=self.units/'p0test-r1-root-health.service';p.write_text('human')
   with self.assertRaises(m.Refusal):m.prepare(self.b,self.selector,self.p)
