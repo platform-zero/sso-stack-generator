@@ -38,6 +38,9 @@ class ExactAclFixture(unittest.TestCase):
         p1=patch.object(acl.stage,'owned_plan',return_value=self.plan)
         p2=patch.object(acl.binds,'inventory',return_value=self.paths)
         p1.start();p2.start();self.addCleanup(p1.stop);self.addCleanup(p2.stop)
+        # ACL fixtures test exact POSIX metadata, not a racy whole-host procfs
+        # inventory. Mount-screen behavior is tested separately below.
+        p3=patch.object(acl,'assert_no_mounts');p3.start();self.addCleanup(p3.stop)
     def test_exact_inherited_acl_restored_without_gerald_access(self):
         original={str(p):acl.acl(p) for p in (self.parent,self.parent/'caddy_ca',self.parent/'forgejo_runner_token')}
         self.assertEqual(acl.grant(None,None,self.ledger)['crossDomainPaths'],3)
@@ -63,5 +66,23 @@ class ExactAclFixture(unittest.TestCase):
         with self.assertRaises(acl.Refusal):acl.grant(None,None,self.ledger)
         self.assertEqual((outside/'protected').read_text(),'untouched')
         self.assertFalse(json.loads(self.ledger.read_text()).get('crossDomainAclStatus'))
+
+class MountScreen(unittest.TestCase):
+    def setUp(self):
+        temp=tempfile.TemporaryDirectory(prefix='p0-acl-proc-unit-');self.addCleanup(temp.cleanup)
+        self.proc=Path(temp.name);(self.proc/'123').mkdir();self.mountinfo=self.proc/'123/mountinfo'
+    def test_selected_namespace_mount_refuses(self):
+        self.mountinfo.write_text('1 2 0:1 / /selected/child rw - tmpfs tmpfs rw\n')
+        with self.assertRaisesRegex(acl.Refusal,'mounted in a process namespace'):acl.assert_no_mounts('/selected',self.proc)
+    def test_unrelated_mount_passes(self):
+        self.mountinfo.write_text('1 2 0:1 / /unrelated rw - tmpfs tmpfs rw\n');acl.assert_no_mounts('/selected',self.proc)
+    def test_unknown_mountinfo_error_is_a_closed_refusal(self):
+        with patch.object(Path,'read_text',side_effect=OSError(22,'Invalid argument')):
+            with self.assertRaisesRegex(acl.Refusal,'inspection unavailable'):acl.assert_no_mounts('/selected',self.proc)
+    def test_permission_denied_is_not_ignored(self):
+        with patch.object(Path,'read_text',side_effect=PermissionError('unreadable')):
+            with self.assertRaisesRegex(acl.Refusal,'inspection unavailable'):acl.assert_no_mounts('/selected',self.proc)
+    def test_disappeared_process_is_not_a_mount(self):
+        acl.assert_no_mounts('/selected',self.proc)
 
 if __name__=='__main__':unittest.main()

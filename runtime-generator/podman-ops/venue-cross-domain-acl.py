@@ -54,6 +54,17 @@ def granted_rows(users):
             'group::---','mask::'+('rwx' if 'rwx' in users.values() else 'r-x' if 'r-x' in users.values() else '--x'),
             'other::---']
 
+def assert_no_mounts(root,proc=Path('/proc')):
+    for process in proc.iterdir():
+        if not process.name.isdigit():continue
+        try:lines=(process/'mountinfo').read_text().splitlines()
+        except (FileNotFoundError,ProcessLookupError):continue
+        except OSError as exc:raise Refusal('process mount namespace inspection unavailable; no ACL mutation') from exc
+        if any((mp:=line.split()[4].replace('\\040',' '))==root or mp.startswith(root+'/')
+               for line in lines if len(line.split())>=5):
+            raise Refusal('selected rootful volume parent or child is mounted in a process namespace')
+
+
 def context(bundle,selector,ledger):
     if os.geteuid()!=0:raise Refusal('root required for isolated cross-domain ACLs')
     path=Path(ledger)
@@ -67,13 +78,7 @@ def context(bundle,selector,ledger):
         raise Refusal('installed volume readiness marker must remain absent')
     rules=policy(plan,paths)
     root=str(rules[0][0])
-    for process in Path('/proc').iterdir():
-        if not process.name.isdigit():continue
-        try:lines=(process/'mountinfo').read_text().splitlines()
-        except (FileNotFoundError,PermissionError,ProcessLookupError):continue
-        if any((mp:=line.split()[4].replace('\\040',' '))==root or mp.startswith(root+'/')
-               for line in lines if len(line.split())>=5):
-            raise Refusal('selected rootful volume parent or child is mounted in a process namespace')
+    assert_no_mounts(root)
     record={row['path']:row for row in data['venueDataBindDirs']}
     parent=rules[0][0]
     expected={Path(row['path']).name for row in data['venueDataBindDirs'] if row['parent']==str(parent)}

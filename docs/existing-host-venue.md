@@ -65,6 +65,12 @@ network retirement removes only its unchanged receipted hook/proof after network
 undefinition and before its own fence table deletion. Existing network names,
 routes, interfaces, fence tables or journals are never adopted or retried.
 
+Cross-domain ACL namespace inspection fails closed on unreadable/invalid procfs
+mountinfo, including permission denial; it never interprets an unknown namespace
+as unmounted. Only a disappeared process is skipped. POSIX ACL metadata fixtures
+isolate that separately tested mount screen rather than treating a transient
+whole-host procfs error as proof of the intended ACL rejection.
+
 Readiness checks correlate both native activation and exec timestamps to the
 current start epoch. A prior attempt's retained failed Result is pending, never
 success and never a new failure; current-epoch failures still refuse immediately.
