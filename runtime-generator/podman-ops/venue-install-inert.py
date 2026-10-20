@@ -195,7 +195,7 @@ def no_data_mounts(rows):
         if not process.name.isdigit():continue
         try:lines=(process/'mountinfo').read_text().splitlines()
         except (FileNotFoundError,ProcessLookupError):continue
-        except PermissionError as exc:raise Refusal('cannot establish absence of selected data mounts') from exc
+        except OSError as exc:raise Refusal('cannot establish absence of selected data mounts') from exc
         for line in lines:
             entry=fields(line)
             if len(entry)>=5 and any(entry[2]==dev and (entry[3]==root or entry[3].startswith(root+'/')) for dev,root in selected):

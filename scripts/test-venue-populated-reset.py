@@ -30,6 +30,22 @@ class Reset(unittest.TestCase):
         self.assertTrue((path/'data').exists())
     def test_whole_filesystem_is_not_a_reset_root(self):
         with self.assertRaises(m.Refusal):m.no_data_mounts([self.row(Path('/'))])
+    def mount_screen(self,error=None,mounted=False):
+        row=self.row(self.root);dev=f"{os.major(row['dev'])}:{os.minor(row['dev'])}"
+        def read(path,*args,**kwargs):
+            if str(path)=='/proc/self/mountinfo':return f'1 0 {dev} / / rw - tmpfs none rw\n'
+            self.assertEqual(str(path),'/proc/123/mountinfo')
+            if error:raise error
+            return f'2 1 {dev} {self.root} /fixture rw - tmpfs none rw\n' if mounted else ''
+        with patch.object(Path,'iterdir',return_value=[Path('/proc/123')]),patch.object(Path,'read_text',read):m.no_data_mounts([row])
+    def test_process_disappearing_during_scan_is_not_a_mount(self):self.mount_screen(error=FileNotFoundError())
+    def test_unreadable_process_mount_table_refuses(self):
+        with self.assertRaisesRegex(m.Refusal,'cannot establish absence'):self.mount_screen(error=PermissionError())
+    def test_invalid_process_mount_read_refuses_without_traceback(self):
+        with self.assertRaisesRegex(m.Refusal,'cannot establish absence'):self.mount_screen(error=OSError(22,'Invalid argument'))
+    def test_selected_data_in_process_namespace_refuses(self):
+        with self.assertRaisesRegex(m.Refusal,'remains mounted'):self.mount_screen(mounted=True)
+    def test_readable_empty_process_namespace_passes(self):self.mount_screen()
     def fixture(self,*,network_failure=False,guest_present=False):
         bundle=self.root/'bundle';(bundle/'site').mkdir(parents=True);(bundle/'site/agent-vm.json').write_text('{"name":"fresh-guest"}')
         log=self.root/'logs';log.mkdir();parent=self.root/'data';parent.mkdir();named=self.root/'named';named.mkdir()
@@ -67,7 +83,10 @@ class Reset(unittest.TestCase):
         b,p,plan,events,registry,lifecycle,native,binds,huly,rows,marker=self.fixture(network_failure=network_failure,guest_present=guest_present)
         with (patch.object(m,'context',return_value=(b,p,plan)),patch.object(m,'load',side_effect=lambda name,file:lifecycle if 'lifecycle' in name else registry),
               patch.object(m.graph,'run',side_effect=native),patch.object(m.composite,'binds',binds),patch.object(m.composite,'huly',huly),
-              patch.object(m.composite.acl,'policy',return_value=[])):
+              patch.object(m.composite.acl,'policy',return_value=[]),
+              # Synthetic network/deletion cases have no process mounts; do not
+              # accidentally inspect live host processes. Gate cases are above.
+              patch.object(m,'no_data_mounts',return_value=None)):
             if network_failure or guest_present:
                 with self.assertRaises(m.Refusal):m.reset_owned(b,'selector','inventory',p,m.stage.sha(p))
                 self.assertTrue(all((Path(row['path'])/'data').exists() for row in rows));self.assertTrue(marker.exists())
