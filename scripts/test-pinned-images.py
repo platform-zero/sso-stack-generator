@@ -184,6 +184,65 @@ class PinnedImages(unittest.TestCase):
         (self.root/'stack.ir.json').write_text(json.dumps(self.ir))
         with self.assertRaises(ValueError):mod.frozen_aliases(self.root,metadata)
 
+    def test_load_deadline_accounts_for_measured_large_sdk_with_finite_ceiling(self):
+        self.assertEqual(mod.image_load_timeout(0), 300)
+        self.assertEqual(mod.image_load_timeout(1), 301)
+        self.assertEqual(mod.image_load_timeout(4 * 1024 * 1024), 301)
+        self.assertEqual(mod.image_load_timeout(4659083776), 1411)
+        self.assertEqual(mod.image_load_timeout(1024**4), 1800)
+
+    def test_load_deadline_rejects_invalid_byte_authority(self):
+        for value in (-1, True, 1.5, '4659083776', None):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                mod.image_load_timeout(value)
+
+    def test_native_load_uses_fd_size_budget_then_rechecks_identity(self):
+        calls=[]
+        def run(command, **kwargs):
+            calls.append((command,kwargs))
+            if command[-1]=='load':
+                self.assertEqual(kwargs['timeout'],mod.image_load_timeout(os.fstat(kwargs['stdin'].fileno()).st_size))
+                self.assertTrue(kwargs['check']);self.assertTrue(kwargs['capture_output'])
+                return SimpleNamespace(returncode=0)
+            return SimpleNamespace(returncode=0 if len(calls)>1 else 1,stdout=self.image)
+        with patch.object(mod.subprocess,'run',side_effect=run),contextlib.redirect_stdout(io.StringIO()):
+            mod.install([(self.image,self.archive,['root'])])
+        self.assertEqual(len(calls),3)
+        self.assertEqual(calls[1][0],['podman','load'])
+        self.assertIn('inspect',calls[2][0])
+
+    def test_load_timeout_is_terminal_without_pull_tag_or_retry(self):
+        calls=[]
+        def run(command, **kwargs):
+            calls.append(command)
+            if command[-1]=='load':raise mod.subprocess.TimeoutExpired(command,kwargs['timeout'])
+            return SimpleNamespace(returncode=1,stdout='')
+        with patch.object(mod.subprocess,'run',side_effect=run),self.assertRaises(mod.subprocess.TimeoutExpired):
+            mod.install([(self.image,self.archive,['root'])])
+        self.assertEqual(len(calls),2)
+        self.assertFalse(any('pull' in x or 'tag' in x for x in calls))
+
+    def test_load_completion_does_not_accept_another_configuration_id(self):
+        calls=[]
+        def run(command, **kwargs):
+            calls.append(command)
+            if command[-1]=='load':return SimpleNamespace(returncode=0)
+            return SimpleNamespace(returncode=1 if len(calls)==1 else 0,stdout='sha256:'+'b'*64)
+        with patch.object(mod.subprocess,'run',side_effect=run),self.assertRaisesRegex(ValueError,'pinned configuration ID'):
+            mod.install([(self.image,self.archive,['root'])])
+        self.assertEqual(len(calls),3)
+        self.assertFalse(any('pull' in x or 'tag' in x for x in calls))
+
+    def test_native_load_failure_is_terminal_without_fallback(self):
+        calls=[]
+        def run(command, **kwargs):
+            calls.append(command)
+            if command[-1]=='load':raise mod.subprocess.CalledProcessError(125,command)
+            return SimpleNamespace(returncode=1,stdout='')
+        with patch.object(mod.subprocess,'run',side_effect=run),self.assertRaises(mod.subprocess.CalledProcessError):
+            mod.install([(self.image,self.archive,['root'])])
+        self.assertEqual(len(calls),2)
+
     def test_registry_update_refused(self):
         self.ir['services']['selected']['updatePolicy'] = 'registry'
         (self.root / 'stack.ir.json').write_text(json.dumps(self.ir))

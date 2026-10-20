@@ -177,6 +177,20 @@ def selected_image_ids(bundle):
     return result
 
 
+def image_load_timeout(archive_bytes):
+    """Finite preparation deadline for pinned SDK archives under 4GiB/200%.
+
+    Image import is not application readiness. Allow a 300s setup budget plus
+    4MiB/s of archive input (the selected Android SDK archive exceeds 4GiB),
+    capped at the same 30 minutes as registry pulls. Identity verification,
+    private scratch, resource limits and no-fallback policy remain mandatory.
+    """
+    if type(archive_bytes) is not int or archive_bytes < 0:
+        raise ValueError('Invalid image archive byte size')
+    quantum = 4 * 1024 * 1024
+    return min(1800, 300 + (archive_bytes + quantum - 1) // quantum)
+
+
 def install(rows, bundle=None):
     os.chdir('/')
     metadata = json.loads((bundle / 'podman-domains.json').read_text()) if bundle is not None else {}
@@ -207,7 +221,8 @@ def install(rows, bundle=None):
                 return result.returncode == 0 and result.stdout.strip().removeprefix('sha256:') == image[7:]
             if not inspect():
                 with archive.open('rb') as source:
-                    subprocess.run(command + ['load'], stdin=source, capture_output=True, check=True, timeout=300)
+                    subprocess.run(command + ['load'], stdin=source, capture_output=True, check=True,
+                                   timeout=image_load_timeout(os.fstat(source.fileno()).st_size))
                 if not inspect():
                     raise ValueError('Imported image differs from the pinned configuration ID')
             for alias in sorted(aliases.get((image, user), ())):

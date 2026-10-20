@@ -62,7 +62,7 @@ class Journal(unittest.TestCase):
             else:text=''
             return SimpleNamespace(returncode=0,stdout=text.replace('\\n','\n'))
         foreign=True
-        with patch.object(composite.graph,'selected_images',return_value={'p0test-r1-apps':{image}}),patch.object(
+        with patch.object(composite,'offline_plan',side_effect=lambda b,p,rows:rows),patch.object(composite.graph,'selected_images',return_value={'p0test-r1-apps':{image}}),patch.object(
                 composite.graph,'stores',return_value=[('root','',['podman-root']),('p0test-r1-apps','',['podman-apps'])]),patch.object(
                 composite.graph,'run',side_effect=runner),patch.object(composite,'retire',return_value={'status':'retired-inert'}) as retire:
             with self.assertRaisesRegex(composite.Refusal,'unjournaled image'):
@@ -73,9 +73,35 @@ class Journal(unittest.TestCase):
             self.assertEqual(composite.recover_failed_import(None,None,self.ledger)['status'],'retired-inert')
             retire.assert_called_once()
         data=json.loads(self.ledger.read_text())
-        self.assertEqual(data['venueCompositeMode'],'inert-ready')
+        self.assertEqual(data['venueCompositeMode'],'interrupted-import-retiring')
         self.assertEqual(data['venueCompositeOfflineImages'],[])
         self.assertEqual(data['venueCompositeFailedImagePlan'][0]['image'],image)
+    def test_complete_interrupted_set_retains_only_actual_per_store_subset_not_readiness(self):
+        a,b,c=['sha256:'+x*64 for x in ('a','b','c')]
+        proposed=[{'image':a,'authorities':['p0test-r1-apps']},{'image':b,'authorities':['root']},{'image':c,'authorities':['p0test-r1-apps']}]
+        self.update(status='units-staged',venueCompositeVersion=2,venueCompositeMode='images-importing',venueCompositeImageInputSha256='d'*64,venueCompositeOfflineImages=proposed)
+        def run(command,**kwargs):
+            root=command[0]=='root'
+            if command[-3:]==['volume','ls','-q']:text='' if root else '\n'.join(composite.huly.NAMES)
+            elif 'network' in command:text='podman'
+            elif 'image' in command:text=b if root else a
+            else:text=''
+            return SimpleNamespace(returncode=0,stdout=text)
+        with patch.object(composite,'offline_plan',side_effect=lambda bundle,plan,rows:rows),patch.object(composite.graph,'selected_images',return_value={'root':{b},'p0test-r1-apps':{a,c}}),patch.object(composite.graph,'stores',return_value=[('root','',['root']),('p0test-r1-apps','',['apps'])]),patch.object(composite.graph,'run',side_effect=run),patch.object(composite,'retire',return_value={'status':'retired-inert'}):
+            composite.recover_failed_import(None,None,self.ledger)
+        data=json.loads(self.ledger.read_text())
+        self.assertEqual(data['venueCompositeFailedImagePlan'],proposed)
+        self.assertEqual(data['venueCompositeOfflineImages'],proposed[:2])
+        self.assertEqual(data['venueCompositeMode'],'interrupted-import-retiring')
+
+    def test_interrupted_authority_change_refuses_before_inventory_or_mutation(self):
+        image='sha256:'+'a'*64
+        self.update(status='units-staged',venueCompositeVersion=2,venueCompositeMode='images-importing',venueCompositeImageInputSha256='b'*64,venueCompositeOfflineImages=[{'image':image,'authorities':['root']}])
+        before=self.ledger.read_bytes()
+        with patch.object(composite,'offline_plan',side_effect=lambda b,p,r:r),patch.object(composite.graph,'selected_images',return_value={'p0test-r1-apps':{image}}),patch.object(composite.graph,'run') as run,self.assertRaisesRegex(composite.Refusal,'authorities differ'):
+            composite.recover_failed_import(None,None,self.ledger)
+        run.assert_not_called();self.assertEqual(self.ledger.read_bytes(),before)
+
     def test_unselected_phase_refuses_before_asset_operation(self):
         self.update(status='huly-volumes-inert')
         original=self.ledger.read_bytes()

@@ -156,6 +156,52 @@ def retire(bundle,selector,inventory,ledger):
     data['venueInstallerPhase']='retired-inert';stage.write_ledger(p,data)
     return {'status':'retired-inert','activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
+def retire_interrupted_import(bundle,selector,inventory,ledger,expected_sha):
+    """Explicit CAS abort of a full190-unit, never-activated offline import.
+
+    This is retirement of actual partial preparation, NOT inert-ready promotion,
+    successful preparation, populated reset or a retry of the failed import.
+    """
+    b,p,plan=context(bundle,selector,ledger);data=receipt(p)
+    if (not isinstance(expected_sha,str) or len(expected_sha)!=64 or
+            any(c not in '0123456789abcdef' for c in expected_sha) or stage.sha(p)!=expected_sha):
+        raise Refusal('interrupted import retirement ledger CAS changed')
+    intent=data.get('venueInterruptedImportRetirement')
+    image_sha=data.get('venueCompositeImageInputSha256')
+    if (not isinstance(image_sha,str) or len(image_sha)!=64 or any(c not in '0123456789abcdef' for c in image_sha) or
+            (intent is not None and (not isinstance(intent,dict) or
+                set(intent)!={'originalLedgerSha256','imageInputSha256','phase'} or
+                intent.get('phase')!='retiring-incomplete' or intent.get('imageInputSha256')!=image_sha or
+                not isinstance(intent.get('originalLedgerSha256'),str) or len(intent['originalLedgerSha256'])!=64 or
+                any(c not in '0123456789abcdef' for c in intent['originalLedgerSha256'])))):
+        raise Refusal('interrupted import authority/retirement intent malformed')
+    if (data.get('plan')!=plan or data.get('venueInstallerVersion')!=1 or
+            data.get('venueInstallerPhase')!='preparing' or data.get('activationAuthorized') is not False or
+            len(data.get('installedUnits',[]))!=190 or data.get('venueStartPhase') or
+            any(data.get(k)!='inert-ready' for k in ('venueReleasePhase','venueDomainRuntimePhase','venueRuntimeEnvPhase')) or
+            any(k in data for k in ('venueIngressPhase','venueRootHealthPhase','venueRegistryPhase','venueBuildBasePhase','venueLocalBuildPhase')) or
+            (not intent and (data.get('venueCompositeMode')!='images-importing' or data.get('status')!='units-staged'))):
+        raise Refusal('only exact full-unit never-activated interrupted offline preparation may be aborted')
+    if not intent:
+        data['venueInterruptedImportRetirement']={'originalLedgerSha256':expected_sha,
+            'imageInputSha256':data.get('venueCompositeImageInputSha256'),'phase':'retiring-incomplete'}
+        stage.write_ledger(p,data)
+    mode=receipt(p).get('venueCompositeMode')
+    if mode=='images-importing':composite.recover_failed_import(b,selector,p)
+    elif mode in ('interrupted-import-retiring','retiring'):composite.retire(b,selector,p)
+    elif mode!='retired-inert':raise Refusal('interrupted composite retirement phase changed')
+    data=receipt(p)
+    if (data.get('venueCompositeMode')!='retired-inert' or data.get('status')!='managers-ready' or
+            len(data.get('retiredUnits',[]))!=190 or
+            data.get('graphCleared')!=['root']+[a['name'] for a in plan['accounts']] or
+            not data.get('podmanImageCacheRetired') or data.get('managerStopped')):
+        raise Refusal('interrupted composite did not finish exact unit/store retirement')
+    data['venueInstallerPhase']='retiring';stage.write_ledger(p,data)
+    result=retire(b,selector,inventory,p)
+    data=receipt(p);data['venueInterruptedImportRetirement']['phase']='retired-incomplete';stage.write_ledger(p,data)
+    return dict(result,retiredIncompletePreparation=True,servicesStarted=False)
+
+
 def empty_owned_directory(row):
     """Keep the receipted top inode; remove only its children using dir-fds."""
     if not shutil.rmtree.avoids_symlink_attacks:raise Refusal('fd-safe recursive deletion required')
@@ -309,6 +355,7 @@ def main():
     mode=p.add_mutually_exclusive_group(required=True)
     mode.add_argument('--prepare-inactive',action='store_true')
     mode.add_argument('--retire-inactive',action='store_true')
+    mode.add_argument('--retire-interrupted-import-sha',metavar='SHA256')
     mode.add_argument('--activate-isolated',action='store_true')
     mode.add_argument('--quarantine-start',action='store_true')
     mode.add_argument('--retry-reviewed-failed-sha',metavar='SHA256')
@@ -320,7 +367,9 @@ def main():
             result=prepare(a.bundle,a.selector,a.protected_inventory,a.ledger,a.sops_age_key_file,a.image_inputs)
         else:
             if a.sops_age_key_file or a.image_inputs:raise Refusal('lifecycle actions must not accept new secret/image inputs')
-            if a.activate_isolated:result=activate(a.bundle,a.selector,a.ledger)
+            if a.retire_interrupted_import_sha is not None:
+                result=retire_interrupted_import(a.bundle,a.selector,a.protected_inventory,a.ledger,a.retire_interrupted_import_sha)
+            elif a.activate_isolated:result=activate(a.bundle,a.selector,a.ledger)
             elif a.retry_reviewed_failed_sha is not None:
                 result=activate(a.bundle,a.selector,a.ledger,reviewed_failed_sha=a.retry_reviewed_failed_sha)
             elif a.reset_experimental_owned_sha is not None:

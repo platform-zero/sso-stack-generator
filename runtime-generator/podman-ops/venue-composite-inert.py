@@ -91,18 +91,23 @@ def prepare(bundle,selector,ledger,image_inputs=None):
             'activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
 def recover_failed_import(bundle,selector,ledger):
-    """Recover only an interrupted one-image import, never unknown content."""
+    """Retire an exact interrupted offline set, never certify it as ready."""
     path,data,plan=context(bundle,selector,ledger)
     proposed=data.get('venueCompositeOfflineImages',[])
     if (data.get('venueCompositeVersion')!=2 or data.get('venueCompositeMode')!='images-importing' or
-            data.get('status')!='units-staged' or len(proposed)!=1 or
+            data.get('status')!='units-staged' or not isinstance(proposed,list) or not proposed or
             not data.get('venueCompositeImageInputSha256')):
-        raise Refusal('no exact single-image interrupted import authority')
-    row=proposed[0]
+        raise Refusal('no exact interrupted offline import authority')
+    offline_plan(bundle,plan,proposed)
     selected=graph.selected_images(bundle)
-    if (not isinstance(row,dict) or row.get('authorities')!=[plan['prefix']+'-apps'] or
-            row.get('image') not in selected.get(row['authorities'][0],set())):
-        raise Refusal('interrupted import does not match selected apps image')
+    expected={a['name']:set() for a in plan['accounts']};expected['root']=set()
+    for row in proposed:
+        owners=sorted(user for user,values in selected.items() if row['image'] in values)
+        if not owners or row['authorities']!=owners:
+            raise Refusal('interrupted image consumer authorities differ from selection')
+        for user in owners:
+            if user not in expected:raise Refusal('interrupted image consumer is not owned')
+            expected[user].add(row['image'])
     observed={}
     for user,_,command in graph.stores(bundle,plan):
         def listing(args):
@@ -111,18 +116,19 @@ def recover_failed_import(bundle,selector,ledger):
             return set(result.stdout.splitlines())
         if listing(['ps','-aq']) or listing(['pod','ps','--quiet']):
             raise Refusal('interrupted import graph contains container or pod')
-        if listing(['volume','ls','-q'])!=(set(huly.NAMES) if user==row['authorities'][0] else set()):
+        if listing(['volume','ls','-q'])!=(set(huly.NAMES) if user==plan['prefix']+'-apps' else set()):
             raise Refusal('interrupted import graph has foreign named volume')
         if listing(['network','ls','--format','{{.Name}}'])-{'podman'}:
             raise Refusal('interrupted import graph has foreign network')
         found={('sha256:'+v.removeprefix('sha256:')) for v in listing(['image','ls','-a','--no-trunc','--format','{{.ID}}'])}
-        if found-(set([row['image']]) if user==row['authorities'][0] else set()):
+        if user not in expected or found-expected[user]:
             raise Refusal('interrupted import graph has unjournaled image')
         observed[user]=found
-    if not observed[row['authorities'][0]]:
-        data['venueCompositeFailedImagePlan']=proposed
-        data['venueCompositeOfflineImages']=[]
-    data['venueCompositeMode']='inert-ready';stage.write_ledger(path,data)
+    if set(observed)!=set(expected):raise Refusal('interrupted image store inventory incomplete')
+    data['venueCompositeFailedImagePlan']=proposed
+    data['venueCompositeOfflineImages']=[{'image':row['image'],'authorities':owners}
+        for row in proposed if (owners:=sorted(user for user in row['authorities'] if row['image'] in observed[user]))]
+    data['venueCompositeMode']='interrupted-import-retiring';stage.write_ledger(path,data)
     return retire(bundle,selector,ledger)
 
 def finish_graph_retirement(bundle,selector,ledger):
@@ -152,9 +158,15 @@ def retire(bundle,selector,ledger):
         # inventory inside graph.clear before removing ANY image; never rerun
         # earlier bind/volume/unit deletion against a partially unwound stage.
         return finish_graph_retirement(bundle,selector,ledger)
-    if (data.get('venueCompositeVersion')!=2 or data.get('venueCompositeMode') not in ('inert-ready','retiring') or
+    if (data.get('venueCompositeVersion')!=2 or data.get('venueCompositeMode') not in ('inert-ready','retiring','interrupted-import-retiring') or
             data.get('status') not in ('units-staged','units-retiring')):
         raise Refusal('only a fully journaled inert composition may be retired here')
+    if data.get('venueCompositeMode')=='interrupted-import-retiring':
+        failed=offline_plan(bundle,plan,data.get('venueCompositeFailedImagePlan',[]))
+        allowed={(row['image'],user) for row in failed for user in row['authorities']}
+        actual=[(row['image'],user) for row in data.get('venueCompositeOfflineImages',[]) for user in row['authorities']]
+        if len(actual)!=len(set(actual)) or not set(actual).issubset(allowed):
+            raise Refusal('interrupted observed image subset differs from original authority')
     # All data, named volumes and unit sources must pass BEFORE the first
     # unlink. This deliberately refuses a populated installed stack.
     rows=data['venueDataBindDirs']
