@@ -154,11 +154,17 @@ def preflight(bundle,selector,inventory):
     diagnostic=load('venue_diagnostic','inspect-existing-host-venue-beyond-listeners.py')
     return diagnostic.inspect(bundle,selector,inventory)
 
+def static_boundary(checked):
+    # Reviewed selected composition: includes the two live read-only CA mounts
+    # for Huly front and LibreChat. Missing OR additional mounts still refuse.
+    expected={'checkedMounts':221,'checkedRootfulStoreUnits':12,'checkedPublishedPorts':48}
+    if any(type(checked.get(key)) is not int or checked[key]!=value for key,value in expected.items()):
+        raise Refusal('incomplete static venue boundary')
+
 def stage(bundle,selector,inventory,ledger,*,mutate=False):
     plan=owned_plan(bundle,selector)
     checked=preflight(bundle,selector,inventory)
-    if checked['checkedMounts']!=219 or checked['checkedRootfulStoreUnits']!=12 or checked['checkedPublishedPorts']!=48:
-        raise Refusal('incomplete static venue boundary')
+    static_boundary(checked)
     provenance=json.loads((Path(bundle)/'source-provenance.json').read_text())
     if provenance['generatorDirty'] or provenance['siteDirty']:
         raise Refusal('dirty source cannot stage physical venue')

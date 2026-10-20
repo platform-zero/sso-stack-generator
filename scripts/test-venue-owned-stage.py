@@ -14,6 +14,17 @@ spec=importlib.util.spec_from_file_location('venue_stage',Path(__file__).resolve
 stage=importlib.util.module_from_spec(spec);spec.loader.exec_module(stage)
 
 class EmptyStageTests(unittest.TestCase):
+    def test_reviewed_boundary_includes_both_live_ca_mounts(self):
+        stage.static_boundary({'checkedMounts':221,'checkedRootfulStoreUnits':12,'checkedPublishedPorts':48})
+    def test_missing_additional_or_legacy_mount_boundaries_refuse(self):
+        valid={'checkedMounts':221,'checkedRootfulStoreUnits':12,'checkedPublishedPorts':48}
+        for key,values in {'checkedMounts':(219,220,222),'checkedRootfulStoreUnits':(11,13),'checkedPublishedPorts':(47,49)}.items():
+            for value in values:
+                with self.subTest(key=key,value=value),self.assertRaises(stage.Refusal):stage.static_boundary(dict(valid,**{key:value}))
+    def test_missing_or_untyped_boundary_is_not_complete(self):
+        for value in (None,'221',True):
+            with self.subTest(value=value),self.assertRaises(stage.Refusal):stage.static_boundary({'checkedMounts':value,'checkedRootfulStoreUnits':12,'checkedPublishedPorts':48})
+        with self.assertRaises(stage.Refusal):stage.static_boundary({})
     def setUp(self):
         tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup)
         self.root=Path(tmp.name)
