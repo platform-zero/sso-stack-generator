@@ -9,17 +9,25 @@ s=importlib.util.spec_from_file_location('interrupted_installer',source);m=impor
 class Interrupted(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.p=Path(self.tmp.name)/'journal';self.plan={'accounts':[{'name':'apps'}]}
-  self.data={'plan':self.plan,'venueInstallerVersion':1,'venueInstallerPhase':'preparing','activationAuthorized':False,'installedUnits':list(range(190)),'venueReleasePhase':'inert-ready','venueDomainRuntimePhase':'inert-ready','venueRuntimeEnvPhase':'inert-ready','venueCompositeMode':'images-importing','status':'units-staged','venueCompositeImageInputSha256':'b'*64}
+  self.data={'plan':self.plan,'venueInstallerVersion':1,'venueInstallerPhase':'preparing','activationAuthorized':False,'installedUnits':list(range(190)),'venueReleasePhase':'inert-ready','venueDomainRuntimePhase':'inert-ready','venueRuntimeEnvPhase':'inert-ready','venueCompositeMode':'images-importing','venueCompositeVersion':2,'status':'units-staged','venueCompositeImageInputSha256':'b'*64}
   self.save();self.ctx=patch.object(m,'context',return_value=(Path(self.tmp.name),self.p,self.plan));self.ctx.start();self.addCleanup(self.ctx.stop)
  def save(self):self.p.write_text(json.dumps(self.data));self.p.chmod(0o600)
  def finish_composite(self,*args):
-  d=m.receipt(self.p);d.update(venueCompositeMode='retired-inert',status='managers-ready',retiredUnits=list(range(190)),graphCleared=['root','apps'],podmanImageCacheRetired=True);m.stage.write_ledger(self.p,d)
+  d=m.receipt(self.p);self.assertEqual(d['venueInstallerPhase'],'retiring')
+  pending=dict(d,venueCompositeMode='retiring',status='graphs-clearing',retiredUnits=list(range(190)))
+  self.assertTrue(m.graph.offline_frozen_retirement(pending),'strict existing frozen-alias guard must apply before graph removal')
+  d.update(venueCompositeMode='retired-inert',status='managers-ready',retiredUnits=list(range(190)),graphCleared=['root','apps'],podmanImageCacheRetired=True);m.stage.write_ledger(self.p,d)
  def finish_installer(self,*args):
   d=m.receipt(self.p);self.assertEqual(d['venueInstallerPhase'],'retiring');self.assertNotEqual(d['venueInstallerPhase'],'inert-ready');d.update(venueInstallerPhase='retired-inert',status='retired-empty');m.stage.write_ledger(self.p,d);return {'status':'retired-inert'}
  def test_exact_abort_reuses_native_retirement_never_ready_or_activation(self):
   with patch.object(m.composite,'recover_failed_import',side_effect=self.finish_composite) as c,patch.object(m,'retire',side_effect=self.finish_installer) as r:
    result=m.retire_interrupted_import(None,None,None,self.p,m.stage.sha(self.p))
   c.assert_called_once();r.assert_called_once();self.assertTrue(result['retiredIncompletePreparation']);self.assertFalse(result['servicesStarted']);d=m.receipt(self.p);self.assertFalse(d['activationAuthorized']);self.assertEqual(d['venueInterruptedImportRetirement']['phase'],'retired-incomplete')
+ def test_explicit_current_cas_resumes_graph_retirement_without_replaying_import(self):
+  self.data.update(venueCompositeMode='retiring',status='graphs-clearing',venueInstallerPhase='retiring',venueInterruptedImportRetirement={'originalLedgerSha256':'c'*64,'imageInputSha256':'b'*64,'phase':'retiring-incomplete'});self.save()
+  with patch.object(m.composite,'recover_failed_import') as recover,patch.object(m.composite,'retire',side_effect=self.finish_composite) as composite,patch.object(m,'retire',side_effect=self.finish_installer):
+   m.retire_interrupted_import(None,None,None,self.p,m.stage.sha(self.p))
+  recover.assert_not_called();composite.assert_called_once();self.assertEqual(m.receipt(self.p)['venueInterruptedImportRetirement']['phase'],'retired-incomplete')
  def test_stale_cas_no_intent_or_native_mutation(self):
   before=self.p.read_bytes()
   with patch.object(m.composite,'recover_failed_import') as c,self.assertRaisesRegex(m.Refusal,'CAS changed'):m.retire_interrupted_import(None,None,None,self.p,'c'*64)
@@ -30,12 +38,12 @@ class Interrupted(unittest.TestCase):
     original=dict(self.data);self.data[key]=value;self.save();before=self.p.read_bytes()
     with patch.object(m.composite,'recover_failed_import') as c,self.assertRaises(m.Refusal):m.retire_interrupted_import(None,None,None,self.p,m.stage.sha(self.p))
     c.assert_not_called();self.assertEqual(before,self.p.read_bytes());self.data=original
- def test_recovery_refusal_keeps_incomplete_intent_and_original_phase(self):
+ def test_recovery_refusal_keeps_retirement_intent_without_false_readiness(self):
   with patch.object(m.composite,'recover_failed_import',side_effect=m.Refusal('foreign object')),patch.object(m,'retire') as r,self.assertRaisesRegex(m.Refusal,'foreign object'):m.retire_interrupted_import(None,None,None,self.p,m.stage.sha(self.p))
-  r.assert_not_called();d=m.receipt(self.p);self.assertEqual(d['venueInstallerPhase'],'preparing');self.assertEqual(d['venueCompositeMode'],'images-importing');self.assertEqual(d['venueInterruptedImportRetirement']['phase'],'retiring-incomplete')
+  r.assert_not_called();d=m.receipt(self.p);self.assertEqual(d['venueInstallerPhase'],'retiring');self.assertEqual(d['venueCompositeMode'],'images-importing');self.assertEqual(d['venueInterruptedImportRetirement']['phase'],'retiring-incomplete')
  def test_incomplete_native_graph_result_never_unwinds_private_inputs(self):
   with patch.object(m.composite,'recover_failed_import'),patch.object(m,'retire') as r,self.assertRaisesRegex(m.Refusal,'did not finish'):m.retire_interrupted_import(None,None,None,self.p,m.stage.sha(self.p))
-  r.assert_not_called();self.assertEqual(m.receipt(self.p)['venueInstallerPhase'],'preparing')
+  r.assert_not_called();self.assertEqual(m.receipt(self.p)['venueInstallerPhase'],'retiring')
  def test_malformed_intent_and_input_hash_refused_before_mutation(self):
   for extra in ({'venueInterruptedImportRetirement':{}},{'venueCompositeImageInputSha256':'not-a-hash'}):
    original=dict(self.data);self.data.update(extra);self.save();before=self.p.read_bytes()

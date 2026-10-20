@@ -176,7 +176,8 @@ def retire_interrupted_import(bundle,selector,inventory,ledger,expected_sha):
                 any(c not in '0123456789abcdef' for c in intent['originalLedgerSha256'])))):
         raise Refusal('interrupted import authority/retirement intent malformed')
     if (data.get('plan')!=plan or data.get('venueInstallerVersion')!=1 or
-            data.get('venueInstallerPhase')!='preparing' or data.get('activationAuthorized') is not False or
+            data.get('venueInstallerPhase') not in ('preparing','retiring') or
+            (data.get('venueInstallerPhase')=='retiring' and not intent) or data.get('activationAuthorized') is not False or
             len(data.get('installedUnits',[]))!=190 or data.get('venueStartPhase') or
             any(data.get(k)!='inert-ready' for k in ('venueReleasePhase','venueDomainRuntimePhase','venueRuntimeEnvPhase')) or
             any(k in data for k in ('venueIngressPhase','venueRootHealthPhase','venueRegistryPhase','venueBuildBasePhase','venueLocalBuildPhase')) or
@@ -185,7 +186,10 @@ def retire_interrupted_import(bundle,selector,inventory,ledger,expected_sha):
     if not intent:
         data['venueInterruptedImportRetirement']={'originalLedgerSha256':expected_sha,
             'imageInputSha256':data.get('venueCompositeImageInputSha256'),'phase':'retiring-incomplete'}
-        stage.write_ledger(p,data)
+    # Enter actual retirement intent BEFORE composite graph removal. Frozen
+    # multi-alias removal must see the strict never-activated retiring state;
+    # leaving this as preparing would wrongly select legacy build-base logic.
+    data['venueInstallerPhase']='retiring';stage.write_ledger(p,data)
     mode=receipt(p).get('venueCompositeMode')
     if mode=='images-importing':composite.recover_failed_import(b,selector,p)
     elif mode in ('interrupted-import-retiring','retiring'):composite.retire(b,selector,p)
