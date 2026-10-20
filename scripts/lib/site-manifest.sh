@@ -15,7 +15,13 @@ site_manifest_validate() {
     (
       (.components == null) or
       ((.components | type) == "array" and all(.components[]; type == "string" and length > 0))
-    )
+    ) and
+    (. as $manifest | all(["excludedModules", "excludedComponents"][]; . as $key | $manifest |
+      (has($key) | not) or
+      (.[$key] | type == "array" and
+        all(.[]; type == "string" and test("^[a-z0-9][a-z0-9-]*$")) and
+        (length == (unique | length)))
+    ))
   ' "$manifest_path" >/dev/null || die "invalid site manifest: $manifest_path (expected non-empty string keys: site, stackConfig, secretStore; optional components must be a string array)"
 }
 

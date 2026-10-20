@@ -528,6 +528,7 @@ while IFS= read -r domain; do
 done < <(jq -r '.domains[].name' "$WORK_DIR/podman-a/podman-domains.json")
 python3 -B "$ROOT_DIR/scripts/test-podman-health.py" "$WORK_DIR/podman-a" "$generated_units"
 python3 -B "$ROOT_DIR/scripts/test-podman-health-inputs.py"
+python3 -B "$ROOT_DIR/scripts/test-selection-exclusions.py"
 
 image_input_args=()
 if [ -n "${IMAGE_INPUTS:-}" ]; then

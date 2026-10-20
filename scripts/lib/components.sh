@@ -164,13 +164,19 @@ component_selection_resolve() {
   local manifest_path="$1"
   local catalog="$2"
   local -A selected=()
+  local -A excluded=()
   local -a queue=()
   local component dependency changed
 
   component_catalog_validate "$catalog"
+  jq -e 'if has("excludedComponents") then .excludedComponents | type == "array" and all(.[]; type == "string" and test("^[a-z0-9][a-z0-9-]*$")) and (length == (unique | length)) else true end' "$manifest_path" >/dev/null || die "invalid excludedComponents"
+  while IFS= read -r component; do
+    [ -z "$component" ] || excluded["$component"]=1
+  done < <(jq -r '.excludedComponents[]?' "$manifest_path")
 
   while IFS= read -r component; do
     [ -n "$component" ] || continue
+    [ -z "${excluded[$component]+x}" ] || die "site manifest selects excluded component '$component'"
     if ! jq -e --arg component "$component" '.components[$component] != null' "$catalog" >/dev/null; then
       die "site manifest selects unknown component '$component'"
     fi
@@ -188,6 +194,7 @@ component_selection_resolve() {
     for component in "${!selected[@]}"; do
       while IFS= read -r dependency; do
         [ -n "$dependency" ] || continue
+        [ -z "${excluded[$dependency]+x}" ] || die "component '$component' reintroduces excluded component '$dependency'"
         if ! jq -e --arg component "$dependency" '.components[$component] != null' "$catalog" >/dev/null; then
           die "component '$component' depends on unknown component '$dependency'"
         fi

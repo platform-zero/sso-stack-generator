@@ -247,6 +247,17 @@ fun discoverModules(modulesDir: Path): Map<String, ModuleCheckout> {
     return result
 }
 
+fun excludedIds(manifest: ObjectNode, key: String): Set<String> {
+    if (!manifest.has(key)) return emptySet()
+    val values = manifest.path(key)
+    if (!values.isArray || values.any { !it.isTextual || !it.asText().matches(Regex("[a-z0-9][a-z0-9-]*")) }) {
+        fail("site manifest $key must be an explicit identifier array")
+    }
+    val ids = values.map { it.asText() }
+    if (ids.toSet().size != ids.size) fail("site manifest $key contains duplicates")
+    return ids.toSet()
+}
+
 fun selectedModuleIds(manifest: ObjectNode): List<String> {
     val modules = manifest.path("modules")
     if (!modules.isArray || modules.isEmpty) fail("site manifest modules must be a non-empty explicit array")
@@ -254,6 +265,8 @@ fun selectedModuleIds(manifest: ObjectNode): List<String> {
         if (it.isTextual) it.asText() else it.path("id").asText().ifBlank { fail("invalid site module entry: $it") }
     }
     if (ids.toSet().size != ids.size) fail("site manifest contains duplicate modules")
+    val forbidden = excludedIds(manifest, "excludedModules")
+    ids.firstOrNull { it in forbidden }?.let { fail("site manifest selects excluded module '$it'") }
     return ids
 }
 
@@ -1000,6 +1013,8 @@ fun resolveComponentSelection(manifestPath: Path, catalog: ObjectNode): List<Str
         else -> catalog.path("defaultComponents").map { it.asText() }
     }
     if (requested.isEmpty()) fail("component selection is empty")
+    val forbidden = excludedIds(manifest, "excludedComponents")
+    requested.firstOrNull { it in forbidden }?.let { fail("site manifest selects excluded component '$it'") }
 
     val components = catalog.path("components") as? ObjectNode
         ?: fail("component catalog is missing components")
@@ -1013,6 +1028,7 @@ fun resolveComponentSelection(manifestPath: Path, catalog: ObjectNode): List<Str
         val component = queue.removeFirst()
         components.path(component).path("dependencies").forEach { dependencyNode ->
             val dependency = dependencyNode.asText()
+            if (dependency in forbidden) fail("component '$component' reintroduces excluded component '$dependency'")
             if (!components.has(dependency)) fail("component '$component' depends on unknown component '$dependency'")
             if (selected.add(dependency)) queue.add(dependency)
         }
@@ -1023,6 +1039,8 @@ fun resolveComponentSelection(manifestPath: Path, catalog: ObjectNode): List<Str
 fun materializeComponentLock(manifestPath: Path, output: Path, ir: ObjectNode) {
     val manifest = readTree(manifestPath)
     val moduleIds = ir.path("modules").map { it.path("id").asText() }
+    val forbidden = excludedIds(manifest, "excludedComponents")
+    moduleIds.firstOrNull { it in forbidden }?.let { fail("module reintroduces excluded component '$it'") }
     val selected = linkedSetOf<String>().apply {
         addAll(moduleIds)
         if (manifest.has("components")) {
