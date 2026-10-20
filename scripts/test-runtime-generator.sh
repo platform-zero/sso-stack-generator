@@ -14,6 +14,7 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 
 bash "$ROOT_DIR/scripts/test-runtime-input-duplicates.sh"
 python3 -B "$ROOT_DIR/scripts/test-podman-resource-limits.py"
+python3 -B "$ROOT_DIR/scripts/test-podman-isolated-port-policy.py"
 bash "$ROOT_DIR/scripts/test-caddy-private-ingress-render.sh"
 python3 -B "$ROOT_DIR/scripts/test-caddy-venue-guest-binding.py"
 python3 -B "$ROOT_DIR/scripts/test-livekit-private-ice-binding.py"

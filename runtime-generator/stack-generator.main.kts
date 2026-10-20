@@ -521,12 +521,12 @@ fun readPodmanPolicy(manifestPath: Path): PodmanPolicy {
         venueLogRoot != "/var/log/$unitPrefix") {
         fail("isolated storage, control-socket and log roots must be explicit and exclusive")
     }
-    if (unitPrefix != "webservices" && (portMap.size != 51 ||
+    if (unitPrefix != "webservices" && (portMap.size != 50 ||
         portMap.keys.intersect(portMap.values.toSet()).isNotEmpty() ||
-        portMap.values.toSet().size != 51 ||
+        portMap.values.toSet().size != 50 ||
         !portMap.keys.containsAll(setOf(80, 443, 9100, 7880, 7881, 7882)) ||
         siteConfig.path("runtime").path("livekit_node_ip").asText() != "192.168.140.1")) {
-        fail("isolated port map and private Livekit ICE identity must name 51 distinct original and proposed identities")
+        fail("isolated port map and private Livekit ICE identity must name 50 distinct original and proposed identities")
     }
     return PodmanPolicy(
         rootfulModules,
