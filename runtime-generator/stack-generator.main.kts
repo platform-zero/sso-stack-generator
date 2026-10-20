@@ -1445,6 +1445,21 @@ fun shellWords(value: String): List<String> {
 // escaped dollars belong to the container shell. Keep values out of public
 // Quadlets/argv by passing only referenced inputs through the private env file.
 val healthInput = Regex("(?<!\\$)\\$(?:\\{([A-Z_][A-Z0-9_]*)|([A-Z_][A-Z0-9_]*))")
+fun podmanSecurityOptions(service: JsonNode): List<String> {
+    val options = service.path("securityOpt")
+    if (options.isMissingNode) return emptyList()
+    if (!options.isArray) fail("securityOpt must be an array")
+    val values = options.map { option ->
+        if (!option.isTextual) fail("securityOpt entries must be strings")
+        option.asText()
+    }
+    if (values.size != values.toSet().size) fail("duplicate securityOpt")
+    if (values.any { it !in setOf("no-new-privileges", "no-new-privileges:true", "no-new-privileges=true") }) {
+        fail("unsupported or weakening Podman securityOpt")
+    }
+    return if (values.isEmpty()) emptyList() else listOf("NoNewPrivileges=true")
+}
+
 data class PodmanHealth(val command: String?, val inputs: Map<String, String>)
 fun podmanHealth(service: JsonNode): PodmanHealth {
     val health = service.path("health")
@@ -1864,6 +1879,7 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
     service.path("tmpfs").forEach { lines += "Tmpfs=${it.asText()}" }
     service.path("capAdd").forEach { lines += "AddCapability=${it.asText()}" }
     service.path("capDrop").forEach { lines += "DropCapability=${it.asText()}" }
+    lines += podmanSecurityOptions(service)
     if (service.path("readOnly").asBoolean(false)) lines += "ReadOnly=true"
     if (service.path("init").asBoolean(false)) lines += "RunInit=true"
     service.path("user").textOrNull()?.let { lines += "User=$it" }
