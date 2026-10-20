@@ -1460,6 +1460,17 @@ fun podmanSecurityOptions(service: JsonNode): List<String> {
     return if (values.isEmpty()) emptyList() else listOf("NoNewPrivileges=true")
 }
 
+fun podmanRestartPolicy(service: JsonNode): String {
+    val policy = service.get("restart") ?: return "on-failure"
+    if (!policy.isTextual) fail("restart must be a supported policy string")
+    return when (policy.asText()) {
+        "no" -> "no"
+        "always", "unless-stopped" -> "always"
+        "on-failure" -> "on-failure"
+        else -> fail("unsupported Podman restart policy")
+    }
+}
+
 data class PodmanHealth(val command: String?, val inputs: Map<String, String>)
 fun podmanHealth(service: JsonNode): PodmanHealth {
     val health = service.path("health")
@@ -1939,7 +1950,7 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
         lines += "RemainAfterExit=yes"
         lines += "Restart=no"
     } else {
-        lines += "Restart=${when (service.path("restart").asText()) { "always", "unless-stopped" -> "always"; else -> "on-failure" }}"
+        lines += "Restart=${podmanRestartPolicy(service)}"
         lines += "RestartSec=5s"
         lines += "TimeoutStartSec=900"
         lines += "TimeoutStopSec=120"
