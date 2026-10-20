@@ -120,6 +120,33 @@ class StartQuarantine(unittest.TestCase):
     def test_new_target_transition_and_successful_oneshot_ready(self):
         self.assertTrue(q.observed_ready({'ActiveState':'active','Result':'success','InactiveExitTimestampMonotonic':'21'},20,'selected.target'))
         self.assertTrue(q.observed_ready({'ActiveState':'inactive','Result':'success','ExecMainStatus':'0','ExecMainStartTimestampMonotonic':'21'},20,'selected.service'))
+    def completed_row(self):
+        return {'ActiveState':'active','SubState':'exited','Result':'success',
+                'ExecMainCode':'1','ExecMainStatus':'0',
+                'ExecMainStartTimestampMonotonic':'21','ExecMainExitTimestampMonotonic':'22'}
+    def test_completed_requires_successful_current_epoch_exit_not_active_flag(self):
+        row=self.completed_row();self.assertTrue(q.observed_ready(row,20,'producer.service',completed=True))
+        row.update(ActiveState='active',SubState='running',ExecMainCode='0',ExecMainExitTimestampMonotonic='0')
+        self.assertFalse(q.observed_ready(row,20,'producer.service',completed=True))
+    def test_completed_activating_result_success_is_not_completion(self):
+        row=self.completed_row();row.update(ActiveState='activating',SubState='start')
+        self.assertFalse(q.observed_ready(row,20,'producer.service',completed=True))
+    def test_completed_missing_exit_or_code_status_refuses_readiness(self):
+        for key in ('ExecMainExitTimestampMonotonic','ExecMainStartTimestampMonotonic','ExecMainCode','ExecMainStatus','SubState','Result'):
+            row=self.completed_row();row.pop(key)
+            self.assertFalse(q.observed_ready(row,20,'producer.service',completed=True),key)
+    def test_completed_stale_or_reversed_exit_is_not_current_completion(self):
+        for start,end in ((19,22),(21,19),(21,0)):
+            row=self.completed_row();row.update(ExecMainStartTimestampMonotonic=str(start),ExecMainExitTimestampMonotonic=str(end))
+            self.assertFalse(q.observed_ready(row,20,'producer.service',completed=True))
+    def test_completed_signaled_or_nonzero_exit_is_not_success(self):
+        for code,status in (('2','9'),('1','1'),('0','0')):
+            row=self.completed_row();row.update(ExecMainCode=code,ExecMainStatus=status)
+            self.assertFalse(q.observed_ready(row,20,'producer.service',completed=True))
+    def test_completed_failed_producer_still_refuses(self):
+        row=self.completed_row();row.update(ActiveState='failed',Result='exit-code',ExecMainStatus='1')
+        with self.assertRaisesRegex(q.Refusal,'native selected service failed'):
+            q.observed_ready(row,20,'producer.service',completed=True)
     def test_stale_review_requires_exact_old_native_result_and_changed_source(self):
         self.reviewed_fixture();self.save()
         selected={None:[],'p0test-r1-apps':['p0test-r1-app.service']}

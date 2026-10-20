@@ -108,10 +108,24 @@ started. Podman 5.4 requires this flag through `PodmanArgs` (after the generated
 conmon default), not the boolean-only Quadlet `Notify=` key. Startup remains
 bounded by the service timeout and installer quarantine. Native parser/argv and
 translator tests are source proof, not deployed application-health acceptance.
-Cross-manager healthy edges cannot be expressed by user-manager `After=`. The
-existing versioned activation dispatcher derives manager batches from those exact
-IR edges, rejects cycles/missing native probes before intent, and waits for
-current-epoch producer readiness before queuing each dependent manager. It checks
+Cross-manager `healthy` and `completed` edges cannot be expressed by user-manager
+`After=`. The existing versioned activation dispatcher derives manager batches
+from those exact IR edges and rejects cycles/missing native probes or retained
+oneshot declarations before intent. It waits for current-epoch producer readiness
+before queuing each dependent manager. A completed producer must be an actual
+native oneshot with a successful normal zero exit in this startup epoch; an active
+or activating process, default zero exit status, or `Result=success` alone is NOT
+completion. This includes platform Keycloak configuration before finance identity
+verification in its separate user manager. On-demand services are not automatic
+startup consumers, whether or not their reusable Quadlet is emitted. The existing
+dispatcher first journals/queues the exact selected root volume-init foundation
+oneshot and waits for its current-epoch successful exit, then the existing ingress
+bootstrap starts root Caddy before manager batches. Source inspection does not
+assume volume-init is an implicit Caddy dependency. Those early producers still
+require actual current-epoch native
+observations; they do not impose a false whole-root-manager cycle with platform
+configuration needed by a later root consumer. Unqueued root consumers are not
+mistaken for already-started leaves. Other manager cycles still refuse. It checks
 all already-queued mandatory leaves during these bounded waits, releases lifecycle
 exclusion while waiting so quarantine remains available, and rechecks fencing under
 the lease immediately before each native queue. No fixed tier list or new daemon.

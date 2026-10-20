@@ -36,8 +36,31 @@ def selected_commands(plan):
                 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/'+str(a['uid'])+'/bus',
                 'systemctl','--user']) for a in plan['accounts']]
 
+def tls_bootstrap_services(bundle,plan):
+    """Native root producers primed before manager batches: foundation and TLS."""
+    root=Path(bundle)/'quadlet/rootful'
+    native={file.stem.removeprefix(plan['prefix']+'-') for file in root.glob('*.container')}
+    if 'caddy' not in native:return set()
+    services=json.loads((Path(bundle)/'stack.ir.json').read_text())['services']
+    # Root volume initialization is a separate selected foundation oneshot,
+    # not an implicit Caddy dependency. Prime it explicitly before TLS startup.
+    pending=['caddy'];early=set()
+    if 'volume-init' in native:
+        if (services.get('volume-init',{}).get('lifecycle')!='oneshot' or
+                'Type=oneshot' not in (root/(plan['prefix']+'-volume-init.container')).read_text().splitlines()):
+            raise Refusal('early volume initialization lacks native oneshot authority')
+        pending.append('volume-init')
+    while pending:
+        name=pending.pop()
+        if name in early:continue
+        if name not in native or name not in services or services[name].get('lifecycle')=='on-demand':
+            raise Refusal('TLS bootstrap prerequisite is not an automatic native root service')
+        early.add(name)
+        pending.extend(services[name].get('dependencies',{}))
+    return early
+
 def activation_batches(bundle,plan):
-    """Order managers by actual cross-manager healthy edges, never fixed tiers."""
+    """Order managers by native healthy/completed edges, never fixed tiers."""
     commands=selected_commands(plan)
     owners={a['name'] if a else None:(a,command) for a,command in commands}
     services={};texts={}
@@ -48,16 +71,26 @@ def activation_batches(bundle,plan):
         services[name]=owner;texts[name]=file.read_text()
     ir=json.loads((Path(bundle)/'stack.ir.json').read_text())
     requires={owner:set() for owner in owners};dependencies={owner:set() for owner in owners}
+    early=tls_bootstrap_services(bundle,plan)
     for consumer,service in ir['services'].items():
+        if service.get('lifecycle')=='on-demand':
+            continue  # no automatic startup, even when quadletManaged emits its unit
         for producer,condition in service.get('dependencies',{}).items():
-            if condition!='healthy':continue
-            if consumer not in services or producer not in services:raise Refusal('healthy edge has no managed native service')
-            if ('--sdnotify=healthy' not in texts[producer] or
-                    not any(line.startswith('HealthCmd=') for line in texts[producer].splitlines())):
-                raise Refusal('healthy producer lacks native readiness notification')
+            if condition not in ('healthy','completed'):continue
+            if consumer not in services or producer not in services:raise Refusal('dependency edge has no managed native service')
+            if condition=='healthy':
+                if ('--sdnotify=healthy' not in texts[producer] or
+                        not any(line.startswith('HealthCmd=') for line in texts[producer].splitlines())):
+                    raise Refusal('healthy producer lacks native readiness notification')
+            elif (ir['services'][producer].get('lifecycle')!='oneshot' or
+                  'Type=oneshot' not in texts[producer].splitlines() or
+                  'RemainAfterExit=yes' not in texts[producer].splitlines()):
+                raise Refusal('completed producer lacks native retained oneshot completion')
             owner,upstream=services[consumer],services[producer]
             if owner!=upstream:
-                dependencies[owner].add(upstream)
+                # Existing ingress bootstrap precedes ALL manager batches. Keep
+                # the actual readiness requirement, not a false manager cycle.
+                if upstream is not None or producer not in early:dependencies[owner].add(upstream)
                 requires[owner].add((upstream,plan['prefix']+'-'+producer+'.service'))
     remaining=list(owners);ordered=[];done=set()
     while remaining:
@@ -69,23 +102,53 @@ def activation_batches(bundle,plan):
 
 def startup_observations(bundle,plan,state,selected):
     """Observe only queued managers, including every mandatory startup leaf."""
-    observations={}
+    observations={};early=tls_bootstrap_services(bundle,plan)
     for account,command in selected_commands(plan):
         owner=account['name'] if account else None
-        if (owner or 'root') not in state['venueStartQueued']:continue
+        queued=(owner or 'root') in state['venueStartQueued']
+        if not queued and (account is not None or not early):continue
         directory=Path(bundle)/'quadlet'/('rootless-'+account['name'].removeprefix(plan['prefix']+'-') if account else 'rootful')
+        oneshots={file.stem+'.service' for file in directory.glob('*.container')
+                  if 'Type=oneshot' in file.read_text().splitlines()}
         wanted=set()
-        for file in directory.glob('*.target'):
-            for line in file.read_text().splitlines():
-                if line.startswith(('Wants=','Requires=')):
-                    wanted.update(x for x in line.split('=',1)[1].split() if x.endswith('.service'))
+        if queued:
+            for file in directory.glob('*.target'):
+                for line in file.read_text().splitlines():
+                    if line.startswith(('Wants=','Requires=')):
+                        wanted.update(x for x in line.split('=',1)[1].split() if x.endswith('.service'))
+        else:
+            wanted={plan['prefix']+'-'+name+'.service' for name in early}
         if not wanted<=set(selected[owner]):raise Refusal('startup dependency escaped selected unit set')
-        for name in sorted(wanted|{plan['prefix']+'.target'}):
-            result=graph.run(command+['show',name,'-p','ActiveState','-p','Result','-p','ExecMainStatus','-p','ExecMainStartTimestampMonotonic','-p','InactiveExitTimestampMonotonic'],timeout=30)
+        for name in sorted(wanted|({plan['prefix']+'.target'} if queued else set())):
+            result=graph.run(command+['show',name,'-p','ActiveState','-p','SubState','-p','Result','-p','ExecMainStatus','-p','ExecMainCode','-p','ExecMainStartTimestampMonotonic','-p','ExecMainExitTimestampMonotonic','-p','InactiveExitTimestampMonotonic'],timeout=30)
             if result.returncode:raise Refusal('cannot inspect selected startup state')
             row=dict(line.split('=',1) for line in result.stdout.splitlines() if '=' in line)
-            observations[owner,name]=observed_ready(row,state['venueStartMonotonicUsec'],name)
+            observations[owner,name]=observed_ready(row,state['venueStartMonotonicUsec'],name,completed=name in oneshots)
     return observations
+
+def bootstrap_volume_init(bundle,plan,ledger,context,deadline,selected,registry):
+    """Prime only the exact selected root foundation, under existing authority."""
+    if 'volume-init' not in tls_bootstrap_services(bundle,plan):return
+    unit=plan['prefix']+'-volume-init.service';p=Path(ledger)
+    if unit not in selected[None]:raise Refusal('early volume initialization escaped selected units')
+    with lifecycle(context):
+        state=json.loads(p.read_text())
+        if (time.monotonic()>=deadline or state.get('venueStartPhase')!='starting' or
+                state.get('activationAuthorized') is not True or 'venueStartBootstrapPending' in state or
+                state.get('venueStartBootstrapQueued')):
+            raise Refusal('early volume initialization fenced, expired or already attempted')
+        registry.reserve();context.physical_reserves()
+        state['venueStartBootstrapPending']=unit;stage.write_ledger(p,state)
+        if graph.run(['systemctl','start','--job-mode=fail','--no-block',unit],timeout=30).returncode:
+            raise Refusal('selected early volume initialization request failed; intent retained')
+        state['venueStartBootstrapQueued']=[unit];state.pop('venueStartBootstrapPending');stage.write_ledger(p,state)
+    while True:
+        registry.reserve();context.physical_reserves();state=json.loads(p.read_text())
+        if state.get('venueStartPhase')!='starting' or state.get('activationAuthorized') is not True:
+            raise Refusal('early volume initialization was fenced')
+        if time.monotonic()>=deadline:raise Refusal('early volume initialization completion deadline')
+        if startup_observations(bundle,plan,state,selected).get((None,unit)) is True:return
+        time.sleep(2)
 
 def targets(bundle,plan,state,*,selector=None,ledger=None):
     selected=units.manifest(bundle,plan)
@@ -207,13 +270,21 @@ def cancel_starts(command,names):
                 if again.returncode or any(len(row)<4 or row[0]==fields[0] for row in rows):
                     raise Refusal('selected late start job could not be cancelled')
 
-def observed_ready(row,epoch,name):
+def observed_ready(row,epoch,name,*,completed=False):
     changed=max(int(row.get('ExecMainStartTimestampMonotonic','0')),
                 int(row.get('InactiveExitTimestampMonotonic','0')))>=epoch
     failed=row.get('ActiveState')=='failed' or row.get('Result','success') not in ('','success')
     if failed:
         if changed:raise Refusal('native selected service failed: '+name)
         return False  # prior attempt's retained Result is not this start's failure
+    if completed:
+        started=int(row.get('ExecMainStartTimestampMonotonic','0'))
+        exited=int(row.get('ExecMainExitTimestampMonotonic','0'))
+        return (started>=epoch and exited>=started and
+                row.get('ActiveState') in ('active','inactive') and
+                row.get('SubState') in ('exited','dead') and
+                row.get('Result')=='success' and row.get('ExecMainCode')=='1' and
+                row.get('ExecMainStatus')=='0')
     return changed and (row.get('ActiveState')=='active' or
            (row.get('ActiveState')=='inactive' and row.get('ExecMainStatus')=='0'))
 
@@ -336,8 +407,10 @@ def start(bundle,selector,ledger,timeout=900,*,reviewed_failed_sha=None):
                   ('venueStartPhase','venueStartIntent','venueStartMonotonicUsec','venueStartRepair',
                    'venueStartQuarantineUnits','venueRecoveryNetworks','venueRecoveryContainers',
                    'venueStartLifecycleSha256','venueStartFailure','venueStartFenceMonotonicUsec',
-                   'venueIngressStartPending','venueIngressQueued','venueIngressTlsProof','venueIngressMailProof')})
-            for key in ('venueIngressStartPending','venueIngressQueued','venueIngressTlsProof','venueIngressMailProof'):
+                   'venueIngressStartPending','venueIngressQueued','venueIngressTlsProof','venueIngressMailProof',
+                   'venueStartBootstrapPending','venueStartBootstrapQueued')})
+            for key in ('venueIngressStartPending','venueIngressQueued','venueIngressTlsProof','venueIngressMailProof',
+                        'venueStartBootstrapPending','venueStartBootstrapQueued'):
                 state.pop(key,None)  # Only after exact quarantined/idle reviewed recovery; preserve the prior attempt above.
         state.update(venueInstallerVersion=2,venueInstallerPhase='starting',status='installed-starting',
                      venueStartPhase='starting',venueStartIntent=plan['quadletTreeSha256'],
@@ -361,6 +434,7 @@ def start(bundle,selector,ledger,timeout=900,*,reviewed_failed_sha=None):
             runtime_receipt(context,'failed-quarantining',False)
             raise  # caller performs the same exact journaled stop below
     deadline=time.monotonic()+timeout
+    bootstrap_volume_init(bundle,plan,p,context,deadline,selected,registry)
     ingress.bootstrap_tls(bundle,selector,p,context,deadline)
     for account,command,required in batches:
         while True:
