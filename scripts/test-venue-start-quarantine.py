@@ -154,11 +154,29 @@ class StartQuarantine(unittest.TestCase):
         self.assertIn('p0test-r1.target',names)
         self.assertNotIn('p0test-r1',names)
         self.assertIn('p0test-r1-fixture-1.service',names)
-    def test_shared_lifecycle_lock_refuses_competing_stop(self):
+    def test_shared_lifecycle_lock_times_out_without_competing_stop(self):
         records=[]
         with q.lifecycle(self.context):
-            with self.assertRaisesRegex(q.Refusal,'already in progress'):self.run_guard(records)
+            with patch.object(q.time,'monotonic',side_effect=[0,121]),patch.object(q.time,'sleep'):
+                with self.assertRaisesRegex(q.Refusal,'after bounded wait'):self.run_guard(records)
         self.assertFalse(records)
+    def test_native_flock_contention_waits_for_release_without_replacing_lock(self):
+        import threading,time,os,fcntl
+        path=self.context.runtime/'lifecycle.lock';held=threading.Event();release=threading.Event()
+        def holder():
+            fd=os.open(path,os.O_CREAT|os.O_RDWR,0o600)
+            try:
+                fcntl.flock(fd,fcntl.LOCK_EX);held.set();release.wait(5)
+            finally:os.close(fd)
+        thread=threading.Thread(target=holder);thread.start();self.assertTrue(held.wait(2));inode=path.stat().st_ino
+        timer=threading.Timer(0.2,release.set);timer.start()
+        try:
+            started=time.monotonic()
+            with q.lifecycle(self.context):
+                self.assertTrue(release.is_set());self.assertEqual(path.stat().st_ino,inode)
+            self.assertGreaterEqual(time.monotonic()-started,0.15)
+        finally:release.set();timer.join();thread.join()
+        self.assertEqual(path.stat().st_ino,inode)
     def test_marker_symlink_refuses_before_stop(self):
         marker=self.root/'volume-ready-r1.txt';marker.symlink_to('/etc/hosts')
         records=[]

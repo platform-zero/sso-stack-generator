@@ -159,8 +159,17 @@ def lifecycle(context):
         s=os.fstat(fd)
         if not stat.S_ISREG(s.st_mode) or s.st_uid or s.st_nlink!=1 or stat.S_IMODE(s.st_mode)!=0o600:
             raise Refusal('unsafe installed lifecycle lease')
-        try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        except BlockingIOError:raise Refusal('lifecycle operation already in progress') from None
+        # Native scoped health execution can legitimately hold this lease for
+        # up to90s. Contention is serialization, not an activation failure. Keep
+        # exclusion intact and wait boundedly; never steal/recreate the lock.
+        deadline=time.monotonic()+120
+        while True:
+            try:
+                fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic()>=deadline:raise Refusal('lifecycle operation still in progress after bounded wait') from None
+                time.sleep(0.1)
         yield
     finally:os.close(fd)
 
