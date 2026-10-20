@@ -32,13 +32,13 @@ def policy(plan,paths):
     accounts={a['name'].removeprefix(plan['prefix']+'-'):a['uid'] for a in plan['accounts']}
     root=Path(plan['roots']['rootful-volume'])
     ca=root/'caddy_ca';token=root/'forgejo_runner_token'
-    if (paths.get(str(ca),{}).get('consumers')!=['rootful','rootless-apps','rootless-platform','rootless-vaultwarden'] or
+    if (paths.get(str(ca),{}).get('consumers')!=['rootful','rootless-apps','rootless-finance','rootless-platform'] or
             paths.get(str(token),{}).get('consumers')!=['rootless-apps','rootless-ci-runner']):
         raise Refusal('cross-domain consumers differ from reviewed Caddy CA and Forgejo token')
-    if set(accounts)!=set(('platform','apps','homeassistant','vaultwarden','ci-runner','workloads','test-runners')):
+    if set(accounts)!=set(('platform','apps','homeassistant','finance','ci-runner','workloads','test-runners')):
         raise Refusal('seven selected accounts missing')
-    parent={accounts[d]:'--x' for d in ('platform','apps','vaultwarden','ci-runner','test-runners')}
-    ca_users={accounts[d]:'r-x' for d in ('platform','apps','vaultwarden','test-runners')}
+    parent={accounts[d]:'--x' for d in ('platform','apps','finance','ci-runner','test-runners')}
+    ca_users={accounts[d]:'r-x' for d in ('platform','apps','finance','test-runners')}
     token_users={accounts['apps']:'rwx',accounts['ci-runner']:'r-x'}
     return [(root,parent),(ca,ca_users),(token,token_users)]
 

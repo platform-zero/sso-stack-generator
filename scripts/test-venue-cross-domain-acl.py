@@ -27,13 +27,13 @@ class ExactAclFixture(unittest.TestCase):
         dirs.extend({'path':str(self.root/f'rootless{i}'),'parent':'elsewhere'} for i in range(41))
         self.plan={'prefix':'p0test-r1','roots':{'rootful-volume':str(self.parent),'rootful-state':str(self.root/'state')},
             'accounts':[{'name':'p0test-r1-'+name,'uid':3200+i} for i,name in enumerate(
-                ('platform','apps','homeassistant','vaultwarden','ci-runner','workloads','test-runners'))]}
+                ('platform','apps','homeassistant','finance','ci-runner','workloads','test-runners'))]}
         os.mkdir(self.plan['roots']['rootful-state'])
         s=self.parent.lstat()
         self.data={'plan':self.plan,'status':'data-binds-inert','venueDataBindDirs':dirs,
                    'pathIdentities':{str(self.parent):{'dev':s.st_dev,'ino':s.st_ino}}}
         self.ledger=self.root/'ledger.json';self.ledger.write_text(json.dumps(self.data));self.ledger.chmod(0o600)
-        self.paths={str(self.parent/'caddy_ca'):{'consumers':['rootful','rootless-apps','rootless-platform','rootless-vaultwarden']},
+        self.paths={str(self.parent/'caddy_ca'):{'consumers':['rootful','rootless-apps','rootless-finance','rootless-platform']},
                     str(self.parent/'forgejo_runner_token'):{'consumers':['rootless-apps','rootless-ci-runner']}}
         p1=patch.object(acl.stage,'owned_plan',return_value=self.plan)
         p2=patch.object(acl.binds,'inventory',return_value=self.paths)
@@ -49,6 +49,21 @@ class ExactAclFixture(unittest.TestCase):
         self.assertNotIn('gerald',acl.acl(self.parent/'caddy_ca'))
         self.assertEqual(acl.restore(None,None,self.ledger)['status'],'retired')
         self.assertEqual({str(p):acl.acl(p) for p in (self.parent,self.parent/'caddy_ca',self.parent/'forgejo_runner_token')},original)
+    def test_retired_vaultwarden_topology_refuses_before_acl_mutation(self):
+        for account in self.plan['accounts']:
+            if account['name']=='p0test-r1-finance':account['name']='p0test-r1-vaultwarden'
+        self.paths[str(self.parent/'caddy_ca')]['consumers']=['rootful','rootless-apps','rootless-platform','rootless-vaultwarden']
+        self.ledger.write_text(json.dumps(self.data))
+        before=acl.acl(self.parent/'caddy_ca')
+        with self.assertRaisesRegex(acl.Refusal,'cross-domain consumers'):acl.grant(None,None,self.ledger)
+        self.assertEqual(acl.acl(self.parent/'caddy_ca'),before)
+        self.assertFalse(json.loads(self.ledger.read_text()).get('crossDomainAclStatus'))
+    def test_additional_ca_consumer_refuses_before_acl_mutation(self):
+        self.paths[str(self.parent/'caddy_ca')]['consumers'].append('rootless-workloads')
+        before=acl.acl(self.parent/'caddy_ca')
+        with self.assertRaisesRegex(acl.Refusal,'cross-domain consumers'):acl.grant(None,None,self.ledger)
+        self.assertEqual(acl.acl(self.parent/'caddy_ca'),before)
+        self.assertFalse(json.loads(self.ledger.read_text()).get('crossDomainAclStatus'))
     def test_populated_bind_refuses_empty_stage_restore_without_removal(self):
         acl.grant(None,None,self.ledger)
         target=self.parent/'forgejo_runner_token'/'foreign-secret'
