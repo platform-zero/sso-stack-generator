@@ -308,7 +308,7 @@ def screen_venue_volume_init(bundle, selector):
     marker=state+'/volume-ready-r1.txt'
     expected_mount='Volume='+marker+':/run/p0-venue-volume-ready.txt:ro'
     exec_lines=[line for line in lines if line.startswith('Exec=')]
-    if (lines.count('AssertPathIsRegular='+marker)!=1 or
+    if (lines.count('AssertFileNotEmpty='+marker)!=1 or
             [line for line in lines if line.startswith('Volume=')]!=[expected_mount] or
             lines.count('Entrypoint=/bin/sh')!=1 or len(exec_lines)!=1 or
             "grep -qx '"+prefix+"-volume-ready-v1' /run/p0-venue-volume-ready.txt" not in exec_lines[0] or

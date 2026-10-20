@@ -143,11 +143,13 @@ class VenueTest(unittest.TestCase):
         root=Path(self.tmp.name)/'bundle/quadlet/rootful';root.mkdir(parents=True)
         state=self.selector['rootful']['stateRoot'];prefix=self.selector['unitPrefix']
         path=root/(prefix+'-volume-init.container')
-        safe=('[Unit]\nAssertPathIsRegular='+state+'/volume-ready-r1.txt\n'
+        safe=('[Unit]\nAssertFileNotEmpty='+state+'/volume-ready-r1.txt\n'
               '[Container]\nVolume='+state+'/volume-ready-r1.txt:/run/p0-venue-volume-ready.txt:ro\n'
               'Entrypoint=/bin/sh\nExec="-ec" "grep -qx \'p0test-r1-volume-ready-v1\' /run/p0-venue-volume-ready.txt"\n')
         path.write_text(safe)
         self.assertTrue(venue.screen_venue_volume_init(root.parents[1],self.selector))
+        path.write_text(safe.replace('AssertFileNotEmpty=', 'AssertPathIsRegular='))
+        with self.assertRaises(venue.Refusal):venue.screen_venue_volume_init(root.parents[1],self.selector)
         path.write_text(safe.replace('grep -qx ', 'chmod 755 /mnt/stack; grep -qx '))
         with self.assertRaises(venue.Refusal):venue.screen_venue_volume_init(root.parents[1],self.selector)
         path.write_text(safe+'Volume=/mnt/stack/shared:/data\n')

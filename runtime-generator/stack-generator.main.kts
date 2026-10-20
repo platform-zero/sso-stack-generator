@@ -1803,7 +1803,7 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
     val lines = mutableListOf<String>()
     lines += "[Unit]"
     lines += "Description=Webservices container: $name"
-    if (isolatedVolumeInit) lines += "AssertPathIsRegular=$volumeReady"
+    if (isolatedVolumeInit) lines += "AssertFileNotEmpty=$volumeReady"
     dependencies.forEach { (dependency, _) ->
         lines += "Requires=$unitPrefix-$dependency.service"
         lines += "After=$unitPrefix-$dependency.service"

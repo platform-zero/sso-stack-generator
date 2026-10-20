@@ -129,6 +129,14 @@ mistaken for already-started leaves. Other manager cycles still refuse. It check
 all already-queued mandatory leaves during these bounded waits, releases lifecycle
 exclusion while waiting so quarantine remains available, and rechecks fencing under
 the lease immediately before each native queue. No fixed tier list or new daemon.
+The native parser health contract checks both healthy/completed observation
+barriers and recognizes only those explicit root bootstrap ordering exceptions;
+it must not silently drop the barriers to make manager ordering pass. The volume
+foundation uses supported systemd `AssertFileNotEmpty=` (regular nonempty marker),
+not the unsupported/ignored `AssertPathIsRegular` key. Installer no-follow,
+root-owner, mode0600 and exact marker-content checks remain mandatory, as does the
+read-only marker mount and exact in-container check. Native local-file predicate
+and parser regressions do not establish deployed volume/application readiness.
 Native version-2 retirement invokes the existing exact host-unit retirement
 helper after graph/unit/env disposal and before manager retirement. A foreign or
 changed host unit stops this sequence; the manager empty-unit gate is unchanged.

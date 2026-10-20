@@ -19,6 +19,32 @@ def decode(value):
     return value.replace("$$", "$").replace("%%", "%")
 
 
+def check_activation_edges(services, owners, batches, early, prefix):
+    """Every automatic cross-manager edge retains its native observation barrier.
+
+    Only selected root producers explicitly primed before manager batches may
+    precede their manager's full batch. On-demand units are not automatic consumers.
+    """
+    order = {account['name'] if account else None: i for i, (account, _, _) in enumerate(batches)}
+    barriers = {account['name'] if account else None: required for account, _, required in batches}
+    count = 0
+    for consumer, service in services.items():
+        if service.get('lifecycle') == 'on-demand':
+            continue
+        for producer, condition in service.get('dependencies', {}).items():
+            if condition not in ('healthy', 'completed'):
+                continue
+            assert consumer in owners and producer in owners, (consumer, producer, 'missing native service')
+            owner, upstream = owners[consumer], owners[producer]
+            if owner == upstream:
+                continue
+            assert (upstream, prefix + '-' + producer + '.service') in barriers[owner], (consumer, producer, 'missing native barrier')
+            if upstream is not None or producer not in early:
+                assert order[upstream] < order[owner], (consumer, producer, 'manager order')
+            count += 1
+    return count
+
+
 def check(bundle, generated):
     services = json.loads((bundle / "stack.ir.json").read_text())["services"]
     files = {p.stem: p for p in (bundle / "quadlet").glob("*/*.container")}
@@ -96,20 +122,11 @@ def check(bundle, generated):
     plan = {'prefix': prefix, 'accounts': [{'name': prefix + '-' + p.name.removeprefix('rootless-'),
             'uid': 3200 + i, 'home': '/nonexistent-fixture'} for i, p in enumerate(directories)]}
     batches = dispatcher.activation_batches(bundle, plan)
-    order = {account['name'] if account else None: i for i, (account, _, _) in enumerate(batches)}
-    barriers = {account['name'] if account else None: required for account, _, required in batches}
     owners = {name.removeprefix(prefix + '-'): (None if path.parent.name == 'rootful' else
               prefix + '-' + path.parent.name.removeprefix('rootless-')) for name, path in files.items()}
-    cross_edges = 0
-    for consumer, service in services.items():
-        for producer, condition in service.get('dependencies', {}).items():
-            if condition != 'healthy' or owners[consumer] == owners[producer]:
-                continue
-            owner, upstream = owners[consumer], owners[producer]
-            assert order[upstream] < order[owner], (consumer, producer)
-            assert (upstream, prefix + '-' + producer + '.service') in barriers[owner], (consumer, producer)
-            cross_edges += 1
-    print(f"[health-contract] {probes} probes / {gated} health-ready producers; native argv verified; {cross_edges} cross-manager healthy edges gated")
+    early = dispatcher.tls_bootstrap_services(bundle, plan)
+    cross_edges = check_activation_edges(services, owners, batches, early, prefix)
+    print(f"[health-contract] {probes} probes / {gated} health-ready producers; native argv verified; {cross_edges} cross-manager healthy/completed edges gated, including explicit root bootstrap observations")
 
 
 if __name__ == "__main__":
