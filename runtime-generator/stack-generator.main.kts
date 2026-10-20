@@ -1498,6 +1498,22 @@ fun podmanDns(service: JsonNode, isolated: Boolean, serviceName: String = ""): L
     return listOf(gateway)
 }
 
+fun podmanExtraHosts(service: JsonNode, isolated: Boolean): List<String> = service.path("extraHosts").map { entry ->
+    val value = entry.asText()
+    if (!isolated) value else {
+        val host = value.substringBefore(':')
+        val canonical = host == "datamancy.net" || host.endsWith(".datamancy.net")
+        if (!canonical) value else {
+            // This selected private profile's DNS/TLS authority is virbr140.
+            // Rootless host-gateway becomes pasta's 169.254.1.2, NOT this
+            // authority; /etc/hosts would override the correct private DNS.
+            val target = value.substringAfter(':', "")
+            if (target !in setOf("host-gateway", "192.168.140.1")) fail("isolated canonical host alias escapes private ingress")
+            "$host:192.168.140.1"
+        }
+    }
+}
+
 fun renderEnvironmentTemplate(name: String, service: ObjectNode, output: Path) {
     val environment = service.path("environment").fieldsMap().toMap().toMutableMap()
     podmanHealth(service).inputs.forEach { (key, value) -> environment[key] = nodes.textNode(value) }
@@ -1825,7 +1841,7 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
             lines += "PublishPort=127.0.0.1:${endpoint.hostPort}:${endpoint.containerPort}$suffix"
         }
     }
-    service.path("extraHosts").forEach { lines += "AddHost=${it.asText().replace("host-gateway", "host-gateway")}" }
+    podmanExtraHosts(service, unitPrefix != "webservices").forEach { lines += "AddHost=$it" }
     podmanDns(service, unitPrefix != "webservices", name).forEach { lines += "DNS=$it" }
     service.path("tmpfs").forEach { lines += "Tmpfs=${it.asText()}" }
     service.path("capAdd").forEach { lines += "AddCapability=${it.asText()}" }

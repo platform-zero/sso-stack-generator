@@ -82,6 +82,19 @@ check(podmanDns(mailDns, true, "mailserver") == listOf("192.168.140.1"))
 for (name in listOf("", "caddy")) check(runCatching { podmanDns(mailDns, true, name) }.isFailure)
 check(runCatching { podmanDns(json.readTree("""{"dns":["8.8.8.8","1.1.1.1"]}"""), true, "mailserver") }.isFailure)
 println("[scope-dns-test] ${dnsGood.size + dnsBad.size + 5} actual-translator cases passed; exact mail defaults scoped without fallback")
+val aliasGood = listOf(
+    Triple("{}", true, emptyList<String>()),
+    Triple("""{"extraHosts":["keycloak.datamancy.net:host-gateway"]}""", false, listOf("keycloak.datamancy.net:host-gateway")),
+    Triple("""{"extraHosts":["keycloak.datamancy.net:host-gateway"]}""", true, listOf("keycloak.datamancy.net:192.168.140.1")),
+    Triple("""{"extraHosts":["datamancy.net:host-gateway","api.bookstack.datamancy.net:host-gateway"]}""", true, listOf("datamancy.net:192.168.140.1", "api.bookstack.datamancy.net:192.168.140.1")),
+    Triple("""{"extraHosts":["mail.datamancy.net:192.168.140.1"]}""", true, listOf("mail.datamancy.net:192.168.140.1")),
+    Triple("""{"extraHosts":["host.docker.internal:host-gateway","host.containers.internal:host-gateway"]}""", true, listOf("host.docker.internal:host-gateway", "host.containers.internal:host-gateway")),
+    Triple("""{"extraHosts":["example.net:127.0.0.1","notdatamancy.net:host-gateway"]}""", true, listOf("example.net:127.0.0.1", "notdatamancy.net:host-gateway")),
+    Triple("""{"extraHosts":["keycloak.datamancy.net:127.0.0.1"]}""", false, listOf("keycloak.datamancy.net:127.0.0.1")))
+for ((raw, isolated, expected) in aliasGood) check(podmanExtraHosts(json.readTree(raw), isolated) == expected)
+for (target in listOf("127.0.0.1", "169.254.1.2", "1.1.1.1"))
+    check(runCatching { podmanExtraHosts(json.readTree("""{"extraHosts":["keycloak.datamancy.net:$target"]}"""), true) }.isFailure)
+println("[scope-host-alias-test] ${aliasGood.size + 3} actual-translator cases passed; canonical issuer names preserved, no pasta-gateway/public fallback")
 val caddySource = "prefix && test -s /ca/caddy-ca.crt && wget --quiet --tries=1 --spider --timeout=5 http://127.0.0.1:2019/config/ && wget --quiet --tries=1 --spider --timeout=5 http://127.0.0.1:2019/reverse_proxy/upstreams && caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile | grep Valid"
 val caddyScoped = isolatedCaddyProbe(caddySource)
 check(!caddyScoped.contains(":2019") && caddyScoped.startsWith("prefix && test -s /ca/caddy-ca.crt"))
