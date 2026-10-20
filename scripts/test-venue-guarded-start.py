@@ -37,7 +37,7 @@ class Start(unittest.TestCase):
         (self.bundle/'stack.ir.json').write_text(json.dumps({'services':{
             'root':{'dependencies':{}},'app':{'dependencies':{'root':'healthy'}}}}))
         sources={};rows=[]
-        for index in range(61):
+        for index in range(54):
             path=self.root/('bind-'+str(index));path.mkdir();info=path.stat()
             sources[str(path)]={'owner':0}
             rows.append({'path':str(path),'dev':info.st_dev,'ino':info.st_ino})
@@ -119,7 +119,7 @@ class Start(unittest.TestCase):
         self.assertFalse(json.loads((self.runtime/'runtime-authority.json').read_text())['activationAuthorized'])
         self.assertEqual(sum('start' in c for c in self.commands),2)
         self.assertEqual(sum('stop' in c for c in self.commands),2)
-        self.assertEqual(len(list(self.root.glob('bind-*'))),61)
+        self.assertEqual(len(list(self.root.glob('bind-*'))),54)
 
     def test_upstream_observation_precedes_downstream_queue(self):
         with patch.object(q.graph,'run',side_effect=self.native):

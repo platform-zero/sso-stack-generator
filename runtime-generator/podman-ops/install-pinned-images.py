@@ -77,7 +77,7 @@ def rootful_command(bundle):
     state, graph, run = (venue[k] for k in ('rootfulStateRoot', 'rootfulGraphRoot', 'rootfulRunRoot'))
     if (venue['rootfulRuntimeRoot'] != '/run/' + prefix or
             venue['controlSocketRoot'] != '/run/' + prefix + '-control' or
-            not isinstance(venue['portMap'], dict) or len(venue['portMap']) != 51 or
+            not isinstance(venue['portMap'], dict) or len(venue['portMap']) != 50 or
             state != '/var/lib/' + prefix or run != '/run/' + prefix + '-podman'
             or not isinstance(graph, str) or not re.fullmatch(
                 r'/mnt/stack/p0-existing-host-venue-[a-z0-9-]{1,24}/rootful-graph', graph)):

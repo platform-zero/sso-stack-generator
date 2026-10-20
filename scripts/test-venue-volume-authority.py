@@ -18,11 +18,11 @@ class VolumeAuthorityFixtures(unittest.TestCase):
         self.rootful=self.root/'volumes';self.apps=self.root/'rootless/apps'
         self.q=self.bundle/'quadlet/rootful';self.a=self.bundle/'quadlet/rootless-apps'
         self.q.mkdir(parents=True);self.a.mkdir(parents=True)
-        self.labels={'data'+str(i):str(self.rootful/('data'+str(i))) for i in range(61)}
+        self.labels={'data'+str(i):str(self.rootful/('data'+str(i))) for i in range(55)}
         self.labels.update({name:str(self.apps/'graph/volumes'/name/'_data') for name in vol.NAMED})
         self.selector.write_text(json.dumps({'volumes':self.labels,'rootful':{'volumeRoot':str(self.rootful)}}))
         self.plan={'prefix':'p0test-r1','accounts':[{'name':'p0test-r1-apps','volume':str(self.apps)}]}
-        for i in range(61):
+        for i in range(54):
             src=self.apps/'data0' if i==0 else self.rootful/('data'+str(i))
             dst=self.a if i==0 else self.q
             (dst/('p0test-r1-data'+str(i)+'.container')).write_text('Volume='+str(src)+':/data\n')
@@ -30,8 +30,9 @@ class VolumeAuthorityFixtures(unittest.TestCase):
     def test_actual_rootless_path_differs_from_selector_label(self):
         with patch.object(vol.stage,'owned_plan',return_value=self.plan):
             result=vol.inspect(self.bundle,self.selector)
-        self.assertEqual(result['actualDataBindSources'],61)
-        self.assertEqual(result['selectedVolumeLabels'],65)
+        self.assertEqual(result['actualDataBindSources'],54)
+        self.assertEqual(result['selectedVolumeLabels'],59)
+        self.assertEqual(result['unreferencedSelectorLabels'],['data54'])
         self.assertEqual(result['pathDivergences']['data0'],[str(self.apps/'data0')])
         self.assertFalse(result['activationAuthorized'])
     def test_foreign_path_or_unknown_name_refuses(self):

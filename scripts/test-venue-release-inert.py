@@ -98,7 +98,7 @@ class ReleaseFixture(unittest.TestCase):
         self.record={k:self.record[k] for k in ('plan','status','activationAuthorized','pathIdentities')}
         self.ledger.write_text(json.dumps(self.record));self.ledger.chmod(0o600)
         units=self.bundle/'quadlet/rootful';units.mkdir(parents=True)
-        for i in range(194):(units/('test-%03d.container'%i)).write_text('selected-unit-%03d\n'%i)
+        for i in range(190):(units/('test-%03d.container'%i)).write_text('selected-unit-%03d\n'%i)
         key=self.root/'keys.txt';key.write_text('fake private fixture');key.chmod(0o600)
         def interrupted(source,dest,**kwargs):
             target=Path(dest)/'quadlet/rootful';target.mkdir(parents=True)

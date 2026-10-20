@@ -14,25 +14,29 @@ spec=importlib.util.spec_from_file_location('venue_stage',Path(__file__).resolve
 stage=importlib.util.module_from_spec(spec);spec.loader.exec_module(stage)
 
 class EmptyStageTests(unittest.TestCase):
-    def test_reviewed_boundary_includes_both_live_ca_mounts(self):
-        stage.static_boundary({'checkedMounts':221,'checkedRootfulStoreUnits':12,'checkedPublishedPorts':48})
+    def test_reviewed_boundary_includes_private_configs_and_retained_ca(self):
+        stage.static_boundary({'checkedMounts':237,'checkedRootfulStoreUnits':12,'checkedPublishedPorts':47})
     def test_missing_additional_or_legacy_mount_boundaries_refuse(self):
-        valid={'checkedMounts':221,'checkedRootfulStoreUnits':12,'checkedPublishedPorts':48}
-        for key,values in {'checkedMounts':(219,220,222),'checkedRootfulStoreUnits':(11,13),'checkedPublishedPorts':(47,49)}.items():
+        valid={'checkedMounts':237,'checkedRootfulStoreUnits':12,'checkedPublishedPorts':47}
+        for key,values in {'checkedMounts':(219,220,221,222,236,238),'checkedRootfulStoreUnits':(11,13),'checkedPublishedPorts':(46,48,49)}.items():
             for value in values:
                 with self.subTest(key=key,value=value),self.assertRaises(stage.Refusal):stage.static_boundary(dict(valid,**{key:value}))
     def test_missing_or_untyped_boundary_is_not_complete(self):
-        for value in (None,'221',True):
-            with self.subTest(value=value),self.assertRaises(stage.Refusal):stage.static_boundary({'checkedMounts':value,'checkedRootfulStoreUnits':12,'checkedPublishedPorts':48})
+        for value in (None,'237',True):
+            with self.subTest(value=value),self.assertRaises(stage.Refusal):stage.static_boundary({'checkedMounts':value,'checkedRootfulStoreUnits':12,'checkedPublishedPorts':47})
         with self.assertRaises(stage.Refusal):stage.static_boundary({})
+    def test_retired_194_member_tree_cannot_certify_current_scope(self):
+        root=self.bundle/'quadlet/rootful'
+        for i in range(4):(root/f'p0test-r1-retired-extra-{i}.container').write_text('[Container]\n')
+        with self.assertRaises(stage.Refusal):stage.quadlet_tree_hash(self.bundle)
     def setUp(self):
         tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup)
         self.root=Path(tmp.name)
         self.bundle=self.root/'bundle';self.bundle.mkdir()
         quadlets=self.bundle/'quadlet/rootful';quadlets.mkdir(parents=True)
-        for i in range(194):(quadlets/f'p0test-r1-synthetic-{i}.container').write_text('[Container]\n')
+        for i in range(190):(quadlets/f'p0test-r1-synthetic-{i}.container').write_text('[Container]\n')
         accounts={}
-        for i,name in enumerate(('platform','apps','homeassistant','vaultwarden','ci-runner','workloads','test-runners')):
+        for i,name in enumerate(('platform','apps','homeassistant','finance','ci-runner','workloads','test-runners')):
             accounts[name]={'name':name,'user':f'p0test-r1-{name}','uid':3200+i,'subuidStart':52000000+i*65536,
                             'stateRoot':f'/mnt/stack/new/state/{name}','graphRoot':f'/mnt/stack/new/graphs/{name}',
                             'volumeRoot':f'/mnt/stack/new/rootless/{name}'}

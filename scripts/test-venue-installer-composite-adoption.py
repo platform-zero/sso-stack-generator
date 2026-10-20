@@ -19,7 +19,7 @@ class AdoptCompletedComposite(unittest.TestCase):
                    'venueDomainRuntimePhase':'inert-ready','venueRuntimeEnvPhase':'inert-ready',
                    'venueCompositeMode':'retired-inert','status':'managers-ready',
                    'graphCleared':['root','isolated'],'managerStopped':[],
-                   'installedUnits':[{}]*194,'retiredUnits':[{}]*194,
+                   'installedUnits':[{}]*190,'retiredUnits':[{}]*190,
                    'venueRegistryPhase':'retired-inert','venueBuildBasePhase':'retired-inert',
                    'podmanImageCacheRetired':True}
     def run_first_step(self):
@@ -34,7 +34,7 @@ class AdoptCompletedComposite(unittest.TestCase):
         self.assertEqual(self.run_first_step(),1)
         self.assertEqual(self.data['venueInstallerPhase'],'retiring')
     def test_partial_graph_or_missing_unit_receipt_refused_prewrite(self):
-        for field,invalid in (('graphCleared',['root']),('retiredUnits',[{}]*193),
+        for field,invalid in (('graphCleared',['root']),('retiredUnits',[{}]*189),
                               ('managerStopped',['isolated']),('venueBuildBasePhase','preparing')):
             with self.subTest(field=field):
                 saved=self.data[field];self.data[field]=invalid
@@ -49,7 +49,7 @@ class NativeHostRetirement(unittest.TestCase):
         self.plan['quadletTreeSha256']='tree'
         self.data.update(venueInstallerVersion=2,venueInstallerPhase='retiring',
                          venueRuntimeEnvPhase='retired-inert',venueStartHostContextSha256='context')
-        rows=[{'path':'owned-'+str(i)} for i in range(65)]
+        rows=[{'path':'owned-'+str(i)} for i in range(58)]
         self.data['venueOwnedReset']={'phase':'empty-owned','quadletTreeSha256':'tree',
             'contextSha256':'context','directories':rows,'emptied':[r['path'] for r in rows],
             'networks':{'network':{'id':'native-id'}},'retiredNetworks':['native-id']}
@@ -72,6 +72,10 @@ class NativeHostRetirement(unittest.TestCase):
         return events
     def test_native_units_retire_before_manager_empty_unit_gate(self):
         self.assertEqual(self.invoke(),['host-units','managers'])
+    def test_less_than_all_data_and_named_reset_roots_refuses_pre_mutation(self):
+        reset=self.data['venueOwnedReset'];reset['directories']=reset['directories'][:-1]
+        reset['emptied']=[row['path'] for row in reset['directories']]
+        self.assertEqual(self.invoke(refuse=True),[])
     def test_completed_native_unit_receipt_is_not_replayed(self):
         self.data['venueHostUnitsRetirement']={'phase':'retired'}
         self.assertEqual(self.invoke(),['managers'])

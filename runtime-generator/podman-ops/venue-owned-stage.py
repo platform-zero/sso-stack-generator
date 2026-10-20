@@ -27,8 +27,8 @@ def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 def quadlet_tree_hash(bundle):
     root=Path(bundle)/'quadlet'
     sources=sorted(root.glob('*/*'))
-    if len(sources)!=194 or any(p.is_symlink() or not p.is_file() for p in sources):
-        raise Refusal('unreviewed 194-member Quadlet tree')
+    if len(sources)!=190 or any(p.is_symlink() or not p.is_file() for p in sources):
+        raise Refusal('unreviewed 190-member Quadlet tree')
     digest=hashlib.sha256()
     for source in sources:
         relative=source.relative_to(root).as_posix().encode()
@@ -155,9 +155,9 @@ def preflight(bundle,selector,inventory):
     return diagnostic.inspect(bundle,selector,inventory)
 
 def static_boundary(checked):
-    # Reviewed selected composition: includes the two live read-only CA mounts
-    # for Huly front and LibreChat. Missing OR additional mounts still refuse.
-    expected={'checkedMounts':221,'checkedRootfulStoreUnits':12,'checkedPublishedPorts':48}
+    # Measured cuts/finance composition; includes private source configs and
+    # retained Huly CA. Missing OR additional mounts/publishers still refuse.
+    expected={'checkedMounts':237,'checkedRootfulStoreUnits':12,'checkedPublishedPorts':47}
     if any(type(checked.get(key)) is not int or checked[key]!=value for key,value in expected.items()):
         raise Refusal('incomplete static venue boundary')
 

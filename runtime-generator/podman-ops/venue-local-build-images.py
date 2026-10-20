@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Build 14 no-pull selected Quadlets in an inactive exact-CAS venue.
+"""Build 13 no-pull selected Quadlets in an inactive exact-CAS venue.
 
-Three are network-disabled. Eleven may fetch mutable dependencies while being
+Four are network-disabled. Nine may fetch mutable dependencies while being
 built: their resulting IDs are DISCOVERY, never release pins until separately
 reviewed and frozen in clean site source. Never start container target units,
 issue a data readiness marker or credit a trial as an integrated installation.
@@ -27,13 +27,13 @@ registry=load('venue_registry_images','venue-registry-images.py')
 base=load('venue_build_base_images','venue-build-base-images.py')
 graph=registry.graph;authority=registry.authority;stage=registry.stage;Refusal=stage.Refusal
 OFFLINE={'p0test-r1-apps':('mastodon-rss-publisher',),
-         'p0test-r1-platform':('keycloak','onboarding')}
+         'p0test-r1-platform':('keycloak','onboarding'),
+         'p0test-r1-finance':('firefly-native-api',)}
 NETWORK={'p0test-r1-apps':('forgejo','jellyfin','legal-research-mcp'),
          'p0test-r1-ci-runner':('forgejo-runner',),
          'p0test-r1-platform':('market-data-exporter',),
          'p0test-r1-test-runners':('android-test-runner-api34','android-test-runner-api36'),
-         'p0test-r1-workloads':('jupyter-notebook-build','jupyterhub',
-                                'workload-spawner-api','workload-spawner-router')}
+         'p0test-r1-workloads':('jupyter-notebook-build','jupyterhub')}
 
 def plan_for(bundle,source):
     plan={}
@@ -57,8 +57,8 @@ def plan_for(bundle,source):
             key=user+'|'+tag
             plan[key]={'unit':'p0test-r1-'+name+'-build.service','quadletSha256':entry['sha256'],
                        'offline':offline}
-    if len(plan)!=14 or sum(row['offline'] for row in plan.values())!=3:
-        raise Refusal('selected 3 offline and 11 egress build units differ')
+    if len(plan)!=13 or sum(row['offline'] for row in plan.values())!=4:
+        raise Refusal('selected 4 offline and 9 egress build units differ')
     return dict(sorted(plan.items()))
 
 def probe(bundle,selector,plan,data,outputs,intermediates=None):
@@ -287,8 +287,8 @@ def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,aba
             set(data.get('venueBuildBaseVerified',{}))!=set(source['buildBaseStores']) or
             data.get('venueBuildBaseFrozenSha256')!=source['frozenBuildBaseSha256'] or
             data.get('venueCompositeMode')!='inert-ready' or data.get('status')!='units-staged'):
-        raise Refusal('three builds need 60 direct and 14 frozen build-base inputs in fully inert installer')
-    if type(max_new) is not int or not 1<=max_new<=14:raise Refusal('one to fourteen bounded local builds per invocation')
+        raise Refusal('builds need 57 direct and 14 frozen build-base inputs in fully inert installer')
+    if type(max_new) is not int or not 1<=max_new<=13:raise Refusal('one to thirteen bounded local builds per invocation')
     if data.get('venueLocalBuildPhase') is None:
         data['venueLocalBuildPhase']='preparing';data['venueLocalBuildPlan']=selected
         data['venueLocalBuildOutputs']={};data['venueLocalBuildIntermediates']={}
@@ -304,7 +304,7 @@ def prepare(bundle,selector,site_source,ledger,max_new,recover_pending=False,aba
                  for k,v in intermediates.items()) or
             not isinstance(data.get('venueLocalBuildSkipped',[]),list) or
             any(k not in selected or k in outputs for k in data.get('venueLocalBuildSkipped',[])) or
-            len(data.get('venueLocalBuildSkipped',[]))>14):
+            len(data.get('venueLocalBuildSkipped',[]))>13):
         raise Refusal('selected local build output CAS differs')
     if classify_only:
         if data.get('venueLocalBuildPending'):

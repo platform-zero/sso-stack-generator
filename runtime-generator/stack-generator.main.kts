@@ -1984,10 +1984,10 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
         // executing a generated build unit. Legacy units are unchanged.
         if (unitPrefix != "webservices") {
             buildLines += "Pull=never"
-            // Three selected Containerfiles need no build-time egress.
+            // Four selected Containerfiles need no build-time egress.
             // Other builds may discover candidate outputs only; their
             // network-fetched dependencies still require reviewed output pins.
-            if (name in setOf("keycloak", "onboarding", "mastodon-rss-publisher"))
+            if (name in setOf("keycloak", "onboarding", "mastodon-rss-publisher", "firefly-native-api"))
                 buildLines += "Network=none"
         }
         if (unitPrefix != "webservices") {

@@ -14,19 +14,19 @@ class InertUnitManifest(unittest.TestCase):
         temp=tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup)
         self.bundle=Path(temp.name);root=self.bundle/'quadlet'
         self.plan={'prefix':'p0test-r1','accounts':[{'name':'p0test-r1-'+d,'uid':3200+i,'home':'/home/p0test-r1-'+d}
-                        for i,d in enumerate(('platform','apps','homeassistant','vaultwarden','ci-runner','workloads','test-runners'))]}
-        for domain,count in (('rootful',16),('rootless-platform',33),('rootless-apps',78),
-                             ('rootless-homeassistant',9),('rootless-vaultwarden',10),
-                             ('rootless-ci-runner',7),('rootless-workloads',17),('rootless-test-runners',24)):
+                        for i,d in enumerate(('platform','apps','homeassistant','finance','ci-runner','workloads','test-runners'))]}
+        for domain,count in (('rootful',16),('rootless-platform',33),('rootless-apps',74),
+                             ('rootless-homeassistant',9),('rootless-finance',15),
+                             ('rootless-ci-runner',7),('rootless-workloads',12),('rootless-test-runners',24)):
             folder=root/domain;folder.mkdir(parents=True)
             for i in range(count):
                 ext='.target' if i==0 else '.container'
                 (folder/(f'p0test-r1-{domain}-{i}'+ext)).write_text('[Unit]\nDescription=synthetic unit\n')
-    def test_exact_194_disjoint_private_unit_destinations(self):
+    def test_exact_190_disjoint_private_unit_destinations(self):
         result=units.manifest(self.bundle,self.plan)
-        self.assertEqual(len(result),194)
+        self.assertEqual(len(result),190)
         self.assertEqual(sum(p.startswith('/etc/') for p in result),16)
-        self.assertEqual(sum(p.startswith('/home/') for p in result),178)
+        self.assertEqual(sum(p.startswith('/home/') for p in result),174)
         self.assertTrue(all(v['sha256'] and len(v['sha256'])==64 for v in result.values()))
         self.assertFalse(any('webservices-' in p or '/run/p0-control' in p for p in result))
     def test_extra_duplicate_link_or_old_name_refuses(self):

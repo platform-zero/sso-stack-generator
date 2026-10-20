@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Incremental exact-authority registry image preparation, NEVER activation.
 
-Populate only eight fresh CAS-selected venue graphs. Every one of 60 direct
-image/authority pairs is frozen in the clean site commit; 14 local builds
+Populate only eight fresh CAS-selected venue graphs. Every one of 57 direct
+image/authority pairs is frozen in the clean site commit; 13 local builds
 remain separate and MUST NOT be credited as pulled. One selected archive ID
 is already imported by the inert installer. On registry/tag drift, resource
 reserve loss or graph foreign data, stop this operation and retain the ledger.
@@ -46,7 +46,7 @@ def journal(bundle,selector,site_source,ledger):
     if (data.get('plan')!=plan or data.get('venueInstallerVersion')!=1 or
             data.get('venueInstallerPhase')!='inert-ready' or data.get('venueCompositeMode')!='inert-ready' or
             data.get('status')!='units-staged' or data.get('activationAuthorized') is not False or
-            data.get('managerStopped') or len(data.get('installedUnits',[]))!=194 or
+            data.get('managerStopped') or len(data.get('installedUnits',[]))!=190 or
             len(data.get('managerStarted',[]))!=7):
         raise Refusal('only complete inactive exact-CAS installer is a registry input')
     source=authority.authority(bundle,selector,site_source)

@@ -118,11 +118,11 @@ class LocalBuildFixtures(unittest.TestCase):
             result=local.export_outputs(self.bundle,'selector','site','ledger',subset,key)
             self.assertEqual(result['status'],'exported-discovery-subset')
             self.assertEqual(result['selectedBuildOutputs'],1)
-            self.assertEqual(result['compositionBuildOutputs'],14)
+            self.assertEqual(result['compositionBuildOutputs'],13)
 
-    def test_fourteen_selected_source_builds_and_hostile_egress_refusal(self):
-        self.assertEqual(len(self.plan),14)
-        self.assertEqual(sum(row['offline'] for row in self.plan.values()),3)
+    def test_thirteen_selected_source_builds_and_hostile_egress_refusal(self):
+        self.assertEqual(len(self.plan),13)
+        self.assertEqual(sum(row['offline'] for row in self.plan.values()),4)
         p=self.bundle/'quadlet/rootless-platform/p0test-r1-keycloak.build'
         p.write_text(p.read_text().replace('Network=none\n',''))
         with self.assertRaisesRegex(local.Refusal,'pull/network authority differs'):

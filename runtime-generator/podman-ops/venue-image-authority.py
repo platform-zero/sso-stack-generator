@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only complete selected image/build authority for a 60/95 venue.
+"""Read-only complete selected image/build authority for the cuts/finance venue.
 
 Do not infer image authority from 1 offline archive or a successful source
 suite. Every selected direct container reference must have a frozen per-store
@@ -63,9 +63,9 @@ def authority(bundle,selector,site_source=None,require_pinned_bases=False):
     identities=b/'site/global.settings/registry-image-ids.json'
     if identities.is_symlink() or not identities.is_file():raise Refusal('frozen per-store identity authority missing')
     registry_ids=json.loads(identities.read_text())
-    if (not isinstance(registry_ids,dict) or len(registry_ids)!=60 or
+    if (not isinstance(registry_ids,dict) or len(registry_ids)!=57 or
             any(not isinstance(k,str) or not isinstance(v,str) or not HEX.fullmatch(v) for k,v in registry_ids.items())):
-        raise Refusal('malformed sixty frozen site image config identities')
+        raise Refusal('malformed 57 frozen site image config identities')
     local_ids=pinned_images.frozen_image_ids(b)
     data=pinned_images.selected_image_ids(b)
     local_pins=b/'site/global.settings/local-build-image-ids.json'
@@ -79,8 +79,8 @@ def authority(bundle,selector,site_source=None,require_pinned_bases=False):
         producer_pins={name:s['frozenBuildImage'] for name,s in ir['services'].items()
                        if 'build' in s and (s.get('lifecycle')!='on-demand' or s.get('quadletManaged') is True)}
         if (type(document.get('schemaVersion')) is not int or document['schemaVersion']!=1 or
-                len(producer_pins)!=14 or document.get('images')!=producer_pins):
-            raise Refusal('all fourteen frozen recipe identities must match the selected site')
+                len(producer_pins)!=13 or document.get('images')!=producer_pins):
+            raise Refusal('all thirteen frozen recipe identities must match the selected site')
         local_sha=hashlib.sha256(local_pins.read_bytes()).hexdigest()
     rows={};builds={};unit_count=0;base_refs={};store_bases={};mutable_store_bases=set()
     for directory in sorted((b/'quadlet').iterdir()):
@@ -107,7 +107,7 @@ def authority(bundle,selector,site_source=None,require_pinned_bases=False):
                 if require_pinned_bases and file.read_text().splitlines().count('Pull=never')!=1:
                     raise Refusal('selected build unit may pull an unreviewed base')
                 if (require_pinned_bases and unit.stem.removeprefix(plan['prefix']+'-') in
-                        ('keycloak','onboarding','mastodon-rss-publisher') and
+                        ('keycloak','onboarding','mastodon-rss-publisher','firefly-native-api') and
                         file.read_text().splitlines().count('Network=none')!=1):
                     raise Refusal('selected local-only build permits unreviewed network egress')
                 digest=hashlib.sha256(file.read_bytes()).hexdigest()
@@ -122,8 +122,8 @@ def authority(bundle,selector,site_source=None,require_pinned_bases=False):
                     raise Refusal('unreviewed implicit image or mutable latest')
                 key=user+'|'+ref
                 rows.setdefault(key,[]).append(unit.name)
-    if unit_count!=93 or len(builds)!=14 or len(rows)!=len(data) or set(rows)!=set(data):
-        raise Refusal('93 containers, 14 recipes and exact registry plus imported image authority required')
+    if unit_count!=92 or len(builds)!=13 or len(rows)!=len(data) or set(rows)!=set(data):
+        raise Refusal('92 containers, 13 recipes and exact registry plus imported image authority required')
     for key,image_id in data.items():
         ref=key.split('|',1)[1]
         if ref.startswith('sha256:') and ref!=image_id:

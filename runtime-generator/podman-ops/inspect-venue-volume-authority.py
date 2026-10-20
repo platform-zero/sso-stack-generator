@@ -21,7 +21,7 @@ def inspect(bundle,selector):
     bundle=Path(bundle);authority=json.loads(Path(selector).read_text())
     plan=stage.owned_plan(bundle,selector)
     volumes=authority['volumes']
-    if len(volumes)!=65 or not NAMED<=set(volumes):raise Refusal('65 selected volume labels differ')
+    if len(volumes)!=59 or not NAMED<=set(volumes):raise Refusal('59 selected volume labels differ')
     domains={a['name'].removeprefix(plan['prefix']+'-'):a for a in plan['accounts']}
     references={};nested_ca=set()
     for directory in sorted((bundle/'quadlet').iterdir()):
@@ -64,8 +64,8 @@ def inspect(bundle,selector):
                 references.setdefault(key,{}).setdefault(source,set()).add(domain)
     if set(references)&NAMED!=NAMED:raise Refusal('four Huly named sources absent')
     bind_sources={source for name,sources in references.items() for source in sources if name not in NAMED}
-    if len(bind_sources)!=61:
-        raise Refusal('expected 61 unique data bind sources, got '+str(len(bind_sources)))
+    if len(bind_sources)!=54:
+        raise Refusal('expected 54 unique data bind sources, got '+str(len(bind_sources)))
     # Cross-domain data is deliberately recorded as one source and multiple
     # consumers; never grant an ACL or assume a selector label is the path.
     mismatched={name:sorted(sources) for name,sources in references.items()

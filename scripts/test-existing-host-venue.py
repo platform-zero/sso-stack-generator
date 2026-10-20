@@ -16,8 +16,8 @@ class VenueTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.base = self.tmp.name + '/new'
-        self.ir = {'services': {str(i): {} for i in range(95)}, 'volumes': {f'volume-{i}': {'hostPath':f'{self.base}/data/volume-{i}'} for i in range(61)} | {f'huly_{x}':{} for x in ('cockroach','elastic','minio','redpanda')}}
-        names=('platform','apps','homeassistant','vaultwarden','ci-runner','workloads','test-runners')
+        self.ir = {'services': {str(i): {} for i in range(94)}, 'volumes': {f'volume-{i}': {'hostPath':f'{self.base}/data/volume-{i}'} for i in range(55)} | {f'huly_{x}':{} for x in ('cockroach','elastic','minio','redpanda')}}
+        names=('platform','apps','homeassistant','finance','ci-runner','workloads','test-runners')
         self.domains = {'domains':[{'name':name,'user':f'p0test-u{i}','uid':3000+i,'subuidStart':3000000+i*65536,**{k:f'{self.base}/d{i}/{k}' for k in ('stateRoot','graphRoot','volumeRoot')}} for i,name in enumerate(names)]}
         self.selector = {'schemaVersion':1,'rootful':{k:f'{self.base}/root/{k}' for k in ('stateRoot','graphRoot','volumeRoot','runRoot')},
             'domains':{name:{'user':f'p0test-u{i}','uid':3000+i,'subuidStart':3000000+i*65536,**{k:f'{self.base}/d{i}/{k}' for k in ('stateRoot','graphRoot','volumeRoot')}} for i,name in enumerate(names)},
@@ -40,7 +40,7 @@ class VenueTest(unittest.TestCase):
     def valid(self, selector=None, exists=lambda _: False):
         return venue.check(selector or self.selector,self.ir,self.domains,self.protected,exists=exists)
     def test_complete_preflight_is_not_activation_permission(self):
-        self.assertEqual(self.valid()['checkedVolumes'],65)
+        self.assertEqual(self.valid()['checkedVolumes'],59)
         self.assertFalse(self.valid()['activationAuthorized'])
     def test_legacy_native_installer_refuses_venue_before_host_mutation(self):
         source=(Path(__file__).resolve().parents[1]/'runtime-generator/podman-ops/install-podman-bundle.sh').read_text()
@@ -129,9 +129,9 @@ class VenueTest(unittest.TestCase):
         root=Path(self.tmp.name)/'bundle/quadlet/rootful'
         root.mkdir(parents=True)
         q=root/'webservices-source.container'
-        q.write_text(''.join(f'PublishPort=127.0.0.1:{18000+i}:80\n' for i in range(48)))
+        q.write_text(''.join(f'PublishPort=127.0.0.1:{18000+i}:80\n' for i in range(47)))
         required=venue.published_host_ports(root.parents[1])
-        self.assertEqual(len(required),51)
+        self.assertEqual(len(required),50)
         x=copy.deepcopy(self.selector)
         x['ports']={k:40000+i for i,k in enumerate(sorted(required))}
         changed=copy.deepcopy(self.domains);changed['venue']['portMap']=copy.deepcopy(x['ports'])
@@ -173,11 +173,11 @@ class VenueTest(unittest.TestCase):
 
     def test_generated_port_provenance_requires_all_original_identities(self):
         bundle=Path(self.tmp.name)/'bundle';root=bundle/'quadlet/rootful';root.mkdir(parents=True)
-        original=['80','443','9100']+[str(i) for i in range(18001,18046)]+['7880','7881','7882']
+        original=['80','443','9100']+[str(i) for i in range(18001,18045)]+['7880','7881','7882']
         mapping={key:56000+i for i,key in enumerate(original)}
         (bundle/'podman-domains.json').write_text(json.dumps({'venue':{'portMap':mapping}}))
         q=root/'p0test-r1-ports.container'
-        q.write_text(''.join('PublishPort=127.0.0.1:'+str(mapping[str(i)])+':80\n' for i in range(18001,18046)))
+        q.write_text(''.join('PublishPort=127.0.0.1:'+str(mapping[str(i)])+':80\n' for i in range(18001,18045)))
         rtc=root/'p0test-r1-livekit.container'
         rtc.write_text(f'PublishPort=127.0.0.1:{mapping["7880"]}:7880\n'
                        f'PublishPort=192.168.140.1:{mapping["7881"]}:{mapping["7881"]}/tcp\n'
@@ -189,25 +189,25 @@ class VenueTest(unittest.TestCase):
             venue.published_host_ports(bundle)
         q.write_text(protected)
         selector=copy.deepcopy(self.selector);selector['ports']=mapping
-        self.assertEqual(venue.screen_rendered_ports(bundle,selector),48)
-        del mapping['18045']
+        self.assertEqual(venue.screen_rendered_ports(bundle,selector),47)
+        del mapping['18044']
         (bundle/'podman-domains.json').write_text(json.dumps({'venue':{'portMap':mapping}}))
         with self.assertRaises(venue.Refusal):venue.published_host_ports(bundle)
 
-    def test_rendered_ports_are_46_private_and_two_guest_rtc_listeners(self):
+    def test_rendered_ports_are_45_private_and_two_guest_rtc_listeners(self):
         root=Path(self.tmp.name)/'bundle/quadlet/rootful'
         root.mkdir(parents=True)
         q=root/'p0test-r1-ports.container'
         selector=copy.deepcopy(self.selector)
-        selector['ports']={str(port):40000+i for i,port in enumerate([80,443,9100]+list(range(18001,18046))+[7880,7881,7882])}
-        declarations=[f'PublishPort=127.0.0.1:{selector["ports"][str(port)]}:80' for port in range(18001,18046)]
+        selector['ports']={str(port):40000+i for i,port in enumerate([80,443,9100]+list(range(18001,18045))+[7880,7881,7882])}
+        declarations=[f'PublishPort=127.0.0.1:{selector["ports"][str(port)]}:80' for port in range(18001,18045)]
         q.write_text('[Container]\n'+'\n'.join(declarations)+'\n')
         rtc=root/'p0test-r1-livekit.container'
         mapped=selector['ports']
         rtc.write_text(f'PublishPort=127.0.0.1:{mapped["7880"]}:7880\n'
                        f'PublishPort=192.168.140.1:{mapped["7881"]}:{mapped["7881"]}/tcp\n'
                        f'PublishPort=192.168.140.1:{mapped["7882"]}:{mapped["7882"]}/udp\n')
-        self.assertEqual(venue.screen_rendered_ports(root.parents[1],selector),48)
+        self.assertEqual(venue.screen_rendered_ports(root.parents[1],selector),47)
         for wrong in ('PublishPort=127.0.0.1:18001:80', 'PublishPort=127.0.0.1:80:80',
                       'PublishPort=40001:80', 'PublishPort=garbage'):
             q.write_text('[Container]\n'+'\n'.join(declarations[:-1]+[wrong])+'\n')

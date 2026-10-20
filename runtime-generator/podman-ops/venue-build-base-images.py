@@ -67,9 +67,9 @@ def prepare(bundle,selector,site_source,ledger,max_new):
     source=authority.authority(bundle,selector,site_source,require_pinned_bases=True)
     if (data.get('venueRegistryPhase')!='inert-ready' or
             data.get('venueRegistryVerified')!=source['imageIds'] or
-            len(source['buildBaseStores'])!=14 or source['frozenBuildBasePairs']!=6 or
+            len(source['buildBaseStores'])!=14 or source['frozenBuildBasePairs']!=5 or
             source['unfrozenBuildBaseReferences']):
-        raise Refusal('all 60 direct images and 14 frozen build-base inputs required')
+        raise Refusal('all 57 direct images and 14 frozen build-base inputs required')
     if type(max_new) is not int or not 1<=max_new<=14:raise Refusal('one to fourteen bounded new bases per invocation')
     if data.get('venueBuildBasePhase') is None:
         data['venueBuildBasePhase']='preparing'

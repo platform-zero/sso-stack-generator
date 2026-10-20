@@ -143,7 +143,7 @@ class StartQuarantine(unittest.TestCase):
                 q.cancel_starts(['systemctl'],['p0test-r1-app.service'])
     def test_real_manifest_mapping_preserves_native_target_suffix(self):
         manifest={};records=[]
-        for index in range(194):
+        for index in range(190):
             name='p0test-r1.target' if index==0 else 'p0test-r1-fixture-'+str(index)+'.container'
             path=self.root/name;path.write_text('[Unit]\n');info=path.stat()
             manifest[str(path)]={'uid':0,'sha256':q.units.hashlib.sha256(path.read_bytes()).hexdigest()}

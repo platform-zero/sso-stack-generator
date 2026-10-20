@@ -17,15 +17,15 @@ class ImageAuthority(unittest.TestCase):
         self.b=Path(tmp.name);self.root=self.b/'quadlet/rootful';self.root.mkdir(parents=True)
         self.site=self.b/'site/global.settings';self.site.mkdir(parents=True)
         self.rows={}
-        for i in range(60):
+        for i in range(57):
             ref=f'docker.io/selected/image{i}:v1@sha256:{i+1:064x}'
             image_id=f'sha256:{i+101:064x}'
             self.rows['root|'+ref]=image_id
             (self.root/f'p0test-r1-image-{i}.container').write_text('Image='+ref+'\n')
-        for i in range(19):
+        for i in range(22):
             ref=list(self.rows)[i].split('|',1)[1]
             (self.root/f'p0test-r1-repeat-{i}.container').write_text('Image='+ref+'\n')
-        for i in range(14):
+        for i in range(13):
             name=f'p0test-r1-build-{i}'
             (self.root/(name+'.container')).write_text('Image='+name+'.build\n')
             (self.root/(name+'.build')).write_text('[Build]\nImageTag=selected\n'
@@ -35,23 +35,27 @@ class ImageAuthority(unittest.TestCase):
         self.pins=self.site/'registry-image-ids.json';self.pins.write_text(json.dumps(self.rows))
         self.plan={'sourceCommit':'a'*40,'bundleIrSha256':'b'*64,
                    'quadletTreeSha256':'c'*64,'selectorSha256':'d'*64,
-                   'accounts':[{'name':'p0test-r1-'+n} for n in ('platform','apps','homeassistant','vaultwarden','ci-runner','workloads','test-runners')],
+                   'accounts':[{'name':'p0test-r1-'+n} for n in ('platform','apps','homeassistant','finance','ci-runner','workloads','test-runners')],
                    'prefix':'p0test-r1'}
         patcher=patch.object(authority.stage,'owned_plan',return_value=self.plan);patcher.start();self.addCleanup(patcher.stop)
-    def test_all_60_frozen_authorities_and_14_local_builds(self):
-        r=authority.authority(self.b,'unused');self.assertEqual((r['containerUnits'],r['directImageReferences'],r['localBuildUnits']),(93,60,14))
+    def test_all_57_frozen_authorities_and_13_local_builds(self):
+        r=authority.authority(self.b,'unused');self.assertEqual((r['containerUnits'],r['directImageReferences'],r['localBuildUnits']),(92,57,13))
         self.assertEqual(set(r['imageIds']),set(self.rows))
     def test_local_only_build_requires_offline_network(self):
-        old='p0test-r1-build-0';new='p0test-r1-keycloak'
-        (self.root/(old+'.container')).rename(self.root/(new+'.container'))
-        (self.root/(new+'.container')).write_text('Image='+new+'.build\n')
-        (self.root/(old+'.build')).rename(self.root/(new+'.build'))
-        source=self.b/'build'/old;source.rename(self.b/'build'/new)
-        p=self.root/(new+'.build');p.write_text(p.read_text().replace(old,new))
-        with self.assertRaisesRegex(authority.Refusal,'unreviewed network egress'):
-            authority.authority(self.b,'unused',require_pinned_bases=True)
-        p.write_text(p.read_text()+'Network=none\n')
-        self.assertEqual(authority.authority(self.b,'unused',require_pinned_bases=True)['localBuildUnits'],14)
+        old='p0test-r1-build-0'
+        for producer in ('keycloak','onboarding','mastodon-rss-publisher','firefly-native-api'):
+            with self.subTest(producer=producer):
+                new='p0test-r1-'+producer
+                (self.root/(old+'.container')).rename(self.root/(new+'.container'))
+                (self.root/(new+'.container')).write_text('Image='+new+'.build\n')
+                (self.root/(old+'.build')).rename(self.root/(new+'.build'))
+                source=self.b/'build'/old;source.rename(self.b/'build'/new)
+                p=self.root/(new+'.build');p.write_text(p.read_text().replace(old,new).replace('Network=none\n',''))
+                with self.assertRaisesRegex(authority.Refusal,'unreviewed network egress'):
+                    authority.authority(self.b,'unused',require_pinned_bases=True)
+                p.write_text(p.read_text()+'Network=none\n')
+                self.assertEqual(authority.authority(self.b,'unused',require_pinned_bases=True)['localBuildUnits'],13)
+                old=new
     def test_build_without_no_pull_refuses_pinned_activation(self):
         p=self.root/'p0test-r1-build-0.build'
         p.write_text(p.read_text().replace('Pull=never\n',''))

@@ -221,7 +221,7 @@ class GraphClearFixtures(unittest.TestCase):
     def offline_state(self):
         return {'venueInstallerVersion':1,'venueInstallerPhase':'retiring','venueCompositeVersion':2,
                 'venueCompositeMode':'retiring','status':'graphs-clearing','activationAuthorized':False,
-                'venueCompositeImageInputSha256':'c'*64,'retiredUnits':[{}]*194}
+                'venueCompositeImageInputSha256':'c'*64,'retiredUnits':[{}]*190}
     def frozen_import_aliases(self,*,shared=False,foreign=False,offline=False):
         image='sha256:'+'b'*64;user='p0test-r1-platform';aliases={'localhost/webservices/selected:bundle'}
         if shared:aliases.add('localhost/webservices/selected-twin:bundle')
@@ -255,7 +255,7 @@ class GraphClearFixtures(unittest.TestCase):
                 ('venueCompositeVersion',1),('venueCompositeMode','images-importing'),('status','units-staged'),
                 ('activationAuthorized',True),('venueStartPhase','starting'),('venueStartIntent','partial'),
                 ('venueRegistryPhase','preparing'),('venueRegistryPending','partial'),('venueRegistryVerified',{}),
-                ('retiredUnits',[{}]*193),('venueCompositeImageInputSha256','invalid'),('venueInstallerVersion',True)]:
+                ('retiredUnits',[{}]*189),('venueCompositeImageInputSha256','invalid'),('venueInstallerVersion',True)]:
             with self.subTest(key=key):self.assertFalse(clear.offline_frozen_retirement({**state,key:value}))
     def test_verified_frozen_identity_dispatches_exact_alias_cleanup(self):self.frozen_identity_dispatch()
     def test_offline_only_frozen_identity_dispatches_exact_alias_cleanup(self):self.frozen_identity_dispatch(offline=True)

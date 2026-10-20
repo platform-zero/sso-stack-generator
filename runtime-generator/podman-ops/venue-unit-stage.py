@@ -49,8 +49,8 @@ def manifest(bundle,plan):
             if str(dest) in result:raise Refusal('duplicate installed unit path')
             result[str(dest)]={'source':str(p),'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),
                                'uid':0 if account is None else account['uid']}
-    if count!=194 or len(result)!=194:
-        raise Refusal('incomplete 194-member venue Quadlet inventory')
+    if count!=190 or len(result)!=190:
+        raise Refusal('incomplete 190-member venue Quadlet inventory')
     return result
 
 def verified(bundle,selector,ledger):
@@ -150,7 +150,7 @@ def retire(bundle,selector,ledger):
     if state['status'] not in ('units-staged','units-installing','units-retiring'):
         raise Refusal('no exact selected unit stage to retire')
     files=manifest(bundle,plan)
-    if (state.get('unitFiles')!=files or len(state.get('installedUnits',[]))>194 or
+    if (state.get('unitFiles')!=files or len(state.get('installedUnits',[]))>190 or
             (state.get('venueCompositeVersion')==2 and state.get('preVenueUnitStatus') not in ('managers-ready','data-binds-inert','huly-volumes-inert'))):
         raise Refusal('unit source/ledger CAS drift')
     units_idle(plan)

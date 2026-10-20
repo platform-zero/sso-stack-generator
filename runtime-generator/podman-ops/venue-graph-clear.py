@@ -123,7 +123,7 @@ def journaled_local_output_ids(bundle,selector,state,source=None):
     twin=state.get('venueLocalBuildDuplicateSkip')
     permitted_skips=set(failed)|({twin} if twin else set())
     failures=state.get('venueLocalBuildFailures',{})
-    if (not isinstance(failed,dict) or not isinstance(skipped,list) or len(skipped)>14 or
+    if (not isinstance(failed,dict) or not isinstance(skipped,list) or len(skipped)>13 or
             len(skipped)!=len(set(skipped)) or set(skipped)!=permitted_skips or
             not isinstance(failures,dict) or (failures and set(failures)!=set(failed)) or
             (twin and (not twin.endswith('/android-test-runner-api36:bundle') or
@@ -229,7 +229,7 @@ def offline_frozen_retirement(state):
             state.get('venueCompositeVersion')==2 and state.get('venueCompositeMode')=='retiring' and
             state.get('status')=='graphs-clearing' and state.get('activationAuthorized') is False and
             not any(key.startswith(('venueStart','venueRegistry')) for key in state) and
-            isinstance(state.get('retiredUnits'),list) and len(state['retiredUnits'])==194 and
+            isinstance(state.get('retiredUnits'),list) and len(state['retiredUnits'])==190 and
             isinstance(state.get('venueCompositeImageInputSha256'),str) and
             re.fullmatch(r'[0-9a-f]{64}',state['venueCompositeImageInputSha256']) is not None)
 

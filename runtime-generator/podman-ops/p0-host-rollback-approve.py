@@ -104,8 +104,8 @@ def review_selection(apply_id):
         raise ValueError('Only clean exact-site pinned predecessor is eligible')
     service_ir=json.loads((current_release/'stack.ir.json').read_text())
     manifest=json.loads((current_release/'site/manifest.json').read_text())
-    if len(service_ir.get('services',{}))!=95 or len(manifest.get('modules',[]))!=60:
-        raise ValueError('Only same 60/95 native composition rollback reviewed')
+    if len(service_ir.get('services',{}))!=94 or len(manifest.get('modules',[]))!=58:
+        raise ValueError('Only same 58/94 native composition rollback reviewed')
     # A stack-source upgrade is not a controller upgrade by implication. Do
     # not let a stale installed broker/worker silently authorize rollback of
     # a newer selected source; it must be adopted via the reviewed installer.

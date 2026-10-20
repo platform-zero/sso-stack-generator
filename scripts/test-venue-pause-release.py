@@ -21,7 +21,7 @@ class PauseFixture(unittest.TestCase):
         self.plan={'prefix':'p0test-r1','accounts':[self.account]}
         info=self.g.stat();self.image='sha256:'+'a'*64
         self.data={'plan':self.plan,'status':'managers-ready','venueCompositeMode':'retiring',
-            'retiredUnits':[str(n) for n in range(194)],'managerStopped':[],
+            'retiredUnits':[str(n) for n in range(190)],'managerStopped':[],
             'activationAuthorized':False,'pathIdentities':{str(self.g):{
                 'dev':info.st_dev,'ino':info.st_ino,'uid':3206}},
             'venueLocalBuildOutputs':{self.account['name']+'|output':self.image}}

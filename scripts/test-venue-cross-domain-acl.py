@@ -24,7 +24,7 @@ class ExactAclFixture(unittest.TestCase):
         for name in ('caddy_ca','forgejo_runner_token',*(f'other{i}' for i in range(11))):
             p=self.parent/name;p.mkdir(mode=0o700);p.chmod(0o700);s=p.lstat()
             dirs.append({'path':str(p),'parent':str(self.parent),'dev':s.st_dev,'ino':s.st_ino,'uid':0})
-        dirs.extend({'path':str(self.root/f'rootless{i}'),'parent':'elsewhere'} for i in range(48))
+        dirs.extend({'path':str(self.root/f'rootless{i}'),'parent':'elsewhere'} for i in range(41))
         self.plan={'prefix':'p0test-r1','roots':{'rootful-volume':str(self.parent),'rootful-state':str(self.root/'state')},
             'accounts':[{'name':'p0test-r1-'+name,'uid':3200+i} for i,name in enumerate(
                 ('platform','apps','homeassistant','vaultwarden','ci-runner','workloads','test-runners'))]}

@@ -76,7 +76,7 @@ class PinnedImages(unittest.TestCase):
                'pgSsdRoot':'/mnt/stack/p0-existing-host-venue-r1/pg-ssd',
                'vectorDbsRoot':'/mnt/stack/p0-existing-host-venue-r1/vector-dbs',
                'controlSocketRoot':'/run/'+prefix+'-control','logRoot':'/var/log/'+prefix,
-               'portMap':{str(i):56000+i for i in range(51)}}
+               'portMap':{str(i):56000+i for i in range(50)}}
         (self.root/'podman-domains.json').write_text(json.dumps({'domains':[],'venue':venue}))
         config=f'[storage]\\ndriver = "overlay"\\nrunroot = "{run}"\\ngraphroot = "{graph}"\\n'.replace('\\n','\n').encode()
         real_lstat=Path.lstat

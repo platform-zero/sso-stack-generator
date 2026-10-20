@@ -2,7 +2,7 @@
 """Stage seven isolated, config-only rootless current trees, inactive.
 
 Never share the root-owned aggregate/SOPS release with rootless users. Exact
-per-domain allowlists come from the generated 60/95 IR. This is an empty,
+per-domain allowlists come from the selected cuts/finance IR. This is an empty,
 pre-activation lifecycle, NOT a populated-data or service reset.
 """
 import argparse
@@ -21,7 +21,7 @@ stage=release.stage;Refusal=release.Refusal
 def domains(bundle,plan):
     ir=json.loads((bundle/'stack.ir.json').read_text())
     services=ir.get('services',{})
-    if len(services)!=95 or len(plan['accounts'])!=7:raise Refusal('60/95 seven-domain source required')
+    if len(services)!=94 or len(plan['accounts'])!=7:raise Refusal('94-service seven-domain source required')
     result={}
     for a in plan['accounts']:
         name=a['name']

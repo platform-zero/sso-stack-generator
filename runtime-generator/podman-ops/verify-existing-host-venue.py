@@ -29,7 +29,7 @@ def check(selector, ir, domains, protected, exists=os.path.lexists, required_por
     required = {'schemaVersion','rootful','domains','volumes','unitPrefix','socketRoot','storageRoots','ports'}
     if set(selector) not in (required, required | {'guest'}) or type(selector['schemaVersion']) is not int or selector['schemaVersion'] != 1:
         raise Refusal('selector schema or extra authority')
-    if len(ir['services']) != 95 or len(ir['volumes']) != 65 or len(domains['domains']) != 7:
+    if len(ir['services']) != 94 or len(ir['volumes']) != 59 or len(domains['domains']) != 7:
         raise Refusal('unexpected composition')
     venue = domains.get('venue')
     if (not isinstance(venue, dict) or set(venue) != {'schemaVersion','unitPrefix','rootfulStateRoot','rootfulRuntimeRoot','rootfulGraphRoot','rootfulRunRoot','rootfulVolumeRoot','pgSsdRoot','vectorDbsRoot','controlSocketRoot','logRoot','portMap'}
@@ -190,13 +190,13 @@ def published_host_ports(bundle):
             if not match or not 1 <= int(match.group(1)) <= 65535:
                 raise Refusal('unrecognized published port syntax')
             ports.add(str(int(match.group(1))))
-    if count != 48 or len(ports) != 51:
+    if count != 47 or len(ports) != 50:
         raise Refusal('unexpected selected published-port inventory')
     domains_path = bundle / 'podman-domains.json'
     domains = json.loads(domains_path.read_text()) if domains_path.is_file() else {}
     if 'venue' in domains:
         mapping = domains['venue'].get('portMap')
-        if not isinstance(mapping, dict) or len(mapping) != 51:
+        if not isinstance(mapping, dict) or len(mapping) != 50:
             raise Refusal('generated venue has no complete original-port binding')
         if unbound or sorted(rtc)!=sorted([(mapping['7881'],mapping['7881'],'tcp'),
                                             (mapping['7882'],mapping['7882'],'udp')]):
@@ -223,9 +223,9 @@ def screen_quadlet_names(bundle, selector):
                 if not value.startswith(prefix + '-') and not value.startswith(prefix + '_'):
                     raise Refusal('rendered container or network name collides: ' + path.name)
             elif key == 'Network' and value != 'host' and not value.startswith(prefix + '-'):
-                # Network=none is ONLY the three selected local-only build
+                # Network=none is ONLY the four selected local-only build
                 # units. It cannot authorize a container bridge/host escape.
-                offline={prefix+'-'+name+'.build' for name in ('keycloak','onboarding','mastodon-rss-publisher')}
+                offline={prefix+'-'+name+'.build' for name in ('keycloak','onboarding','mastodon-rss-publisher','firefly-native-api')}
                 if not (value=='none' and path.name in offline and
                         path.read_text().splitlines().count('Pull=never')==1):
                     raise Refusal('rendered network reference collides: ' + path.name)
@@ -333,7 +333,7 @@ def screen_rootful_store_quadlets(bundle, selector):
 
 
 def screen_rendered_ports(bundle, selector):
-    """All 48 publishers: 46 loopback, two exact guest-only Livekit RTC."""
+    """All 47 publishers: 45 loopback, two exact guest-only Livekit RTC."""
     expected = set(selector['ports'].values()) - {
         selector['ports'][original] for original in ('80', '443', '9100')
     }
@@ -354,7 +354,7 @@ def screen_rendered_ports(bundle, selector):
             if not match:
                 raise Refusal('unrecognized rendered published-port syntax')
             actual.append(int(match.group(1)))
-    if len(actual) != 48 or len(set(actual)) != 48 or set(actual) != expected:
+    if len(actual) != 47 or len(set(actual)) != 47 or set(actual) != expected:
         raise Refusal('rendered published ports do not match isolated mapping')
     return len(actual)
 

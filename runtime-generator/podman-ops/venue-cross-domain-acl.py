@@ -2,7 +2,7 @@
 """Exact temporary ACLs for the two cross-domain fresh test-only binds.
 
 Does not grant old data or issue the venue volume-init readiness marker.
-Requires all 61 actual empty data binds; snapshot/restore original inherited
+Requires all 54 actual empty data binds; snapshot/restore original inherited
 ACLs byte-exactly. This is NOT the populated installation/reset lifecycle.
 """
 import argparse
@@ -71,8 +71,8 @@ def context(bundle,selector,ledger):
     if path.is_symlink() or not path.is_file() or path.stat().st_uid!=0 or stat.S_IMODE(path.stat().st_mode)!=0o600:
         raise Refusal('protected data-bind stage ledger required')
     data=json.loads(path.read_text());plan=stage.owned_plan(bundle,selector)
-    if data.get('plan')!=plan or data.get('status')!='data-binds-inert' or len(data.get('venueDataBindDirs',[]))!=61:
-        raise Refusal('61 fresh, inert, selected data binds required')
+    if data.get('plan')!=plan or data.get('status')!='data-binds-inert' or len(data.get('venueDataBindDirs',[]))!=54:
+        raise Refusal('54 fresh, inert, selected data binds required')
     paths=binds.inventory(bundle,selector,plan)
     if Path(plan['roots']['rootful-state'],'volume-ready-r1.txt').exists():
         raise Refusal('installed volume readiness marker must remain absent')

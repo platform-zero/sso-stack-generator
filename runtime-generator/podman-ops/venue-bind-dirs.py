@@ -3,7 +3,7 @@
 
 No existing-tree ACL/chown recursion, volume-init service, populated-data reset,
 image or service activation. Cross-domain consumers are recorded, not granted
-access. The 61 data binds and two source-derived media fixtures stay distinct.
+access. The 54 data binds and two source-derived media fixtures stay distinct.
 """
 import argparse
 from contextlib import nullcontext
@@ -25,7 +25,7 @@ Refusal=stage.Refusal
 
 def inventory(bundle,selector,plan):
     checked=volmap.inspect(bundle,selector)
-    if checked['actualDataBindSources']!=61 or checked['selectedVolumeLabels']!=65:
+    if checked['actualDataBindSources']!=54 or checked['selectedVolumeLabels']!=59:
         raise Refusal('actual volume source count differs')
     roots=[(Path(plan['roots']['rootful-volume']),0)]
     roots.extend((Path(a['volume']),a['uid']) for a in plan['accounts'])
@@ -38,7 +38,7 @@ def inventory(bundle,selector,plan):
             if len(matches)!=1:raise Refusal('actual data source not immediate exclusive staged volume root')
             paths[value]={'owner':matches[0][1],'parent':matches[0][0],
                           'label':label,'consumers':consumers}
-    if len(paths)!=61:raise Refusal('duplicate or incomplete actual data sources')
+    if len(paths)!=54:raise Refusal('duplicate or incomplete actual data sources')
     return paths
 
 def checked_stage(bundle,selector,ledger,accepted):
@@ -87,7 +87,7 @@ def retire(bundle,selector,ledger):
         st=Path(pending).lstat();info=paths[pending]
         rows.append({'path':pending,'dev':st.st_dev,'ino':st.st_ino,'uid':st.st_uid,
                      'parent':info['parent'],'label':info['label'],'consumers':info['consumers']})
-    if len(rows)>61 or any(row['path'] not in paths or row['parent']!=paths[row['path']]['parent'] or
+    if len(rows)>54 or any(row['path'] not in paths or row['parent']!=paths[row['path']]['parent'] or
                             row['label']!=paths[row['path']]['label'] or row['consumers']!=paths[row['path']]['consumers']
                             for row in rows):
         raise Refusal('actual bind/selector journal changed')

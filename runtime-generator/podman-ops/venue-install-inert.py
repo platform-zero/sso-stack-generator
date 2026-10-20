@@ -2,8 +2,8 @@
 """Versioned exact-CAS FULL INERT venue preparation and reverse retirement.
 
 One release journal coordinates source, selected accounts, rendered aggregate
-and seven private domain releases, 75 env files, seven managers, 61 binds,
-three ACLs, four Huly volumes, 194 INACTIVE units and exact offline inputs.
+and seven private domain releases, 75 env files, seven managers, 54 binds,
+three ACLs, four Huly volumes, 190 INACTIVE units and exact offline inputs.
 Version-1 preparation/retirement MUST NOT activate anything. Only explicit
 --activate-isolated upgrades a fresh exact frozen stage to a version-2 intent,
 issues current-boot authority under the controller lifecycle lock, and queues
@@ -84,13 +84,13 @@ def prepare(bundle,selector,inventory,ledger,age_key,image_inputs):
     if (data.get('venueReleasePhase')!='inert-ready' or data.get('venueDomainRuntimePhase')!='inert-ready' or
             data.get('venueRuntimeEnvPhase')!='inert-ready' or data.get('venueCompositeMode')!='inert-ready' or
             data.get('status')!='units-staged' or data.get('venueIngressPhase')!='inert-ready' or data.get('venueRootHealthPhase')!='inert-ready' or marker.exists() or
-            len(data.get('venueRuntimeEnvFiles',{}))!=75 or len(data.get('installedUnits',[]))!=194 or
-            len(data.get('venueDataBindDirs',[]))!=61 or len(data.get('venueHulyVolumes',[]))!=4 or
+            len(data.get('venueRuntimeEnvFiles',{}))!=75 or len(data.get('installedUnits',[]))!=190 or
+            len(data.get('venueDataBindDirs',[]))!=54 or len(data.get('venueHulyVolumes',[]))!=4 or
             data.get('venueCompositeOfflineImages')!=offline):
         raise Refusal('inert installer co-presence invariants not met')
     data['venueInstallerPhase']='inert-ready';stage.write_ledger(p,data)
     return {'status':'inert-ready','rootlessCurrentTrees':7,'privateEnvFiles':75,
-            'actualBindDirectories':61,'namedVolumes':4,'installedInactiveUnits':194,'privateInactiveRelayUnits':8,'privateInactiveHealthUnits':2,
+            'actualBindDirectories':54,'namedVolumes':4,'installedInactiveUnits':190,'privateInactiveRelayUnits':8,'privateInactiveHealthUnits':2,
             'activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
 def retire(bundle,selector,inventory,ledger):
@@ -99,7 +99,7 @@ def retire(bundle,selector,inventory,ledger):
     reset_complete=(reset.get('phase')=='empty-owned' and reset.get('quadletTreeSha256')==plan['quadletTreeSha256'] and
                     reset.get('contextSha256')==data.get('venueStartHostContextSha256') and
                     set(reset.get('emptied',[]))=={row['path'] for row in reset.get('directories',[])} and
-                    len(reset.get('directories',[]))>=65 and
+                    len(reset.get('directories',[]))>=54+4 and
                     set(reset.get('retiredNetworks',[]))=={row['id'] for row in reset.get('networks',{}).values()})
     version_ok=data.get('venueInstallerVersion')==1 or (data.get('venueInstallerVersion')==2 and reset_complete)
     if (data.get('plan')!=plan or not version_ok or
@@ -117,15 +117,15 @@ def retire(bundle,selector,inventory,ledger):
             # build-output graph rollback. Adopt ONLY that completed ledger,
             # never a partly cleared graph or active installed unit.
             if (data.get('graphCleared')!=['root']+[a['name'] for a in plan['accounts']] or
-                    data.get('managerStopped') or len(data.get('installedUnits',[]))!=194 or
-                    len(data.get('retiredUnits',[]))!=194 or
+                    data.get('managerStopped') or len(data.get('installedUnits',[]))!=190 or
+                    len(data.get('retiredUnits',[]))!=190 or
                     any(data.get(k)!='retired-inert' for k in
                         ('venueRegistryPhase','venueBuildBasePhase')) or
                     not data.get('podmanImageCacheRetired') or
                     (Path(plan['roots']['rootful-state'])/'volume-ready-r1.txt').exists()):
                 raise Refusal('external selected composite retirement is incomplete')
         else:
-            raise Refusal('all 194 units and private inputs must coexist before initial retirement')
+            raise Refusal('all 190 units and private inputs must coexist before initial retirement')
         data['venueInstallerPhase']='retiring';stage.write_ledger(p,data)
     current=receipt(p)
     if current.get('venueRootHealthPhase') and current['venueRootHealthPhase']!='retired-inert':root_health.retire(b,selector,p)
@@ -226,8 +226,8 @@ def reset_owned(bundle,selector,inventory,ledger,reviewed_sha):
         roots,_=registry.probe(b,plan,data,authority['imageIds'],recovering=True)
         if data.get('venueRecoveryContainers'):raise Refusal('exact stopped-native cleanup required before data reset')
         sources=composite.binds.inventory(b,selector,plan);rows=[]
-        if set(sources)!={row['path'] for row in data.get('venueDataBindDirs',[])} or len(sources)!=61:
-            raise Refusal('all 61 original selected data binds required for reset')
+        if set(sources)!={row['path'] for row in data.get('venueDataBindDirs',[])} or len(sources)!=54:
+            raise Refusal('all 54 original selected data binds required for reset')
         for row in data['venueDataBindDirs']:rows.append({**row,'restoreUid':sources[row['path']]['owner'],'restoreGid':sources[row['path']]['owner']})
         logs=composite.binds.log_sources(b,plan)
         if logs!={row['path']:row['consumers'] for row in data.get('venueLogBindDirs',[])}:raise Refusal('actual owned log set differs')

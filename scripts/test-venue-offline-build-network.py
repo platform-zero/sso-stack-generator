@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Network=none is allowed only in exactly three no-pull build Quadlets."""
+"""Network=none is allowed only in exactly four no-pull build Quadlets."""
 import importlib.util
 from pathlib import Path
 import tempfile
@@ -15,6 +15,12 @@ class OfflineBuildNetwork(unittest.TestCase):
         self.build=d/'p0test-r1-mastodon-rss-publisher.build'
         self.build.write_text('[Build]\nPull=never\nNetwork=none\n')
         self.selector={'unitPrefix':'p0test-r1'}
+    def test_all_four_selected_no_pull_builds_accept_offline_network(self):
+        self.build.unlink()
+        for producer in ('keycloak','onboarding','mastodon-rss-publisher','firefly-native-api'):
+            path=self.build.parent/('p0test-r1-'+producer+'.build')
+            path.write_text('[Build]\nPull=never\nNetwork=none\n')
+        self.assertEqual(screen.screen_quadlet_names(self.root,self.selector),4)
     def test_only_selected_no_pull_build_may_use_offline_network(self):
         self.assertEqual(screen.screen_quadlet_names(self.root,self.selector),1)
         self.build.write_text('[Build]\nNetwork=none\n')

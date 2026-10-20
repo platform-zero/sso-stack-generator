@@ -63,7 +63,7 @@ class RegistryPreparation(unittest.TestCase):
                'pgSsdRoot':'/mnt/stack/p0-existing-host-venue-r1/pg-ssd',
                'vectorDbsRoot':'/mnt/stack/p0-existing-host-venue-r1/vector-dbs',
                'controlSocketRoot':'/run/p0test-r1-control','logRoot':'/var/log/p0test-r1',
-               'portMap':{str(i):56000+i for i in range(51)}}
+               'portMap':{str(i):56000+i for i in range(50)}}
         (self.bundle/'podman-domains.json').write_text(json.dumps({'domains':[],'venue':venue}))
         with self.assertRaises(ValueError):self.run_prepare()
         self.assertEqual(self.calls,[])

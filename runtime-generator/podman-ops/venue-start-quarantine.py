@@ -3,7 +3,7 @@
 
 A crash during activation can leave a target partly active. The selected
 version-2 installer must journal the intent BEFORE queuing any unit. This
-worker stops only the selected 194-unit namespace in reverse declared order,
+worker stops only the selected 190-unit namespace in reverse declared order,
 retains all data/graphs/inputs, and will not issue an automatic retry.
 """
 import argparse
@@ -89,8 +89,8 @@ def startup_observations(bundle,plan,state,selected):
 
 def targets(bundle,plan,state,*,selector=None,ledger=None):
     selected=units.manifest(bundle,plan)
-    if (selected!=state.get('unitFiles') or len(selected)!=194 or
-            len(state.get('installedUnits',[]))!=194):
+    if (selected!=state.get('unitFiles') or len(selected)!=190 or
+            len(state.get('installedUnits',[]))!=190):
         raise Refusal('installed unit names/source SHA not selected')
     paths={row['path']:row for row in state['installedUnits']}
     if set(paths)!=set(selected):raise Refusal('installed unit inode set changed')
@@ -326,7 +326,7 @@ def start(bundle,selector,ledger,timeout=900,*,reviewed_failed_sha=None):
             if (path.is_symlink() or not path.is_dir() or (info.st_dev,info.st_ino)!=(row['dev'],row['ino']) or
                     (not recovering and (info.st_uid!=sources[str(path)]['owner'] or any(path.iterdir())))):
                 raise Refusal('selected data bind identity changed or fresh bind contains authored data')
-        if len(state.get('venueDataBindDirs',[]))!=61:raise Refusal('all 61 exact fresh data binds required')
+        if len(state.get('venueDataBindDirs',[]))!=54:raise Refusal('all 54 exact fresh data binds required')
         if recovering:
             info=marker.lstat()
             if (marker.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid or info.st_nlink!=1 or
@@ -535,7 +535,7 @@ def retire_host_units(bundle,selector,ledger,expected_sha):
                 state.get('status')!='managers-ready' or state.get('venueInstallerPhase')!='retiring' or
                 state.get('venueCompositeMode')!='retired-inert' or state.get('venueRuntimeEnvPhase')!='retired-inert' or
                 state.get('graphCleared')!=['root']+[a['name'] for a in plan['accounts']] or
-                len(state.get('retiredUnits',[]))!=194 or state.get('activationAuthorized') is not False):
+                len(state.get('retiredUnits',[]))!=190 or state.get('activationAuthorized') is not False):
             raise Refusal('exact retired native graph/units/env required before isolated host-unit removal')
         runtime=context.runtime/'runtime-authority.json';meta=runtime.lstat();receipt=json.loads(runtime.read_bytes())
         if (runtime.is_symlink() or not stat.S_ISREG(meta.st_mode) or meta.st_uid or meta.st_nlink!=1 or stat.S_IMODE(meta.st_mode)!=0o600 or

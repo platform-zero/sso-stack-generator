@@ -20,7 +20,7 @@ class Units(unittest.TestCase):
   self.capability=self.runtime/'runtime-authority.json';self.capability.write_text(json.dumps(receipt));self.capability.chmod(0o600)
   self.plan={'accounts':[{'name':'fixture'+str(i)} for i in range(7)]};self.ledger=self.root/'ledger'
   self.state={'plan':self.plan,'venueInstallerVersion':2,'status':'managers-ready','venueInstallerPhase':'retiring','venueCompositeMode':'retired-inert','venueRuntimeEnvPhase':'retired-inert',
-              'graphCleared':['root']+[a['name'] for a in self.plan['accounts']],'retiredUnits':list(range(194)),'activationAuthorized':False}
+              'graphCleared':['root']+[a['name'] for a in self.plan['accounts']],'retiredUnits':list(range(190)),'activationAuthorized':False}
   self.ledger.write_text(json.dumps(self.state));self.ledger.chmod(0o600);self.active=False;self.commands=[]
   for p in [patch.object(m.stage,'owned_plan',return_value=self.plan),patch.object(m,'host_context',return_value=self.context),
             patch.object(m,'HOST_UNIT_DIRECTORY',self.directory),patch.object(m.graph,'run',side_effect=self.native)]:p.start();self.addCleanup(p.stop)

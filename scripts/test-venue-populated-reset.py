@@ -50,7 +50,7 @@ class Reset(unittest.TestCase):
         bundle=self.root/'bundle';(bundle/'site').mkdir(parents=True);(bundle/'site/agent-vm.json').write_text('{"name":"fresh-guest"}')
         log=self.root/'logs';log.mkdir();parent=self.root/'data';parent.mkdir();named=self.root/'named';named.mkdir()
         rows=[];sources={};huly=[]
-        for i in range(61):
+        for i in range(54):
             p=parent/str(i);p.mkdir();(p/'data').write_text('experiment');row=self.row(p);row.pop('restoreUid');rows.append(row);sources[str(p)]={'owner':0}
         p=log/'caddy';p.mkdir();(p/'log').write_text('experiment');logrow=self.row(p);logrow.pop('restoreUid');logrow['consumers']=['caddy.container']
         names=['huly_'+str(i) for i in range(4)]
@@ -92,9 +92,9 @@ class Reset(unittest.TestCase):
                 self.assertTrue(all((Path(row['path'])/'data').exists() for row in rows));self.assertTrue(marker.exists())
             else:
                 result=m.reset_owned(b,'selector','inventory',p,m.stage.sha(p))
-                self.assertEqual(result['emptiedExactOwnedDirectories'],66);self.assertFalse(marker.exists())
+                self.assertEqual(result['emptiedExactOwnedDirectories'],59);self.assertFalse(marker.exists())
                 data=json.loads(p.read_text());self.assertEqual(data['venueInstallerVersion'],2);self.assertEqual(data['venueOwnedReset']['phase'],'empty-owned')
-                self.assertEqual(len(data['venueOwnedReset']['emptied']),66);self.assertFalse(data['activationAuthorized'])
+                self.assertEqual(len(data['venueOwnedReset']['emptied']),59);self.assertFalse(data['activationAuthorized'])
         return events
     def test_complete_owned_reset_retains_top_inodes_and_version_two_evidence(self):self.run_fixture()
     def test_network_failure_preserves_data_and_pending_exact_id(self):self.run_fixture(network_failure=True)

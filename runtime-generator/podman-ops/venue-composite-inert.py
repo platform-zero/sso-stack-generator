@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CAS-bound combined INERT preparation of 61 binds, 4 volumes, 194 units.
+"""CAS-bound combined INERT preparation of 54 binds, 4 volumes, 190 units.
 
 This is not a service installer, image import, volume-init marker issuer or
 populated-data reset. All selected assets coexist before return. A failed
@@ -83,11 +83,11 @@ def prepare(bundle,selector,ledger,image_inputs=None):
     if (data['status']!='units-staged' or data.get('preVenueUnitStatus')!='huly-volumes-inert' or
             data.get('preVenueHulyStatus')!='data-binds-inert' or
             data.get('preVenueDataStatus')!='managers-ready' or
-            data.get('crossDomainAclStatus')!='granted' or len(data.get('venueDataBindDirs',[]))!=61 or
-            len(data.get('venueHulyVolumes',[]))!=4 or len(data.get('installedUnits',[]))!=194):
+            data.get('crossDomainAclStatus')!='granted' or len(data.get('venueDataBindDirs',[]))!=54 or
+            len(data.get('venueHulyVolumes',[]))!=4 or len(data.get('installedUnits',[]))!=190):
         raise Refusal('composite assets failed same-CAS coexistence check')
     data['venueCompositeMode']='inert-ready';stage.write_ledger(path,data)
-    return {'status':'inert-ready','actualBindDirectories':61,'namedVolumes':4,'installedInactiveUnits':194,
+    return {'status':'inert-ready','actualBindDirectories':54,'namedVolumes':4,'installedInactiveUnits':190,
             'activationAuthorized':False,'acceptedIntegratedInstalls':0}
 
 def recover_failed_import(bundle,selector,ledger):
@@ -146,7 +146,7 @@ def retire(bundle,selector,ledger):
     path,data,plan=context(bundle,selector,ledger)
     if (data.get('venueCompositeVersion')==2 and data.get('venueCompositeMode')=='retiring' and
             data.get('status') in ('managers-ready','graphs-clearing') and
-            len(data.get('retiredUnits',[]))==194 and
+            len(data.get('retiredUnits',[]))==190 and
             not data.get('podmanImageCacheRetired')):
         # Only graph metadata remains. Re-check the full exact 8-store image
         # inventory inside graph.clear before removing ANY image; never rerun
@@ -159,8 +159,8 @@ def retire(bundle,selector,ledger):
     # unlink. This deliberately refuses a populated installed stack.
     rows=data['venueDataBindDirs']
     paths=binds.inventory(bundle,selector,plan)
-    if len(rows)!=61 or set(paths)!={row['path'] for row in rows}:
-        raise Refusal('all 61 generated data binds must remain selected')
+    if len(rows)!=54 or set(paths)!={row['path'] for row in rows}:
+        raise Refusal('all 54 generated data binds must remain selected')
     for row in rows:
         p=Path(row['path']);info=p.lstat()
         if (p.is_symlink() or not stat.S_ISDIR(info.st_mode) or
@@ -179,7 +179,7 @@ def retire(bundle,selector,ledger):
         if str(dest)!=row['mountpoint'] or (info.st_dev,info.st_ino)!=(row['dev'],row['ino']) or any(dest.iterdir()):
             raise Refusal('named volume now contains data or changed inode')
     selected=units.manifest(bundle,plan)
-    if selected!=data.get('unitFiles') or len(data.get('installedUnits',[]))!=194:
+    if selected!=data.get('unitFiles') or len(data.get('installedUnits',[]))!=190:
         raise Refusal('unit source/journal differed before retirement')
     units.units_idle(plan)
     for row in data['installedUnits']:

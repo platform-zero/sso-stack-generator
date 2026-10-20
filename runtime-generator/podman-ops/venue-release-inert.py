@@ -70,8 +70,8 @@ def prepare(bundle,selector,ledger,age_key):
     if any(os.path.lexists(x) for x in (releases,release,current)) or not shutil.rmtree.avoids_symlink_attacks:
         raise Refusal('occupied or unsupported isolated release authority')
     source_tree=inventory(b)
-    if not source_tree or len(list((b/'quadlet').glob('*/*')))!=194:
-        raise Refusal('incomplete immutable 60/95 source tree')
+    if not source_tree or len(list((b/'quadlet').glob('*/*')))!=190:
+        raise Refusal('incomplete immutable selected cuts/finance source tree')
     data['venueReleasePhase']='copying'
     data['venueReleaseRoot']=str(release)
     data['venueReleaseSourceEntries']=len(source_tree)
@@ -148,8 +148,8 @@ def retire(bundle,selector,ledger):
             raise Refusal('all selected managers must stop first')
         if data.get('venueCompositeVersion'):
             if (data.get('venueCompositeMode')!='retired-inert' or
-                    len(data.get('retiredUnits',[]))!=194 or
-                    len(data.get('retiredDataBindDirs',[]))!=61 or
+                    len(data.get('retiredUnits',[]))!=190 or
+                    len(data.get('retiredDataBindDirs',[]))!=54 or
                     len(data.get('retiredHulyVolumes',[]))!=4 or
                     len(data.get('graphCleared',[]))!=8 or
                     not data.get('podmanImageCacheRetired') or not data.get('podmanRunrootRetired')):
@@ -255,7 +255,7 @@ def recover_interrupted_copy(bundle,selector,ledger):
 def recover_interrupted_render(bundle,selector,ledger):
     """Retire only a known renderer-output namespace, never unknown files.
 
-    The exact copied 60/95 source tree is journaled before SOPS starts. Any
+    The exact copied selected source tree is journaled before SOPS starts. Any
     created path must be one of its seven .template derivatives or one of the
     two explicit runtime metadata/env files. All non-runtime bytes/inodes
     must be intact. This is not reset authority for an installed release.

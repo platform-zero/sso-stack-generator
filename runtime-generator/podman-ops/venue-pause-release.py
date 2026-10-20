@@ -63,7 +63,7 @@ def release(bundle,selector,ledger,pid,selected_account='test-runners'):
     account=next(a for a in plan['accounts'] if a['name']==plan['prefix']+'-'+selected_account)
     if (data.get('plan')!=plan or data.get('status') not in ('managers-ready','graphs-clearing') or
             data.get('venueCompositeMode')!='retiring' or data.get('managerStopped') or
-            len(data.get('retiredUnits',[]))!=194 or account['name'] in data.get('graphCleared',[]) or
+            len(data.get('retiredUnits',[]))!=190 or account['name'] in data.get('graphCleared',[]) or
             data.get('activationAuthorized') is not False):
         raise Refusal('only fully stopped and uncleared selected build graph can release pause')
     root=Path(account['graph']);info=root.lstat();record=data['pathIdentities'].get(str(root))

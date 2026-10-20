@@ -146,7 +146,7 @@ def retire(bundle,selector,ledger):
     if data.get('venueRuntimeEnvPhase')!='inert-ready' or len(data.get('venueRuntimeEnvFiles',{}))!=75:
         raise Refusal('only fully recorded inactive environment may retire')
     if data.get('venueCompositeVersion') and (data.get('venueCompositeMode')!='retired-inert' or
-            len(data.get('retiredUnits',[]))!=194):
+            len(data.get('retiredUnits',[]))!=190):
         raise Refusal('co-staged units must retire before private environments')
     directories=data.get('venueRuntimeEnvDirs',{})
     if len(directories)!=8 or set(data['venueRuntimeEnvPlan'])!=set(entries):
