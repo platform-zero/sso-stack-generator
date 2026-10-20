@@ -1763,7 +1763,10 @@ fun resourceLimit(node: JsonNode, kind: String): String? {
     val raw = node.asText().trim()
     if (raw.isEmpty()) return null
     val defaultExpression = Regex("^\\$\\{[A-Z_][A-Z0-9_]*:-([^}]+)}$")
-    val resolved = defaultExpression.matchEntire(raw)?.groupValues?.get(1)?.trim() ?: raw
+    val resolvedValue = defaultExpression.matchEntire(raw)?.groupValues?.get(1)?.trim() ?: raw
+    // Compose/Podman accept lower-case magnitude suffixes; systemd MemoryMax
+    // needs their canonical spelling. Keep the same concrete-size validation.
+    val resolved = if (kind == "memory") resolvedValue.replace(Regex("[kmgtpe](?=[iIbB]*$)")) { it.value.uppercase() } else resolvedValue
     when (kind) {
         "memory" -> if (!resolved.matches(Regex("^[1-9][0-9]*(?:\\.[0-9]+)?[KMGTPE]?[iI]?[bB]?$"))) {
             fail("invalid resources.limits.memory '$raw'; use a concrete Podman size or ${'$'}{VAR:-default}")
