@@ -386,7 +386,12 @@ def port_screen(selector):
     for filename in ('/proc/net/tcp','/proc/net/tcp6','/proc/net/udp','/proc/net/udp6'):
         for line in Path(filename).read_text().splitlines()[1:]:
             fields = line.split()
-            if len(fields) < 4: raise Refusal('unparseable socket table')
+            if len(fields) < 10: raise Refusal('unparseable socket table')
+            # A closed outbound TCP connection can use a reserved number as
+            # its ephemeral source port. TIME_WAIT with inode0 has no live
+            # listener/owner; it must not masquerade as an installed service.
+            # All live, UDP and unknown socket states remain conservative gates.
+            if filename in ('/proc/net/tcp','/proc/net/tcp6') and fields[3]=='06' and fields[9]=='0':continue
             occupied_ports.add(int(fields[1].rsplit(':',1)[1],16))
     # Caddy's venue-only admin API is off; the other three host-network
     # local-only listeners have no Podman publisher. Reserve their actual

@@ -30,7 +30,7 @@ def inspect(bundle,selector,inventory):
     expected='venue preflight refused: host-network container lacks isolated listener proof: '
     authority=json.loads(selector.read_text())
     if checked.returncode==0 or checked.stderr.strip()!=expected+authority['unitPrefix']+'-alloy.container':
-        raise venue.Refusal('physical venue does not stop at the expected listener gate')
+        raise venue.Refusal('physical venue does not stop at the expected listener gate; preflight exit='+str(checked.returncode)+'; '+checked.stderr.strip())
     classified=intent.verify(bundle)
     if classified['activationAuthorized'] or classified['hostNetworkCount']!=4:
         raise venue.Refusal('host-network static diagnostic lost scoped authority')
