@@ -233,10 +233,33 @@ def offline_frozen_retirement(state):
             isinstance(state.get('venueCompositeImageInputSha256'),str) and
             re.fullmatch(r'[0-9a-f]{64}',state['venueCompositeImageInputSha256']) is not None)
 
+def verified_frozen_import_retirement(state,user,image):
+    """Completed verification remains evidence during abandoned inert retirement.
+
+    This does not promote partial registry preparation to ready or permit resume.
+    Canonical import/store/alias identities are independently checked by remover.
+    """
+    if state.get('venueRegistryVerified',{}).get(user+'|'+image)!=image:return False
+    if state.get('venueRegistryPhase')=='inert-ready':return True
+    return (state.get('venueRegistryPhase')=='preparing' and
+            type(state.get('venueInstallerVersion')) is int and state['venueInstallerVersion']==1 and
+            state.get('venueInstallerPhase')=='retiring' and
+            type(state.get('venueCompositeVersion')) is int and state['venueCompositeVersion']==2 and
+            state.get('venueCompositeMode')=='retiring' and
+            state.get('status')=='graphs-clearing' and state.get('activationAuthorized') is False and
+            state.get('venueRegistryPreparationAbandoned') is True and
+            state.get('venueRegistryFailedPendingRetirement',{}).get('phase')=='retired-drifted-pending' and
+            'venueRegistryPending' not in state and
+            not any(key.startswith('venueStart') for key in state) and
+            isinstance(state.get('retiredUnits'),list) and len(state['retiredUnits'])==190 and
+            all(type(unit)is str and unit for unit in state['retiredUnits']) and
+            len(set(state['retiredUnits']))==190)
+
+
 def remove_exact_frozen_import(bundle,state,path,user,image,command,aliases=None):
     """Remove only receipted canonical producer plus seeded config-ID aliases."""
     key=user+'|'+image
-    verified=(state.get('venueRegistryPhase')=='inert-ready' and state.get('venueRegistryVerified',{}).get(key)==image)
+    verified=verified_frozen_import_retirement(state,user,image)
     if ((not verified and not offline_frozen_retirement(state)) or
             not any(row.get('image')==image and user in row.get('authorities',[]) for row in state.get('venueCompositeOfflineImages',[]))):
         raise Refusal('multi-name frozen import lacks exact store/import/verification receipt')
@@ -435,7 +458,7 @@ def clear(bundle,selector,ledger):
             removed=run(command+['image','rm',image],timeout=180)
             if removed.returncode:
                 if 'by digest with more than one tag' in removed.stderr:
-                    if ((state.get('venueRegistryPhase')=='inert-ready' and state.get('venueRegistryVerified',{}).get(user+'|'+image)==image) or
+                    if (verified_frozen_import_retirement(state,user,image) or
                             (state.get('venueCompositeVersion')==2 and frozen_profile and offline_frozen_retirement(state) and
                              any(row.get('image')==image and user in row.get('authorities',[]) for row in state.get('venueCompositeOfflineImages',[])))):
                         remove_exact_frozen_import(bundle,state,path,user,image,command)

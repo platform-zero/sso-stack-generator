@@ -420,7 +420,17 @@ crashed before issuing its rm. Unissued intent permits only the original present
 target. Arbitrary absence/completed replay/second deletion are rejected.
 No backup, archive, production-data operation, pull, retag, force or app grant.
 
-SOURCE/fake tests: `python3 -B scripts/test-venue-failed-registry-retire.py`.
+During subsequent normal retirement, an already verified canonical frozen import
+retains its exact alias-removal eligibility even while registry phase is still
+`preparing`, but ONLY for an abandoned, never-started version1 installer already
+retiring all190 units, with completed failed-pending deletion and no pending pull.
+Both dispatch and remover use the same narrow eligibility check. The imported
+store/config receipt, canonical alias/digest set, non-force untag and exact-ID rm
+checks remain unchanged. This does not mark partial preparation ready, adopt an
+unverified image or permit preparation/activation to resume.
+
+SOURCE/fake tests: `python3 -B scripts/test-venue-failed-registry-retire.py` and
+`python3 -B scripts/test-venue-partial-frozen-retire.py`.
 These do not establish actual root/kernel/graph ownership or installed acceptance.
 
 ## Focused tests
