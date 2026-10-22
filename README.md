@@ -111,6 +111,31 @@ then emits only the manifest-selected components.
 Site-specific module selection and exact commit pins belong in the site
 configuration repository, not in this public repo.
 
+## Optional Native Acceptance Tool Image
+
+A site may explicitly reference a public, immutable acceptance-tool lock using
+`nativeAcceptanceImagePinsPath` in its manifest. Its only supported path is
+`global.settings/native-retained-acceptance-image.json`; unreferenced files are
+not discovered or copied. This input is optional and does not add a managed
+service, runtime build, listener, or activation authority.
+
+The version-1 lock identifies a Linux/amd64 archive by filename, byte count,
+SHA-256 and immutable image config ID, plus the selected `test-runners` source
+commit/remote, Containerfile SHA-256 and two immutable build-parent identities.
+The generator rejects malformed types, mutable identities, duplicate keys,
+unknown fields, symlinks and oversized inputs. It requires the selected source
+module and recipe to match, copies the lock into `site/`, and records its SHA-256
+as `nativeAcceptanceImagePinsSha256` in source provenance. The source verifier
+checks both original and bundled lock bytes against that digest.
+
+This is source/input closure, not verification of an external archive's bytes,
+its installation, native test execution, browser ownership, or application
+acceptance. The operator must independently verify the actual archive and
+image identity before any separately authorized use; image policy is unchanged.
+Run `python3 -B scripts/test-native-acceptance-image-pins.py` for the owning
+Kotlin-validator and Python-verifier source regressions (normal cached Gradle
+compiler dependencies are required).
+
 ## Safety Rules
 
 - Edit source, not generated output.

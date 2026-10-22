@@ -53,6 +53,28 @@ def checked_rows(rows, key):
     return result
 
 
+def verify_native_acceptance_image_pins(bundle, site, manifest, provenance):
+    field = "nativeAcceptanceImagePinsPath"
+    digest_field = "nativeAcceptanceImagePinsSha256"
+    if field not in manifest:
+        if digest_field in provenance:
+            fail("unreferenced native acceptance image pins provenance")
+        return
+    relative = manifest[field]
+    if relative != "global.settings/native-retained-acceptance-image.json":
+        fail("noncanonical native acceptance image pins path")
+    expected = provenance.get(digest_field)
+    if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
+        fail("missing native acceptance image pins provenance")
+    for root in (site, bundle / "site"):
+        path = root / relative
+        if (path.is_symlink() or path.parent.is_symlink() or not path.is_file()
+                or not path.resolve().is_relative_to(root.resolve()) or path.stat().st_size > 32768):
+            fail("missing, linked or oversized native acceptance image pins")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            fail("native acceptance image pins differ from built input")
+
+
 def verify(bundle, site):
     provenance_path = bundle / "source-provenance.json"
     provenance = load(provenance_path)
@@ -78,6 +100,7 @@ def verify(bundle, site):
         fail("site manifest differs from built input")
     if provenance.get("stackConfigSha256") != hashlib.sha256(config.read_bytes()).hexdigest():
         fail("site stack config differs from built input")
+    verify_native_acceptance_image_pins(bundle, site, manifest, provenance)
     secret = (site / manifest["secretStore"]).resolve()
     copied_secret = (bundle / "site" / manifest["secretStore"]).resolve()
     if not secret.is_relative_to(site.resolve()) or not secret.is_file():

@@ -736,6 +736,49 @@ fun gitDirty(dir: Path): Boolean? {
     return if (process.waitFor() == 0) output.isNotBlank() else null
 }
 
+fun nativeAcceptanceImagePins(manifestPath: Path): Pair<Path, ObjectNode>? {
+    val manifest = readTree(manifestPath)
+    if (!manifest.has("nativeAcceptanceImagePinsPath")) return null
+    val relative = manifest.path("nativeAcceptanceImagePinsPath")
+    if (!relative.isTextual || relative.asText() != "global.settings/native-retained-acceptance-image.json")
+        fail("native acceptance image pins require exact site-owned input path")
+    val path = manifestPath.parent.resolve(relative.asText())
+    if (!path.isRegularFile() || path.isSymbolicLink() || path.parent.isSymbolicLink()
+        || !path.toRealPath().startsWith(manifestPath.parent.toRealPath()) || Files.size(path) > 32768)
+        fail("missing, linked or oversized native acceptance image pins")
+    val pins = readTree(path)
+    fun keys(value: JsonNode, expected: Set<String>) =
+        value.isObject && value.fieldNames().asSequence().toSet() == expected
+    val digest = Regex("[a-f0-9]{64}")
+    val image = Regex("sha256:[a-f0-9]{64}")
+    if (!keys(pins, setOf("schemaVersion", "purpose", "image", "platform", "archiveFilename",
+            "archiveSha256", "archiveBytes", "sourceModule", "containerfileSha256", "immutableParents"))
+        || !pins.path("schemaVersion").isIntegralNumber || !pins.path("schemaVersion").canConvertToInt()
+        || pins.path("schemaVersion").asInt() != 1
+        || pins.path("purpose").asText() != "optional native retained-acceptance tooling; no managed runtime service"
+        || !image.matches(pins.path("image").asText()) || pins.path("platform").asText() != "linux/amd64"
+        || !Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,199}\\.tar").matches(pins.path("archiveFilename").asText())
+        || !pins.path("archiveSha256").isTextual || !digest.matches(pins.path("archiveSha256").asText())
+        || !pins.path("archiveBytes").isIntegralNumber || !pins.path("archiveBytes").canConvertToLong()
+        || pins.path("archiveBytes").asLong() !in 1L..(16L * 1024 * 1024 * 1024)
+        || !pins.path("containerfileSha256").isTextual || !digest.matches(pins.path("containerfileSha256").asText()))
+        fail("invalid immutable native acceptance image archive identity")
+    val module = pins.path("sourceModule")
+    if (!keys(module, setOf("id", "git", "commit")) || module.path("id").asText() != "test-runners"
+        || !Regex("https://github\\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+").matches(module.path("git").asText())
+        || !module.path("commit").isTextual || !Regex("[a-f0-9]{40}").matches(module.path("commit").asText()))
+        fail("invalid native acceptance image source binding")
+    val parents = pins.path("immutableParents")
+    if (!parents.isArray || parents.size() != 2 || parents.any { parent ->
+            !keys(parent, setOf("sourceReference", "immutableReference", "imageConfigId"))
+            || !parent.path("sourceReference").isTextual || parent.path("sourceReference").asText().isBlank()
+            || !Regex("[a-z0-9][a-z0-9._:/-]+@sha256:[a-f0-9]{64}").matches(parent.path("immutableReference").asText())
+            || !parent.path("imageConfigId").isTextual || !Regex("(sha256:)?[a-f0-9]{64}").matches(parent.path("imageConfigId").asText())
+        } || parents.map { it.path("immutableReference").asText() }.toSet().size != 2)
+        fail("invalid immutable native acceptance image parent identities")
+    return path to pins
+}
+
 fun sourceProvenance(manifest: Path, modules: List<ModuleCheckout>): ObjectNode {
     val generatorRoot = System.getenv("STACK_GENERATOR_ROOT")?.let(Path::of)?.toAbsolutePath()?.normalize()
         ?: fail("STACK_GENERATOR_ROOT is not set")
@@ -753,6 +796,15 @@ fun sourceProvenance(manifest: Path, modules: List<ModuleCheckout>): ObjectNode 
         val path = manifest.parent.resolve(secretStore).normalize()
         if (!path.startsWith(manifest.parent) || !path.isRegularFile()) fail("invalid site secretStore path: $secretStore")
         provenance.put("secretStoreSha256", sha256(path))
+    }
+    nativeAcceptanceImagePins(manifest)?.let { (path, pins) ->
+        val module = modules.singleOrNull { it.id == pins.path("sourceModule").path("id").asText() }
+            ?: fail("native acceptance image source module is not selected")
+        if (module.commit != pins.path("sourceModule").path("commit").asText()
+            || module.remote != pins.path("sourceModule").path("git").asText()
+            || sha256(module.dir.resolve("stack.containers/test-runner/Containerfile")) != pins.path("containerfileSha256").asText())
+            fail("native acceptance image pins differ from selected source module or recipe")
+        provenance.put("nativeAcceptanceImagePinsSha256", sha256(path))
     }
     provenance.put("generatorCommit", gitRevision(generatorRoot))
     provenance.put("generatorDirty", gitDirty(generatorRoot))
@@ -1113,6 +1165,7 @@ fun buildLocalArtifacts(output: Path) {
 }
 
 fun materializeSiteManifest(manifestPath: Path, output: Path) {
+    nativeAcceptanceImagePins(manifestPath)
     val manifest = readTree(manifestPath)
     val siteDir = output.resolve("site")
     siteDir.createDirectories()
@@ -1123,6 +1176,7 @@ fun materializeSiteManifest(manifestPath: Path, output: Path) {
         "imageIdentityPinsPath".takeIf { manifest.has(it) },
         "buildBaseIdentityPinsPath".takeIf { manifest.has(it) },
         "localBuildImagePinsPath".takeIf { manifest.has(it) },
+        "nativeAcceptanceImagePinsPath".takeIf { manifest.has(it) },
         "agentVmSpec".takeIf { manifest.has(it) })).forEach { key ->
         val relative = manifest.path(key).textOrNull() ?: fail("site manifest missing $key")
         if (relative.startsWith("/")) fail("site manifest $key must be relative: $relative")

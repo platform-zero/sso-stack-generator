@@ -63,6 +63,7 @@ python3 -B "$ROOT_DIR/scripts/test-existing-host-ingress.py"
 python3 -B "$ROOT_DIR/scripts/test-existing-host-listener-intent.py"
 python3 -B "$ROOT_DIR/scripts/test-pinned-images.py"
 python3 -B "$ROOT_DIR/scripts/test-registry-preparation.py"
+python3 -B "$ROOT_DIR/scripts/test-native-acceptance-image-pins.py"
 
 # Cached dist JARs must be seeded before compilation, never replace selected-source output.
 python3 - "$ROOT_DIR/runtime-generator/stack-generator.main.kts" <<'PY'
