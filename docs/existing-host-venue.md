@@ -382,6 +382,47 @@ partial starts, source tests and image discovery do not count. Use scoped
 results rather than a blanket success claim; actual owner/device proof remains
 separate.
 
+## Exact failed-pending experimental-image retirement
+
+A mutable registry tag can leave one drifted image after a refused pull. Do NOT
+substitute its ID into selected pins/progress, retry the tag, delete foreign graph
+objects, or bypass the existing inert-retirement pending-image gate. The separate
+root host-admin source `ops/host-admin/retire-failed-venue-registry-image.py` is NOT
+part of deploy/activation UX. Use only its independently reviewed root-protected
+copy via isolated `/usr/bin/python3 -I -S -B`, in a finite resource-bounded unit.
+
+It requires initial root/PID1 user namespace, protected self/bundle/ops/ledger,
+explicit complete ledger/provenance SHA and the exact actual drifted config ID.
+The original selected source/plan and verified progress must remain unchanged;
+all190 units must be idle. Under the venue lifecycle lock it verifies all8 graph
+inventories equal completed IDs plus this ONE deletion target, no containers,
+pods, foreign volumes/networks or other image IDs. That target must have exactly
+the one pending reference as its only tag; it must not be any selected config ID.
+It rejects cached bytecode/cache directories throughout the protected transitive
+ops import tree (-B alone does NOT prevent cache reads). Registry preparation
+uses the same private lifecycle lease; old frozen sources are not patched, so
+explicitly prove the old preparation invocation terminal/quiescent before use.
+Current complete ledger CAS is checked at each mutation boundary, including
+after inventory/alias work and after each own write. Own postwrite SHA is derived
+from the exact serialized intended bytes, never adopted from an unknown writer.
+It persists exact intent then a durable `delete-issued` marker BEFORE non-force
+removal by ID. Exact aliases/idle/all8 inventories/CAS are rechecked even after
+that marker, directly before rm. It then proves all8 inventories back to completed
+IDs and the pending tag absent. Only then does
+it clear pending and preserve expected/actual/before-CAS/source failure evidence.
+Registry phase stays `preparing`, completed progress is NEVER incremented, and
+activation stays false. This abandons preparation; perform normal selected inert
+retirement next, NOT preparation/activation. An interrupted deletion may continue
+only with exact persisted source/progress identities and newly reviewed current
+ledger SHA. After `delete-issued`, ONLY absence can continue without another rm;
+a present/recreated image is ambiguous and refuses, even if the prior process
+crashed before issuing its rm. Unissued intent permits only the original present
+target. Arbitrary absence/completed replay/second deletion are rejected.
+No backup, archive, production-data operation, pull, retag, force or app grant.
+
+SOURCE/fake tests: `python3 -B scripts/test-venue-failed-registry-retire.py`.
+These do not establish actual root/kernel/graph ownership or installed acceptance.
+
 ## Focused tests
 
 Run `scripts/test-venue-owned-stage.py` for ACL/identity fixtures and

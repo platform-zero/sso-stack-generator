@@ -228,8 +228,23 @@ def fetch(command,ref):
     if process.returncode:raise Refusal('selected registry pull failed; exact partial graph retained')
     reserve()
 
+def preparation_lease(bundle,plan):
+    lifecycle=load('registry_preparation_lifecycle','venue-start-quarantine.py')
+    return lifecycle.lifecycle(lifecycle.host_context(bundle,plan))
+
 def prepare(bundle,selector,site_source,ledger,max_new,retry_pending=False):
     p,data,plan,source=journal(bundle,selector,site_source,ledger)
+    if 'venueRegistryPreparationAbandoned' in data:
+        raise Refusal('failed registry preparation was abandoned for exact retirement; never resume')
+    if type(max_new) is not int or not 1<=max_new<=60:raise Refusal('one to sixty bounded new images per invocation')
+    # Same lease as deletion/start: no cooperating image writer crosses its CAS.
+    with preparation_lease(bundle,plan):
+        return prepare_locked(bundle,selector,site_source,ledger,max_new,retry_pending)
+
+def prepare_locked(bundle,selector,site_source,ledger,max_new,retry_pending=False):
+    p,data,plan,source=journal(bundle,selector,site_source,ledger)
+    if 'venueRegistryPreparationAbandoned' in data:
+        raise Refusal('failed registry preparation was abandoned for exact retirement; never resume')
     if type(max_new) is not int or not 1<=max_new<=60:raise Refusal('one to sixty bounded new images per invocation')
     ids=source['imageIds'];offline=data['venueCompositeOfflineImages']
     imported={user+'|'+row['image']:row['image'] for row in offline for user in row['authorities']}

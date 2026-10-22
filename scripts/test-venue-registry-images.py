@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Incremental complete-image CAS progress and failure fencing fixtures."""
+import contextlib
 import importlib.util
 import json
 from pathlib import Path
@@ -43,7 +44,10 @@ class RegistryProgress(unittest.TestCase):
         patches=[patch.object(module,'journal',side_effect=read),patch.object(module.stage,'write_ledger',side_effect=write),
                  patch.object(module,'command_graphs',return_value=self.stores),patch.object(module,'probe',side_effect=probe),
                  patch.object(module,'pulled',side_effect=inspected),patch.object(module,'fetch',side_effect=fetch),
-                 patch.object(module,'reserve',return_value=None)]
+                 patch.object(module,'reserve',return_value=None),
+                 # SOURCE fixture only: production prepare now requires the same
+                 # actual private lifecycle lease as deletion/start operations.
+                 patch.object(module,'preparation_lease',return_value=contextlib.nullcontext())]
         for mock in patches:mock.start();self.addCleanup(mock.stop)
     def test_same_ledger_resumes_one_by_one_and_only_all_three_are_ready(self):
         first=module.prepare('bundle','selector','site','journal',1)
