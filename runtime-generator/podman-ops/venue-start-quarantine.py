@@ -597,6 +597,26 @@ def cleanup_stopped(bundle,selector,ledger,reviewed_failed_sha):
                 'dataAndVolumesRetained':True,'servicesStarted':False,'activationAuthorized':False}
 
 
+def never_started_host_unit_retirement(state):
+    """Additional never-activated v1 branch; absence is NOT a v2 capability."""
+    installed=state.get('installedUnits');retired=state.get('retiredUnits')
+    return (type(state.get('venueInstallerVersion')) is int and state['venueInstallerVersion']==1 and
+            state.get('activationAuthorized') is False and
+            not any(key.startswith('venueStart') for key in state) and
+            state.get('venueRegistryPreparationAbandoned') is True and
+            state.get('venueRegistryPhase')=='retired-inert' and
+            state.get('venueRegistryFailedPendingRetirement',{}).get('phase')=='retired-drifted-pending' and
+            'venueRegistryPending' not in state and
+            type(installed)is list and len(installed)==190 and
+            all(type(row)is dict and set(row)=={'dev','ino','path'} and
+                type(row['dev'])is int and row['dev']>=0 and
+                type(row['ino'])is int and row['ino']>0 and
+                type(row['path'])is str and row['path'] for row in installed) and
+            type(retired)is list and len(retired)==190 and
+            all(type(path)is str and path for path in retired) and len(set(retired))==190 and
+            {row['path']for row in installed}==set(retired))
+
+
 def retire_host_units(bundle,selector,ledger,expected_sha):
     """Remove only three unchanged inactive installed isolated control units."""
     path=Path(ledger);info=path.lstat()
@@ -605,17 +625,24 @@ def retire_host_units(bundle,selector,ledger,expected_sha):
     plan=stage.owned_plan(bundle,selector);context=host_context(bundle,plan)
     with lifecycle(context):
         state=json.loads(path.read_bytes())
-        if (stage.sha(path)!=expected_sha or state.get('plan')!=plan or state.get('venueInstallerVersion')!=2 or
+        never_started=never_started_host_unit_retirement(state)
+        if (stage.sha(path)!=expected_sha or state.get('plan')!=plan or
+                (state.get('venueInstallerVersion')!=2 and not never_started) or
                 state.get('status')!='managers-ready' or state.get('venueInstallerPhase')!='retiring' or
                 state.get('venueCompositeMode')!='retired-inert' or state.get('venueRuntimeEnvPhase')!='retired-inert' or
                 state.get('graphCleared')!=['root']+[a['name'] for a in plan['accounts']] or
                 len(state.get('retiredUnits',[]))!=190 or state.get('activationAuthorized') is not False):
             raise Refusal('exact retired native graph/units/env required before isolated host-unit removal')
-        runtime=context.runtime/'runtime-authority.json';meta=runtime.lstat();receipt=json.loads(runtime.read_bytes())
-        if (runtime.is_symlink() or not stat.S_ISREG(meta.st_mode) or meta.st_uid or meta.st_nlink!=1 or stat.S_IMODE(meta.st_mode)!=0o600 or
-                receipt.get('schemaVersion')!=2 or receipt.get('namespace')!=context.namespace or receipt.get('hostContextSha256')!=context.digest or
-                receipt.get('activationAuthorized') is not False or receipt.get('phase')!='failed-quarantined'):
-            raise Refusal('exact false quarantined installed context required')
+        runtime=context.runtime/'runtime-authority.json'
+        if never_started:
+            if os.path.lexists(runtime) or {p.name for p in context.runtime.iterdir()}!={'lifecycle.lock'}:
+                raise Refusal('never-started context contains runtime authority or foreign state')
+        else:
+            meta=runtime.lstat();receipt=json.loads(runtime.read_bytes())
+            if (runtime.is_symlink() or not stat.S_ISREG(meta.st_mode) or meta.st_uid or meta.st_nlink!=1 or stat.S_IMODE(meta.st_mode)!=0o600 or
+                    receipt.get('schemaVersion')!=2 or receipt.get('namespace')!=context.namespace or receipt.get('hostContextSha256')!=context.digest or
+                    receipt.get('activationAuthorized') is not False or receipt.get('phase')!='failed-quarantined'):
+                raise Refusal('exact false quarantined installed context required')
         slot=(context.source/'agent-services-current-host').resolve(strict=True);manifest=json.loads((slot/'manifest.json').read_bytes())
         names=('p0-identity-reconcile.service','p0-identity-reconcile.timer','p0-web.service')
         rows=[]
@@ -628,7 +655,10 @@ def retire_host_units(bundle,selector,ledger,expected_sha):
         saved=state.get('venueHostUnitsRetirement')
         if saved is None:
             saved={'contextSha256':context.digest,'units':rows,'identities':{},'removed':[],'phase':'intended'}
-        if saved.get('contextSha256')!=context.digest or saved.get('units')!=rows:raise Refusal('host-unit retirement source/context changed')
+            if never_started:saved['neverStartedInstallerVersion']=1
+        if (saved.get('contextSha256')!=context.digest or saved.get('units')!=rows or
+                ((type(saved.get('neverStartedInstallerVersion'))is not int or saved['neverStartedInstallerVersion']!=1) if never_started else 'neverStartedInstallerVersion' in saved)):
+            raise Refusal('host-unit retirement source/context changed')
         commands=['systemctl'];jobs=graph.run(commands+['list-jobs','--no-legend','--no-pager'],timeout=30)
         if jobs.returncode or any(len(line.split())<4 or line.split()[1] in {Path(row['path']).name for row in rows} for line in jobs.stdout.splitlines() if line.strip()):
             raise Refusal('host-role job inventory not idle')
@@ -666,6 +696,9 @@ def retire_host_units(bundle,selector,ledger,expected_sha):
         result=graph.run(['systemctl','daemon-reload'],timeout=30)
         if result.returncode:raise Refusal('host unit removal daemon-reload failed')
         saved['phase']='retired';stage.write_ledger(path,state)
+        if never_started:
+            return {'status':'retired-host-role-units','retiredExactInactiveUnits':3,
+                    'runtimeAuthorityAbsentNeverStarted':True,'servicesStarted':False}
         return {'status':'retired-host-role-units','retiredExactInactiveUnits':3,'runtimeAuthorityRetainedFalse':True,'servicesStarted':False}
 
 

@@ -429,6 +429,19 @@ store/config receipt, canonical alias/digest set, non-force untag and exact-ID r
 checks remain unchanged. This does not mark partial preparation ready, adopt an
 unverified image or permit preparation/activation to resume.
 
+If preactivation staged the three isolated host control units, the unchanged
+manager-empty gate still requires their exact retirement. `--retire-host-role-units`
+additionally accepts a narrowly abandoned NEVER-started v1 context after all eight
+graphs, all190 receipted Quadlets and private environments are retired. It requires
+exact installed-path/inode receipts matching the190 retired paths, no start fields,
+no pending registry work and NO runtime-authority file (even a false file refuses).
+The existing selected source hashes, three root-owned644 file/inode checks,
+inactive/disabled/static/no-overrides/no-jobs gates and exact unlinks remain.
+This branch reports authority ABSENT, never invents a false v2 capability or an
+activation/quarantine receipt. Existing failed-quarantined v2 behavior is unchanged.
+Normal manager/account/path retirement must then continue; empty control-lease
+and transport/source disposition remain separate, not automatic data deletion.
+
 SOURCE/fake tests: `python3 -B scripts/test-venue-failed-registry-retire.py` and
 `python3 -B scripts/test-venue-partial-frozen-retire.py`.
 These do not establish actual root/kernel/graph ownership or installed acceptance.
