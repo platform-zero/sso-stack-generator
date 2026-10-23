@@ -25,22 +25,22 @@ def command(args, data=None):
     return result.stdout
 
 
-def directory(path):
+def directory(path, unsealed=False):
     fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
     try:
         for part in path.parts[1:]:
             child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
             os.close(fd); fd = child
         info = os.fstat(fd)
-        if info.st_uid != 0 or info.st_mode & 0o022:
+        if info.st_uid != 0 or info.st_mode & 0o002 or (info.st_mode & 0o020 and not unsealed):
             raise ValueError('Runtime trust directory is not root-controlled')
         return fd
     except BaseException:
         os.close(fd); raise
 
 
-def read_at(root, relative):
-    fd = directory(root)
+def read_at(root, relative, unsealed=False):
+    fd = directory(root, unsealed=unsealed)
     try:
         parts = Path(relative).parts
         if not parts or any(p in ('/', '.', '..') for p in parts): raise ValueError('Invalid trust artifact path')
@@ -66,7 +66,9 @@ def certificates_only(data):
 
 
 def seal_directory(path, mode):
-    fd = directory(path)
+    # These exact root-owned derived directories may still have the scope
+    # creator's inherited writable ACL. Revoke it here, never on ancestors.
+    fd = directory(path, unsealed=True)
     try:
         command(['setfacl', '-b', '-k', str(path)])
         os.fchmod(fd, mode)
@@ -75,12 +77,12 @@ def seal_directory(path, mode):
 
 def prepare(private, public, target):
     # Validate all derived public artifacts BEFORE altering permissions.
-    fd = directory(public)
+    fd = directory(public, unsealed=True)
     try:
         if set(os.listdir(fd)) - {'caddy-ca.crt'}: raise ValueError('Unexpected public trust artifact')
     finally: os.close(fd)
     if (public / 'caddy-ca.crt').is_symlink(): raise ValueError('Linked public trust artifact')
-    if (public / 'caddy-ca.crt').exists(): certificates_only(read_at(public, 'caddy-ca.crt'))
+    if (public / 'caddy-ca.crt').exists(): certificates_only(read_at(public, 'caddy-ca.crt', unsealed=True))
     seal_directory(private, 0o700)
     # Revoke historical writable/default actor ACLs. Only root/Caddy publishes.
     seal_directory(public, 0o755)

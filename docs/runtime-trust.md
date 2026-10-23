@@ -20,7 +20,7 @@ and unrelated server keys are never copied or mounted there.
 The native installer prepares permissions before Caddy starts and publishes the
 mail leaf before application startup. The same publisher is the rotation entry
 point. Automatic refresh/reload integration and installed rotation/recovery tests
-remain lifecycle work; four isolated-root fixtures are not deployed security,
+remain lifecycle work; six isolated-root fixtures are not deployed security,
 mail workflow, interruption or application/recovery acceptance.
 
 JupyterHub and its spawned notebooks mount only the public bundle at `/ca`, with

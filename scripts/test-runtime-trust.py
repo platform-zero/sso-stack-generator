@@ -49,6 +49,15 @@ class Trust(unittest.TestCase):
         self.assertNotEqual(self.actor(f'open({str(self.private/"root.key")!r},"rb").read()'),0)
         self.assertEqual(trust.publish(self.target,cert,key,65533),name)
         self.assertEqual(len(list((self.target/'generations').iterdir())),1)
+    def test_derived_public_store_revokes_inherited_creator_write_not_parent(self):
+        subprocess.run(['setfacl','-m','u:65533:rwx,g::rwx',str(self.public)],check=True,capture_output=True)
+        before=self.root.stat().st_mode
+        self.assertTrue(self.public.stat().st_mode&0o020)
+        trust.prepare(self.private,self.public,self.target)
+        self.assertEqual(self.root.stat().st_mode,before)
+        self.assertEqual(self.public.stat().st_mode&0o777,0o755)
+        self.assertNotEqual(self.actor(f'open({str(self.public/"replacement")!r},"w").write("x")'),0)
+
     def test_rootful_mail_leaf_remains_root_private(self):
         cert,key=self.cert.read_bytes(),self.key.read_bytes()
         trust.publish(self.target,cert,key,0)
