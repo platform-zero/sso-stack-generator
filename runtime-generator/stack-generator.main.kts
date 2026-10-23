@@ -1185,7 +1185,23 @@ fun applyStandaloneHostProfile(ir: ObjectNode, manifest: JsonNode) {
                 if (source == "/run/p0-control") {
                     if (name != "caddy" || !mount.isTextual || mount.asText() != "/run/p0-control:/run/p0-control:ro")
                         fail("unreviewed managed control mount in standalone profile")
-                } else retained.add(mount.deepCopy<JsonNode>())
+                } else {
+                    fun stateRoot(domain: String): String = activePodmanPolicy.domains.singleOrNull { it.name == domain }?.stateRoot
+                        ?: fail("standalone bind requires selected domain '$domain'")
+                    val replacement = when (source) {
+                        "/mnt/stack/forgejo-runner-ssh" -> stateRoot("ci-runner") + "/forgejo-runner-ssh"
+                        "/mnt/stack/podman/test-runners/state/test-runner/results" -> stateRoot("test-runners") + "/test-runner/results"
+                        "/mnt/stack/volumes/caddy_ca/caddy-ca.crt" ->
+                            (ir.path("volumes").path("caddy_ca").path("hostPath").textOrNull()
+                                ?: fail("standalone bind requires selected CA volume")) + "/caddy-ca.crt"
+                        "/var/lib/webservices-rootless-test-runners/current/build" -> stateRoot("test-runners") + "/current/build"
+                        "/var/lib/webservices-rootless-test-runners/current/site/components.lock.json" -> stateRoot("test-runners") + "/current/site/components.lock.json"
+                        else -> source
+                    }
+                    if (replacement == source) retained.add(mount.deepCopy<JsonNode>())
+                    else if (mount.isTextual) retained.add(replacement + mount.asText().removePrefix(source))
+                    else retained.add(mount.deepCopy<ObjectNode>().put("source", replacement))
+                }
             }
             service.set<ArrayNode>("volumes", retained)
         }
