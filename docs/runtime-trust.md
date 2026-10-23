@@ -5,7 +5,10 @@ receive only the root-owned `caddy_ca` public certificate bundle; the declared
 `rootlessAccess: read-only` shared-volume policy gives no host-actor write/default
 write permission. Installation validates certificate-only contents, revokes old
 writable actor ACLs on this derived public artifact, and seals the private store
-without changing its key bytes. No system-wide trust or original cache is changed.
+without changing its key bytes. Exact execute-only ACLs cover the shared public
+volume's own ancestry inside the claimed scope (not merely private domain roots),
+preserving authored masks and every ancestor above the scope. No system-wide
+trust or original cache is changed.
 
 Mail is an explicit, narrower credential delegation, not a CA-store consumer.
 `ops/runtime-trust.py --bundle /absolute/installed/release --publish-mail` selects
@@ -20,7 +23,7 @@ and unrelated server keys are never copied or mounted there.
 The native installer prepares permissions before Caddy starts and publishes the
 mail leaf before application startup. The same publisher is the rotation entry
 point. Automatic refresh/reload integration and installed rotation/recovery tests
-remain lifecycle work; six isolated-root fixtures are not deployed security,
+remain lifecycle work; seven isolated-root fixtures are not deployed security,
 mail workflow, interruption or application/recovery acceptance.
 
 JupyterHub and its spawned notebooks mount only the public bundle at `/ca`, with

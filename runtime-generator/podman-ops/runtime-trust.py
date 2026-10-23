@@ -177,10 +177,25 @@ def publish(target, cert, key, uid):
     finally: os.close(fd)
 
 
-def binding(bundle):
+def storage_binding(bundle):
     spec = importlib.util.spec_from_file_location('storage_trust_binding', Path(__file__).with_name('grant-rootless-volume-parent-traverse.py'))
     module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
     scope, operator, expected = module.authority(bundle); module.marker(scope, expected)
+    return module, scope, operator, expected
+
+
+def grant_public_parents(bundle, public):
+    module, scope, operator, expected = storage_binding(bundle)
+    # Shared named volumes need their OWN ancestry, not a private domain's
+    # volumeRoot. Never touch anything above the claimed scope or grant r/w.
+    paths = list(reversed([p for p in public.parent.parents if p.is_relative_to(scope)])) + [public.parent]
+    for path in paths:
+        module.safe_parent(path, operator)
+        for row in expected['domains']: module.exact_execute(path, row['user'])
+
+
+def binding(bundle):
+    module, scope, operator, expected = storage_binding(bundle)
     ir = json.loads((bundle / 'stack.ir.json').read_text())
     mail_selected = 'mailserver' in ir['services']
     names = ['caddy_certs', 'caddy_ca'] + (['mail_tls'] if mail_selected else [])
@@ -208,7 +223,9 @@ def main():
     args = parser.parse_args()
     if os.geteuid() != 0 or args.prepare == args.publish_mail: raise ValueError('Root and exactly one trust operation required')
     paths, uid, hostname = binding(args.bundle)
-    if args.prepare: prepare(*paths); print(json.dumps({'trustPrepared': True, 'privateStoreShared': False})); return
+    if args.prepare:
+        prepare(*paths); grant_public_parents(args.bundle, paths[1])
+        print(json.dumps({'trustPrepared': True, 'privateStoreShared': False})); return
     if paths[2] is None:
         print(json.dumps({'mailLeafPublished': False, 'reason': 'mailserver-not-selected'})); return
     deadline = time.monotonic() + 120

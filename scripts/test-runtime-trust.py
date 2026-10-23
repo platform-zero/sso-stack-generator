@@ -49,6 +49,26 @@ class Trust(unittest.TestCase):
         self.assertNotEqual(self.actor(f'open({str(self.private/"root.key")!r},"rb").read()'),0)
         self.assertEqual(trust.publish(self.target,cert,key,65533),name)
         self.assertEqual(len(list((self.target/'generations').iterdir())),1)
+    def test_shared_public_parent_gets_only_scoped_execute(self):
+        import pwd
+        from unittest.mock import patch
+        helper=path.with_name('grant-rootless-volume-parent-traverse.py')
+        spec=importlib.util.spec_from_file_location('trust_parent_fixture',helper)
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        scope=self.root/'scope';scope.mkdir(mode=0o700)
+        parent=scope/'volumes';parent.mkdir(mode=0o700)
+        public=parent/'public';public.mkdir(mode=0o755)
+        before=subprocess.check_output(['getfacl','-cpn',str(self.root)])
+        account=pwd.getpwnam('nobody')
+        expected={'domains':[{'user':account.pw_name,'uid':account.pw_uid}]}
+        with patch.object(trust,'storage_binding',return_value=(module,scope,pwd.getpwuid(0),expected)):
+            trust.grant_public_parents(Path('/fixture-bundle'),public)
+        self.assertEqual(before,subprocess.check_output(['getfacl','-cpn',str(self.root)]))
+        for folder in (scope,parent):
+            acl=subprocess.check_output(['getfacl','-cpn',str(folder)]).decode()
+            self.assertIn(f'user:{account.pw_uid}:--x',acl)
+            self.assertNotIn(f'user:{account.pw_uid}:r',acl)
+
     def test_derived_public_store_revokes_inherited_creator_write_not_parent(self):
         subprocess.run(['setfacl','-m','u:65533:rwx,g::rwx',str(self.public)],check=True,capture_output=True)
         before=self.root.stat().st_mode
