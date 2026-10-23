@@ -1216,7 +1216,7 @@ fun applyStandaloneHostProfile(ir: ObjectNode, manifest: JsonNode) {
     ir.set<ArrayNode>("deferredCapabilities", arr())
 }
 
-fun materializeStandaloneHostInputs(manifest: JsonNode, output: Path) {
+fun materializeStandaloneHostInputs(manifest: ObjectNode, output: Path) {
     if (!standaloneHost(manifest)) return
     listOf("build/stack.config/caddy/Caddyfile", "runtime/configs/caddy/Caddyfile").forEach { relative ->
         val caddy = output.resolve(relative)
