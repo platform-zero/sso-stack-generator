@@ -1,0 +1,342 @@
+{
+  "schemaVersion": 1,
+  "actualTarget": null,
+  "fixtureNamespace": "p0test-example",
+  "artifacts": {
+    "venue-registry-images.py": {
+      "sha256": "e80709fb04198f716fbf4a7d2da734a1ccd7da81a8aca6a769538f31124f417c",
+      "mode": 384,
+      "sizeBytes": 18763
+    },
+    "platform-zero-host-broker.service": {
+      "sha256": "117e8e4047bd623dab0b7b826d42e1a1f9cc7fecc961a53abaa284cd20530489",
+      "mode": 384,
+      "sizeBytes": 484
+    },
+    "install-platform-zero-control-plane.sh": {
+      "sha256": "18c8dbb8ac7c820077c61a49d5c381f1800c40d436bfbe998cf56ab6769f172d",
+      "mode": 384,
+      "sizeBytes": 11999
+    },
+    "p0-host-broker.py": {
+      "sha256": "665b6c3edab338403b7d6247fc4bb4df03a4bae3a1b4d092133fad5958142df8",
+      "mode": 384,
+      "sizeBytes": 29016
+    },
+    "p0-host-test-approve.py": {
+      "sha256": "9a0388ce034126c40a2d2d5188da82b0fec688af8ca375e53cad812d10d1b6d6",
+      "mode": 384,
+      "sizeBytes": 6848
+    },
+    "verify-venue-caddy-live.py": {
+      "sha256": "13943126296274210c5ea0ba8632b2af67c61e3052f394ac08e8973fff811d6f",
+      "mode": 384,
+      "sizeBytes": 8061
+    },
+    "verify-existing-host-listener-intent.py": {
+      "sha256": "dd6741eb32eb3bc2997050aa78ef11276e51aec874308223e7b4270af7fdb544",
+      "mode": 384,
+      "sizeBytes": 3293
+    },
+    "venue-release-inert.py": {
+      "sha256": "fb062c762d4e3dc0abdeaf65346f0879cb150096200c8ebeae8173088c736a06",
+      "mode": 384,
+      "sizeBytes": 21401
+    },
+    "verify-agent-vm-bundle.py": {
+      "sha256": "2632c2cb73266dd91298277a989b95a6d4f7c9f656d923aea12754f7fa1b2d43",
+      "mode": 384,
+      "sizeBytes": 5828
+    },
+    "p0-domain-dispatch": {
+      "sha256": "dafc2bb0df55ccda556ce7c6829e196cdb31a314c5e1b5f2fafd4c31d5f1ea7c",
+      "mode": 384,
+      "sizeBytes": 1505
+    },
+    "verify-existing-host-venue.py": {
+      "sha256": "d333dc285e8ada12dd64374af8c450c8048b2832642fd256411256f493fb384f",
+      "mode": 384,
+      "sizeBytes": 25699
+    },
+    "venue-composite-inert.py": {
+      "sha256": "7772bb793dc7ffcc4025ff2215889e3eee6293076a5212ff6200c03111378302",
+      "mode": 384,
+      "sizeBytes": 17755
+    },
+    "render-existing-host-mail-ingress.py": {
+      "sha256": "178961d94478df38941f93eeac9328c65c4e1ce313d0b5a0d0732529d165d53d",
+      "mode": 384,
+      "sizeBytes": 3807
+    },
+    "venue-private-ingress.py": {
+      "sha256": "208050076abd6bb9683fb56c7572b6878e5cfff153e2c1868e9dddf59530aa24",
+      "mode": 384,
+      "sizeBytes": 22349
+    },
+    "venue-runtime-env-inert.py": {
+      "sha256": "b2a255fabec56ecec5e7f476bb19fce0a6c654df7f26b1c4a98047b7aa6aa9e2",
+      "mode": 384,
+      "sizeBytes": 10790
+    },
+    "venue-root-health.py": {
+      "sha256": "81d114cb42dcada0f44a9b04662affe1efc561ccb798ef0e454daa5e27fb0d6d",
+      "mode": 384,
+      "sizeBytes": 14362
+    },
+    "venue-bind-dirs.py": {
+      "sha256": "9120409a983fbbd549e455870a5c0ea33d7d1ac8579871f493adbe321f9cf31f",
+      "mode": 384,
+      "sizeBytes": 18890
+    },
+    "bind-caddy-venue-guest.py": {
+      "sha256": "631e04a49e9c92cc5023f9cf1f472cb53b7ca921dc3c89c3020e7ef8e123a095",
+      "mode": 384,
+      "sizeBytes": 4220
+    },
+    "inspect-existing-host-venue-beyond-listeners.py": {
+      "sha256": "44fabf6988934d0e997b8fd02b85820def246c664a3c14a92f385df5cd2d306b",
+      "mode": 384,
+      "sizeBytes": 2802
+    },
+    "venue-buildah-containers-retire.py": {
+      "sha256": "063fc5a355a180744f63e33292ff0367455f47206c8c7dc58705425856866c92",
+      "mode": 384,
+      "sizeBytes": 6526
+    },
+    "platform-zero-host-broker.socket": {
+      "sha256": "746796dd66893ea785a9611f2a0991825d6737ef8e7746582d8009b3e779aba7",
+      "mode": 384,
+      "sizeBytes": 466
+    },
+    "venue-build-tmp-retire.py": {
+      "sha256": "4205ea2ac03094108aed0d4c1b798f018b9d15a9549d3b819033ac10d38914c2",
+      "mode": 384,
+      "sizeBytes": 7486
+    },
+    "render-existing-host-guest-network.py": {
+      "sha256": "da895b8068aeb575417d92ad8370597bbd78fe4d56df19b00e6d50d7f5ee7959",
+      "mode": 384,
+      "sizeBytes": 30978
+    },
+    "venue-start-quarantine.py": {
+      "sha256": "fd39991b9fc88572ef5328141372f9e6afa946fb863260a74344eb1f23b513ce",
+      "mode": 384,
+      "sizeBytes": 56070
+    },
+    "venue-cross-domain-acl.py": {
+      "sha256": "1990d19f724c9b086e70d80a232f39173b8bd6cb3d6d0d7a01c968605e917cbf",
+      "mode": 384,
+      "sizeBytes": 8665
+    },
+    "venue-pause-release.py": {
+      "sha256": "108902a7c66b6cc2fd35d791c6308394080b2d786945888d7fdfffd5d6511718",
+      "mode": 384,
+      "sizeBytes": 8516
+    },
+    "venue-domain-runtime-inert.py": {
+      "sha256": "a54d44f719811ccbc9ba40b387975e2af837424055c077a680a5357c2f6ff8ef",
+      "mode": 384,
+      "sizeBytes": 17280
+    },
+    "install-pinned-images.py": {
+      "sha256": "3d128b1ccdd407c5f8c69e992f2524f987e38bbc2d3db6651c0099842c289b1c",
+      "mode": 384,
+      "sizeBytes": 20031
+    },
+    "p0-host-approve.py": {
+      "sha256": "b84eeeb7b3478e6486fa4e4133781a8f05a47554db9c4cd60b0e4fd62bfedb8c",
+      "mode": 384,
+      "sizeBytes": 11370
+    },
+    "venue-build-base-images.py": {
+      "sha256": "470c45be90e328cd5e28037fb54ea34965a5d0d204f1884c1ea61b66849136ad",
+      "mode": 384,
+      "sizeBytes": 7268
+    },
+    "webservices-auto-update.timer": {
+      "sha256": "a600e3066aa543d3643d21b891e592932fee8262b4a7290b91fb61995a7c7171",
+      "mode": 384,
+      "sizeBytes": 161
+    },
+    "venue-graph-clear.py": {
+      "sha256": "0ad78be7464054a0894b033ce6dac45fe8ed420c82f7ef213736725207b0af27",
+      "mode": 384,
+      "sizeBytes": 41051
+    },
+    "venue-local-build-images.py": {
+      "sha256": "6d66a8483a10f026b8e327e7df48f9b9cd5ca2d0ace793a971f15f0a1cf6cc21",
+      "mode": 384,
+      "sizeBytes": 40315
+    },
+    "render-existing-host-guest-fence.py": {
+      "sha256": "adda5922b9229f92b8d9d3baa35bdcc559df17332777e01ded7151fd97593dbc",
+      "mode": 384,
+      "sizeBytes": 4621
+    },
+    "install-journal.py": {
+      "sha256": "83c022c6dc66a2f2b3d2805863aec206f0e8c25b62e5d1fed48598391ea637ae",
+      "mode": 384,
+      "sizeBytes": 16114
+    },
+    "p0-host-install-inputs.py": {
+      "sha256": "b6439957af5010b351a4771e9a3a91468f5eefb0da8e72d589a0db2a812bc58f",
+      "mode": 384,
+      "sizeBytes": 8775
+    },
+    "webservices-auto-update": {
+      "sha256": "c70e7b9ce9cf3f1b7beaf925274a389f8732cc57fcb8f2b88ca4237d8a3325d5",
+      "mode": 384,
+      "sizeBytes": 706
+    },
+    "p0-hostctl.py": {
+      "sha256": "656dcf7e383bd611ee0ca4fc02c7cf7c70df8732cbba4897a1b0a761cdeb6f09",
+      "mode": 384,
+      "sizeBytes": 2231
+    },
+    "venue-guest-fence-hook.py": {
+      "sha256": "af1e6a57806e76bda04b95786d2306ca77cba33c4781bfdae191afd48d9ee9e4",
+      "mode": 384,
+      "sizeBytes": 5879
+    },
+    "render-existing-host-ingress.py": {
+      "sha256": "c2e2b5781efcd5124576137982884ab0ed6c5ebdb89b12ebc5d3e10e94bbb3ce",
+      "mode": 384,
+      "sizeBytes": 6627
+    },
+    "venue-runner-token-file-acl.py": {
+      "sha256": "b330d6f7f64397a19012557c40d893fb0f33419d864cd60e42fe4a96ba68636a",
+      "mode": 384,
+      "sizeBytes": 5420
+    },
+    "p0-host-operations.py": {
+      "sha256": "5a3ac122b7adc212eac145a85018d6199ed6ae5a87e1474b2ba47d81d8bc4d39",
+      "mode": 384,
+      "sizeBytes": 27945
+    },
+    "venue-install-inert.py": {
+      "sha256": "7aca5b4a26132caad888c4ce954e63f5d911fbdb9f52b108aeb0f0ddd7774178",
+      "mode": 384,
+      "sizeBytes": 27021
+    },
+    "venue-huly-volumes.py": {
+      "sha256": "079f22671566579609b8f4ed5853c0b14f993fc6a0e3a85f54b6e294b01fe2cc",
+      "mode": 384,
+      "sizeBytes": 8898
+    },
+    "bind-livekit-venue-ports.py": {
+      "sha256": "d4dec00fb98d063f8a3f890a30708d012a6232ca757cf7adcb1bd9a42456e43e",
+      "mode": 384,
+      "sizeBytes": 3228
+    },
+    "venue-owned-stage.py": {
+      "sha256": "4f6d20df3cc80f1283bc0c15696a7972f88e76f3ada01c6611fb2d3a42f6673c",
+      "mode": 384,
+      "sizeBytes": 28717
+    },
+    "grant-rootless-volume-parent-traverse.py": {
+      "sha256": "6045da4ea1e43d4dc949a7182e913a7e4c05fe19c7515391db30a47761dee890",
+      "mode": 384,
+      "sizeBytes": 2816
+    },
+    "venue-user-managers.py": {
+      "sha256": "21a10898153806c583ac180e378a6e7e9bb43a00983f520c2e441fe2d3c150a5",
+      "mode": 384,
+      "sizeBytes": 8190
+    },
+    "venue-image-authority.py": {
+      "sha256": "aef1662452a9caefa66d6d5241b122f2144ec2f90270fcca58f42d17e11577df",
+      "mode": 384,
+      "sizeBytes": 13710
+    },
+    "install-domain-dispatch-key.py": {
+      "sha256": "b83fd41a148f7eb85f2899f1c29468d6ecb958ac88304308a5a371ef935bf004",
+      "mode": 384,
+      "sizeBytes": 3507
+    },
+    "venue-unit-stage.py": {
+      "sha256": "e7278258a0410d6abe5754403f6504fc3d672f9db7f57c73414dbf00cf4cb3f5",
+      "mode": 384,
+      "sizeBytes": 12983
+    },
+    "install-podman-bundle.sh": {
+      "sha256": "dae4f45e167385af3789132ca3785d0357a174a059248fa01dbfd5dae0040261",
+      "mode": 384,
+      "sizeBytes": 56119
+    },
+    "venue-control-source.py": {
+      "sha256": "cf162d9a050c5707fe04bd85989f88d58be831946d025d804e92e3f78b85d36e",
+      "mode": 384,
+      "sizeBytes": 8537
+    },
+    "p0-host-rollback-approve.py": {
+      "sha256": "20fd38ee1426049c2d787ebaf42b8dd0587aeb4e01f5be78ceb3e225cb68c6a4",
+      "mode": 384,
+      "sizeBytes": 10568
+    },
+    "inspect-venue-volume-authority.py": {
+      "sha256": "5494929938b3bbbae99617beef25d417931fd9d6688c07b50ac3523ded0a1be9",
+      "mode": 384,
+      "sizeBytes": 5418
+    },
+    "webservices-auto-update.service": {
+      "sha256": "f9b3fe2f89e769a160cbf7319378db5f1670d8be08d98d1de600e00fbcc8992a",
+      "mode": 384,
+      "sizeBytes": 260
+    },
+    "venue-shortname-cache-retire.py": {
+      "sha256": "ca3e9a6639c83cf6a36a0e02bfa15555b3c8e46be0778336f8f33e27a4072a67",
+      "mode": 384,
+      "sizeBytes": 13654
+    },
+    "materialize-workspaces.py": {
+      "sha256": "01296c856c83aec201c1bf6fe6fdd1a20986bf0307a9b903ab31382531cef2a9",
+      "mode": 384,
+      "sizeBytes": 53
+    },
+    "platform-zero-worklanes.service": {
+      "sha256": "3040f024699c0c4ea69ff32e430d5567bb7ce794b0b304aa083366d8b2161e82",
+      "mode": 384,
+      "sizeBytes": 59
+    },
+    "reap-idle-worklanes.py": {
+      "sha256": "5077e7b282a3e465471e92b2cfb299a6eb76a8ac76619513ada964077dd76dba",
+      "mode": 384,
+      "sizeBytes": 50
+    },
+    "migrate-domain-authorities.py": {
+      "sha256": "baa2e07c75a11bae235779a1c5229dd8642f766e2becefab9ede729541fbc3c8",
+      "mode": 384,
+      "sizeBytes": 57
+    },
+    "platform-zero-worklane-idle-reaper.service": {
+      "sha256": "cae097f14d57c534ecf18367663bfe083809a91d5a93538fd2375a18fd3c3bdf",
+      "mode": 384,
+      "sizeBytes": 70
+    },
+    "platform-zero.nft": {
+      "sha256": "8bee4ff2de8d9e8be542120e78e0fea1b7da2a9c4e4ca023ab0779aa425c0c4b",
+      "mode": 384,
+      "sizeBytes": 45
+    },
+    "start-worklane-containers.py": {
+      "sha256": "bebbc440cf70ae4e11cc0d74a4cb8fbf655dd286a08120974f6bf559a8fa075f",
+      "mode": 384,
+      "sizeBytes": 56
+    },
+    "provision-domain-accounts.sh": {
+      "sha256": "d315ab83fa1732239d28ccd040fd60dd72c28e46822007fa76d2f9315145ba8a",
+      "mode": 384,
+      "sizeBytes": 56
+    },
+    "platform-zero-worklane-idle-reaper.timer": {
+      "sha256": "96bc8e3a86e7fc0f0bd2cd547c7b88ce35b999c04ac4d53b0a374a4ee700ea6b",
+      "mode": 384,
+      "sizeBytes": 68
+    },
+    "retire-legacy-webservices-account.sh": {
+      "sha256": "7cd3127966a1219bdb75ef38f591a0d6dd35701dcdb4573580171211fc202d45",
+      "mode": 384,
+      "sizeBytes": 64
+    }
+  }
+}

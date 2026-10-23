@@ -53,7 +53,10 @@ ssh user@host 'cd ~/webservices && ./deploy.sh'
 ssh user@host 'cd ~/webservices && ./verify.sh'
 ```
 
-Host reset tools stay under `ops/host-admin/`. Destructive helpers such as
+Host reset tools stay under `ops/host-admin/`. The explicit never-activated
+venue policy/lease APIs and their separate private authority contract are described
+in [Inert venue control retirement](inert-venue-control-retirement.md); they are
+not deployment hooks or general purge authority. Destructive helpers such as
 `purge-webservices-stack.sh` are not part of the normal deploy UX. Use
 `--print-only` before a purge and use `--skip-labware-runtime` only when keeping
 workspace runtime data is intentional.
