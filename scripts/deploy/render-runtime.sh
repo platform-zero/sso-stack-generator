@@ -130,6 +130,18 @@ build_derived_render_values
 prepare_host_runtime_dirs
 prepare_runtime_dir "$runtime_root"
 render_config_tree "$BUNDLE_ROOT/stack.config" "$runtime_configs_dir"
+# Initial credentials stay in the private native import, never process arguments
+# or keycloak-configure's environment. Existing/production accounts are not
+# created or overwritten; fresh synthetic mode is an explicit, bound choice.
+owner_mode="$(render_get KEYCLOAK_OWNER_PROVISIONING_MODE)"
+owner_mode="${owner_mode:-existing}"
+if [ -f "$runtime_configs_dir/keycloak/realm/webservices-realm.json" ] || [ "$owner_mode" != existing ]; then
+  printf '%s\0' "$owner_mode" "$(render_get KEYCLOAK_OWNER_SUBJECT)" \
+    "$(render_get KEYCLOAK_OWNER_USERNAME)" "$(render_get KEYCLOAK_OWNER_EMAIL)" \
+    "$(render_get KEYCLOAK_OWNER_INITIAL_PASSWORD)" "$(render_get FIREFLY_OWNER_SUBJECT)" |
+    python3 -B "$BUNDLE_ROOT/ops/prepare-owner-import.py" --bundle "$BUNDLE_ROOT" \
+      --runtime-configs "$runtime_configs_dir" >/dev/null
+fi
 if [ -n "$(render_get CADDY_VENUE_HTTPS_PORT)" ]; then
   python3 -B "$BUNDLE_ROOT/ops/bind-caddy-venue-guest.py" \
     --bundle "$BUNDLE_ROOT" --caddyfile "$runtime_configs_dir/caddy/Caddyfile" >/dev/null
