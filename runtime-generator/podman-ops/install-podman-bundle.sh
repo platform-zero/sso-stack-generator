@@ -83,6 +83,8 @@ jq -e '.backend == "podman"' "$BUNDLE/bundle.json" >/dev/null
 DOMAINS_FILE="$BUNDLE/podman-domains.json"
 [ -f "$DOMAINS_FILE" ] || { printf 'Podman bundle is missing podman-domains.json\n' >&2; exit 1; }
 jq -e '.schemaVersion == 1 and (.domains | type == "array" and length > 0)' "$DOMAINS_FILE" >/dev/null
+STANDALONE=false
+if [ "$(jq -r '.deploymentMode // ""' "$DOMAINS_FILE")" = standalone ]; then STANDALONE=true; fi
 # The legacy installer has no venue role/account/image/graph lifecycle.
 # Refuse before SOPS rendering or modifying even the candidate bundle;
 # the later duplicate gate is deliberate defense in depth.
@@ -397,6 +399,9 @@ if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mo
     raise SystemExit('[podman-install] unsafe host control runtime directory')
 PY
 fi
+if [ "$ACTIVATE" = true ] && [ "$STANDALONE" = true ]; then
+  python3 "$BUNDLE/ops/grant-rootless-volume-parent-traverse.py" --bundle "$BUNDLE" --validate-scope
+fi
 printf '[podman-install] preflight passed\n'
 
 [ "$ACTIVATE" = true ] || {
@@ -438,6 +443,9 @@ journal() {
   python3 "$JOURNAL_TOOL" --root "$STATE_ROOT" --bundle "$BUNDLE" --release "$release" --phase "$1" --expected "$RESUME_INTENT"
 }
 journal preparing
+if [ "$STANDALONE" = true ]; then
+  python3 "$BUNDLE/ops/grant-rootless-volume-parent-traverse.py" --bundle "$BUNDLE" --prepare-scope
+fi
 
 declare -a ROOTLESS_RELEASES=()
 declare -a ROOTLESS_PREVIOUS=()
@@ -490,13 +498,16 @@ ensure_rootless_domain() {
   ROOTLESS_ENV_STORES[$index]="$env_store"
   ROOTLESS_QUADLET_DIRS[$index]="$quadlet_dir"
   ROOTLESS_SYSTEMD_DIRS[$index]="$systemd_dir"
-  install -d -m 0711 -o root -g root /mnt/stack/podman
-  case "$(dirname "$graph_root")" in
-    /mnt/stack/podman/*) install -d -m 0710 -o root -g "$user" "$(dirname "$graph_root")" ;;
-  esac
+  if [ "$STANDALONE" = false ]; then
+    install -d -m 0711 -o root -g root /mnt/stack/podman
+    case "$(dirname "$graph_root")" in
+      /mnt/stack/podman/*) install -d -m 0710 -o root -g "$user" "$(dirname "$graph_root")" ;;
+    esac
+  fi
   mkdir -p "${ROOTLESS_RELEASES[$index]}" "$state_root/releases" "$graph_root" "$volume_root" "$runtime" "$env_store" "$quadlet_dir" "$systemd_dir" "$home/.config/containers"
-  python3 "$BUNDLE/ops/grant-rootless-volume-parent-traverse.py" \
-    --domain "${ROOTLESS_DOMAIN_NAMES[$index]}" --user "$user" --volume-root "$volume_root"
+  local traverse_args=(--domain "${ROOTLESS_DOMAIN_NAMES[$index]}" --user "$user" --volume-root "$volume_root")
+  if [ "$STANDALONE" = true ]; then traverse_args+=(--bundle "$BUNDLE"); fi
+  python3 "$BUNDLE/ops/grant-rootless-volume-parent-traverse.py" "${traverse_args[@]}"
   if command -v setfacl >/dev/null 2>&1; then
     setfacl -b -k "$graph_root" "$volume_root"
   fi
@@ -506,6 +517,9 @@ ensure_rootless_domain() {
   # layer roots into mode 2550 and prevents non-root container users from
   # traversing their own root filesystem.
   chmod 0700 "$graph_root"
+  if [ "$STANDALONE" = true ]; then
+    chmod 0700 "$state_root" "$state_root/releases" "$volume_root" "$runtime"
+  fi
   find "$graph_root" -mindepth 1 -maxdepth 1 -type d -perm -2000 -exec chmod g-s {} +
   if [ -d "$graph_root/overlay" ]; then
     find "$graph_root/overlay" -mindepth 1 -maxdepth 1 -type d -exec chmod 0700 {} +
@@ -734,10 +748,18 @@ if [ -f "$ENV_DIR/forgejo-runner.env" ]; then
   forgejo_runner_ssh_dir="$(sed -n 's/^FORGEJO_RUNNER_SSH_DIR=//p' "$ENV_DIR/forgejo-runner.env" | tail -n 1)"
 fi
 if [ -n "$forgejo_runner_ssh_dir" ]; then
-  forgejo_index="$(domain_index_by_name forgejo-runner)"
+  forgejo_domain="$(jq -er '.services["forgejo-runner"].rootlessDomain' "$BUNDLE/stack.ir.json")"
+  forgejo_index="$(domain_index_by_name "$forgejo_domain")"
   forgejo_user="${ROOTLESS_DOMAIN_USERS[$forgejo_index]}"
-  install -d -m 0700 -o "$forgejo_user" -g "$forgejo_user" "$forgejo_runner_ssh_dir"
-  chown -R "$forgejo_user:$forgejo_user" "$forgejo_runner_ssh_dir"
+  if [ "$STANDALONE" = true ]; then
+    [ "$forgejo_runner_ssh_dir" = "${ROOTLESS_DOMAIN_STATE_ROOTS[$forgejo_index]}/forgejo-runner-ssh" ] || {
+      printf '[podman-install] CI SSH authority escapes selected domain state\n' >&2; exit 1;
+    }
+    python3 "$BUNDLE/ops/grant-rootless-volume-parent-traverse.py" --bundle "$BUNDLE" --prepare-ci-ssh
+  else
+    install -d -m 0700 -o "$forgejo_user" -g "$forgejo_user" "$forgejo_runner_ssh_dir"
+    chown -R "$forgejo_user:$forgejo_user" "$forgejo_runner_ssh_dir"
+  fi
 fi
 
 jq -r '.volumes | to_entries[] | [.key, (.value.hostPath // "")] | @tsv' "$BUNDLE/stack.ir.json" | while IFS="$(printf '\t')" read -r name path; do

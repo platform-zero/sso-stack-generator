@@ -54,6 +54,14 @@ def verify(bundle, control=None):
                 or metadata.get('sourceProvenanceSha256') != hashlib.sha256(provenance_bytes).hexdigest()
                 or metadata.get('irSha256') != hashlib.sha256(ir_bytes).hexdigest()):
             raise ValueError('Standalone host provenance/profile binding mismatch')
+        scope = manifest.get('storageScope')
+        if (not isinstance(scope, dict) or set(scope) != {'root', 'dataClass'}
+                or scope.get('dataClass') not in ('synthetic', 'production')
+                or not isinstance(scope.get('root'), str)
+                or not re.fullmatch(r'/[A-Za-z0-9_./-]+', scope['root'])
+                or scope['root'] == '/' or '..' in Path(scope['root']).parts
+                or str(Path(scope['root'])) != scope['root'] or domains.get('storageScope') != scope):
+            raise ValueError('Standalone storage scope binding mismatch')
         for service in ir.get('services', {}).values():
             for mount in service.get('volumes', []):
                 source = mount.split(':', 1)[0] if isinstance(mount, str) else mount.get('source', '')

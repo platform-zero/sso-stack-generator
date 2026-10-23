@@ -17,11 +17,14 @@ with tempfile.TemporaryDirectory()as d:
     shared=parent/'rootless';shared.mkdir(mode=0o700)
     for n in ('platform','apps'):(shared/n).mkdir(mode=0o700)
     with patch.object(mod,'ROOTLESS_PARENT',shared):
+        # Authored group read exists but is masked off; a new UID must not unmask it.
+        subprocess.run(['setfacl','-m','g::r-x,m::--x',str(shared)],check=True)
         before=mod.entries(shared)
         assert mod.grant('platform','webservices-platform',shared/'platform') is True
         assert mod.grant('platform','webservices-platform',shared/'platform') is False
         after=mod.entries(shared)
         assert after.get(('user','webservices-platform'))=='--x'
+        assert after.get(('mask',''))=='--x'
         assert all(after.get(k)==v for k,v in before.items()if k!=('mask',''))
         assert shared.stat().st_mode&0o007==0
         subprocess.run(['setfacl','-m','u:webservices-apps:r--',str(shared)],check=True)

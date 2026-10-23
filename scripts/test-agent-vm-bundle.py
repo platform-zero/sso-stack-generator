@@ -123,12 +123,14 @@ class StandaloneBundle(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         (self.root / 'site').mkdir()
-        self.manifest = {'schemaVersion': 2, 'site': 'latium', 'deploymentMode': 'standalone'}
+        self.manifest = {'schemaVersion': 2, 'site': 'latium', 'deploymentMode': 'standalone',
+                         'storageScope': {'root': '/tmp/standalone-volumes', 'dataClass': 'synthetic'}}
         self.log_root = '/tmp/standalone-volumes/_logs/caddy'
         self.ir = {'services': {'caddy': {'volumes': ['./configs:/etc/caddy:ro', self.log_root + ':/var/log/caddy']}},
                    'volumes': {'caddy_ca': {'hostPath': '/tmp/standalone-volumes/caddy_ca'}}}
         self.domains = {'schemaVersion': 1, 'deploymentMode': 'standalone',
-                        'caddyLogRoot': self.log_root, 'domains': [{'uid': 42}]}
+                        'caddyLogRoot': self.log_root, 'domains': [{'uid': 42}],
+                        'storageScope': self.manifest['storageScope']}
         self.seal()
 
     def save(self, path, value):
@@ -181,6 +183,13 @@ class StandaloneBundle(unittest.TestCase):
         self.domains['caddyLogRoot'] = self.log_root
         self.ir['services']['crowdsec'] = {'volumes': ['/var/log/webservices/caddy:/logs:ro']}; self.seal()
         with self.assertRaisesRegex(ValueError, 'old host logs'): module.verify(self.root)
+
+    def test_missing_or_foreign_storage_scope_refused(self):
+        self.domains.pop('storageScope'); self.seal()
+        with self.assertRaisesRegex(ValueError, 'storage scope'): module.verify(self.root)
+        self.manifest['storageScope'] = {'root': '/', 'dataClass': 'synthetic'}
+        self.domains['storageScope'] = self.manifest['storageScope']; self.seal()
+        with self.assertRaisesRegex(ValueError, 'storage scope'): module.verify(self.root)
 
     def test_foreign_journal_uid_scope_refused(self):
         self.ir['services']['alloy'] = {'environment': {'STACK_LOG_UID_REGEX': '0|42'}}; self.seal()

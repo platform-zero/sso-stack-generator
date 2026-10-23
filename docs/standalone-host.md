@@ -6,6 +6,29 @@ flag. The mode is part of the hashed site manifest and generated bundle metadata
 Omitting the field preserves the existing managed-site contract, including its
 Latium agent-VM validation and control-checkout requirement. Unknown modes fail.
 
+Standalone manifests also declare, for example:
+
+```json
+"storageScope": {"root": "/mnt/stack/example-stack", "dataClass": "production"}
+```
+
+Use `synthetic` only for deliberately disposable fixture data. All private domain
+state/image/volume roots and named application data stay inside this canonical
+scope. The installer claims only an empty directory tree, never nonempty unclaimed
+data or retained service accounts. A root-owned, atomically published ownership
+marker binds the site, identities and private roots for subsequent operations.
+Existing marker identity/path drift is refused; there is no broad adoption flag.
+
+Execute-only per-domain ACLs cover selected state, graph and volume ancestry,
+never an operator's private home or another parent above the scope. Authored ACLs
+and their masks are preserved rather than unmasked by `setfacl`. Private leaves
+remain mode 0700. Standalone preparation does not chmod/re-own the legacy shared
+Podman cache parent. CI SSH setup uses its actual IR domain and can claim only a
+new/empty fixture directory, not foreign existing keys or a linked path.
+
+The storage marker is not a backup, a production-data recovery approval or an
+application/recovery acceptance result. Those lifecycle gates remain separate.
+
 A standalone site:
 
 - uses the ordinary `webservices` unit namespace, not the isolated venue profile;

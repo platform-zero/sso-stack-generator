@@ -1171,6 +1171,12 @@ fun standaloneHost(manifest: JsonNode): Boolean {
     if (mode.isMissingNode) return false // Preserve the existing managed contract.
     if (!mode.isTextual || mode.asText() != "standalone") fail("unknown deploymentMode")
     if (manifest.has("agentVmSpec")) fail("standalone deployment cannot manage an agent VM")
+    val scope = manifest.path("storageScope")
+    val root = scope.path("root").asText()
+    if (!scope.isObject || scope.fieldNames().asSequence().toSet() != setOf("root", "dataClass") ||
+        scope.path("dataClass").asText() !in setOf("synthetic", "production") ||
+        !root.matches(Regex("/[A-Za-z0-9_./-]+")) || root == "/" || Path(root).normalize().toString() != root)
+        fail("standalone deployment requires an explicit canonical storageScope and dataClass")
     return true
 }
 
@@ -1180,6 +1186,13 @@ fun standaloneCaddyLogRoot(): String =
 fun applyStandaloneHostProfile(ir: ObjectNode, manifest: JsonNode) {
     if (!standaloneHost(manifest)) return
     if (activePodmanPolicy.unitPrefix != "webservices") fail("standalone deployment requires the ordinary native host profile")
+    val scopeRoot = Path(manifest.path("storageScope").path("root").asText())
+    fun requireScoped(root: String) {
+        val path = Path(root).normalize()
+        if (!path.startsWith(scopeRoot) || path == scopeRoot) fail("standalone private storage escapes its declared scope")
+    }
+    activePodmanPolicy.domains.forEach { listOf(it.stateRoot, it.graphRoot, it.volumeRoot).forEach(::requireScoped) }
+    ir.path("volumes").fieldsMap().forEach { (_, volume) -> volume.path("hostPath").textOrNull()?.let(::requireScoped) }
     ir.path("services").fieldsMap().forEach { (name, raw) ->
         val service = raw as ObjectNode
         if (name == "alloy") {
@@ -2303,6 +2316,7 @@ fun writeDomainMetadata(ir: ObjectNode, modules: List<ModuleCheckout>, manifestP
     if (standaloneHost(readTree(manifestPath))) {
         domainMetadata.put("deploymentMode", "standalone")
         domainMetadata.put("caddyLogRoot", standaloneCaddyLogRoot())
+        domainMetadata.set<JsonNode>("storageScope", readTree(manifestPath).path("storageScope").deepCopy<JsonNode>())
     }
     writeJson(output.resolve("podman-domains.json"), domainMetadata)
 
