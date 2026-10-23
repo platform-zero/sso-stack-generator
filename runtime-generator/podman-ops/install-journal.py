@@ -17,6 +17,7 @@ import stat
 import tempfile
 import time
 import re
+import sys
 
 PHASES = ('preparing', 'units-selected', 'building', 'starting', 'active', 'failed', 'retired-failed')
 CORE_INPUTS = ('bundle.json', 'stack.ir.json', 'source-provenance.json')
@@ -86,6 +87,32 @@ def fingerprint(bundle, names=None):
     return result
 
 
+def standalone_profile(bundle):
+    # Either canonical declaration selects the stronger host admission path;
+    # removing one declaration must not silently select legacy admission.
+    selected = False
+    for name in ('site/manifest.json', 'podman-domains.json'):
+        path = bundle / name
+        if path.exists() or path.is_symlink():
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError('Unsafe installation profile input')
+            value = json.loads(path.read_text())
+            if not isinstance(value, dict):
+                raise ValueError('Invalid installation profile input')
+            selected = selected or value.get('deploymentMode') == 'standalone'
+    return selected
+
+
+def readiness_owner():
+    source = Path(__file__).with_name('native-readiness-owner.py')
+    spec = importlib.util.spec_from_file_location('native_journal_readiness_owner', source)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def update(root, bundle, release, phase, expected=''):
     directory(root)
     if not root.is_absolute() or release.parent != root / 'releases':
@@ -132,6 +159,19 @@ def update(root, bundle, release, phase, expected=''):
         if phase != 'failed' and PHASES.index(phase) != PHASES.index(old['phase']) + 1:
             raise ValueError('Installation phase ordering mismatch')
         value = dict(old, phase=phase, steps=old['steps'] + [phase])
+        if standalone_profile(bundle) and phase in ('units-selected', 'starting', 'active'):
+            owner = readiness_owner()
+            if phase == 'units-selected':
+                # Caddy bootstrap can execute required volume-init before the
+                # final target transaction. Its attempt timestamp starts here.
+                value['readiness'] = owner.seal_selection(root, release, old)
+            elif phase == 'starting':
+                value['readiness'] = owner.capture_images(root, release, old)
+            else:
+                # This is synchronous canonical admission, not an externally
+                # supplied token or a target-active assertion. Refusal writes
+                # no active receipt/intent and leaves failed/pending evidence.
+                value['nativeReadiness'] = owner.verify_active_transition(root, release, old)
     release.mkdir(mode=0o755, parents=True, exist_ok=True)
     directory(release)
     # Preserve each immutable release's own compact receipt, not an experiment backup.

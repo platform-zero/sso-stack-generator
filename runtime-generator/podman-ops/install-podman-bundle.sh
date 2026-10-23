@@ -92,6 +92,10 @@ jq -e '.schemaVersion == 1 and (.domains | type == "array" and length > 0)' "$DO
 STANDALONE=false
 if [ "$(jq -r '.deploymentMode // ""' "$DOMAINS_FILE")" = standalone ]; then
   STANDALONE=true
+  if [ "$ACTIVATION_ROLLBACK" != 0 ]; then
+    printf '[podman-install] standalone predecessor restart requires explicit compatible-data recovery, not an environment override\n' >&2
+    exit 1
+  fi
   bound_state_root="$(jq -r '.installerStateRoot // "/var/lib/webservices"' "$DOMAINS_FILE")"
   if [ -n "${WEBSERVICES_STATE_ROOT+x}" ] && [ "$STATE_ROOT" != "$bound_state_root" ]; then
     printf '[podman-install] state root override differs from generated runtime authority\n' >&2; exit 1
@@ -424,16 +428,26 @@ printf '[podman-install] preflight passed\n'
 [ "$(id -u)" -eq 0 ] || { printf -- '--activate requires root\n' >&2; exit 1; }
 
 # Serialize the complete privileged install, not just individual image imports.
-python3 - "$STATE_ROOT" <<'PY'
+python3 - "$STATE_ROOT" "$STANDALONE" <<'PY'
 import os
 from pathlib import Path
 import stat
 import sys
 root = Path(sys.argv[1])
-root.mkdir(mode=0o755, parents=True, exist_ok=True)
+private_host = sys.argv[2] == 'true'
+root.mkdir(mode=0o700 if private_host else 0o755, parents=True, exist_ok=True)
 info = root.lstat()
 if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
     raise SystemExit('[podman-install] unsafe installation state root')
+if private_host:
+    directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        observed = os.fstat(directory_fd)
+        if (observed.st_dev, observed.st_ino, observed.st_uid, observed.st_mode) != (info.st_dev, info.st_ino, info.st_uid, info.st_mode):
+            raise SystemExit('[podman-install] changed installation state root')
+        os.fchmod(directory_fd, 0o700)
+    finally:
+        os.close(directory_fd)
 fd = os.open(root / '.install.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
 try:
     info = os.fstat(fd)
@@ -453,7 +467,7 @@ if [ -z "$RESUME_INTENT" ] && { [ -e "$release" ] || [ -L "$release" ]; }; then
 fi
 previous="$(readlink -f "$STATE_ROOT/current" 2>/dev/null || true)"
 journal() {
-  python3 "$JOURNAL_TOOL" --root "$STATE_ROOT" --bundle "$BUNDLE" --release "$release" --phase "$1" --expected "$RESUME_INTENT"
+  python3 -B "$JOURNAL_TOOL" --root "$STATE_ROOT" --bundle "$BUNDLE" --release "$release" --phase "$1" --expected "$RESUME_INTENT"
 }
 journal preparing
 preparation_failure() {
@@ -534,9 +548,6 @@ ensure_rootless_domain() {
     esac
   fi
   mkdir -p "${ROOTLESS_RELEASES[$index]}" "$state_root/releases" "$graph_root" "$volume_root" "$runtime" "$env_store" "$quadlet_dir" "$systemd_dir" "$home/.config/containers"
-  local traverse_args=(--domain "${ROOTLESS_DOMAIN_NAMES[$index]}" --user "$user" --volume-root "$volume_root")
-  if [ "$STANDALONE" = true ]; then traverse_args+=(--bundle "$BUNDLE"); fi
-  python3 "$BUNDLE/ops/grant-rootless-volume-parent-traverse.py" "${traverse_args[@]}"
   if command -v setfacl >/dev/null 2>&1; then
     setfacl -b -k "$graph_root" "$volume_root"
   fi
@@ -549,6 +560,12 @@ ensure_rootless_domain() {
   if [ "$STANDALONE" = true ]; then
     chmod 0700 "$state_root" "$state_root/releases" "$volume_root" "$runtime"
   fi
+  # The namespace-root proof requires an already private, correctly owned
+  # graph leaf. Fresh mkdir creates root-owned leaves; do not validate/grant
+  # their ancestry until the exact selected actor handoff above is complete.
+  local traverse_args=(--domain "${ROOTLESS_DOMAIN_NAMES[$index]}" --user "$user" --volume-root "$volume_root")
+  if [ "$STANDALONE" = true ]; then traverse_args+=(--bundle "$BUNDLE"); fi
+  python3 "$BUNDLE/ops/grant-rootless-volume-parent-traverse.py" "${traverse_args[@]}"
   find "$graph_root" -mindepth 1 -maxdepth 1 -type d -perm -2000 -exec chmod g-s {} +
   if [ -d "$graph_root/overlay" ]; then
     find "$graph_root/overlay" -mindepth 1 -maxdepth 1 -type d -exec chmod 0700 {} +
@@ -1237,6 +1254,9 @@ wait_for_cross_domain_producers() {
 }
 
 retry_failed_rootless_services() {
+  # Never replay an identity/bootstrap/migration failure, or reset evidence
+  # across a manager-wide prefix, in the marker-bound host product.
+  if [ "$STANDALONE" = true ]; then return 0; fi
   local attempt i unit retried quiet_passes=0
   for attempt in $(seq 1 12); do
     retried=0
@@ -1350,7 +1370,15 @@ done
 # operator-owned generation workspace. Preserve the root-owner image gate.
 python3 "$release/ops/install-pinned-images.py" --bundle "$release" --prepare-registry
 journal starting
-systemctl enable --now webservices-auto-update.timer
+if [ "$STANDALONE" = true ]; then
+  # Reviewed immutable upgrades use the serialized native operation owner.
+  # A persistent catch-up timer must not race a pending installation, nor run
+  # the legacy unscoped rollback updater after host admission.
+  systemctl disable --now webservices-auto-update.timer
+  systemctl stop webservices-auto-update.service
+else
+  systemctl enable --now webservices-auto-update.timer
+fi
 # Launch both sides before readiness waits: selected rootless producers can
 # require rootful databases/mail, and rootful consumers require rootless peers.
 # Preparation remains serial; starting only one authority graph deadlocks a
