@@ -89,7 +89,9 @@ def inventory(bundle):
         details.append({'name': name, 'module': service.get('module'),
                         'lifecycle': service.get('lifecycle', 'daemon'),
                         'placement': service.get('placement'), 'domain': service.get('rootlessDomain'),
-                        'sourceBuild': bool(service.get('build')), 'namedDataVolumes': sorted(set(persistent)),
+                        'sourceBuild': bool(service.get('build')),
+                        'emittedBuildProducer': bool(service.get('build')) and (manifest.get('deploymentMode') == 'standalone' or service.get('lifecycle') != 'on-demand' or service.get('quadletManaged') is True),
+                        'namedDataVolumes': sorted(set(persistent)),
                         'otherMountSources': sorted(set(binds))})
     warnings = []
     if 'venue' in domains:
@@ -119,7 +121,7 @@ def markdown_inventory(value):
     lines=['# Selected stack composition inventory','',
            '**Generated/source classification only; not application, SSO or recovery acceptance.**','',
            f"Site: `{value['site']}`; mode: `{value['deploymentMode']}`; modules: {len(value['modules'])}; services: {len(rows)}; domains: {len(value['domains'])}.",
-           f"Requested groups: {len(value['components'])}; source image producers: {sum(r['sourceBuild'] for r in rows)}.",'',
+           f"Requested groups: {len(value['components'])}; image recipes: {sum(r['sourceBuild'] for r in rows)}; emitted build producers: {sum(r['emittedBuildProducer'] for r in rows)}.",'',
            'Lifecycle counts: '+', '.join(f'{k}: {v}' for k,v in value['lifecycleCounts'].items())+'.','',
            '## Selected services','',
            '| Service | Owning module | Actor/domain | Lifecycle | Source build | Named data volumes | Other mount sources |',

@@ -2203,7 +2203,7 @@ fun renderPodman(ir: ObjectNode, output: Path) {
         ir.path("services").fieldsMap()
             .filter { (_, service) ->
                 podmanDomainForService(service).name == domain.name &&
-                    quadletManaged(service)
+                    (quadletManaged(service) || (activePodmanPolicy.standalone && service.has("build")))
             }
             .forEach { (name, service) -> renderQuadletService(name, service as ObjectNode, ir, output, domain, loopbacks) }
         listOf("core", "apps", "observability").forEach { target ->
