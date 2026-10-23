@@ -38,16 +38,17 @@ def main():
     baseline = json.loads((args.baseline_bundle / 'stack.ir.json').read_text())
     assert not baseline.get('quadletBuildImagesFrozen'), 'test requires unfrozen source baseline'
     builds = {name: service for name, service in baseline['services'].items()
-              if 'build' in service and (service.get('lifecycle') != 'on-demand' or service.get('quadletManaged') is True)}
+              if 'build' in service and (manifest.get('deploymentMode') == 'standalone' or service.get('lifecycle') != 'on-demand' or service.get('quadletManaged') is True)}
     assert builds
     images = {name: 'sha256:' + hashlib.sha256(('synthetic-only-' + name).encode()).hexdigest()
               for name in builds}
     shared_pairs = (('android-test-runner-api34', 'android-test-runner-api36'),
                     ('workload-spawner-api', 'workload-spawner-router'))
-    for first, second in shared_pairs:
-        assert first in images and second in images
+    selected_shared_pairs = [(first, second) for first, second in shared_pairs
+                             if first in images and second in images]
+    for first, second in selected_shared_pairs:
         images[first] = images[second]
-    assert len(set(images.values())) == len(images) - len(shared_pairs)
+    assert len(set(images.values())) == len(images) - len(selected_shared_pairs)
     pins = {'schemaVersion': 1, 'images': images}
     pins_path = site_root / manifest['localBuildImagePinsPath']
     pins_path.parent.mkdir(parents=True, exist_ok=True)

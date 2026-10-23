@@ -908,6 +908,9 @@ fun buildIr(manifestPath: Path, modulesDir: Path): Pair<ObjectNode, List<ModuleC
 fun quadletManaged(service: JsonNode): Boolean =
     service.path("lifecycle").asText() != "on-demand" || service.path("quadletManaged").asBoolean(false)
 
+fun quadletEmitted(service: JsonNode): Boolean =
+    quadletManaged(service) || (activePodmanPolicy.standalone && service.has("build"))
+
 fun freezeLocalBuildImages(ir: ObjectNode, manifestPath: Path) {
     val services = ir.path("services") as ObjectNode
     if (services.fieldsMap().any { (_, service) -> service.has("frozenBuildImage") })
@@ -926,7 +929,7 @@ fun freezeLocalBuildImages(ir: ObjectNode, manifestPath: Path) {
         !pins.path("schemaVersion").isInt || pins.path("schemaVersion").asInt() != 1 ||
         !pins.path("images").isObject)
         fail("invalid local build identity pins schema")
-    val builds = services.fieldsMap().filter { (_, service) -> service.has("build") && quadletManaged(service) }
+    val builds = services.fieldsMap().filter { (_, service) -> service.has("build") && quadletEmitted(service) }
         .map { it.first }.toSet()
     val images = pins.path("images").fieldsMap().associate { (name, value) ->
         if (!value.isTextual || !value.asText().matches(Regex("sha256:[0-9a-f]{64}")))
@@ -2288,7 +2291,7 @@ fun renderPodman(ir: ObjectNode, output: Path) {
         ir.path("services").fieldsMap()
             .filter { (_, service) ->
                 podmanDomainForService(service).name == domain.name &&
-                    (quadletManaged(service) || (activePodmanPolicy.standalone && service.has("build")))
+                    quadletEmitted(service)
             }
             .forEach { (name, service) -> renderQuadletService(name, service as ObjectNode, ir, output, domain, loopbacks) }
         listOf("core", "apps", "observability").forEach { target ->
