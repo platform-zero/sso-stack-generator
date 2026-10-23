@@ -70,7 +70,8 @@ fi
 # Read-only pin check before any activation preparation. This binds the stack
 # release to the site VM contract; host/guest roles still need their own CAS
 # selection and configuration via the reviewed control installer.
-if [ "$ACTIVATE" = true ] && [ "$(jq -r '.site' "$BUNDLE/site/manifest.json")" = latium ]; then
+if [ "$ACTIVATE" = true ] && [ "$(jq -r '.site' "$BUNDLE/site/manifest.json")" = latium ] &&
+    [ "$(jq -r '.deploymentMode // "managed"' "$BUNDLE/site/manifest.json")" != standalone ]; then
   [ -n "$CONTROL_CHECKOUT" ] || { printf 'Latium activation requires reviewed --control-checkout\n' >&2; exit 1; }
 fi
 agent_vm_check=(python3 "$BUNDLE/ops/verify-agent-vm-bundle.py" --bundle "$BUNDLE")

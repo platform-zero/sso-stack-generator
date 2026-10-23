@@ -117,4 +117,64 @@ class BundlePins(unittest.TestCase):
 
 
 
+class StandaloneBundle(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        (self.root / 'site').mkdir()
+        self.manifest = {'schemaVersion': 2, 'site': 'latium', 'deploymentMode': 'standalone'}
+        self.ir = {'services': {'caddy': {'volumes': ['./configs:/etc/caddy:ro']}}}
+        self.seal()
+
+    def save(self, path, value):
+        body = json.dumps(value).encode()
+        (self.root / path).write_bytes(body)
+        import hashlib
+        return hashlib.sha256(body).hexdigest()
+
+    def seal(self):
+        manifest_sha = self.save('site/manifest.json', self.manifest)
+        ir_sha = self.save('stack.ir.json', self.ir)
+        source_sha = self.save('source-provenance.json', {'manifestSha256': manifest_sha})
+        self.save('bundle.json', {'backend': 'podman', 'deploymentMode': 'standalone',
+                                 'irSha256': ir_sha, 'sourceProvenanceSha256': source_sha})
+        self.save('podman-domains.json', {'schemaVersion': 1, 'deploymentMode': 'standalone', 'domains': []})
+
+    def test_explicit_standalone_does_not_require_or_activate_guest_roles(self):
+        result = module.verify(self.root)
+        self.assertEqual(result['agentVm'], 'not-managed')
+        self.assertFalse(result['rolesActivated'])
+
+    def test_mode_tampering_refused(self):
+        self.save('site/manifest.json', {**self.manifest, 'components': ['other']})
+        with self.assertRaisesRegex(ValueError, 'binding'): module.verify(self.root)
+
+    def test_unknown_mode_refused(self):
+        self.manifest['deploymentMode'] = 'skip-checks'; self.seal()
+        with self.assertRaisesRegex(ValueError, 'Unknown'): module.verify(self.root)
+
+    def test_guest_spec_or_control_checkout_refused(self):
+        with self.assertRaisesRegex(ValueError, 'cannot manage'): module.verify(self.root, self.root)
+        self.manifest['agentVmSpec'] = 'agent-vm.json'; self.seal()
+        with self.assertRaisesRegex(ValueError, 'cannot manage'): module.verify(self.root)
+
+    def test_managed_role_artifacts_refused(self):
+        for name in ('site/agent-vm.json', 'site/agent-vm.provenance.json',
+                     'maintenance-workspaces.json', 'software-workspaces.json'):
+            p = self.root / name; p.write_text('{}')
+            with self.assertRaisesRegex(ValueError, 'role inputs'): module.verify(self.root)
+            p.unlink()
+
+    def test_venue_profile_cannot_be_relabelled_standalone(self):
+        self.save('podman-domains.json', {'deploymentMode': 'standalone', 'venue': {}, 'domains': []})
+        with self.assertRaisesRegex(ValueError, 'binding'): module.verify(self.root)
+
+    def test_control_socket_access_refused(self):
+        for mount in ('/run/p0-control:/run/p0-control:ro',
+                      {'source': '/run/p0-control/http.sock', 'target': '/control.sock'}):
+            self.ir['services']['caddy']['volumes'] = [mount]; self.seal()
+            with self.assertRaisesRegex(ValueError, 'control sockets'): module.verify(self.root)
+
+
 if __name__ == '__main__': unittest.main()

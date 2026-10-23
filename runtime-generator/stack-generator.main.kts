@@ -1164,13 +1164,59 @@ fun buildLocalArtifacts(output: Path) {
         }
 }
 
+fun standaloneHost(manifest: JsonNode): Boolean {
+    val mode = manifest.path("deploymentMode")
+    if (mode.isMissingNode) return false // Preserve the existing managed contract.
+    if (!mode.isTextual || mode.asText() != "standalone") fail("unknown deploymentMode")
+    if (manifest.has("agentVmSpec")) fail("standalone deployment cannot manage an agent VM")
+    return true
+}
+
+fun applyStandaloneHostProfile(ir: ObjectNode, manifest: JsonNode) {
+    if (!standaloneHost(manifest)) return
+    if (activePodmanPolicy.unitPrefix != "webservices") fail("standalone deployment requires the ordinary native host profile")
+    ir.path("services").fieldsMap().forEach { (name, raw) ->
+        val service = raw as ObjectNode
+        val volumes = service.path("volumes")
+        if (volumes.isArray) {
+            val retained = arr()
+            volumes.forEach { mount ->
+                val source = if (mount.isTextual) mount.asText().substringBefore(':') else mount.path("source").asText()
+                if (source == "/run/p0-control") {
+                    if (name != "caddy" || !mount.isTextual || mount.asText() != "/run/p0-control:/run/p0-control:ro")
+                        fail("unreviewed managed control mount in standalone profile")
+                } else retained.add(mount.deepCopy<JsonNode>())
+            }
+            service.set<ArrayNode>("volumes", retained)
+        }
+    }
+    // These applications remain selected and must be tested, not silently deferred.
+    ir.set<ArrayNode>("deferredCapabilities", arr())
+}
+
+fun materializeStandaloneHostInputs(manifest: JsonNode, output: Path) {
+    if (!standaloneHost(manifest)) return
+    val caddy = output.resolve("stack.config/caddy/Caddyfile")
+    if (!caddy.isRegularFile() || caddy.isSymbolicLink()) fail("standalone Caddy source missing")
+    val start = "# webservices-component-start caddy"
+    val end = "# webservices-component-end caddy"
+    val source = caddy.readText()
+    if (source.split(start).size != 2 || source.split(end).size != 2) fail("ambiguous managed-control Caddy block")
+    val before = source.substringBefore(start)
+    val managed = source.substringAfter(start).substringBefore(end)
+    if (!managed.contains("unix//run/p0-control/http.sock") || !managed.contains("control.{"))
+        fail("unreviewed managed-control Caddy source")
+    // This marked source block contains only the managed control and agent API routes.
+    caddy.writeText(before + source.substringAfter(end))
+}
+
 fun materializeSiteManifest(manifestPath: Path, output: Path) {
     nativeAcceptanceImagePins(manifestPath)
     val manifest = readTree(manifestPath)
     val siteDir = output.resolve("site")
     siteDir.createDirectories()
     manifestPath.copyTo(siteDir.resolve("manifest.json"), overwrite = true)
-    if (manifest.path("site").asText() == "latium" && manifest.path("agentVmSpec").asText() != "agent-vm.json")
+    if (!standaloneHost(manifest) && manifest.path("site").asText() == "latium" && manifest.path("agentVmSpec").asText() != "agent-vm.json")
         fail("Latium requires exact site-owned agent-vm.json")
     (listOf("stackConfig", "secretStore") + listOfNotNull(
         "imageIdentityPinsPath".takeIf { manifest.has(it) },
@@ -1185,7 +1231,7 @@ fun materializeSiteManifest(manifestPath: Path, output: Path) {
             fail("site manifest $key points to missing or linked file: $source")
         if (key == "buildBaseIdentityPinsPath" &&
             (relative != "global.settings/build-base-image-ids.json" ||
-             activePodmanPolicy.unitPrefix == "webservices"))
+             (activePodmanPolicy.unitPrefix == "webservices" && !standaloneHost(manifest))))
             fail("only isolated venue may select exact build-base identity pins")
         if (key == "agentVmSpec") {
             val vm = readTree(source)
@@ -2213,6 +2259,7 @@ fun writeDomainMetadata(ir: ObjectNode, modules: List<ModuleCheckout>, manifestP
         })
         domainMetadata.set<ObjectNode>("venue", venueMetadata)
     }
+    if (standaloneHost(readTree(manifestPath))) domainMetadata.put("deploymentMode", "standalone")
     writeJson(output.resolve("podman-domains.json"), domainMetadata)
 
     val dependencyRows = arr()
@@ -2239,6 +2286,8 @@ fun writeDomainMetadata(ir: ObjectNode, modules: List<ModuleCheckout>, manifestP
     }
     writeJson(output.resolve("podman-domain-dependencies.json"), obj().put("schemaVersion", 1).set<ArrayNode>("dependencies", dependencyRows))
 
+    // Host application installation must not prepare, dispatch or own lane workspaces.
+    if (standaloneHost(readTree(manifestPath))) return
     val generatorRoot = Path(System.getenv("STACK_GENERATOR_ROOT") ?: fail("STACK_GENERATOR_ROOT is not set"))
     val siteMetadata = manifestPath.parent.resolve(".webservices-generator.json").takeIf(Path::isRegularFile)?.let(::readTree)
     val siteRow = findGitRoot(manifestPath)?.let { localRepositoryRow("site-config", it, false) }
@@ -2419,10 +2468,12 @@ fun commandGenerate(options: Map<String, String>) {
         applyResourceDefaults(ir, activePodmanPolicy)
         applyVenueBindPolicy(ir, activePodmanPolicy)
         applyCrossDomainEndpointPolicy(ir, activePodmanPolicy)
+        applyStandaloneHostProfile(ir, readTree(manifest))
         freezeLocalBuildImages(ir, manifest)
         writeJson(staging.resolve("stack.ir.json"), ir)
         materializeSiteManifest(manifest, staging)
         materializeModules(modules, staging)
+        materializeStandaloneHostInputs(readTree(manifest), staging)
         materializeGradleBuildInputs(staging)
         // Optional cached inputs must never overwrite artifacts compiled from selected source.
         materializeGeneratedBuildArtifacts(modules, staging)
@@ -2437,6 +2488,7 @@ fun commandGenerate(options: Map<String, String>) {
         val metadata = obj()
         metadata.put("schemaVersion", 1)
         metadata.put("backend", backend)
+        if (standaloneHost(readTree(manifest))) metadata.put("deploymentMode", "standalone")
         metadata.put("irSha256", sha256(staging.resolve("stack.ir.json")))
         metadata.put("sourceProvenanceSha256", sha256(staging.resolve("source-provenance.json")))
         metadata.set<ArrayNode>("deferredCapabilities", ir.path("deferredCapabilities").deepCopy())

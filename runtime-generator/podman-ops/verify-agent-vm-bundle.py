@@ -13,7 +13,7 @@ import re
 import subprocess
 
 
-def strict(path, *, include_bytes=False):
+def strict(path, *, include_bytes=False, limit=65536):
     def pairs(rows):
         value = {}
         for key, item in rows:
@@ -21,10 +21,10 @@ def strict(path, *, include_bytes=False):
                 raise ValueError('Duplicate agent VM authority key')
             value[key] = item
         return value
-    if path.is_symlink() or not path.is_file() or path.stat().st_size > 65536:
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > limit:
         raise ValueError('Missing, linked or oversized agent VM input')
     body = path.read_bytes()
-    if len(body) > 65536:
+    if len(body) > limit:
         raise ValueError('Oversized agent VM input')
     decoded = json.loads(body, object_pairs_hook=pairs)
     return (decoded, body) if include_bytes else decoded
@@ -32,7 +32,35 @@ def strict(path, *, include_bytes=False):
 
 def verify(bundle, control=None):
     site = bundle / 'site'
-    manifest = strict(site / 'manifest.json')
+    manifest, manifest_bytes = strict(site / 'manifest.json', include_bytes=True)
+    mode = manifest.get('deploymentMode')
+    if mode is not None and mode != 'standalone':
+        raise ValueError('Unknown deployment mode')
+    if mode == 'standalone':
+        if control is not None or 'agentVmSpec' in manifest:
+            raise ValueError('Standalone host cannot manage control/guest roles')
+        for name in ('site/agent-vm.json', 'site/agent-vm.provenance.json',
+                     'maintenance-workspaces.json', 'software-workspaces.json'):
+            path = bundle / name
+            if path.exists() or path.is_symlink():
+                raise ValueError('Standalone host includes managed role inputs')
+        domains = strict(bundle / 'podman-domains.json')
+        metadata = strict(bundle / 'bundle.json')
+        provenance, provenance_bytes = strict(bundle / 'source-provenance.json', include_bytes=True)
+        ir, ir_bytes = strict(bundle / 'stack.ir.json', include_bytes=True, limit=8 * 1024 * 1024)
+        if (domains.get('deploymentMode') != 'standalone' or 'venue' in domains
+                or metadata.get('deploymentMode') != 'standalone' or metadata.get('backend') != 'podman'
+                or provenance.get('manifestSha256') != hashlib.sha256(manifest_bytes).hexdigest()
+                or metadata.get('sourceProvenanceSha256') != hashlib.sha256(provenance_bytes).hexdigest()
+                or metadata.get('irSha256') != hashlib.sha256(ir_bytes).hexdigest()):
+            raise ValueError('Standalone host provenance/profile binding mismatch')
+        for service in ir.get('services', {}).values():
+            for mount in service.get('volumes', []):
+                source = mount.split(':', 1)[0] if isinstance(mount, str) else mount.get('source', '')
+                if source == '/run/p0-control' or source.startswith('/run/p0-control/'):
+                    raise ValueError('Standalone host cannot mount managed control sockets')
+        return {'site': manifest.get('site'), 'agentVm': 'not-managed',
+                'deploymentMode': 'standalone', 'rolesActivated': False}
     if manifest.get('site') != 'latium':
         return {'site': manifest.get('site'), 'agentVm': 'not-applicable'}
     if manifest.get('agentVmSpec') != 'agent-vm.json':
