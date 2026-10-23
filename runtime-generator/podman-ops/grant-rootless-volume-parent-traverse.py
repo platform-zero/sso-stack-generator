@@ -19,30 +19,50 @@ ROOTLESS_PARENT = Path('/mnt/stack/rootless')
 MARKER = '.stack-installation.json'
 
 
-def entries(path):
-    result = subprocess.run(['getfacl', '-cp', '--', str(path)], capture_output=True,
-                            text=True, check=True, timeout=10)
+def entries(path, *, pass_fds=(), numeric=False):
+    result = subprocess.run(['getfacl', '-cp'] + (['-n'] if numeric else []) + ['--', str(path)], capture_output=True,
+                            text=True, check=True, timeout=10, pass_fds=pass_fds)
     return {tuple(line.split(':', 2)[:2]): line.split(':', 2)[2] for line in result.stdout.splitlines()
             if line.startswith(('user:', 'group:', 'mask:', 'other:')) and line.count(':') >= 2}
 
 
 def exact_execute(path, user):
-    before = entries(path)
+    # Anchor each component and the actual ACL target; neither an intermediate
+    # symlink nor a replaced final inode may redirect a privileged ACL grant.
+    expected = path.lstat()
+    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for component in path.parts[1:]:
+            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd); fd = child
+        actual = os.fstat(fd)
+        if (actual.st_dev, actual.st_ino, actual.st_uid, actual.st_gid, actual.st_mode) != (
+                expected.st_dev, expected.st_ino, expected.st_uid, expected.st_gid, expected.st_mode):
+            raise ValueError('Changed ACL target identity')
+        return exact_execute_fd(fd, user)
+    finally:
+        os.close(fd)
+
+
+def exact_execute_fd(fd, user):
+    path = Path('/proc/self/fd') / str(fd)
+    user = str(user) if str(user).isdigit() else str(pwd.getpwnam(user).pw_uid)
+    before = entries(path, pass_fds=(fd,), numeric=True)
+    mask = before.get(('mask', ''))
+    if mask is not None and 'x' not in mask:
+        raise ValueError('Existing ACL mask cannot be broadened implicitly')
     existing = before.get(('user', user))
     if existing is not None:
         if existing != '--x':
             raise ValueError('Authored user ACL cannot be replaced')
         return False
-    mask = before.get(('mask', ''))
-    if mask is not None and 'x' not in mask:
-        raise ValueError('Existing ACL mask cannot be broadened implicitly')
     if mask is None:
         old = before.get(('group', ''), '---')
         mask = ''.join(c if c in old or c == 'x' else '-' for c in 'rwx')
     # Do NOT let setfacl recalculate a mask and unmask authored group/user rights.
     subprocess.run(['setfacl', '--no-mask', '-m', 'u:' + user + ':--x,m::' + mask,
-                    '--', str(path)], check=True, timeout=10)
-    after = entries(path)
+                    '--', str(path)], check=True, timeout=10, pass_fds=(fd,))
+    after = entries(path, pass_fds=(fd,), numeric=True)
     if (after.get(('user', user)) != '--x' or after.get(('mask', '')) != mask
             or any(after.get(k) != v for k, v in before.items() if k != ('mask', ''))):
         raise ValueError('Unexpected ancestor ACL change')
@@ -214,6 +234,71 @@ def prepare_scope(bundle, *, dry_run=False):
     return True
 
 
+def namespace_root_id(user, *, files=('/etc/subuid', '/etc/subgid')):
+    """keep-id maps namespace UID/GID 0 to the actor's first subordinate ID.
+
+    This is NOT another service identity: only execute access to the selected
+    graph's unmapped, root/operator-owned ancestors is delegated to it.
+    """
+    ranges = []
+    for filename in files:
+        path = Path(filename); info = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or path.is_symlink() or info.st_uid != 0
+                or info.st_mode & 0o022 or info.st_nlink != 1 or info.st_size > 1024 * 1024):
+            raise ValueError('Unsafe subordinate identity authority')
+        matches = []; allocations = []
+        for line in path.read_text().splitlines():
+            if not line or line.startswith('#'): continue
+            parts = line.split(':')
+            if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
+                raise ValueError('Malformed subordinate identity authority')
+            start, count = int(parts[1]), int(parts[2])
+            if start <= 0 or count <= 0 or start + count > 2**32 - 1:
+                raise ValueError('Invalid subordinate identity interval')
+            allocations.append((parts[0], start, count))
+            if parts[0] == user: matches.append((start, count))
+        if len(matches) != 1 or matches[0][1] != 65536:
+            raise ValueError('Exact selected subordinate range required')
+        start, count = matches[0]
+        if any(owner != user and start < other + size and other < start + count
+               for owner, other, size in allocations):
+            raise ValueError('Selected subordinate interval overlaps another authority')
+        ranges.append(matches[0])
+    if ranges[0] != ranges[1]: raise ValueError('Subordinate UID/GID range disagreement')
+    start, count = ranges[0]
+    if any(start <= account.pw_uid < start + count for account in pwd.getpwall()) or any(
+            start <= group.gr_gid < start + count for group in grp.getgrall()):
+        raise ValueError('Selected subordinate interval overlaps a host identity')
+    return start
+
+
+def grant_namespace_graph_parents(bundle, scope, operator, row):
+    ir = json.loads((bundle / 'stack.ir.json').read_text())
+    if not any(s.get('rootlessDomain') == row['name'] and
+               isinstance(s.get('userns'), str) and s['userns'].split(':', 1)[0] == 'keep-id'
+               for s in ir.get('services', {}).values()):
+        return False
+    account = pwd.getpwnam(row['user']); subordinate = namespace_root_id(row['user'])
+    graph = Path(row['graphRoot']); info = graph.lstat()
+    if (graph.is_symlink() or not stat.S_ISDIR(info.st_mode) or
+            info.st_uid != row['uid'] or info.st_gid != account.pw_gid):
+        raise ValueError('Graph root must retain mapped actor ownership')
+    # A rootless namespace root can traverse actor-owned graph inodes. It cannot
+    # override DAC on the outer scope's UNMAPPED root/operator-owned inodes.
+    # Delegate only these exact graph ancestors, never graph contents, state,
+    # volumes, another domain's roots, read/write rights or above-scope paths.
+    parents = []
+    for parent in graph.parents:
+        if not parent.is_relative_to(scope): break
+        parents.append(parent)
+        if parent == scope: break
+    changed = False
+    for parent in reversed(parents):
+        safe_parent(parent, operator)
+        changed = exact_execute(parent, str(subordinate)) or changed
+    return changed
+
+
 def grant_standalone(bundle, domain, user, volume_root):
     scope, operator, expected = authority(bundle); marker(scope, expected)
     row = next((r for r in expected['domains'] if r['name'] == domain and r['user'] == user), None)
@@ -233,6 +318,7 @@ def grant_standalone(bundle, domain, user, volume_root):
         if parent.stat().st_uid == row['uid'] and parent.stat().st_mode & 0o100: continue
         safe_parent(parent, operator)
         changed = exact_execute(parent, user) or changed
+    changed = grant_namespace_graph_parents(bundle, scope, operator, row) or changed
     return changed
 
 
