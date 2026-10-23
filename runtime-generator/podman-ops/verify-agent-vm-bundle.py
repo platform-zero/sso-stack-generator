@@ -54,6 +54,11 @@ def verify(bundle, control=None):
                 or metadata.get('sourceProvenanceSha256') != hashlib.sha256(provenance_bytes).hexdigest()
                 or metadata.get('irSha256') != hashlib.sha256(ir_bytes).hexdigest()):
             raise ValueError('Standalone host provenance/profile binding mismatch')
+        state_root = manifest.get('installerStateRoot', '/var/lib/webservices')
+        if (not isinstance(state_root, str)
+                or not re.fullmatch(r'/var/lib/(?:webservices|stack-[a-z0-9-]{1,48})', state_root)
+                or domains.get('installerStateRoot', '/var/lib/webservices') != state_root):
+            raise ValueError('Standalone installer state root binding mismatch')
         scope = manifest.get('storageScope')
         if (not isinstance(scope, dict) or set(scope) != {'root', 'dataClass'}
                 or scope.get('dataClass') not in ('synthetic', 'production')
@@ -62,6 +67,9 @@ def verify(bundle, control=None):
                 or scope['root'] == '/' or '..' in Path(scope['root']).parts
                 or str(Path(scope['root'])) != scope['root'] or domains.get('storageScope') != scope):
             raise ValueError('Standalone storage scope binding mismatch')
+        if (Path(state_root).is_relative_to(scope['root'])
+                or Path(scope['root']).is_relative_to(state_root)):
+            raise ValueError('Installer metadata and application scope overlap')
         for service in ir.get('services', {}).values():
             for mount in service.get('volumes', []):
                 source = mount.split(':', 1)[0] if isinstance(mount, str) else mount.get('source', '')

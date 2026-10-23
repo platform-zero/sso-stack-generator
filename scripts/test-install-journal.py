@@ -106,6 +106,15 @@ class InstallationJournal(unittest.TestCase):
         journal.update(self.root,self.bundle,next_release,'preparing')
         self.assertEqual(journal.read(self.release/'installation-receipt.json')['phase'],'retired-failed')
 
+    def test_only_inactive_fragmentless_not_found_units_are_unconfigured(self):
+        from types import SimpleNamespace
+        absent='LoadState=not-found\nActiveState=inactive\nFragmentPath=\nUnitFileState=\n'
+        for result, expected in ((absent,True), (absent.replace('inactive','active'),False),
+                (absent.replace('FragmentPath=','FragmentPath=/foreign.service'),False),
+                ('',False), (absent.replace('not-found','loaded'),False)):
+            with patch.object(journal.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout=result)):
+                self.assertEqual(journal.unconfigured_unit(['systemctl'],'fixture.service'),expected)
+
     def test_unselected_stage_seal_refuses_links_before_any_owner_change(self):
         journal.update(self.root,self.bundle,self.release,'preparing'); self.copy_pins_to_release()
         import os

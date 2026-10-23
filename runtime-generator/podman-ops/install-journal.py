@@ -196,6 +196,16 @@ def selected_quarantine_plans(release):
     return plans
 
 
+def unconfigured_unit(command, unit):
+    result = subprocess.run(command + ['show', unit, '-p', 'LoadState', '-p', 'ActiveState',
+                            '-p', 'FragmentPath', '-p', 'UnitFileState'],
+                            capture_output=True, text=True, timeout=30)
+    props = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
+    return (result.returncode == 0 and props.get('LoadState') == 'not-found'
+            and props.get('ActiveState') == 'inactive' and props.get('FragmentPath') == ''
+            and props.get('UnitFileState') in ('', 'not-found'))
+
+
 def verify_quarantined(release):
     """Read actual selected managers; no service/volume mutation or trigger replay."""
     plans = selected_quarantine_plans(release)
@@ -216,7 +226,8 @@ def verify_quarantined(release):
             raise ValueError('Failed selection jobs remain; retirement refused')
     timer = subprocess.run(['systemctl', 'is-enabled', 'webservices-auto-update.timer'],
                            capture_output=True, text=True, timeout=10)
-    if timer.stdout.strip() not in ('disabled', 'masked'):
+    if (timer.stdout.strip() not in ('disabled', 'masked')
+            and not unconfigured_unit(['systemctl'], 'webservices-auto-update.timer')):
         raise ValueError('Failed selection timer not quarantined')
 
 
@@ -357,15 +368,18 @@ def quarantine_failed(root, expected, reviewed, verifier=verify_quarantined, wai
     os.chdir('/')
     # Disable boot/upgrade triggers before stopping. Never touch a unit that is
     # not named by this root-owned selected release (or its own target/timer).
-    timer = subprocess.run(['systemctl', 'disable', '--now', 'webservices-auto-update.timer'],
-                           capture_output=True, text=True, timeout=30)
-    failures = [] if timer.returncode == 0 else ['timer']
+    failures = []
+    if not unconfigured_unit(['systemctl'], 'webservices-auto-update.timer'):
+        timer = subprocess.run(['systemctl', 'disable', '--now', 'webservices-auto-update.timer'],
+                               capture_output=True, text=True, timeout=30)
+        if timer.returncode: failures.append('timer')
     for label, command, units in plans:
         disabled = subprocess.run(command + ['disable', 'webservices.target'],
                                   capture_output=True, text=True, timeout=30)
-        stopped = subprocess.run(command + ['--no-block', 'stop', *units],
-                                 capture_output=True, text=True, timeout=60)
-        if disabled.returncode or stopped.returncode:
+        loaded = [unit for unit in units if not unconfigured_unit(command, unit)]
+        stopped = (subprocess.run(command + ['--no-block', 'stop', *loaded],
+                                  capture_output=True, text=True, timeout=60) if loaded else None)
+        if disabled.returncode or (stopped is not None and stopped.returncode):
             failures.append(label)
     if failures:
         raise ValueError('Failed selected-unit quarantine incomplete; no automatic restart')

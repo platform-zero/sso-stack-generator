@@ -9,8 +9,17 @@ Latium agent-VM validation and control-checkout requirement. Unknown modes fail.
 Standalone manifests also declare, for example:
 
 ```json
+"installerStateRoot": "/var/lib/stack-example",
 "storageScope": {"root": "/mnt/stack/example-stack", "dataClass": "production"}
 ```
+
+`installerStateRoot` must match `podman.rootful_state_root` in site configuration.
+It binds generated rootful mount/environment paths as well as journal selection;
+a runtime environment override may not relocate only half of that authority.
+The default remains `/var/lib/webservices`; dedicated standalone metadata roots
+use `/var/lib/stack-*` and may not overlap application storage. Failed-selection
+quarantine skips an unconfigured unit only after native `not-found`, inactive,
+empty-fragment/unit-file-state evidence; unknown/active units still refuse it.
 
 Use `synthetic` only for deliberately disposable fixture data. All private domain
 state/image/volume roots and named application data stay inside this canonical

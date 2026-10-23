@@ -485,12 +485,20 @@ fun readPodmanPolicy(manifestPath: Path): PodmanPolicy {
         fail("podman.unit_prefix must be a dedicated p0test namespace")
     }
     val rootfulStateRoot = podman.path("rootful_state_root").asText("/var/lib/webservices")
-    if (rootfulStateRoot != "/var/lib/webservices" &&
-        !rootfulStateRoot.matches(Regex("/var/lib/p0test-[a-z0-9-]{1,24}"))) {
-        fail("podman.rootful_state_root must be a dedicated /var/lib/p0test namespace")
-    }
-    if ((unitPrefix == "webservices") != (rootfulStateRoot == "/var/lib/webservices")) {
-        fail("podman isolated unit and state roots must be selected together")
+    if (standaloneHost(manifest)) {
+        if (rootfulStateRoot != manifest.path("installerStateRoot").asText("/var/lib/webservices") ||
+            (rootfulStateRoot != "/var/lib/webservices" &&
+             !rootfulStateRoot.matches(Regex("/var/lib/stack-[a-z0-9-]{1,48}")))) {
+            fail("standalone installerStateRoot must bind a dedicated native metadata root")
+        }
+    } else {
+        if (rootfulStateRoot != "/var/lib/webservices" &&
+            !rootfulStateRoot.matches(Regex("/var/lib/p0test-[a-z0-9-]{1,24}"))) {
+            fail("podman.rootful_state_root must be a dedicated /var/lib/p0test namespace")
+        }
+        if ((unitPrefix == "webservices") != (rootfulStateRoot == "/var/lib/webservices")) {
+            fail("podman isolated unit and state roots must be selected together")
+        }
     }
     val rootfulGraphRoot = podman.path("rootful_graph_root").textOrNull()
     val rootfulRunRoot = podman.path("rootful_run_root").textOrNull()
@@ -2325,6 +2333,7 @@ fun writeDomainMetadata(ir: ObjectNode, modules: List<ModuleCheckout>, manifestP
     }
     if (standaloneHost(readTree(manifestPath))) {
         domainMetadata.put("deploymentMode", "standalone")
+        domainMetadata.put("installerStateRoot", activePodmanPolicy.rootfulStateRoot)
         domainMetadata.put("caddyLogRoot", standaloneCaddyLogRoot())
         domainMetadata.set<JsonNode>("storageScope", readTree(manifestPath).path("storageScope").deepCopy<JsonNode>())
     }

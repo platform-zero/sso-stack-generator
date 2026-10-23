@@ -152,6 +152,16 @@ class StandaloneBundle(unittest.TestCase):
         self.assertEqual(result['agentVm'], 'not-managed')
         self.assertFalse(result['rolesActivated'])
 
+    def test_dedicated_installer_state_root_is_manifest_bound(self):
+        self.manifest['installerStateRoot']='/var/lib/stack-fixture'
+        self.domains['installerStateRoot']='/var/lib/stack-fixture'; self.seal()
+        module.verify(self.root)
+        self.domains['installerStateRoot']='/var/lib/stack-other'; self.seal()
+        with self.assertRaisesRegex(ValueError,'state root binding'): module.verify(self.root)
+        self.manifest['installerStateRoot']=self.domains['installerStateRoot']='/var/lib/platform-zero'
+        self.seal()
+        with self.assertRaisesRegex(ValueError,'state root binding'): module.verify(self.root)
+
     def test_mode_tampering_refused(self):
         self.save('site/manifest.json', {**self.manifest, 'components': ['other']})
         with self.assertRaisesRegex(ValueError, 'binding'): module.verify(self.root)

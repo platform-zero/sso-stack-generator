@@ -90,7 +90,14 @@ DOMAINS_FILE="$BUNDLE/podman-domains.json"
 [ -f "$DOMAINS_FILE" ] || { printf 'Podman bundle is missing podman-domains.json\n' >&2; exit 1; }
 jq -e '.schemaVersion == 1 and (.domains | type == "array" and length > 0)' "$DOMAINS_FILE" >/dev/null
 STANDALONE=false
-if [ "$(jq -r '.deploymentMode // ""' "$DOMAINS_FILE")" = standalone ]; then STANDALONE=true; fi
+if [ "$(jq -r '.deploymentMode // ""' "$DOMAINS_FILE")" = standalone ]; then
+  STANDALONE=true
+  bound_state_root="$(jq -r '.installerStateRoot // "/var/lib/webservices"' "$DOMAINS_FILE")"
+  if [ -n "${WEBSERVICES_STATE_ROOT+x}" ] && [ "$STATE_ROOT" != "$bound_state_root" ]; then
+    printf '[podman-install] state root override differs from generated runtime authority\n' >&2; exit 1
+  fi
+  STATE_ROOT="$bound_state_root"
+fi
 # The legacy installer has no venue role/account/image/graph lifecycle.
 # Refuse before SOPS rendering or modifying even the candidate bundle;
 # the later duplicate gate is deliberate defense in depth.
