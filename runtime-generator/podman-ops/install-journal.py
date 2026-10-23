@@ -206,11 +206,74 @@ def unconfigured_unit(command, unit):
             and props.get('UnitFileState') in ('', 'not-found'))
 
 
+def offline_actor(release, label):
+    """Never revive a stopped standalone manager merely to inspect its units."""
+    if not label.startswith('rootless-'): return None
+    metadata = json.loads((release / 'podman-domains.json').read_text())
+    if metadata.get('deploymentMode') != 'standalone': return None
+    name = label.removeprefix('rootless-')
+    row = next(r for r in metadata['domains'] if r['name'] == name)
+    manager = 'user@' + str(row['uid']) + '.service'
+    result = subprocess.run(['systemctl', 'show', manager, '-p', 'Id', '-p', 'LoadState',
+                             '-p', 'ActiveState', '-p', 'SubState', '-p', 'MainPID', '-p', 'Job'],
+                            capture_output=True, text=True, timeout=15)
+    props = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
+    if (result.returncode or props.get('Id') != manager or props.get('LoadState') != 'loaded'):
+        raise ValueError('Unknown selected manager state')
+    if props.get('ActiveState') == 'active' and props.get('SubState') == 'running': return None
+    if (props.get('ActiveState') not in ('inactive', 'failed') or
+            props.get('SubState') not in ('dead', 'failed') or props.get('MainPID') != '0' or props.get('Job') != ''):
+        raise ValueError('Selected manager has pending activity')
+    return row
+
+
+def offline_control(command):
+    # Unit-file operations only: never start a manager, socket or application.
+    return command[:-2] + ['SYSTEMD_OFFLINE=1', *command[-2:], '--no-reload']
+
+
+def offline_subordinate_start(user):
+    spec = importlib.util.spec_from_file_location('stack_offline_subids',
+             Path(__file__).with_name('grant-rootless-volume-parent-traverse.py'))
+    storage = importlib.util.module_from_spec(spec); spec.loader.exec_module(storage)
+    return storage.namespace_root_id(user)
+
+
+def verify_offline_actor(row, command):
+    linger = Path('/var/lib/systemd/linger') / row['user']
+    if linger.exists() or linger.is_symlink(): raise ValueError('Stopped actor still has a linger trigger')
+    result = subprocess.run(offline_control(command) + ['is-enabled', 'webservices.target', 'podman.socket'],
+                            capture_output=True, text=True, timeout=15)
+    states = result.stdout.splitlines()
+    if result.returncode not in (0, 1, 4) or len(states) != 2 or any(
+            state not in ('disabled', 'masked', 'not-found') for state in states):
+        raise ValueError('Stopped actor still has boot/API activation')
+    start = offline_subordinate_start(row['user'])
+    for proc in Path('/proc').glob('[0-9]*'):
+        try:
+            status = (proc / 'status').read_text()
+        except (FileNotFoundError, ProcessLookupError): continue
+        uid_lines = [line for line in status.splitlines() if line.startswith('Uid:')]
+        if len(uid_lines) != 1: raise ValueError('Unknown process identity during stopped proof')
+        ids = list(map(int, uid_lines[0].split()[1:]))
+        if any(uid == row['uid'] or start <= uid < start + 65536 for uid in ids):
+            raise ValueError('Stopped actor still owns a live namespace/process')
+    jobs = subprocess.run(['systemctl', 'list-jobs', '--no-legend', '--no-pager'],
+                          capture_output=True, text=True, timeout=15)
+    manager = 'user@' + str(row['uid']) + '.service'
+    if jobs.returncode or any(manager in line.split() for line in jobs.stdout.splitlines()):
+        raise ValueError('Stopped actor manager job remains')
+
+
 def verify_quarantined(release):
     """Read actual selected managers; no service/volume mutation or trigger replay."""
     plans = selected_quarantine_plans(release)
     os.chdir('/')
     for label, command, units in plans:
+        actor = offline_actor(release, label)
+        if actor is not None:
+            verify_offline_actor(actor, command)
+            continue
         result = subprocess.run(command + ['show', *units, '-p', 'ActiveState', '--value'],
                                 capture_output=True, text=True, timeout=30)
         states = [s for s in result.stdout.splitlines() if s]
@@ -374,6 +437,13 @@ def quarantine_failed(root, expected, reviewed, verifier=verify_quarantined, wai
                                capture_output=True, text=True, timeout=30)
         if timer.returncode: failures.append('timer')
     for label, command, units in plans:
+        actor = offline_actor(release, label)
+        if actor is not None:
+            linger = subprocess.run(['loginctl', 'disable-linger', actor['user']], capture_output=True, text=True, timeout=15)
+            disabled = subprocess.run(offline_control(command) + ['disable', 'webservices.target', 'podman.socket'],
+                                     capture_output=True, text=True, timeout=30)
+            if linger.returncode or disabled.returncode: failures.append(label)
+            continue
         disabled = subprocess.run(command + ['disable', 'webservices.target'],
                                   capture_output=True, text=True, timeout=30)
         loaded = [unit for unit in units if not unconfigured_unit(command, unit)]
