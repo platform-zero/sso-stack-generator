@@ -484,6 +484,12 @@ ensure_rootless_domain() {
     current_subgid="$(awk -F: -v user="$user" '$1 == user { print $2; exit }' /etc/subgid)"
     [ "$current_subuid" = "$expected_subuid" ] && [ "$current_subgid" = "$expected_subuid" ] || { printf 'subordinate-id drift for %s\n' "$user" >&2; exit 1; }
   fi
+  current_subuid="$(awk -F: -v user="$user" '$1 == user && $3 >= 65536 { print $2; exit }' /etc/subuid)"
+  current_subgid="$(awk -F: -v user="$user" '$1 == user && $3 >= 65536 { print $2; exit }' /etc/subgid)"
+  [ -n "$current_subuid" ] && [ "$current_subuid" = "$current_subgid" ] || {
+    printf 'incomplete or unequal subordinate-id ranges for %s\n' "$user" >&2; exit 1;
+  }
+  ROOTLESS_DOMAIN_SUBUID_STARTS[$index]="$current_subuid"
   loginctl enable-linger "$user"
   systemctl start "user@${uid}.service"
   runtime="/run/user/${uid}/webservices"
@@ -793,6 +799,39 @@ copy_tree_once() {
   [ "$copied" = false ] || chown "$destination_user:$destination_user" "$destination"
 }
 
+prepare_standalone_private_volume() {
+  local destination="$1" user="$2" subid_start="$3"
+  python3 - "$destination" "$(id -u "$user")" "$(id -g "$user")" "$subid_start" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+uid, gid, subid = map(int, sys.argv[2:])
+# No legacy-store copy or recursive ownership translation in standalone mode.
+flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+parent = os.open('/', flags)
+try:
+    for part in path.parent.parts[1:]:
+        child = os.open(part, flags, dir_fd=parent)
+        os.close(parent); parent = child
+    try: os.mkdir(path.name, mode=0o700, dir_fd=parent)
+    except FileExistsError: pass
+    fd = os.open(path.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+    try:
+        info = os.fstat(fd)
+        if info.st_uid == uid or subid <= info.st_uid < subid + 65536:
+            pass  # Preserve existing shifted ownership and mode exactly.
+        elif info.st_uid == 0 and not os.listdir(fd):
+            os.fchown(fd, uid, gid)
+            os.fchmod(fd, 0o711)  # Only this leaf, behind its private domain parent.
+        else:
+            raise ValueError('cannot adopt foreign/nonempty private volume')
+    finally: os.close(fd)
+finally: os.close(parent)
+PY
+}
+
 translate_rootless_volume_owner() {
   local destination="$1" user="$2" subid_start="$3" desired_uid
   [ -d "$destination" ] || return 0
@@ -811,6 +850,8 @@ legacy_subid = 1_000_000
 subid_size = 65_536
 
 def translated(value, legacy_root, target_root):
+    if value == target_root or target_subid <= value < target_subid + subid_size:
+        return value
     if value in (0, legacy_root):
         return target_root
     if 0 < value < 65_536:
@@ -853,6 +894,7 @@ grant_shared_access() {
 command -v python3 >/dev/null
 python3 - "$BUNDLE/stack.ir.json" "$DOMAINS_FILE" <<'PY' | while IFS="$(printf '\t')" read -r domain strategy source destination; do
 import json
+import re
 import sys
 
 ir = json.load(open(sys.argv[1]))
@@ -876,6 +918,8 @@ for service in rootless_services:
         volume = volumes.get(name)
         if not volume or "hostPath" not in volume:
             continue
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', name):
+            raise SystemExit('invalid named volume storage authority')
         host_path = volume["hostPath"]
         strategy = volume.get("rootlessStrategy", "copy")
         destination = host_path if strategy == "shared" else rootless_host_path(domain, name)
@@ -895,11 +939,17 @@ PY
   domain_user="${ROOTLESS_DOMAIN_USERS[$domain_index]}"
   case "$strategy" in
     shared) grant_shared_access "$source" "$domain_user" ;;
-    copy|"") copy_tree_once "$source" "$destination" "$domain_user" ;;
+    copy|"")
+      if [ "$STANDALONE" = true ]; then
+        prepare_standalone_private_volume "$destination" "$domain_user" "${ROOTLESS_DOMAIN_SUBUID_STARTS[$domain_index]}"
+      else
+        copy_tree_once "$source" "$destination" "$domain_user"
+      fi
+      ;;
     forbidden) printf 'rootless volume is forbidden: %s\n' "$source" >&2; exit 1 ;;
     *) printf 'unknown rootless volume strategy %s for %s\n' "$strategy" "$source" >&2; exit 1 ;;
   esac
-  if [ "$strategy" != "shared" ]; then
+  if [ "$strategy" != "shared" ] && [ "$STANDALONE" = false ]; then
     translate_rootless_volume_owner "$destination" "$domain_user" "${ROOTLESS_DOMAIN_SUBUID_STARTS[$domain_index]}"
     # The domain parent remains 0700.  Allow mapped container users to traverse
     # each individual volume root without exposing it to sibling domains.

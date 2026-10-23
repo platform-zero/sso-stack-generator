@@ -25,6 +25,10 @@ and their masks are preserved rather than unmasked by `setfacl`. Private leaves
 remain mode 0700. Standalone preparation does not chmod/re-own the legacy shared
 Podman cache parent. CI SSH setup uses its actual IR domain and can claim only a
 new/empty fixture directory, not foreign existing keys or a linked path.
+Standalone private volumes are initialized through no-follow directory FDs; there
+is no legacy-store copy or recursive ownership migration on repeated installs.
+Actual allocated subordinate-ID ranges populate the subsequent runtime table,
+including when the site lets the installer select an unused range.
 
 The storage marker is not a backup, a production-data recovery approval or an
 application/recovery acceptance result. Those lifecycle gates remain separate.
