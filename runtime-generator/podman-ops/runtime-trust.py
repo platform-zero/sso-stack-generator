@@ -120,7 +120,8 @@ def reader(path, uid, is_dir=False):
     command(['setfacl', '-b', '-k', str(path)] if is_dir else ['setfacl', '-b', str(path)])
     path.chmod(0o700 if is_dir else 0o600)
     access = 'r-x' if is_dir else 'r--'
-    command(['setfacl', '-m', f'u:{uid}:{access},m::{access}', str(path)])
+    if uid != 0:
+        command(['setfacl', '-m', f'u:{uid}:{access},m::{access}', str(path)])
 
 
 def publish(target, cert, key, uid):
@@ -188,11 +189,15 @@ def binding(bundle):
     if any(ir['volumes'][name].get('rootlessAccess') != 'read-only' for name in names[1:]):
         raise ValueError('Trust/delegation reader policy missing')
     if not mail_selected: return paths + [None], None, None
-    domain = ir['services']['mailserver']['rootlessDomain']
-    row = next(r for r in expected['domains'] if r['name'] == domain)
+    mail = ir['services']['mailserver']
+    if mail.get('placement') == 'rootful':
+        uid = 0
+    elif mail.get('placement') == 'rootless':
+        uid = next(r['uid'] for r in expected['domains'] if r['name'] == mail['rootlessDomain'])
+    else: raise ValueError('Unknown mail service authority')
     values = [shlex.split(line.split('=', 1)[1])[0] for line in (bundle / 'runtime/stack.env').read_text().splitlines() if line.startswith('DOMAIN=')]
     if len(values) != 1 or not re.fullmatch(r'[a-z0-9][a-z0-9.-]{0,240}[a-z0-9]', values[0]): raise ValueError('Invalid mail domain authority')
-    return paths, row['uid'], 'mail.' + values[0]
+    return paths, uid, 'mail.' + values[0]
 
 
 def main():
