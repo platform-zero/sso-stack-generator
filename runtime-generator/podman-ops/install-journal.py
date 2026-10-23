@@ -6,6 +6,7 @@ attempt requires exact journal CAS plus an unchanged input fingerprint.
 """
 import argparse
 import hashlib
+import importlib.util
 import fcntl
 import pwd
 import subprocess
@@ -21,7 +22,9 @@ PHASES = ('preparing', 'units-selected', 'building', 'starting', 'active', 'fail
 CORE_INPUTS = ('bundle.json', 'stack.ir.json', 'source-provenance.json')
 PINNED_INPUTS = ('podman-domains.json', 'site/agent-vm.json',
                  'site/agent-vm.provenance.json', 'site/manifest.json',
-                 'site/components.lock.json', 'site/global.settings/registry-image-ids.json')
+                 'site/components.lock.json', 'site/global.settings/registry-image-ids.json',
+                 'site/global.settings/webservices.sops.json',
+                 'site/global.settings/build-base-image-ids.json')
 
 
 def digest(path):
@@ -137,6 +140,16 @@ def update(root, bundle, release, phase, expected=''):
     return value
 
 
+def standalone_binding(release):
+    source = Path(__file__).with_name('grant-rootless-volume-parent-traverse.py')
+    spec = importlib.util.spec_from_file_location('journal_storage_binding', source)
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    scope, operator, expected = module.authority(release)
+    module.marker(scope, expected)
+    module.safe_parent(scope, operator)
+    return expected
+
+
 def selected_quarantine_plans(release):
     """Bind stop/read plans to root-owned files in only the failed release."""
     directory(release)
@@ -144,7 +157,10 @@ def selected_quarantine_plans(release):
     info = manifest.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
         raise ValueError('Unmanaged failed release domain authority')
-    domains = json.loads(manifest.read_text())['domains']
+    metadata = json.loads(manifest.read_text())
+    standalone = metadata.get('deploymentMode') == 'standalone'
+    if standalone: standalone_binding(release)  # No relaxed free-form user authority.
+    domains = metadata['domains']
     if not isinstance(domains, list) or not domains:
         raise ValueError('Missing failed release domains')
     commands = [('rootful', ['systemctl'])]
@@ -152,7 +168,9 @@ def selected_quarantine_plans(release):
     for domain in domains:
         name, user, uid = domain['name'], domain['user'], domain['uid']
         if (not isinstance(name, str) or not re.fullmatch(r'[a-z][a-z0-9-]{0,63}', name)
-                or user != 'webservices-' + name or type(uid) is not int or name in seen):
+                or (not standalone and user != 'webservices-' + name)
+                or not isinstance(user, str) or not re.fullmatch(r'[a-z][a-z0-9-]{0,31}', user)
+                or type(uid) is not int or name in seen):
             raise ValueError('Invalid failed release domain authority')
         seen.add(name)
         account = pwd.getpwnam(user)
@@ -200,6 +218,119 @@ def verify_quarantined(release):
                            capture_output=True, text=True, timeout=10)
     if timer.stdout.strip() not in ('disabled', 'masked'):
         raise ValueError('Failed selection timer not quarantined')
+
+
+def unselected_configuration_roots(domains):
+    roots = [Path('/etc/containers/systemd'), Path('/etc/systemd/system')]
+    for row in domains:
+        home = Path(pwd.getpwnam(row['user']).pw_dir)
+        roots.extend((home / '.config/containers/systemd', home / '.config/systemd/user'))
+    return roots
+
+
+def unselected_preparation_binding(root, release):
+    """No selected pointers or installed configuration; never adopt a live stage."""
+    binding = standalone_binding(release)
+    if binding['scope']['dataClass'] != 'synthetic':
+        raise ValueError('Unselected retirement requires an explicitly synthetic scope')
+    pointers = [root / 'current', root / 'previous']
+    config_roots = unselected_configuration_roots(binding['domains'])
+    for row in binding['domains']:
+        pointers.extend(Path(row['stateRoot']) / name for name in ('current', 'previous'))
+    if any(p.exists() or p.is_symlink() for p in pointers):
+        raise ValueError('A selected/current or previous release exists')
+    for base in config_roots:
+        for parent in (*reversed(base.parents), base):
+            if parent.is_symlink(): raise ValueError('Linked unit configuration authority')
+        if base.exists() and any(base.rglob('webservices*')):
+            raise ValueError('Installed stack unit configuration exists')
+    return binding
+
+
+def verify_unselected_preparation(root, release, value):
+    """Never-selected synthetic preparation only; read-only native evidence."""
+    unselected_preparation_binding(root, release)
+    for label, command, units in selected_quarantine_plans(release):
+        result = subprocess.run(command + ['show', *units, '-p', 'ActiveState', '--value'],
+                                capture_output=True, text=True, timeout=30)
+        states = result.stdout.splitlines()
+        if result.returncode or len(states) != len(units) or any(s != 'inactive' for s in states):
+            raise ValueError('Never-selected service absence not proved')
+        for unit in (['webservices.target', 'webservices-auto-update.timer'] if label == 'rootful' else ['webservices.target']):
+            result = subprocess.run(command + ['is-enabled', unit], capture_output=True, text=True, timeout=10)
+            if result.stdout.strip() not in ('not-found', 'disabled', 'masked'):
+                raise ValueError('Unexpected boot trigger in unselected preparation')
+        result = subprocess.run(command + ['list-jobs', '--no-legend', '--no-pager'],
+                                capture_output=True, text=True, timeout=15)
+        if result.returncode or any('webservices' in line for line in result.stdout.splitlines()):
+            raise ValueError('Stack jobs remain in unselected preparation')
+
+
+def seal_unselected(root, expected, reviewed):
+    """Repair cp -a's owner reset on an exact never-selected synthetic stage."""
+    directory(root)
+    path = root / '.install-intent.json'; value = read(path)
+    if (not reviewed or not re.fullmatch(r'[a-f0-9]{64}', expected) or not value
+            or digest(path) != expected or value['phase'] not in ('preparing', 'failed')
+            or value.get('steps') not in (['preparing'], ['preparing', 'failed'])
+            or value.get('previousRelease') is not None):
+        raise ValueError('Exact reviewed initial preparation required for staging seal')
+    release = Path(value['release'])
+    if release.parent != root / 'releases' or release.is_symlink():
+        raise ValueError('Unselected stage escaped metadata root')
+    if (read(release / 'installation-receipt.json') != value
+            or fingerprint(release, value['inputs'].keys()) != value['inputs']):
+        raise ValueError('Unselected staging input/receipt binding changed')
+    binding = unselected_preparation_binding(root, release)
+    operator = Path(binding['scope']['root']).stat().st_uid
+    paths = [release]
+    for base, dirs, files in os.walk(release, followlinks=False):
+        paths.extend(Path(base) / name for name in dirs + files)
+        if len(paths) > 100000: raise ValueError('Oversized staging tree')
+    # Validate the entire derived artifact before changing ANY owner. No links,
+    # devices, foreign owners, application store or original-cache adoption.
+    for item in paths:
+        info = item.lstat()
+        if (not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode))
+                or info.st_uid not in (0, operator)
+                or (stat.S_ISREG(info.st_mode) and info.st_nlink != 1)):
+            raise ValueError('Unrecognized staging ownership or linked/special artifact')
+    if digest(path) != expected: raise ValueError('Staging seal CAS changed')
+    for item in paths:
+        info = item.lstat(); os.chown(item, 0, 0, follow_symlinks=False)
+        os.chmod(item, stat.S_IMODE(info.st_mode) & ~0o022)
+    release.chmod(0o700)
+    directory(release)
+    if fingerprint(release, value['inputs'].keys()) != value['inputs']:
+        raise ValueError('Staging bytes changed while sealing')
+    return {'sealed': True, 'entries': len(paths), 'intentSha256': expected,
+            'dataPreserved': True, 'applicationAcceptance': False}
+
+
+def retire_unselected(root, expected, reviewed, verifier=verify_unselected_preparation):
+    """Exact-CAS terminal disposition; no stop/restart/data/account mutation."""
+    directory(root)
+    path = root / '.install-intent.json'
+    value = read(path)
+    if (not reviewed or not re.fullmatch(r'[a-f0-9]{64}', expected) or not value
+            or digest(path) != expected or value['phase'] not in ('preparing', 'failed')
+            or value.get('steps') not in (['preparing'], ['preparing', 'failed'])
+            or value.get('previousRelease') is not None):
+        raise ValueError('Only exact reviewed initial preparation can be retired as unselected')
+    release = Path(value['release'])
+    if release.parent != root / 'releases': raise ValueError('Unselected release escaped receipt root')
+    directory(release)
+    if read(release / 'installation-receipt.json') != value:
+        raise ValueError('Unselected release receipt binding changed')
+    if fingerprint(release, value['inputs'].keys()) != value['inputs']:
+        raise ValueError('Unselected release input binding changed')
+    verifier(root, release, value)
+    if digest(path) != expected: raise ValueError('Unselected preparation CAS changed during review')
+    retired = dict(value, phase='retired-failed', steps=['preparing', 'failed', 'retired-failed'],
+                   retiredIntentSha256=expected, neverSelectedProved=True, dataPreserved=True,
+                   dataCompatibilityProved=False)
+    write(release / 'installation-receipt.json', retired); write(path, retired)
+    return retired
 
 
 def quarantine_failed(root, expected, reviewed, verifier=verify_quarantined, wait_seconds=120):
@@ -277,6 +408,8 @@ def main():
     parser.add_argument('--root', type=Path, required=True)
     parser.add_argument('--inspect', action='store_true')
     parser.add_argument('--retire-failed', default='')
+    parser.add_argument('--retire-unselected', default='')
+    parser.add_argument('--seal-unselected', default='')
     parser.add_argument('--quarantine-failed', default='')
     parser.add_argument('--reviewed-data-state', action='store_true')
     parser.add_argument('--bundle', type=Path)
@@ -286,8 +419,8 @@ def main():
     args = parser.parse_args()
     if os.geteuid() != 0: parser.error('Root-owned installation journal required')
     try:
-        if args.retire_failed or args.quarantine_failed:
-            if args.retire_failed and args.quarantine_failed:
+        if args.retire_failed or args.quarantine_failed or args.retire_unselected or args.seal_unselected:
+            if sum(bool(v) for v in (args.retire_failed, args.quarantine_failed, args.retire_unselected, args.seal_unselected)) != 1:
                 raise ValueError('One exact recovery operation at a time')
             directory(args.root)
             lock = args.root / '.install.lock'
@@ -297,7 +430,11 @@ def main():
                 if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
                     raise ValueError('Unsafe installation lock')
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                if args.quarantine_failed:
+                if args.seal_unselected:
+                    result = seal_unselected(args.root, args.seal_unselected, args.reviewed_data_state)
+                elif args.retire_unselected:
+                    result = retire_unselected(args.root, args.retire_unselected, args.reviewed_data_state)
+                elif args.quarantine_failed:
                     result = quarantine_failed(args.root, args.quarantine_failed, args.reviewed_data_state)
                 else:
                     result = retire_failed(args.root, args.retire_failed, args.reviewed_data_state)

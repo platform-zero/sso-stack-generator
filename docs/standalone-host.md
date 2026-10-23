@@ -30,6 +30,21 @@ is no legacy-store copy or recursive ownership migration on repeated installs.
 Actual allocated subordinate-ID ranges populate the subsequent runtime table,
 including when the site lets the installer select an unused range.
 
+Preparation errors/signals are journalled before account/volume/unit work, not
+only after unit selection. A copied immutable stage is immediately root-sealed
+and standalone stages remain root-private. New receipts also bind encrypted
+settings and base-image pin bytes; historical receipt pin sets remain readable.
+
+For an explicitly synthetic, **never-selected initial** preparation only, the
+journal supports exact-CAS `--seal-unselected SHA --reviewed-data-state` repair of
+the old archive-copy ownership reset, then native
+`--retire-unselected-intent SHA --reviewed-data-state`. Seal checks the entire
+new derived tree for foreign owners, links and special files before changing any
+owner. Retirement requires bound storage, no current/previous pointer, no installed
+stack configuration, inactive selected units, absent/disabled boot triggers and
+no stack jobs. This does not stop/restart services, erase data or authorize a
+production upgrade. Ordinary selected-failure quarantine remains separate.
+
 The storage marker is not a backup, a production-data recovery approval or an
 application/recovery acceptance result. Those lifecycle gates remain separate.
 

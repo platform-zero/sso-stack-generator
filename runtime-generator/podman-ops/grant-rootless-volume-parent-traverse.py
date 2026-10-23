@@ -99,7 +99,12 @@ def authority(bundle):
             or metadata.get('storageScope') != scope_config):
         raise ValueError('Missing hash-bound standalone storage scope')
     scope = normal_path(scope_config['root'])
-    operator = pwd.getpwuid(bundle.stat().st_uid)
+    operator_uid = bundle.stat().st_uid
+    # Installed immutable releases belong to root, not to the operator who
+    # prepared an existing empty storage scope. Its owner remains authoritative.
+    if operator_uid == 0 and scope.is_dir() and not scope.is_symlink():
+        operator_uid = scope.stat().st_uid
+    operator = pwd.getpwuid(operator_uid)
     rows = []
     for row in metadata['domains']:
         name, user, uid = row.get('name'), row.get('user'), row.get('uid')

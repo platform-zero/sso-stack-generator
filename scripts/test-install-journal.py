@@ -106,6 +106,100 @@ class InstallationJournal(unittest.TestCase):
         journal.update(self.root,self.bundle,next_release,'preparing')
         self.assertEqual(journal.read(self.release/'installation-receipt.json')['phase'],'retired-failed')
 
+    def test_unselected_stage_seal_refuses_links_before_any_owner_change(self):
+        journal.update(self.root,self.bundle,self.release,'preparing'); self.copy_pins_to_release()
+        import os
+        scope=self.root/'synthetic-scope'; scope.mkdir(); os.chown(scope,1000,1000)
+        os.chown(self.release,1000,1000)
+        for name in journal.CORE_INPUTS: os.chown(self.release/name,1000,1000)
+        expected=journal.digest(self.path)
+        binding={'scope':{'root':str(scope),'dataClass':'synthetic'}}
+        with patch.object(journal,'unselected_preparation_binding',return_value=binding):
+            with self.assertRaises(ValueError):journal.seal_unselected(self.root,expected,False)
+            os.link(self.bundle/'bundle.json',self.release/'linked-fixture')
+            with self.assertRaises(ValueError):journal.seal_unselected(self.root,expected,True)
+            self.assertEqual(self.release.stat().st_uid,1000)
+            (self.release/'linked-fixture').unlink()
+            proof=journal.seal_unselected(self.root,expected,True)
+        self.assertTrue(proof['sealed']); self.assertEqual(self.release.stat().st_uid,0)
+        self.assertEqual(self.release.stat().st_mode&0o777,0o700)
+        self.assertEqual(journal.digest(self.path),expected)
+        self.assertTrue(all((self.release/name).stat().st_uid==0 for name in journal.CORE_INPUTS))
+
+    def test_unselected_retirement_is_exact_reviewed_and_preserves_failure_evidence(self):
+        journal.update(self.root,self.bundle,self.release,'preparing'); self.copy_pins_to_release()
+        expected=journal.digest(self.path); original=self.path.read_bytes(); seen=[]
+        verify=lambda root,release,value:seen.append((root,release,value['phase']))
+        with self.assertRaises(ValueError):journal.retire_unselected(self.root,expected,False,verify)
+        with self.assertRaises(ValueError):journal.retire_unselected(self.root,'0'*64,True,verify)
+        self.assertEqual(self.path.read_bytes(),original); self.assertEqual(seen,[])
+        value=journal.retire_unselected(self.root,expected,True,verify)
+        self.assertEqual(seen,[(self.root,self.release,'preparing')])
+        self.assertEqual(value['steps'],['preparing','failed','retired-failed'])
+        self.assertTrue(value['neverSelectedProved']); self.assertFalse(value['dataCompatibilityProved'])
+        self.assertEqual(value['retiredIntentSha256'],expected)
+
+    def test_unselected_retirement_refuses_selection_history_input_and_receipt_drift(self):
+        journal.update(self.root,self.bundle,self.release,'preparing'); self.copy_pins_to_release()
+        expected=journal.digest(self.path)
+        (self.release/'bundle.json').write_text('{"changed":true}')
+        with self.assertRaises(ValueError):journal.retire_unselected(self.root,expected,True,lambda *a:None)
+        self.copy_pins_to_release()
+        value=journal.read(self.path); value['previousRelease']=str(self.root/'releases/prior')
+        journal.write(self.path,value)
+        with self.assertRaises(ValueError):journal.retire_unselected(self.root,journal.digest(self.path),True,lambda *a:None)
+        value['previousRelease']=None; value['steps']=['preparing','units-selected','failed']; value['phase']='failed'
+        journal.write(self.path,value)
+        with self.assertRaises(ValueError):journal.retire_unselected(self.root,journal.digest(self.path),True,lambda *a:None)
+
+    def test_never_selected_native_proof_does_not_accept_files_pointers_active_jobs_or_production(self):
+        account=self.selected_fixture()
+        binding={'scope':{'dataClass':'synthetic'},'domains':[{'user':'webservices-platform','stateRoot':str(self.root/'actor')}]}
+        configs=self.root/'unit-fixture'; configs.mkdir()
+        commands=[]
+        def result(command,**kwargs):
+            commands.append(command)
+            if 'show' in command:
+                count=command.index('-p')-command.index('show')-1
+                return SimpleNamespace(returncode=0,stdout='inactive\n'*count)
+            if 'is-enabled' in command:return SimpleNamespace(returncode=4,stdout='not-found\n')
+            return SimpleNamespace(returncode=0,stdout='')
+        with patch.object(journal,'standalone_binding',return_value=binding), \
+             patch.object(journal,'unselected_configuration_roots',return_value=[configs]), \
+             patch.object(journal.pwd,'getpwnam',return_value=account), \
+             patch.object(journal.subprocess,'run',side_effect=result):
+            journal.verify_unselected_preparation(self.root,self.release,{})
+            (configs/'webservices-fixture.service').write_text('fixture')
+            with self.assertRaises(ValueError):journal.verify_unselected_preparation(self.root,self.release,{})
+            (configs/'webservices-fixture.service').unlink()
+            (self.root/'current').symlink_to(self.release)
+            with self.assertRaises(ValueError):journal.verify_unselected_preparation(self.root,self.release,{})
+            (self.root/'current').unlink()
+            for kind in ('show','is-enabled','list-jobs'):
+                def unsafe(command,**kwargs):
+                    base=result(command,**kwargs)
+                    if kind in command:
+                        return SimpleNamespace(returncode=0,stdout={
+                            'show':base.stdout.replace('inactive','active',1),
+                            'is-enabled':'enabled\n',
+                            'list-jobs':'1 webservices-fixture.service start running\n'}[kind])
+                    return base
+                with patch.object(journal.subprocess,'run',side_effect=unsafe):
+                    with self.assertRaises(ValueError):journal.verify_unselected_preparation(self.root,self.release,{})
+            binding['scope']['dataClass']='production'
+            with self.assertRaises(ValueError):journal.verify_unselected_preparation(self.root,self.release,{})
+        self.assertFalse(any(word in ('start','stop','restart','enable','disable') for cmd in commands for word in cmd))
+
+    def test_ciphertext_and_base_pin_changes_refuse_pending_resume(self):
+        settings=self.bundle/'site/global.settings'; settings.mkdir(parents=True)
+        for name in ('webservices.sops.json','build-base-image-ids.json'): (settings/name).write_text('{}')
+        journal.update(self.root,self.bundle,self.release,'preparing'); expected=journal.digest(self.path)
+        (settings/'webservices.sops.json').write_text('{"changed":true}')
+        with self.assertRaises(ValueError):journal.update(self.root,self.bundle,self.release,'preparing',expected)
+        (settings/'webservices.sops.json').write_text('{}')
+        (settings/'build-base-image-ids.json').write_text('{"changed":true}')
+        with self.assertRaises(ValueError):journal.update(self.root,self.bundle,self.release,'preparing',expected)
+
     def selected_fixture(self):
         self.release.mkdir(parents=True, exist_ok=True)
         manifest=json.dumps({'domains':[{'name':'platform','user':'webservices-platform','uid':992}]})

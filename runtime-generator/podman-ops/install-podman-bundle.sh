@@ -10,6 +10,7 @@ INSPECT=false
 REWRITE_CONFIGS_ONLY=false
 RESUME_INTENT=""
 RETIRE_FAILED=""
+RETIRE_UNSELECTED=""
 QUARANTINE_FAILED=""
 REVIEWED_DATA_STATE=false
 JOURNAL_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/install-journal.py"
@@ -25,7 +26,7 @@ declare -a ROOTLESS_DOMAIN_UIDS=()
 declare -a ROOTLESS_DOMAIN_SUBUID_STARTS=()
 
 usage() {
-  printf 'Usage: %s --bundle DIR [--env-dir DIR] [--image-inputs FILE] [--activate] | --bundle DIR --rewrite-rendered-configs (unpublished build-only) [--resume-intent EXACT_SHA256] | --inspect | --quarantine-failed-intent EXACT_SHA256 --reviewed-data-state | --retire-failed-intent EXACT_SHA256 --reviewed-data-state\n' "${0##*/}" >&2
+  printf 'Usage: %s --bundle DIR [--env-dir DIR] [--image-inputs FILE] [--activate] | --bundle DIR --rewrite-rendered-configs (unpublished build-only) [--resume-intent EXACT_SHA256] | --inspect | --quarantine-failed-intent EXACT_SHA256 --reviewed-data-state | --retire-failed-intent EXACT_SHA256 --reviewed-data-state | --retire-unselected-intent EXACT_SHA256 --reviewed-data-state\n' "${0##*/}" >&2
 }
 
 while [ "$#" -gt 0 ]; do
@@ -39,6 +40,7 @@ while [ "$#" -gt 0 ]; do
     --rewrite-rendered-configs) REWRITE_CONFIGS_ONLY=true; shift ;;
     --resume-intent) RESUME_INTENT="$2"; shift 2 ;;
     --retire-failed-intent) RETIRE_FAILED="$2"; shift 2 ;;
+    --retire-unselected-intent) RETIRE_UNSELECTED="$2"; shift 2 ;;
     --quarantine-failed-intent) QUARANTINE_FAILED="$2"; shift 2 ;;
     --reviewed-data-state) REVIEWED_DATA_STATE=true; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -50,14 +52,18 @@ done
 # journal or activation code; use only on a new unpublished candidate copy.
 if [ "$REWRITE_CONFIGS_ONLY" = true ]; then
   [ "$ACTIVATE" = false ] && [ "$INSPECT" = false ] && [ -z "$RESUME_INTENT" ] &&
-    [ -z "$RETIRE_FAILED" ] && [ -z "$QUARANTINE_FAILED" ] && [ "$REVIEWED_DATA_STATE" = false ] &&
+    [ -z "$RETIRE_FAILED" ] && [ -z "$RETIRE_UNSELECTED" ] && [ -z "$QUARANTINE_FAILED" ] && [ "$REVIEWED_DATA_STATE" = false ] &&
     [ -z "$ENV_DIR" ] && [ -z "$IMAGE_INPUTS" ] && [ -z "$CONTROL_CHECKOUT" ] || { usage; exit 2; }
 fi
-if [ -n "$RETIRE_FAILED" ] || [ -n "$QUARANTINE_FAILED" ]; then
+if [ -n "$RETIRE_FAILED" ] || [ -n "$QUARANTINE_FAILED" ] || [ -n "$RETIRE_UNSELECTED" ]; then
   [ "$REVIEWED_DATA_STATE" = true ] && [ "$ACTIVATE" = false ] && [ "$INSPECT" = false ] &&
     [ -z "$RESUME_INTENT" ] && [ -z "$BUNDLE" ] && [ -z "$ENV_DIR" ] &&
     [ -z "$IMAGE_INPUTS" ] && [ -z "$CONTROL_CHECKOUT" ] &&
-    { [ -z "$RETIRE_FAILED" ] || [ -z "$QUARANTINE_FAILED" ]; } || { usage; exit 2; }
+    { [ -z "$RETIRE_FAILED" ] || [ -z "$QUARANTINE_FAILED" ]; } &&
+    { [ -z "$RETIRE_UNSELECTED" ] || { [ -z "$RETIRE_FAILED" ] && [ -z "$QUARANTINE_FAILED" ]; }; } || { usage; exit 2; }
+  if [ -n "$RETIRE_UNSELECTED" ]; then
+    exec python3 "$JOURNAL_TOOL" --root "$STATE_ROOT" --retire-unselected "$RETIRE_UNSELECTED" --reviewed-data-state
+  fi
   if [ -n "$RETIRE_FAILED" ]; then
     exec python3 "$JOURNAL_TOOL" --root "$STATE_ROOT" --retire-failed "$RETIRE_FAILED" --reviewed-data-state
   fi
@@ -443,6 +449,16 @@ journal() {
   python3 "$JOURNAL_TOOL" --root "$STATE_ROOT" --bundle "$BUNDLE" --release "$release" --phase "$1" --expected "$RESUME_INTENT"
 }
 journal preparing
+preparation_failure() {
+  local status="${1:-$?}"
+  [ "${BASH_SUBSHELL:-0}" -eq 0 ] || return "$status"
+  trap - ERR TERM INT
+  journal failed || printf '[podman-install] preparation failure journal needs inspection\n' >&2
+  exit "$status"
+}
+trap preparation_failure ERR
+trap 'preparation_failure 143' TERM
+trap 'preparation_failure 130' INT
 if [ "$STANDALONE" = true ]; then
   python3 "$BUNDLE/ops/grant-rootless-volume-parent-traverse.py" --bundle "$BUNDLE" --prepare-scope
 fi
@@ -635,10 +651,15 @@ for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
 done
 systemctl reset-failed 'webservices-*' || true
 cp -a "$BUNDLE/." "$release/"
-# cp -a inherits the installer worktree's root0700 mode. The root-owned
-# selected test entrypoint must be traversable by its dedicated rootless
-# runner; decrypted runtime/ remains root0700 and stack.env root0600.
-install -d -m 0755 "$release"
+# Archive copy also resets the destination owner. Seal this NEW derived stage
+# immediately, before preparation can fail; never adopt an original host tree.
+chown -hR root:root "$release"
+if [ "$STANDALONE" = true ]; then
+  chmod 0700 "$release"
+else
+  # Preserve the legacy dedicated integration runner's traversal contract.
+  install -d -m 0755 "$release"
+fi
 install -d -m 0755 "$release/repos"
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user="${ROOTLESS_DOMAIN_USERS[$i]}"

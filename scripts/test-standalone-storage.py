@@ -70,6 +70,14 @@ class Storage(unittest.TestCase):
             self.assertFalse(m.prepare_scope(self.bundle))
         self.assertEqual([p.name for p in self.scope.iterdir()], [m.MARKER])
 
+    def test_root_owned_installed_bundle_retains_operator_owned_scope(self):
+        operator = m.pwd.getpwnam('daemon')
+        os.chown(self.scope, operator.pw_uid, operator.pw_gid)
+        self.prepare()
+        with patch.object(m.pwd, 'getpwnam', self.present):
+            self.assertFalse(m.prepare_scope(self.bundle))
+        self.assertEqual(self.scope.stat().st_uid, operator.pw_uid)
+
     def test_nonempty_unclaimed_data_and_existing_identity_are_not_adopted(self):
         authored = self.scope / 'authored-fixture'; authored.write_bytes(b'synthetic fixture')
         before = authored.stat()
