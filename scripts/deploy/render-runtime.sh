@@ -29,6 +29,18 @@ SKIP_RUNTIME_MODEL_VALIDATE=0
 prepare_host_runtime_dirs() {
   local forgejo_runner_ssh_dir
   forgejo_runner_ssh_dir="$(render_get FORGEJO_RUNNER_SSH_DIR)"
+  if [ -f "$BUNDLE_ROOT/podman-domains.json" ] &&
+     [ "$(jq -r '.deploymentMode // ""' "$BUNDLE_ROOT/podman-domains.json")" = standalone ]; then
+    # Rendering must work before provisioning and after the CI actor makes its
+    # state private. Physical no-follow/owner checks belong to the privileged
+    # journalled installer, not a renderer that mkdir/chmods somebody's keys.
+    local standalone_ci
+    standalone_ci="$(jq -er '[.domains[] | select(.name == "ci-runner")] | if length == 1 then .[0].stateRoot else error("CI domain") end' "$BUNDLE_ROOT/podman-domains.json")"
+    [ "$forgejo_runner_ssh_dir" = "$standalone_ci/forgejo-runner-ssh" ] || {
+      printf 'standalone render refused: CI SSH path differs from bound domain state\n' >&2; return 1;
+    }
+    return 0
+  fi
   if [ -n "$(render_get CADDY_VENUE_HTTPS_PORT)" ]; then
     # The legacy renderer's default is under $HOME. That is not a
     # venue-owned path and may contain existing authored host material.
