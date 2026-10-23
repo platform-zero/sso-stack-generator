@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Native selected-installation status. Unit state is not application readiness."""
+"""Native installation entry point and selected status; unit state is not readiness."""
 import argparse
 import importlib.util
 import json
@@ -59,13 +59,40 @@ def status(root, journal=None):
     return base
 
 
+def install_command(bundle, activate=False, image_inputs=None, resume=False):
+    bundle=bundle.absolute()
+    if bundle.is_symlink() or not bundle.is_dir():raise ValueError('Plain generated bundle required')
+    # The canonical installer owns all crypto, immutable supply, resource,
+    # ownership, journal and activation gates. Do not duplicate or skip them.
+    args=['bash',str(ROOT/'runtime-generator/podman-ops/install-podman-bundle.sh'),'--bundle',str(bundle)]
+    if activate:
+        if os.geteuid()!=0:raise ValueError('Activation requires root')
+        args.append('--activate')
+    if image_inputs is not None:args.extend(['--image-inputs',str(image_inputs.absolute())])
+    if resume:args.append('--resume-intent')
+    return args
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__);commands=parser.add_subparsers(dest='command',required=True)
     p=commands.add_parser('status');p.add_argument('--state-root',required=True,type=Path);p.add_argument('--json',action='store_true')
+    p=commands.add_parser('install');p.add_argument('--bundle',required=True,type=Path)
+    p.add_argument('--activate',action='store_true');p.add_argument('--image-inputs',type=Path)
+    p.add_argument('--resume-intent',action='store_true');p.add_argument('--age-key-file',type=Path)
     args=parser.parse_args()
-    try:result=status(args.state_root)
+    try:
+        if args.command=='install':
+            command=install_command(args.bundle,args.activate,args.image_inputs,args.resume_intent)
+            env=dict(os.environ)
+            if args.age_key_file:
+                key=args.age_key_file.absolute()
+                if key.is_symlink() or not key.is_file() or key.stat().st_mode&0o077:
+                    raise ValueError('Private regular age identity file required')
+                env['SOPS_AGE_KEY_FILE']=str(key)
+            os.execvpe(command[0],command,env)
+        result=status(args.state_root)
     except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError):
-        print('stackctl: selected installation inspection refused; verify root access, receipt and unit authority',file=sys.stderr);return 1
+        print('stackctl: native operation refused; verify root access, private identity, receipt and unit authority',file=sys.stderr);return 1
     print(json.dumps(result,indent=2,sort_keys=True));return 0
 
 

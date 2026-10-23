@@ -23,6 +23,21 @@ class Status(unittest.TestCase):
     def test_query_failure_never_reports_empty_success(self):
         with patch.object(m.subprocess,'run',return_value=SimpleNamespace(returncode=1,stdout='')):
             with self.assertRaises(ValueError):m.unit_states(['systemctl'],['webservices-a.service'])
+    def test_install_delegates_without_implicit_activation_or_gate_skips(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle=Path(tmp)
+            args=m.install_command(bundle)
+            self.assertNotIn('--activate',args);self.assertNotIn('--resume-intent',args)
+            self.assertIn('install-podman-bundle.sh',args[1])
+            self.assertEqual(args[-2:],['--bundle',str(bundle)])
+            with patch.object(m.os,'geteuid',return_value=1000):
+                with self.assertRaises(ValueError):m.install_command(bundle,activate=True)
+            with patch.object(m.os,'geteuid',return_value=0):
+                args=m.install_command(bundle,activate=True,image_inputs=bundle/'images',resume=True)
+                self.assertIn('--activate',args);self.assertIn('--resume-intent',args)
+                self.assertEqual(args[args.index('--image-inputs')+1],str(bundle/'images'))
+
     def test_absolute_root_is_required_before_inspection(self):
         with self.assertRaises(ValueError):m.status(Path('relative'))
 if __name__=='__main__':unittest.main()

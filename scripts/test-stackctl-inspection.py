@@ -51,6 +51,19 @@ class Inspection(unittest.TestCase):
         self.assertFalse(result['mutationsPerformed'])
         self.assertFalse(result['privateInputsInspected'])
 
+    def test_full_service_classification_excludes_environment_values(self):
+        self.save('stack.ir.json', {'services': {'fixture': {'module':'fixture-module','placement':'rootless',
+            'rootlessDomain':'apps','lifecycle':'oneshot','build':{'context':'./fixture'},
+            'environment':{'PRIVATE_FIXTURE':'never-print-this-fixture-value'},
+            'volumes':['state:/data','/etc/localtime:/etc/localtime:ro']}},'volumes':{'state':{'hostPath':'/mnt/stack/test/data'}}})
+        metadata=json.loads((self.root/'bundle.json').read_text());metadata['irSha256']=self.sha('stack.ir.json')
+        self.save('bundle.json',metadata)
+        result=HOST.inventory(self.root);row=result['serviceDetails'][0]
+        self.assertEqual(row['module'],'fixture-module');self.assertTrue(row['sourceBuild'])
+        self.assertEqual(row['namedDataVolumes'],['state']);self.assertEqual(row['otherMountSources'],['/etc/localtime'])
+        self.assertEqual(result['lifecycleCounts'],{'oneshot':1})
+        self.assertNotIn('never-print-this-fixture-value',json.dumps(result))
+
     def test_changed_ir_refused(self):
         self.save('stack.ir.json', {'services': {'foreign': {}}})
         with self.assertRaises(ValueError): HOST.inventory(self.root)

@@ -77,6 +77,20 @@ def inventory(bundle):
         if any(not row[key].startswith('/mnt/stack/') for key in required[1:]):
             raise ValueError('domain storage outside supported stack filesystem')
         identities.append({key: row[key] for key in ('name', *required)})
+    details = []
+    for name, service in sorted(services.items()):
+        if not isinstance(service, dict): raise ValueError('invalid service detail inventory')
+        persistent = []
+        binds = []
+        for mount in service.get('volumes', []):
+            source = mount.split(':', 1)[0] if isinstance(mount, str) else mount.get('source', '')
+            if source in ir.get('volumes', {}): persistent.append(source)
+            elif source: binds.append(source)
+        details.append({'name': name, 'module': service.get('module'),
+                        'lifecycle': service.get('lifecycle', 'daemon'),
+                        'placement': service.get('placement'), 'domain': service.get('rootlessDomain'),
+                        'sourceBuild': bool(service.get('build')), 'namedDataVolumes': sorted(set(persistent)),
+                        'otherMountSources': sorted(set(binds))})
     warnings = []
     if 'venue' in domains:
         warnings.append('Isolated experimental venue: ordinary native activation refuses this profile; do not bypass that gate.')
@@ -87,8 +101,40 @@ def inventory(bundle):
             'source': {key: provenance.get(key) for key in ('generatorCommit', 'siteCommit', 'generatorDirty', 'siteDirty')},
             'components': manifest.get('components', []),
             'excludedComponents': manifest.get('excludedComponents', []),
-            'services': sorted(services), 'domains': identities,
+            'services': sorted(services), 'serviceDetails': details, 'domains': identities,
+            'deploymentMode': manifest.get('deploymentMode', 'managed'),
+            'installerStateRoot': domains.get('installerStateRoot', '/var/lib/webservices'),
+            'storageScope': manifest.get('storageScope'),
+            'modules': [{key: row.get(key) for key in ('id', 'commit', 'dirty')}
+                        for row in provenance.get('modules', [])],
+            'lifecycleCounts': {kind: sum(row['lifecycle'] == kind for row in details)
+                                for kind in sorted({row['lifecycle'] for row in details})},
             'warnings': warnings, 'privateInputsInspected': False, 'mutationsPerformed': False}
+
+
+def markdown_inventory(value):
+    # Metadata only. Never include environment values, store/key bodies or paths
+    # from an operator's audit workspace.
+    rows=value['serviceDetails']
+    lines=['# Selected stack composition inventory','',
+           '**Generated/source classification only; not application, SSO or recovery acceptance.**','',
+           f"Site: `{value['site']}`; mode: `{value['deploymentMode']}`; modules: {len(value['modules'])}; services: {len(rows)}; domains: {len(value['domains'])}.",
+           f"Requested groups: {len(value['components'])}; source image producers: {sum(r['sourceBuild'] for r in rows)}.",'',
+           'Lifecycle counts: '+', '.join(f'{k}: {v}' for k,v in value['lifecycleCounts'].items())+'.','',
+           '## Selected services','',
+           '| Service | Owning module | Actor/domain | Lifecycle | Source build | Named data volumes | Other mount sources |',
+           '|---|---|---|---|---|---|---|']
+    for row in rows:
+        cells=[row['name'],row['module'] or 'unspecified',row['domain'] or row['placement'] or 'unspecified',
+               row['lifecycle'],'yes' if row['sourceBuild'] else 'no',', '.join(row['namedDataVolumes']) or '—',
+               str(len(row['otherMountSources']))]
+        lines.append('| '+' | '.join(str(cell).replace('|','\\|').replace('\n',' ') for cell in cells)+' |')
+    lines+=['','## Selected module revisions','','| Module | Commit | Dirty |','|---|---|---|']
+    for row in sorted(value['modules'],key=lambda r:r['id']):
+        lines.append(f"| {row['id']} | `{row['commit']}` | {row['dirty']} |")
+    lines+=['','Per-application functional/shared-login, persistence, backup/restore and rollback proof remains separate.',
+            'Other mount sources include generated configs, runtime sockets and absolute binds; they are not silently excluded from the recovery scope.','']
+    return '\n'.join(lines)
 
 
 def doctor():
@@ -116,7 +162,8 @@ def doctor():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
-    p = commands.add_parser('plan'); p.add_argument('--bundle', required=True); p.add_argument('--json', action='store_true')
+    p = commands.add_parser('plan'); p.add_argument('--bundle', required=True)
+    formats=p.add_mutually_exclusive_group();formats.add_argument('--json', action='store_true');formats.add_argument('--markdown',action='store_true')
     p = commands.add_parser('doctor'); p.add_argument('--json', action='store_true')
     args = parser.parse_args()
     try:
@@ -124,7 +171,7 @@ def main():
     except (OSError, ValueError, KeyError, TypeError):
         print('stackctl: inspection refused; verify bundle integrity and prerequisite access', file=sys.stderr)
         return 1
-    print(json.dumps(result, indent=2, sort_keys=True))
+    print(markdown_inventory(result) if args.command=='plan' and args.markdown else json.dumps(result, indent=2, sort_keys=True))
     return 0 if args.command == 'plan' or result['ok'] else 1
 
 
