@@ -62,6 +62,9 @@ class Inspection(unittest.TestCase):
         self.assertEqual(row['module'],'fixture-module');self.assertTrue(row['sourceBuild'])
         self.assertEqual(row['namedDataVolumes'],['state']);self.assertEqual(row['otherMountSources'],['/etc/localtime'])
         self.assertEqual(result['lifecycleCounts'],{'oneshot':1})
+        self.assertFalse(row['emittedBuildProducer'])
+        unit=self.root/'quadlet/rootless-apps/webservices-fixture.build';unit.parent.mkdir(parents=True);unit.write_text('[Build]\n')
+        self.assertTrue(HOST.inventory(self.root)['serviceDetails'][0]['emittedBuildProducer'])
         self.assertNotIn('never-print-this-fixture-value',json.dumps(result))
 
     def test_changed_ir_refused(self):

@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import stat
@@ -68,7 +69,7 @@ def inventory(bundle):
     seen = set()
     for row in rows:
         name = row.get('name')
-        if not isinstance(name, str) or not name or name in seen:
+        if not isinstance(name, str) or not re.fullmatch(r'[a-z][a-z0-9-]{0,63}',name) or name in seen:
             raise ValueError('duplicate or missing domain identity')
         seen.add(name)
         required = ('user', 'stateRoot', 'graphRoot', 'volumeRoot')
@@ -77,9 +78,19 @@ def inventory(bundle):
         if any(not row[key].startswith('/mnt/stack/') for key in required[1:]):
             raise ValueError('domain storage outside supported stack filesystem')
         identities.append({key: row[key] for key in ('name', *required)})
+    prefix = domains.get('venue', {}).get('unitPrefix', 'webservices')
+    if not isinstance(prefix,str) or not re.fullmatch(r'(?:webservices|p0test-[a-z0-9-]{1,24})',prefix):
+        raise ValueError('invalid inventory unit namespace')
     details = []
     for name, service in sorted(services.items()):
         if not isinstance(service, dict): raise ValueError('invalid service detail inventory')
+        if not re.fullmatch(r'[a-z0-9][a-z0-9-]*',name): raise ValueError('invalid inventory service name')
+        domain_name=service.get('rootlessDomain')
+        if domain_name is not None and domain_name not in seen: raise ValueError('unselected inventory service domain')
+        directory='rootless-'+domain_name if domain_name is not None else 'rootful'
+        build_path=root/'quadlet'/directory/(prefix+'-'+name+'.build')
+        if any(p.is_symlink() for p in (root/'quadlet',build_path.parent,build_path)):
+            raise ValueError('linked build inventory refused')
         persistent = []
         binds = []
         for mount in service.get('volumes', []):
@@ -90,7 +101,7 @@ def inventory(bundle):
                         'lifecycle': service.get('lifecycle', 'daemon'),
                         'placement': service.get('placement'), 'domain': service.get('rootlessDomain'),
                         'sourceBuild': bool(service.get('build')),
-                        'emittedBuildProducer': bool(service.get('build')) and (manifest.get('deploymentMode') == 'standalone' or service.get('lifecycle') != 'on-demand' or service.get('quadletManaged') is True),
+                        'emittedBuildProducer': build_path.is_file(),
                         'namedDataVolumes': sorted(set(persistent)),
                         'otherMountSources': sorted(set(binds))})
     warnings = []
