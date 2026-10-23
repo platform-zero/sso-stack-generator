@@ -243,6 +243,18 @@ class PinnedImages(unittest.TestCase):
             mod.install([(self.image,self.archive,['root'])])
         self.assertEqual(len(calls),2)
 
+    def test_late_native_registry_admission_uses_sealed_release(self):
+        body=path.with_name('install-podman-bundle.sh').read_text()
+        self.assertIn('python3 "$release/ops/install-pinned-images.py" --bundle "$release" --prepare-registry',body)
+        self.assertNotIn('python3 "$BUNDLE/ops/install-pinned-images.py" --bundle "$BUNDLE" --prepare-registry',body)
+
+    def test_operator_owned_generation_pin_is_not_admitted_as_protected(self):
+        os.chown(self.inputs,1000,1000)
+        with self.assertRaises(ValueError):mod.protected(self.inputs)
+        # This is a NEW isolated derived artifact, not a permission takeover.
+        sealed=self.root/'sealed-inputs.json';sealed.write_bytes(self.inputs.read_bytes());sealed.chmod(0o600)
+        mod.protected(sealed)
+
     def test_registry_update_refused(self):
         self.ir['services']['selected']['updatePolicy'] = 'registry'
         (self.root / 'stack.ir.json').write_text(json.dumps(self.ir))

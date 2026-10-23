@@ -1346,7 +1346,9 @@ for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
 done
 # Direct registry-backed images also need serial preparation: otherwise the
 # full graph still launches concurrent cold pulls after the source builds.
-python3 "$BUNDLE/ops/install-pinned-images.py" --bundle "$BUNDLE" --prepare-registry
+# Identity admission/ledger use the root-sealed immutable stage, never the
+# operator-owned generation workspace. Preserve the root-owner image gate.
+python3 "$release/ops/install-pinned-images.py" --bundle "$release" --prepare-registry
 journal starting
 systemctl enable --now webservices-auto-update.timer
 # Launch both sides before readiness waits: selected rootless producers can
