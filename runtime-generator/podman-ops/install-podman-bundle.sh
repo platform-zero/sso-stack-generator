@@ -913,14 +913,15 @@ PY
 
 grant_shared_access() {
   local path="$1"
-  local user="$2"
+  local user="$2" access="${3:-read-write}" permission=rwX
+  case "$access" in read-only) permission=rX ;; read-write) ;; *) printf 'unknown shared reader policy\n' >&2; exit 1 ;; esac
   [ -n "$path" ] && [ -d "$path" ] || return 0
-  setfacl -Rm "u:${user}:rwX" "$path"
-  setfacl -Rdm "u:${user}:rwX" "$path"
+  setfacl -Rm "u:${user}:${permission}" "$path"
+  setfacl -Rdm "u:${user}:${permission}" "$path"
 }
 
 command -v python3 >/dev/null
-python3 - "$BUNDLE/stack.ir.json" "$DOMAINS_FILE" <<'PY' | while IFS="$(printf '\t')" read -r domain strategy source destination; do
+python3 - "$BUNDLE/stack.ir.json" "$DOMAINS_FILE" <<'PY' | while IFS="$(printf '\t')" read -r domain strategy source destination access; do
 import json
 import re
 import sys
@@ -951,7 +952,9 @@ for service in rootless_services:
         host_path = volume["hostPath"]
         strategy = volume.get("rootlessStrategy", "copy")
         destination = host_path if strategy == "shared" else rootless_host_path(domain, name)
-        row = (domain, strategy, host_path, destination)
+        access = volume.get('rootlessAccess', 'read-write')
+        if access not in ('read-only', 'read-write'): raise SystemExit('invalid shared volume access policy')
+        row = (domain, strategy, host_path, destination, access)
         if row not in seen:
             seen.add(row)
             print("\t".join(row))
@@ -966,7 +969,7 @@ PY
   [ -n "$domain_index" ] || { printf 'unknown rootless volume domain: %s\n' "$domain" >&2; exit 1; }
   domain_user="${ROOTLESS_DOMAIN_USERS[$domain_index]}"
   case "$strategy" in
-    shared) grant_shared_access "$source" "$domain_user" ;;
+    shared) grant_shared_access "$source" "$domain_user" "$access" ;;
     copy|"")
       if [ "$STANDALONE" = true ]; then
         prepare_standalone_private_volume "$destination" "$domain_user" "${ROOTLESS_DOMAIN_SUBUID_STARTS[$domain_index]}"
@@ -1315,10 +1318,16 @@ grant_test_runner_managed_socket_access() {
 }
 
 journal building
+if [ "$STANDALONE" = true ] && jq -e '.services.caddy' "$BUNDLE/stack.ir.json" >/dev/null; then
+  python3 "$release/ops/runtime-trust.py" --bundle "$release" --prepare
+fi
 systemctl daemon-reload
 restart_rootful_network_units
 if systemctl list-unit-files webservices-caddy.service --no-legend --no-pager | grep -q '^webservices-caddy\.service'; then
   systemctl restart webservices-caddy.service
+  if [ "$STANDALONE" = true ]; then
+    python3 "$release/ops/runtime-trust.py" --bundle "$release" --publish-mail
+  fi
 fi
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user_systemctl "$i" daemon-reload
