@@ -161,7 +161,7 @@ class InstallationJournal(unittest.TestCase):
             commands.append(command)
             if 'show' in command:
                 count=command.index('-p')-command.index('show')-1
-                return SimpleNamespace(returncode=0,stdout='inactive\n'*count)
+                return SimpleNamespace(returncode=0,stdout='\n\n'.join(['inactive']*count)+'\n')
             if 'is-enabled' in command:return SimpleNamespace(returncode=4,stdout='not-found\n')
             return SimpleNamespace(returncode=0,stdout='')
         with patch.object(journal,'standalone_binding',return_value=binding), \

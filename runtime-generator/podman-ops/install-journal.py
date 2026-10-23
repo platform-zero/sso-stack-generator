@@ -250,10 +250,11 @@ def unselected_preparation_binding(root, release):
 def verify_unselected_preparation(root, release, value):
     """Never-selected synthetic preparation only; read-only native evidence."""
     unselected_preparation_binding(root, release)
+    os.chdir('/')
     for label, command, units in selected_quarantine_plans(release):
         result = subprocess.run(command + ['show', *units, '-p', 'ActiveState', '--value'],
                                 capture_output=True, text=True, timeout=30)
-        states = result.stdout.splitlines()
+        states = [s for s in result.stdout.splitlines() if s]
         if result.returncode or len(states) != len(units) or any(s != 'inactive' for s in states):
             raise ValueError('Never-selected service absence not proved')
         for unit in (['webservices.target', 'webservices-auto-update.timer'] if label == 'rootful' else ['webservices.target']):
