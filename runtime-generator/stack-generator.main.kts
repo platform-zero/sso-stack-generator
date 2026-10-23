@@ -120,7 +120,7 @@ fun importService(name: String, source: ObjectNode): ObjectNode {
         "tmpfs" to "tmpfs", "read_only" to "readOnly", "init" to "init", "cap_add" to "capAdd",
         "cap_drop" to "capDrop", "security_opt" to "securityOpt", "sysctls" to "sysctls",
         "ulimits" to "ulimits", "shm_size" to "shmSize", "stop_grace_period" to "stopGracePeriod",
-        "userns_mode" to "userns", "group_add" to "groupAdd", "devices" to "devices"
+        "userns_mode" to "userns", "group_add" to "groupAdd", "devices" to "devices", "pid" to "pidMode"
     ).forEach { (from, to) -> copyField(source, service, from, to) }
     source.path("deploy").path("resources").takeUnless { it.isMissingNode }?.let {
         service.set<JsonNode>("resources", it.deepCopy())
@@ -1221,6 +1221,29 @@ fun standaloneHost(manifest: JsonNode): Boolean {
 fun standaloneCaddyLogRoot(): String =
     (activePodmanPolicy.venueVolumeRoot ?: fail("standalone logging requires a declared volume root")).trimEnd('/') + "/_logs/caddy"
 
+fun storageMarkerPythonJson(node: JsonNode): String = when {
+    node.isObject -> node.fieldsMap().sortedBy { it.first }.joinToString(", ", "{", "}") { (key, value) -> json.writeValueAsString(key) + ": " + storageMarkerPythonJson(value) }
+    node.isArray -> node.joinToString(", ", "[", "]") { storageMarkerPythonJson(it) }
+    node.isTextual || node.isIntegralNumber || node.isBoolean || node.isNull -> json.writeValueAsString(node)
+    else -> fail("unsupported native storage marker value")
+}
+
+fun standaloneStorageMarkerSha(manifest: JsonNode): String {
+    val domains = arr()
+    val roots = sortedSetOf<String>()
+    activePodmanPolicy.domains.sortedBy { it.name }.forEach { domain ->
+        val row = obj().put("name", domain.name).put("user", domain.user)
+            .put("uid", domain.uid ?: fail("native storage marker requires fixed domain UID"))
+            .put("stateRoot", domain.stateRoot).put("graphRoot", domain.graphRoot).put("volumeRoot", domain.volumeRoot)
+        domains.add(row); roots.addAll(listOf(domain.stateRoot, domain.graphRoot, domain.volumeRoot))
+    }
+    val record = obj().put("schemaVersion", 1).put("kind", "standalone-stack-storage").put("site", manifest.path("site").asText())
+    record.set<JsonNode>("scope", manifest.path("storageScope").deepCopy<JsonNode>())
+    record.set<ArrayNode>("domains", domains); record.set<ArrayNode>("roots", arr().addAll(roots.map(nodes::textNode)))
+    return MessageDigest.getInstance("SHA-256").digest((storageMarkerPythonJson(record) + "\n").toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
+}
+
 fun applyStandaloneHostProfile(ir: ObjectNode, manifest: JsonNode) {
     if (!standaloneHost(manifest)) return
     if (activePodmanPolicy.unitPrefix != "webservices") fail("standalone deployment requires the ordinary native host profile")
@@ -1233,9 +1256,33 @@ fun applyStandaloneHostProfile(ir: ObjectNode, manifest: JsonNode) {
     ir.path("volumes").fieldsMap().forEach { (_, volume) -> volume.path("hostPath").textOrNull()?.let(::requireScoped) }
     ir.path("services").fieldsMap().forEach { (name, raw) ->
         val service = raw as ObjectNode
+        if (name == "volume-init") {
+            val check = service.path("x-standalone-storage-check")
+            if (service.path("placement").asText() != "rootful" || check.path("version").asInt() != 1 ||
+                !check.path("entrypoint").isArray || !check.path("command").isArray)
+                fail("standalone requires owning-module native storage verification contract")
+            // Native scoped preparation owns directory creation/permissions.
+            // Retain the selected oneshot as an exact read-only scope proof,
+            // never give it a parent of the private Caddy signing store.
+            service.set<ArrayNode>("volumes", arr().add("$scopeRoot/.stack-installation.json:/scope-marker.json:ro"))
+            service.set<JsonNode>("entrypoint", check.path("entrypoint").deepCopy<JsonNode>())
+            service.set<JsonNode>("command", check.path("command").deepCopy<JsonNode>())
+            service.set<ObjectNode>("environment", obj().put("STACK_STORAGE_MARKER_SHA256", standaloneStorageMarkerSha(manifest)))
+            service.put("readOnly", true); service.set<ArrayNode>("capDrop", arr().add("ALL"))
+            service.set<ArrayNode>("securityOpt", arr().add("no-new-privileges:true"))
+            service.put("storageProvisioningOwner", "native-installer")
+        }
         if (name == "alloy") {
             val uids = setOf(0) + activePodmanPolicy.domains.map { it.uid ?: fail("standalone journal scope requires fixed domain UIDs") }
+            val alternatives = ir.path("services").fieldsMap().sortedBy { it.first }
+                .filter { (unit, _) -> !unit.contains("firefly") && unit != "postgres" }
+                .map { (unit, selected) ->
+                    if (!unit.matches(Regex("[a-z0-9][a-z0-9-]{0,95}"))) fail("invalid selected journal unit")
+                    if (selected.path("placement").asText("rootful") == "rootful") "webservices-$unit[.]service;"
+                    else "user@${activePodmanPolicy.domains.singleOrNull { it.name == selected.path("rootlessDomain").asText() }?.uid ?: fail("missing journal actor UID")}[.]service;webservices-$unit[.]service"
+                }
             service.withObject("environment").put("STACK_LOG_UID_REGEX", uids.sorted().joinToString("|"))
+                .put("STACK_LOG_UNIT_REGEX", alternatives.joinToString("|", "^(", ")$"))
         }
         val volumes = service.path("volumes")
         if (volumes.isArray) {
@@ -1375,7 +1422,7 @@ fun runtimeModelService(service: ObjectNode): ObjectNode {
         "tmpfs" to "tmpfs", "readOnly" to "read_only", "init" to "init", "capAdd" to "cap_add",
         "capDrop" to "cap_drop", "securityOpt" to "security_opt", "sysctls" to "sysctls",
         "ulimits" to "ulimits", "shmSize" to "shm_size", "stopGracePeriod" to "stop_grace_period",
-        "userns" to "userns_mode", "groupAdd" to "group_add"
+        "userns" to "userns_mode", "groupAdd" to "group_add", "pidMode" to "pid"
     ).forEach { (from, to) -> copyField(service, output, from, to) }
     (output.get("volumes") as? ArrayNode)?.let { volumes ->
         volumes.forEachIndexed { index, mount ->
@@ -2043,6 +2090,14 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
     lines += "PodmanArgs=${podmanArgs.joinToString(" ")}"
     service.path("ephemeralImageVolumes").forEach { lines += "Tmpfs=${it.asText()}" }
     service.path("userns").textOrNull()?.let { lines += "UserNS=$it" }
+    service.path("pidMode").textOrNull()?.let {
+        if (it !in setOf("host", "private")) fail("unsupported PID namespace mode")
+        if (activePodmanPolicy.standalone && it == "host" &&
+            (name != "node-exporter" || service.path("user").asText() != "65534:65534" ||
+             !service.path("readOnly").asBoolean(false) || "ALL" !in service.path("capDrop").map(JsonNode::asText)))
+            fail("unreviewed standalone host PID namespace authority")
+        lines += "Pid=$it"
+    }
     service.path("groupAdd").forEach { lines += "GroupAdd=${it.asText()}" }
     service.path("devices").forEach { lines += "AddDevice=${it.asText()}" }
     resourceLimit(limits.path("pids"), "pids")?.let { lines += "PidsLimit=$it" }
