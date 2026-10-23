@@ -27,7 +27,7 @@ fun checkCase(standalone:Boolean, includeClient:Boolean, success:Boolean) {
  if(includeClient)imageMap.put("client","sha256:"+"c".repeat(64))
  val pins=json.createObjectNode().put("schemaVersion",1);pins.set<ObjectNode>("images",imageMap)
  root.resolve("global.settings/local-build-image-ids.json").writeText(json.writeValueAsString(pins))
- val ir=fixture();val before=ir.deepCopy<ObjectNode>()
+ val ir=fixture();val before=ir.deepCopy()
  try {
   freezeLocalBuildImages(ir,manifest)
   check(success)
