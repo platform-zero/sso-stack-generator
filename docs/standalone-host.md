@@ -15,6 +15,11 @@ A standalone site:
   control/agent-API route block (ordinary application routes remain selected);
 - does not classify controller/VM proof as part of application delivery or defer
   selected notebook/runner workflows merely because of the historical controller;
+- bounds generated build services to 30 minutes, two CPUs, 8 GiB and 512 tasks,
+  using selected private build scratch rather than unrestricted host `/var/tmp`;
+- binds collector journal ingestion to its fixed domain UIDs plus root, requires
+  current collector scope hooks, and derives the unit-namespace filter from site
+  policy. Existing finance/private-database exclusions still apply;
 - remains subject to the existing source, image, domain, resource and native
   installer safety checks. It is not permission to operate unrelated accounts,
   storage, services or sockets.

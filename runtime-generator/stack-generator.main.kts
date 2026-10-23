@@ -379,7 +379,8 @@ data class PodmanPolicy(
     val venuePgSsdRoot: String?,
     val venueVectorDbsRoot: String?,
     val venueControlSocketRoot: String?,
-    val venueLogRoot: String?
+    val venueLogRoot: String?,
+    val standalone: Boolean
 )
 
 lateinit var activePodmanPolicy: PodmanPolicy
@@ -549,7 +550,8 @@ fun readPodmanPolicy(manifestPath: Path): PodmanPolicy {
         venuePgSsdRoot,
         venueVectorDbsRoot,
         venueControlSocketRoot,
-        venueLogRoot
+        venueLogRoot,
+        standaloneHost(manifest)
     )
 }
 
@@ -1177,6 +1179,10 @@ fun applyStandaloneHostProfile(ir: ObjectNode, manifest: JsonNode) {
     if (activePodmanPolicy.unitPrefix != "webservices") fail("standalone deployment requires the ordinary native host profile")
     ir.path("services").fieldsMap().forEach { (name, raw) ->
         val service = raw as ObjectNode
+        if (name == "alloy") {
+            val uids = setOf(0) + activePodmanPolicy.domains.map { it.uid ?: fail("standalone journal scope requires fixed domain UIDs") }
+            service.withObject("environment").put("STACK_LOG_UID_REGEX", uids.sorted().joinToString("|"))
+        }
         val volumes = service.path("volumes")
         if (volumes.isArray) {
             val retained = arr()
@@ -1225,6 +1231,15 @@ fun materializeStandaloneHostInputs(manifest: JsonNode, output: Path) {
             fail("unreviewed managed-control Caddy source")
         // This marked source block contains only the managed control and agent API routes.
         caddy.writeText(before + source.substringAfter(end))
+    }
+    if ("alloy" in selectedModuleIds(manifest)) {
+        listOf("build/stack.config/alloy/alloy.hcl", "runtime/configs/alloy/alloy.hcl").forEach { relative ->
+            val config = output.resolve(relative)
+            if (!config.isRegularFile() || config.isSymbolicLink() ||
+                !config.readText().contains("sys.env(\"STACK_LOG_UID_REGEX\")") ||
+                !config.readText().contains("sys.env(\"STACK_LOG_UNIT_REGEX\")"))
+                fail("standalone journal source lacks selected-UID/unit scope")
+        }
     }
 }
 
@@ -2108,19 +2123,22 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
             if (name in setOf("keycloak", "onboarding", "mastodon-rss-publisher", "firefly-native-api"))
                 buildLines += "Network=none"
         }
-        if (unitPrefix != "webservices") {
+        if (unitPrefix != "webservices" || activePodmanPolicy.standalone) {
             buildLines += "[Service]"
             // Native generated build oneshots otherwise inherit systemd's
             // short default timeout; the guarded build worker enforces the
             // same 30-minute ceiling and physical reserve independently.
             buildLines += "TimeoutStartSec=1800"
+            if (activePodmanPolicy.standalone) {
+                buildLines += listOf("MemoryMax=8G", "CPUQuota=200%", "TasksMax=512")
+            }
             // Buildah's large layer-copy scratch must not silently consume
             // host /var/tmp. Reuse only the selected, UID-private SSD graph;
             // failed scratch remains subject to exact cleanup, never prune.
             val buildScratch = domain.graphRoot ?: activePodmanPolicy.rootfulGraphRoot
-                ?: fail("venue build lacks a selected scratch graph")
+                ?: if (activePodmanPolicy.standalone) "${domain.releaseRoot}/build" else fail("venue build lacks a selected scratch graph")
             buildLines += "Environment=TMPDIR=$buildScratch"
-            if (domain.name == "rootful") {
+            if (domain.name == "rootful" && !activePodmanPolicy.standalone) {
                 buildLines += "Environment=CONTAINERS_STORAGE_CONF=${domain.stateRoot}/containers-storage.conf"
                 buildLines += "Environment=CONTAINERS_CONF=${domain.stateRoot}/containers.conf"
             }

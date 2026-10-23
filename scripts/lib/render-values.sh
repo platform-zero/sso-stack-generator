@@ -181,6 +181,8 @@ load_site_values() {
     render_set CADDY_VENUE_HTTPS_PORT "$venue_https"
     render_set CADDY_VENUE_HTTP_PORT "$venue_http"
   fi
+  local log_unit_prefix="${venue_prefix:-webservices}"
+  render_set STACK_LOG_UNIT_REGEX "(${log_unit_prefix}[-.][^;]*;.*|[^;]*;${log_unit_prefix}[-.].*)"
 
   render_set TRUSTED_PROXY_SOURCE_RANGES "$(yaml_get_scalar "$site_config_file" 'runtime.trusted_proxy_source_ranges')"
   render_set LIVEKIT_NODE_IP "$(yaml_get_scalar "$site_config_file" 'runtime.livekit_node_ip')"

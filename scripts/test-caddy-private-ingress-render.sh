@@ -25,6 +25,9 @@ legacy=$(build_caddy_global_options deploy "$(render_get CADDY_TLS_MODE)")
 load_site_values "$work/normal.yaml"
 normal=$(build_caddy_global_options deploy "$(render_get CADDY_TLS_MODE)")
 [[ $normal == "$legacy" ]] || { echo 'explicit normal native profile changed Caddy listeners' >&2; exit 1; }
+log_regex=$(render_get STACK_LOG_UNIT_REGEX)
+[[ 'webservices-caddy.service;' =~ $log_regex && 'user@42.service;webservices-forgejo.service' =~ $log_regex ]] || exit 1
+[[ ! 'unrelated.service;' =~ $log_regex && ! 'user@43.service;worklane-example.service' =~ $log_regex ]] || exit 1
 for rejected in mixed unknown; do
   if (load_site_values "$work/$rejected.yaml" >/dev/null 2>&1); then
     echo "unreviewed mixed/native Caddy profile accepted: $rejected" >&2; exit 1
@@ -36,6 +39,8 @@ private=$(build_caddy_global_options deploy "$(render_get CADDY_TLS_MODE)")
    $private == *$'\thttps_port 56042'* && $private == *$'\tauto_https disable_redirects'* &&
    $private == *$'\tservers {\n\t\tprotocols h1 h2\n\t}'* &&
    $private != *'0.0.0.0'* ]] || exit 1
+log_regex=$(render_get STACK_LOG_UNIT_REGEX)
+[[ 'p0test-r1-caddy.service;' =~ $log_regex && ! 'webservices-caddy.service;' =~ $log_regex ]] || exit 1
 for bad in '443:56045:local' '56042:80:local' '56042:56042:local' '56042:56045:acme' '56042:56045:bogus'; do
   IFS=: read -r https http tls <<< "$bad"
   if (render_set CADDY_VENUE_HTTPS_PORT "$https"; render_set CADDY_VENUE_HTTP_PORT "$http";
