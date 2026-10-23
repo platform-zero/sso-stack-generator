@@ -85,6 +85,7 @@ render_has() {
 load_secret_store() {
   local secret_store="$1"
   local decrypted_secret_store
+  [[ $- != *x* ]] || die 'secret loading refuses shell tracing'
   [ -f "$secret_store" ] || die "secret store not found: $secret_store"
   require_cmd sops
   require_cmd jq
@@ -102,12 +103,20 @@ load_secret_store() {
 }
 
 render_envsubst() {
+  [[ $- != *x* ]] || die 'secret projection refuses shell tracing'
+  if [ -n "${RENDER_VALUES[STACK_DERIVATION_KEY]-}" ]; then
+    validate_stack_derivation_key || return 1
+  fi
   local envsubst_keys="$1"
+  local root_reference='\$\{?STACK_DERIVATION_KEY([^A-Z0-9_]|$)'
+  [[ ! "$envsubst_keys" =~ $root_reference ]] || die 'derivation key cannot be used in service templates'
   shift
   local keys=("$@")
   (
     local key
+    unset STACK_DERIVATION_KEY
     for key in "${keys[@]}"; do
+      [ "$key" != STACK_DERIVATION_KEY ] || die 'derivation key cannot be used in service templates'
       render_has "$key" || die "missing template value: $key"
       export "$key=${RENDER_VALUES[$key]}"
     done
@@ -212,53 +221,87 @@ print('{SSHA}' + base64.b64encode(digest).decode())
 "
 }
 
+# STACK_DERIVATION_KEY is a separately generated 256-bit key, encoded as
+# 64 hex characters in the encrypted root-only input. Never use a service,
+# OAuth client, or owner password as the key. See docs/secret-derivation.md.
+validate_stack_derivation_key() {
+  [[ $- != *x* ]] || die 'secret derivation refuses shell tracing'
+  local root_key="${RENDER_VALUES[STACK_DERIVATION_KEY]-}"
+  local key value
+  [[ "$root_key" =~ ^[A-Fa-f0-9]{64}$ ]] ||
+    die 'missing or invalid independent STACK_DERIVATION_KEY (expected 64 hex characters)'
+  # Catch direct key reuse even with all-explicit credentials; independence of
+  # the provisioning source itself remains an installer/operator requirement.
+  for key in "${!RENDER_VALUES[@]}"; do
+    [ "$key" != STACK_DERIVATION_KEY ] || continue
+    value="${RENDER_VALUES[$key]}"
+    if [ "$value" = "$root_key" ] || {
+        [[ "$value" =~ ^[A-Fa-f0-9]{64}$ ]] && [ "${value,,}" = "${root_key,,}" ]; }; then
+      die 'STACK_DERIVATION_KEY must not be reused as a service value'
+    fi
+  done
+}
+
 derive_stack_secret() {
+  validate_stack_derivation_key || return 1
   local label="$1"
   local length="${2:-48}"
-  local seed=""
+  local domain="${RENDER_VALUES[DOMAIN]-}"
+  [ -n "$domain" ] && [ -n "$label" ] || die 'secret derivation requires domain and label'
+  [[ "$length" =~ ^([1-9]|[1-5][0-9]|6[0-4])$ ]] || die 'invalid derived secret length (expected 1..64)'
 
-  if render_has MODEL_CONTEXT_PROXY_AUTH_SECRET && [ -n "$(render_get MODEL_CONTEXT_PROXY_AUTH_SECRET)" ]; then
-    seed="$(render_get MODEL_CONTEXT_PROXY_AUTH_SECRET)"
-  elif render_has OAUTH2_PROXY_CLIENT_SECRET && [ -n "$(render_get OAUTH2_PROXY_CLIENT_SECRET)" ]; then
-    seed="$(render_get OAUTH2_PROXY_CLIENT_SECRET)"
-  else
-    seed="$(render_get STACK_ADMIN_PASSWORD)"
-  fi
-
-  printf '%s' "$seed:$label:$(render_get DOMAIN)" | sha256sum | awk '{print $1}' | cut -c "1-$length"
+  # Key material travels only over stdin, never argv or the environment.
+  # NUL framing prevents label/domain boundary ambiguity. The version is part
+  # of the HMAC message; changing it is a credential rotation, not a refactor.
+  printf '%s\0%s\0%s\0%s' "${RENDER_VALUES[STACK_DERIVATION_KEY]}" "$domain" "$label" "$length" |
+    python3 -c 'import hashlib, hmac, sys
+key, domain, label, length = sys.stdin.buffer.read().split(b"\0")
+message = b"webservices/secret-derivation/v1\0" + domain + b"\0" + label
+print(hmac.new(bytes.fromhex(key.decode("ascii")), message, hashlib.sha256).hexdigest()[:int(length)])'
 }
 
 derive_if_missing() {
   local key="$1"
   local label="$2"
   local length="${3:-48}"
+  local derived
   if ! render_has "$key" || [ -z "$(render_get "$key")" ]; then
-    render_set "$key" "$(derive_stack_secret "$label" "$length")"
+    derived="$(derive_stack_secret "$label" "$length")" || return 1
+    render_set "$key" "$derived"
   fi
 }
 
 derive_laravel_app_key_if_missing() {
   local key="$1"
   local label="$2"
-  local current=""
-  if render_has "$key"; then
-    current="$(render_get "$key")"
-  fi
-  if [ -n "$current" ] && printf '%s' "$current" | grep -Eq '^base64:[A-Za-z0-9+/]{43}=?$'; then
+  local current="${RENDER_VALUES[$key]-}"
+  local derived encoded
+  if [ -n "$current" ]; then
+    printf '%s' "$current" | grep -Eq '^base64:[A-Za-z0-9+/]{43}=?$' ||
+      die 'invalid explicit Laravel app key; refusing credential replacement'
     return 0
   fi
-  render_set "$key" "base64:$(python3 -c 'import base64, sys; print(base64.b64encode(bytes.fromhex(sys.argv[1])).decode().rstrip("="))' "$(derive_stack_secret "$label" 64)")"
+  derived="$(derive_stack_secret "$label" 64)" || return 1
+  encoded="$(printf '%s' "$derived" | python3 -c 'import base64, sys; print(base64.b64encode(bytes.fromhex(sys.stdin.read())).decode().rstrip("="))')" || return 1
+  render_set "$key" "base64:$encoded"
 }
 
 derive_policy_secret() {
   local label="$1"
   local length="${2:-32}"
-  local body_length
-  body_length=$((length - 4))
-  if [ "$body_length" -lt 12 ]; then
-    body_length=12
+  local derived
+  [[ "$length" =~ ^(1[6-9]|[2-5][0-9]|6[0-4])$ ]] || die 'invalid policy secret length (expected 16..64)'
+  derived="$(derive_stack_secret "$label" "$((length - 4))")" || return 1
+  printf 'Aa1!%s' "$derived"
+}
+
+derive_fernet_key_if_missing() {
+  local derived encoded
+  if ! render_has AIRFLOW_FERNET_KEY || [ -z "$(render_get AIRFLOW_FERNET_KEY)" ]; then
+    derived="$(derive_stack_secret airflow-fernet 64)" || return 1
+    encoded="$(printf '%s' "$derived" | python3 -c 'import base64, sys; print(base64.urlsafe_b64encode(bytes.fromhex(sys.stdin.read())).decode())')" || return 1
+    render_set AIRFLOW_FERNET_KEY "$encoded"
   fi
-  printf 'Aa1!%s' "$(derive_stack_secret "$label" "$body_length")"
 }
 
 opensearch_password_is_valid() {
@@ -267,6 +310,10 @@ opensearch_password_is_valid() {
 }
 
 build_derived_render_values() {
+  [[ $- != *x* ]] || die 'secret derivation refuses shell tracing'
+  if [ -n "${RENDER_VALUES[STACK_DERIVATION_KEY]-}" ]; then
+    validate_stack_derivation_key || return 1
+  fi
   render_set GENERATION_TIMESTAMP "$(iso_timestamp_utc)"
   render_set BASE_URL "https://$(render_get DOMAIN)"
   render_set CADDY_GLOBAL_OPTIONS "$(build_caddy_global_options "$(render_context)" "$(render_get CADDY_TLS_MODE)")"
@@ -296,68 +343,76 @@ build_derived_render_values() {
   if ! render_has PLAYWRIGHT_IGNORE_HTTPS_ERRORS || [ -z "$(render_get PLAYWRIGHT_IGNORE_HTTPS_ERRORS)" ]; then
     render_set PLAYWRIGHT_IGNORE_HTTPS_ERRORS "false"
   fi
-  derive_if_missing MODEL_CONTEXT_PROXY_AUTH_SECRET model-context-proxy-auth 64
+  derive_if_missing MODEL_CONTEXT_PROXY_AUTH_SECRET model-context-proxy-auth 64 || return 1
   if ! render_has ADMIN_SSHA_PASSWORD || [ -z "$(render_get ADMIN_SSHA_PASSWORD)" ]; then
-    render_set ADMIN_SSHA_PASSWORD "$(compute_ssha "$(render_get STACK_ADMIN_PASSWORD)")"
+    [ -n "$(render_get STACK_ADMIN_PASSWORD)" ] ||
+      die 'STACK_ADMIN_PASSWORD or explicit ADMIN_SSHA_PASSWORD is required; refusing an empty owner password'
+    local admin_ssha
+    admin_ssha="$(compute_ssha "$(render_get STACK_ADMIN_PASSWORD)")" || return 1
+    render_set ADMIN_SSHA_PASSWORD "$admin_ssha"
   fi
   if ! render_has POSTGRES_ADMIN_USER || [ -z "$(render_get POSTGRES_ADMIN_USER)" ]; then
     render_set POSTGRES_ADMIN_USER "webservices"
   fi
-  derive_if_missing KEYCLOAK_ADMIN_PASSWORD keycloak-admin 48
-  derive_if_missing POSTGRES_ADMIN_PASSWORD postgres-admin 48
-  derive_if_missing POSTGRES_GRAFANA_PASSWORD postgres-grafana 48
-  derive_if_missing POSTGRES_PLANKA_PASSWORD postgres-planka 48
-  derive_if_missing POSTGRES_SYNAPSE_PASSWORD postgres-synapse 48
-  derive_if_missing POSTGRES_VAULTWARDEN_PASSWORD postgres-vaultwarden 48
-  derive_if_missing POSTGRES_HOMEASSISTANT_PASSWORD postgres-homeassistant 48
-  derive_if_missing POSTGRES_AGENT_PASSWORD postgres-agent 48
-  derive_if_missing POSTGRES_TXGATEWAY_PASSWORD postgres-txgateway 48
-  derive_if_missing POSTGRES_FORGEJO_PASSWORD postgres-forgejo 48
-  derive_if_missing POSTGRES_OPENWEBUI_PASSWORD postgres-openwebui 48
-  derive_if_missing POSTGRES_MASTODON_PASSWORD postgres-mastodon 48
-  derive_if_missing POSTGRES_PIPELINE_PASSWORD postgres-pipeline 48
-  derive_if_missing POSTGRES_AIRFLOW_PASSWORD postgres-airflow 48
-  derive_if_missing POSTGRES_TEST_RUNNER_PASSWORD postgres-test-runner 48
-  derive_if_missing POSTGRES_LEGAL_RESEARCH_PASSWORD postgres-legal-research 48
-  derive_if_missing LEGAL_RESEARCH_INGESTION_TOKEN legal-research-ingestion-token 48
-  derive_if_missing MARIADB_ADMIN_PASSWORD mariadb-admin 48
-  derive_if_missing MARIADB_BOOKSTACK_PASSWORD mariadb-bookstack 48
-  derive_if_missing MARIADB_SEAFILE_PASSWORD mariadb-seafile 48
-  derive_if_missing MARIADB_AGENT_PASSWORD mariadb-agent 48
-  derive_if_missing VALKEY_ADMIN_PASSWORD valkey-admin 48
-  derive_if_missing VALKEY_SEAFILE_PASSWORD valkey-seafile 48
-  derive_if_missing VALKEY_MASTODON_PASSWORD valkey-mastodon 48
-  derive_if_missing OAUTH2_PROXY_CLIENT_SECRET oauth2-proxy-client 48
-  derive_if_missing OAUTH2_PROXY_COOKIE_SECRET oauth2-proxy-cookie 32
-  derive_laravel_app_key_if_missing BOOKSTACK_APP_KEY bookstack-app-key
-  derive_if_missing BOOKSTACK_OAUTH_SECRET bookstack-oauth 48
-  derive_if_missing HULY_OPENID_CLIENT_SECRET huly-openid 48
-  derive_if_missing FORGEJO_OAUTH_SECRET forgejo-oauth 48
-  derive_if_missing MASTODON_OAUTH_SECRET mastodon-oauth 48
-  derive_if_missing MASTODON_SECRET_KEY_BASE mastodon-secret-key-base 64
-  derive_if_missing MASTODON_OTP_SECRET mastodon-otp-secret 64
-  derive_if_missing MASTODON_ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY mastodon-active-record-deterministic 64
-  derive_if_missing MASTODON_ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT mastodon-active-record-salt 64
-  derive_if_missing MASTODON_ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY mastodon-active-record-primary 64
-  derive_if_missing MATRIX_OAUTH_SECRET matrix-oauth 48
-  derive_if_missing PLANKA_OAUTH_SECRET planka-oauth 48
-  derive_if_missing TEST_RUNNER_OAUTH_SECRET test-runner-oauth 48
-  derive_if_missing VAULTWARDEN_OAUTH_SECRET vaultwarden-oauth 48
-  derive_if_missing QDRANT_ADMIN_API_KEY qdrant-admin-api 48
-  derive_if_missing NATS_PASSWORD nats 48
-  if ! render_has OPENSEARCH_ADMIN_PASSWORD || [ -z "$(render_get OPENSEARCH_ADMIN_PASSWORD)" ] || ! opensearch_password_is_valid "$(render_get OPENSEARCH_ADMIN_PASSWORD)"; then
-    render_set OPENSEARCH_ADMIN_PASSWORD "$(derive_policy_secret opensearch-admin 32)"
+  derive_if_missing KEYCLOAK_ADMIN_PASSWORD keycloak-admin 48 || return 1
+  derive_if_missing POSTGRES_ADMIN_PASSWORD postgres-admin 48 || return 1
+  derive_if_missing POSTGRES_GRAFANA_PASSWORD postgres-grafana 48 || return 1
+  derive_if_missing POSTGRES_PLANKA_PASSWORD postgres-planka 48 || return 1
+  derive_if_missing POSTGRES_SYNAPSE_PASSWORD postgres-synapse 48 || return 1
+  derive_if_missing POSTGRES_VAULTWARDEN_PASSWORD postgres-vaultwarden 48 || return 1
+  derive_if_missing POSTGRES_HOMEASSISTANT_PASSWORD postgres-homeassistant 48 || return 1
+  derive_if_missing POSTGRES_AGENT_PASSWORD postgres-agent 48 || return 1
+  derive_if_missing POSTGRES_TXGATEWAY_PASSWORD postgres-txgateway 48 || return 1
+  derive_if_missing POSTGRES_FORGEJO_PASSWORD postgres-forgejo 48 || return 1
+  derive_if_missing POSTGRES_OPENWEBUI_PASSWORD postgres-openwebui 48 || return 1
+  derive_if_missing POSTGRES_MASTODON_PASSWORD postgres-mastodon 48 || return 1
+  derive_if_missing POSTGRES_PIPELINE_PASSWORD postgres-pipeline 48 || return 1
+  derive_if_missing POSTGRES_AIRFLOW_PASSWORD postgres-airflow 48 || return 1
+  derive_if_missing POSTGRES_TEST_RUNNER_PASSWORD postgres-test-runner 48 || return 1
+  derive_if_missing POSTGRES_LEGAL_RESEARCH_PASSWORD postgres-legal-research 48 || return 1
+  derive_if_missing LEGAL_RESEARCH_INGESTION_TOKEN legal-research-ingestion-token 48 || return 1
+  derive_if_missing MARIADB_ADMIN_PASSWORD mariadb-admin 48 || return 1
+  derive_if_missing MARIADB_BOOKSTACK_PASSWORD mariadb-bookstack 48 || return 1
+  derive_if_missing MARIADB_SEAFILE_PASSWORD mariadb-seafile 48 || return 1
+  derive_if_missing MARIADB_AGENT_PASSWORD mariadb-agent 48 || return 1
+  derive_if_missing VALKEY_ADMIN_PASSWORD valkey-admin 48 || return 1
+  derive_if_missing VALKEY_SEAFILE_PASSWORD valkey-seafile 48 || return 1
+  derive_if_missing VALKEY_MASTODON_PASSWORD valkey-mastodon 48 || return 1
+  derive_if_missing OAUTH2_PROXY_CLIENT_SECRET oauth2-proxy-client 48 || return 1
+  derive_if_missing OAUTH2_PROXY_COOKIE_SECRET oauth2-proxy-cookie 32 || return 1
+  derive_laravel_app_key_if_missing BOOKSTACK_APP_KEY bookstack-app-key || return 1
+  derive_if_missing BOOKSTACK_OAUTH_SECRET bookstack-oauth 48 || return 1
+  derive_if_missing HULY_OPENID_CLIENT_SECRET huly-openid 48 || return 1
+  derive_if_missing FORGEJO_OAUTH_SECRET forgejo-oauth 48 || return 1
+  derive_if_missing MASTODON_OAUTH_SECRET mastodon-oauth 48 || return 1
+  derive_if_missing MASTODON_SECRET_KEY_BASE mastodon-secret-key-base 64 || return 1
+  derive_if_missing MASTODON_OTP_SECRET mastodon-otp-secret 64 || return 1
+  derive_if_missing MASTODON_ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY mastodon-active-record-deterministic 64 || return 1
+  derive_if_missing MASTODON_ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT mastodon-active-record-salt 64 || return 1
+  derive_if_missing MASTODON_ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY mastodon-active-record-primary 64 || return 1
+  derive_if_missing MATRIX_OAUTH_SECRET matrix-oauth 48 || return 1
+  derive_if_missing PLANKA_OAUTH_SECRET planka-oauth 48 || return 1
+  derive_if_missing TEST_RUNNER_OAUTH_SECRET test-runner-oauth 48 || return 1
+  derive_if_missing VAULTWARDEN_OAUTH_SECRET vaultwarden-oauth 48 || return 1
+  derive_if_missing QDRANT_ADMIN_API_KEY qdrant-admin-api 48 || return 1
+  derive_if_missing NATS_PASSWORD nats 48 || return 1
+  if ! render_has OPENSEARCH_ADMIN_PASSWORD || [ -z "$(render_get OPENSEARCH_ADMIN_PASSWORD)" ]; then
+    local opensearch_password
+    opensearch_password="$(derive_policy_secret opensearch-admin 32)" || return 1
+    render_set OPENSEARCH_ADMIN_PASSWORD "$opensearch_password"
+  elif ! opensearch_password_is_valid "$(render_get OPENSEARCH_ADMIN_PASSWORD)"; then
+    die 'invalid explicit OpenSearch password; refusing credential replacement'
   fi
-  derive_if_missing LIVEKIT_API_KEY livekit-api-key 24
-  derive_if_missing LIVEKIT_API_SECRET livekit-api-secret 48
-  derive_if_missing ONLYOFFICE_JWT_SECRET onlyoffice-jwt 48
-  derive_if_missing SEAFILE_EMAIL_PASSWORD seafile-email 48
-  derive_if_missing SEAFILE_SECRET_KEY seafile-secret 48
-  derive_if_missing KOPIA_PASSWORD kopia-password 64
-  derive_if_missing NTFY_SSO_PASSWORD ntfy-sso 48
+  derive_if_missing LIVEKIT_API_KEY livekit-api-key 24 || return 1
+  derive_if_missing LIVEKIT_API_SECRET livekit-api-secret 48 || return 1
+  derive_if_missing ONLYOFFICE_JWT_SECRET onlyoffice-jwt 48 || return 1
+  derive_if_missing SEAFILE_EMAIL_PASSWORD seafile-email 48 || return 1
+  derive_if_missing SEAFILE_SECRET_KEY seafile-secret 48 || return 1
+  derive_if_missing KOPIA_PASSWORD kopia-password 64 || return 1
+  derive_if_missing NTFY_SSO_PASSWORD ntfy-sso 48 || return 1
   render_set NTFY_SSO_AUTHORIZATION "Basic $(printf 'ntfy-sso:%s' "$(render_get NTFY_SSO_PASSWORD)" | base64 | tr -d '\n')"
-  derive_if_missing NTFY_NATIVE_CLIENT_SECRET ntfy-native-client 48
-  derive_if_missing NTFY_NATIVE_GATEWAY_SECRET ntfy-native-gateway 48
+  derive_if_missing NTFY_NATIVE_CLIENT_SECRET ntfy-native-client 48 || return 1
+  derive_if_missing NTFY_NATIVE_GATEWAY_SECRET ntfy-native-gateway 48 || return 1
   render_set NTFY_PUBLISHER_AUTHORIZATION "Basic $(printf '%s:%s' "$(render_get NTFY_USERNAME)" "$(render_get NTFY_PASSWORD)" | base64 | tr -d '\n')"
   if ! render_has KOPIA_SERVER_USERNAME || [ -z "$(render_get KOPIA_SERVER_USERNAME)" ]; then
     render_set KOPIA_SERVER_USERNAME "kopia"
@@ -365,87 +420,42 @@ build_derived_render_values() {
   if ! render_has KOPIA_PROXY_AUTHORIZATION || [ -z "$(render_get KOPIA_PROXY_AUTHORIZATION)" ]; then
     render_set KOPIA_PROXY_AUTHORIZATION "Basic $(printf '%s:%s' "$(render_get KOPIA_SERVER_USERNAME)" "$(render_get KOPIA_PASSWORD)" | base64 | tr -d '\n')"
   fi
-  derive_if_missing SYNAPSE_FORM_SECRET synapse-form 48
-  derive_if_missing SYNAPSE_MACAROON_SECRET synapse-macaroon 48
-  derive_if_missing SYNAPSE_REGISTRATION_SECRET synapse-registration 48
-  if ! render_has SOGO_DB_PASSWORD || [ -z "$(render_get SOGO_DB_PASSWORD)" ]; then
-    render_set SOGO_DB_PASSWORD "$(derive_stack_secret sogo-db 48)"
-  fi
-  if ! render_has SOGO_OAUTH_SECRET || [ -z "$(render_get SOGO_OAUTH_SECRET)" ]; then
-    render_set SOGO_OAUTH_SECRET "$(derive_stack_secret sogo-oauth 48)"
-  fi
-  if ! render_has JELLYFIN_OIDC_SECRET || [ -z "$(render_get JELLYFIN_OIDC_SECRET)" ]; then
-    render_set JELLYFIN_OIDC_SECRET "$(derive_stack_secret jellyfin-oidc 48)"
-  fi
-  if ! render_has DONETICK_JWT_SECRET || [ -z "$(render_get DONETICK_JWT_SECRET)" ]; then
-    render_set DONETICK_JWT_SECRET "$(derive_stack_secret donetick-jwt 48)"
-  fi
-  if ! render_has DONETICK_OAUTH_SECRET || [ -z "$(render_get DONETICK_OAUTH_SECRET)" ]; then
-    render_set DONETICK_OAUTH_SECRET "$(derive_stack_secret donetick-oauth 48)"
-  fi
+  derive_if_missing SYNAPSE_FORM_SECRET synapse-form 48 || return 1
+  derive_if_missing SYNAPSE_MACAROON_SECRET synapse-macaroon 48 || return 1
+  derive_if_missing SYNAPSE_REGISTRATION_SECRET synapse-registration 48 || return 1
+  derive_if_missing SOGO_DB_PASSWORD sogo-db 48 || return 1
+  derive_if_missing SOGO_OAUTH_SECRET sogo-oauth 48 || return 1
+  derive_if_missing JELLYFIN_OIDC_SECRET jellyfin-oidc 48 || return 1
+  derive_if_missing DONETICK_JWT_SECRET donetick-jwt 48 || return 1
+  derive_if_missing DONETICK_OAUTH_SECRET donetick-oauth 48 || return 1
   if ! render_has NATS_USER || [ -z "$(render_get NATS_USER)" ]; then
     render_set NATS_USER "webservices"
   fi
   if ! render_has AIRFLOW_ADMIN_USERNAME || [ -z "$(render_get AIRFLOW_ADMIN_USERNAME)" ]; then
     render_set AIRFLOW_ADMIN_USERNAME "admin"
   fi
-  if ! render_has AIRFLOW_ADMIN_PASSWORD || [ -z "$(render_get AIRFLOW_ADMIN_PASSWORD)" ]; then
-    render_set AIRFLOW_ADMIN_PASSWORD "$(derive_stack_secret airflow-admin 48)"
-  fi
-  if ! render_has AIRFLOW_FERNET_KEY || [ -z "$(render_get AIRFLOW_FERNET_KEY)" ]; then
-    render_set AIRFLOW_FERNET_KEY "$(python3 - <<'PY'
-import base64
-import os
-print(base64.urlsafe_b64encode(os.urandom(32)).decode())
-PY
-)"
-  fi
-  if ! render_has AIRFLOW_WEBSERVER_SECRET_KEY || [ -z "$(render_get AIRFLOW_WEBSERVER_SECRET_KEY)" ]; then
-    render_set AIRFLOW_WEBSERVER_SECRET_KEY "$(derive_stack_secret airflow-webserver 64)"
-  fi
-  if ! render_has MONITORING_API_KEY || [ -z "$(render_get MONITORING_API_KEY)" ]; then
-    render_set MONITORING_API_KEY "$(derive_stack_secret monitoring-api 64)"
-  fi
-  if ! render_has MASTODON_API_TOKEN || [ -z "$(render_get MASTODON_API_TOKEN)" ]; then
-    render_set MASTODON_API_TOKEN "$(derive_stack_secret mastodon-api-token 64)"
-  fi
+  derive_if_missing AIRFLOW_ADMIN_PASSWORD airflow-admin 48 || return 1
+  derive_fernet_key_if_missing || return 1
+  derive_if_missing AIRFLOW_WEBSERVER_SECRET_KEY airflow-webserver 64 || return 1
+  derive_if_missing MONITORING_API_KEY monitoring-api 64 || return 1
+  derive_if_missing MASTODON_API_TOKEN mastodon-api-token 64 || return 1
   render_set OPENSEARCH_BASIC_AUTH "$(printf 'admin:%s' "$(render_get OPENSEARCH_ADMIN_PASSWORD)" | base64 | tr -d '\n')"
-  if ! render_has ONBOARDING_TRUSTED_PROXY_SECRET || [ -z "$(render_get ONBOARDING_TRUSTED_PROXY_SECRET)" ]; then
-    render_set ONBOARDING_TRUSTED_PROXY_SECRET "$(derive_stack_secret onboarding-trusted-proxy 64)"
-  fi
-  if ! render_has BOOKSTACK_INTERNAL_API_TOKEN || [ -z "$(render_get BOOKSTACK_INTERNAL_API_TOKEN)" ]; then
-    render_set BOOKSTACK_INTERNAL_API_TOKEN "$(derive_stack_secret bookstack-internal-api 64)"
-  fi
-  if ! render_has HOMEASSISTANT_TRUSTED_PROXY_SECRET || [ -z "$(render_get HOMEASSISTANT_TRUSTED_PROXY_SECRET)" ]; then
-    render_set HOMEASSISTANT_TRUSTED_PROXY_SECRET "$(derive_stack_secret homeassistant-trusted-proxy 64)"
-  fi
-  if ! render_has INFERENCE_CONTROLLER_API_TOKEN || [ -z "$(render_get INFERENCE_CONTROLLER_API_TOKEN)" ]; then
-    render_set INFERENCE_CONTROLLER_API_TOKEN "$(derive_stack_secret inference-controller-api 64)"
-  fi
-  if ! render_has GPU_ARBITER_API_TOKEN || [ -z "$(render_get GPU_ARBITER_API_TOKEN)" ]; then
-    render_set GPU_ARBITER_API_TOKEN "$(derive_stack_secret gpu-arbiter-api 64)"
-  fi
-  if ! render_has ERPNEXT_OAUTH_SECRET || [ -z "$(render_get ERPNEXT_OAUTH_SECRET)" ]; then
-    render_set ERPNEXT_OAUTH_SECRET "$(derive_stack_secret erpnext-oauth 48)"
-  fi
-  if ! render_has POSTGRES_MATRIX_AUTHENTICATION_SERVICE_PASSWORD || [ -z "$(render_get POSTGRES_MATRIX_AUTHENTICATION_SERVICE_PASSWORD)" ]; then
-    render_set POSTGRES_MATRIX_AUTHENTICATION_SERVICE_PASSWORD "$(derive_stack_secret matrix-authentication-service-db 48)"
-  fi
+  derive_if_missing ONBOARDING_TRUSTED_PROXY_SECRET onboarding-trusted-proxy 64 || return 1
+  derive_if_missing BOOKSTACK_INTERNAL_API_TOKEN bookstack-internal-api 64 || return 1
+  derive_if_missing HOMEASSISTANT_TRUSTED_PROXY_SECRET homeassistant-trusted-proxy 64 || return 1
+  derive_if_missing INFERENCE_CONTROLLER_API_TOKEN inference-controller-api 64 || return 1
+  derive_if_missing GPU_ARBITER_API_TOKEN gpu-arbiter-api 64 || return 1
+  derive_if_missing ERPNEXT_OAUTH_SECRET erpnext-oauth 48 || return 1
+  derive_if_missing POSTGRES_MATRIX_AUTHENTICATION_SERVICE_PASSWORD matrix-authentication-service-db 48 || return 1
   if ! render_has MATRIX_AUTHENTICATION_SERVICE_ACTIVE || [ -z "$(render_get MATRIX_AUTHENTICATION_SERVICE_ACTIVE)" ]; then
     render_set MATRIX_AUTHENTICATION_SERVICE_ACTIVE "false"
   fi
   if ! render_has MATRIX_AUTHENTICATION_SERVICE_UPSTREAM_PROVIDER_ID || [ -z "$(render_get MATRIX_AUTHENTICATION_SERVICE_UPSTREAM_PROVIDER_ID)" ]; then
     render_set MATRIX_AUTHENTICATION_SERVICE_UPSTREAM_PROVIDER_ID "01JY9K7VKQ23V93TP9FB9VYQVM"
   fi
-  if ! render_has MATRIX_AUTHENTICATION_SERVICE_SHARED_SECRET || [ -z "$(render_get MATRIX_AUTHENTICATION_SERVICE_SHARED_SECRET)" ]; then
-    render_set MATRIX_AUTHENTICATION_SERVICE_SHARED_SECRET "$(derive_stack_secret matrix-authentication-service-shared 64)"
-  fi
-  if ! render_has MATRIX_AUTHENTICATION_SERVICE_ENCRYPTION_SECRET || [ -z "$(render_get MATRIX_AUTHENTICATION_SERVICE_ENCRYPTION_SECRET)" ]; then
-    render_set MATRIX_AUTHENTICATION_SERVICE_ENCRYPTION_SECRET "$(derive_stack_secret matrix-authentication-service-encryption 64)"
-  fi
-  if ! render_has MATRIX_AUTHENTICATION_SERVICE_OAUTH_SECRET || [ -z "$(render_get MATRIX_AUTHENTICATION_SERVICE_OAUTH_SECRET)" ]; then
-    render_set MATRIX_AUTHENTICATION_SERVICE_OAUTH_SECRET "$(derive_stack_secret matrix-authentication-service-oauth 48)"
-  fi
+  derive_if_missing MATRIX_AUTHENTICATION_SERVICE_SHARED_SECRET matrix-authentication-service-shared 64 || return 1
+  derive_if_missing MATRIX_AUTHENTICATION_SERVICE_ENCRYPTION_SECRET matrix-authentication-service-encryption 64 || return 1
+  derive_if_missing MATRIX_AUTHENTICATION_SERVICE_OAUTH_SECRET matrix-authentication-service-oauth 48 || return 1
   if [ "$(render_get MATRIX_AUTHENTICATION_SERVICE_ACTIVE)" = "true" ]; then
     render_set SYNAPSE_LEGACY_SSO_CONFIG ""
     local domain
@@ -526,6 +536,10 @@ EOF
 }
 
 write_env_file() {
+  [[ $- != *x* ]] || die 'secret projection refuses shell tracing'
+  if [ -n "${RENDER_VALUES[STACK_DERIVATION_KEY]-}" ]; then
+    validate_stack_derivation_key || return 1
+  fi
   local output_path="$1"
   shift
   local keys=("$@")
@@ -542,6 +556,8 @@ write_env_file() {
     local key value
     for key in "${keys[@]}"; do
       render_validate_key "$key"
+      # Even the all-values/debug path must never project the root key.
+      [ "$key" != STACK_DERIVATION_KEY ] || continue
       render_has "$key" || continue
       value="${RENDER_VALUES[$key]}"
       if [[ "$value" == *$'\n'* ]]; then
