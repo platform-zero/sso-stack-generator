@@ -582,7 +582,8 @@ cancel_webservices_start_jobs() {
   fi
 }
 
-mkdir -p "$release" "$STATE_ROOT/releases" "$STATE_ROOT/test-results" "$STATE_ROOT/runtime-env" "$QUADLET_DIR" /run/webservices /var/log/webservices/caddy
+caddy_log_root="$(jq -r '.caddyLogRoot // "/var/log/webservices/caddy"' "$DOMAINS_FILE")"
+mkdir -p "$release" "$STATE_ROOT/releases" "$STATE_ROOT/test-results" "$STATE_ROOT/runtime-env" "$QUADLET_DIR" /run/webservices "$caddy_log_root"
 chmod 0700 "$STATE_ROOT/runtime-env"
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   ensure_rootless_domain "$i"

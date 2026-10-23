@@ -59,6 +59,28 @@ def verify(bundle, control=None):
                 source = mount.split(':', 1)[0] if isinstance(mount, str) else mount.get('source', '')
                 if source == '/run/p0-control' or source.startswith('/run/p0-control/'):
                     raise ValueError('Standalone host cannot mount managed control sockets')
+                if source == '/var/log/webservices/caddy':
+                    raise ValueError('Standalone private ingress log root cannot reuse old host logs')
+        services = ir.get('services', {})
+        if 'caddy' in services:
+            ca = ir.get('volumes', {}).get('caddy_ca', {}).get('hostPath')
+            log_root = domains.get('caddyLogRoot')
+            if (not isinstance(ca, str) or not Path(ca).is_absolute() or '..' in Path(ca).parts
+                    or log_root != str(Path(ca).parent / '_logs' / 'caddy')
+                    or not any(isinstance(v, str) and v.split(':', 2)[:2] == [log_root, '/var/log/caddy']
+                               for v in services['caddy'].get('volumes', []))):
+                raise ValueError('Standalone private ingress log root mismatch')
+        if 'alloy' in services:
+            rows = domains.get('domains', [])
+            if not isinstance(rows, list) or not rows:
+                raise ValueError('Standalone journal UID scope needs domain identities')
+            uids = [row.get('uid') for row in rows if isinstance(row, dict)]
+            if (len(uids) != len(rows) or any(type(v) is not int or v <= 0 for v in uids)
+                    or len(set(uids)) != len(uids)):
+                raise ValueError('Standalone journal UID scope needs unique fixed identities')
+            expected = '|'.join(str(v) for v in sorted({0, *uids}))
+            if services['alloy'].get('environment', {}).get('STACK_LOG_UID_REGEX') != expected:
+                raise ValueError('Standalone journal UID scope mismatch')
         return {'site': manifest.get('site'), 'agentVm': 'not-managed',
                 'deploymentMode': 'standalone', 'rolesActivated': False}
     if manifest.get('site') != 'latium':

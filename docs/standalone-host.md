@@ -20,6 +20,9 @@ A standalone site:
 - binds collector journal ingestion to its fixed domain UIDs plus root, requires
   current collector scope hooks, and derives the unit-namespace filter from site
   policy. Existing finance/private-database exclusions still apply;
+- allocates ingress/security log storage under the declared volume root and
+  refuses retained host log mounts; requires access and error URI-redaction hooks
+  rather than letting callback/query credentials enter logs;
 - remains subject to the existing source, image, domain, resource and native
   installer safety checks. It is not permission to operate unrelated accounts,
   storage, services or sockets.

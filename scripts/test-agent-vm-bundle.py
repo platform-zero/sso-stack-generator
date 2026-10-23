@@ -124,7 +124,11 @@ class StandaloneBundle(unittest.TestCase):
         self.root = Path(self.temp.name)
         (self.root / 'site').mkdir()
         self.manifest = {'schemaVersion': 2, 'site': 'latium', 'deploymentMode': 'standalone'}
-        self.ir = {'services': {'caddy': {'volumes': ['./configs:/etc/caddy:ro']}}}
+        self.log_root = '/tmp/standalone-volumes/_logs/caddy'
+        self.ir = {'services': {'caddy': {'volumes': ['./configs:/etc/caddy:ro', self.log_root + ':/var/log/caddy']}},
+                   'volumes': {'caddy_ca': {'hostPath': '/tmp/standalone-volumes/caddy_ca'}}}
+        self.domains = {'schemaVersion': 1, 'deploymentMode': 'standalone',
+                        'caddyLogRoot': self.log_root, 'domains': [{'uid': 42}]}
         self.seal()
 
     def save(self, path, value):
@@ -139,7 +143,7 @@ class StandaloneBundle(unittest.TestCase):
         source_sha = self.save('source-provenance.json', {'manifestSha256': manifest_sha})
         self.save('bundle.json', {'backend': 'podman', 'deploymentMode': 'standalone',
                                  'irSha256': ir_sha, 'sourceProvenanceSha256': source_sha})
-        self.save('podman-domains.json', {'schemaVersion': 1, 'deploymentMode': 'standalone', 'domains': []})
+        self.save('podman-domains.json', self.domains)
 
     def test_explicit_standalone_does_not_require_or_activate_guest_roles(self):
         result = module.verify(self.root)
@@ -169,6 +173,26 @@ class StandaloneBundle(unittest.TestCase):
     def test_venue_profile_cannot_be_relabelled_standalone(self):
         self.save('podman-domains.json', {'deploymentMode': 'standalone', 'venue': {}, 'domains': []})
         with self.assertRaisesRegex(ValueError, 'binding'): module.verify(self.root)
+
+    def test_unbound_or_old_ingress_log_root_refused(self):
+        for value in (None, '/var/log/webservices/caddy', '/tmp/elsewhere'):
+            self.domains['caddyLogRoot'] = value; self.seal()
+            with self.assertRaisesRegex(ValueError, 'ingress log root'): module.verify(self.root)
+        self.domains['caddyLogRoot'] = self.log_root
+        self.ir['services']['crowdsec'] = {'volumes': ['/var/log/webservices/caddy:/logs:ro']}; self.seal()
+        with self.assertRaisesRegex(ValueError, 'old host logs'): module.verify(self.root)
+
+    def test_foreign_journal_uid_scope_refused(self):
+        self.ir['services']['alloy'] = {'environment': {'STACK_LOG_UID_REGEX': '0|42'}}; self.seal()
+        module.verify(self.root)
+        self.ir['services']['alloy']['environment']['STACK_LOG_UID_REGEX'] = '.*'; self.seal()
+        with self.assertRaisesRegex(ValueError, 'journal UID scope'): module.verify(self.root)
+
+    def test_missing_or_duplicate_fixed_journal_uids_refused(self):
+        self.ir['services']['alloy'] = {'environment': {'STACK_LOG_UID_REGEX': '0|42'}}
+        for rows in ([{}], [{'uid': True}], [{'uid': 42}, {'uid': 42}]):
+            self.domains['domains'] = rows; self.seal()
+            with self.assertRaisesRegex(ValueError, 'journal UID scope'): module.verify(self.root)
 
     def test_control_socket_access_refused(self):
         for mount in ('/run/p0-control:/run/p0-control:ro',

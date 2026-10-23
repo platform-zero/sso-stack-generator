@@ -1174,6 +1174,9 @@ fun standaloneHost(manifest: JsonNode): Boolean {
     return true
 }
 
+fun standaloneCaddyLogRoot(): String =
+    (activePodmanPolicy.venueVolumeRoot ?: fail("standalone logging requires a declared volume root")).trimEnd('/') + "/_logs/caddy"
+
 fun applyStandaloneHostProfile(ir: ObjectNode, manifest: JsonNode) {
     if (!standaloneHost(manifest)) return
     if (activePodmanPolicy.unitPrefix != "webservices") fail("standalone deployment requires the ordinary native host profile")
@@ -1195,6 +1198,7 @@ fun applyStandaloneHostProfile(ir: ObjectNode, manifest: JsonNode) {
                     fun stateRoot(domain: String): String = activePodmanPolicy.domains.singleOrNull { it.name == domain }?.stateRoot
                         ?: fail("standalone bind requires selected domain '$domain'")
                     val replacement = when (source) {
+                        "/var/log/webservices/caddy" -> standaloneCaddyLogRoot()
                         "/mnt/stack/forgejo-runner-ssh" -> stateRoot("ci-runner") + "/forgejo-runner-ssh"
                         "/mnt/stack/podman/test-runners/state/test-runner/results" -> stateRoot("test-runners") + "/test-runner/results"
                         "/mnt/stack/volumes/caddy_ca/caddy-ca.crt" ->
@@ -1225,6 +1229,7 @@ fun materializeStandaloneHostInputs(manifest: ObjectNode, output: Path) {
         val end = "# webservices-component-end caddy"
         val source = caddy.readText()
         if (source.split(start).size != 2 || source.split(end).size != 2) fail("ambiguous managed-control Caddy block")
+        if (source.split("request>uri replace").size < 3) fail("standalone ingress requires access/error URI redaction")
         val before = source.substringBefore(start)
         val managed = source.substringAfter(start).substringBefore(end)
         if (!managed.contains("unix//run/p0-control/http.sock") || !managed.contains("control.{"))
@@ -2295,7 +2300,10 @@ fun writeDomainMetadata(ir: ObjectNode, modules: List<ModuleCheckout>, manifestP
         })
         domainMetadata.set<ObjectNode>("venue", venueMetadata)
     }
-    if (standaloneHost(readTree(manifestPath))) domainMetadata.put("deploymentMode", "standalone")
+    if (standaloneHost(readTree(manifestPath))) {
+        domainMetadata.put("deploymentMode", "standalone")
+        domainMetadata.put("caddyLogRoot", standaloneCaddyLogRoot())
+    }
     writeJson(output.resolve("podman-domains.json"), domainMetadata)
 
     val dependencyRows = arr()
