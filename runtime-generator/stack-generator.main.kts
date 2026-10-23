@@ -1196,18 +1196,20 @@ fun applyStandaloneHostProfile(ir: ObjectNode, manifest: JsonNode) {
 
 fun materializeStandaloneHostInputs(manifest: JsonNode, output: Path) {
     if (!standaloneHost(manifest)) return
-    val caddy = output.resolve("stack.config/caddy/Caddyfile")
-    if (!caddy.isRegularFile() || caddy.isSymbolicLink()) fail("standalone Caddy source missing")
-    val start = "# webservices-component-start caddy"
-    val end = "# webservices-component-end caddy"
-    val source = caddy.readText()
-    if (source.split(start).size != 2 || source.split(end).size != 2) fail("ambiguous managed-control Caddy block")
-    val before = source.substringBefore(start)
-    val managed = source.substringAfter(start).substringBefore(end)
-    if (!managed.contains("unix//run/p0-control/http.sock") || !managed.contains("control.{"))
-        fail("unreviewed managed-control Caddy source")
-    // This marked source block contains only the managed control and agent API routes.
-    caddy.writeText(before + source.substringAfter(end))
+    listOf("build/stack.config/caddy/Caddyfile", "runtime/configs/caddy/Caddyfile").forEach { relative ->
+        val caddy = output.resolve(relative)
+        if (!caddy.isRegularFile() || caddy.isSymbolicLink()) fail("standalone Caddy source missing")
+        val start = "# webservices-component-start caddy"
+        val end = "# webservices-component-end caddy"
+        val source = caddy.readText()
+        if (source.split(start).size != 2 || source.split(end).size != 2) fail("ambiguous managed-control Caddy block")
+        val before = source.substringBefore(start)
+        val managed = source.substringAfter(start).substringBefore(end)
+        if (!managed.contains("unix//run/p0-control/http.sock") || !managed.contains("control.{"))
+            fail("unreviewed managed-control Caddy source")
+        // This marked source block contains only the managed control and agent API routes.
+        caddy.writeText(before + source.substringAfter(end))
+    }
 }
 
 fun materializeSiteManifest(manifestPath: Path, output: Path) {
