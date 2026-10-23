@@ -2214,11 +2214,21 @@ fun renderPodman(ir: ObjectNode, output: Path) {
     }
     val generatorRoot = System.getenv("STACK_GENERATOR_ROOT")?.let(Path::of)
         ?: fail("STACK_GENERATOR_ROOT is not set")
-    generatorRoot.resolve("runtime-generator/podman-ops").copyToRecursively(
-        output.resolve("ops"),
-        followLinks = false,
-        overwrite = false
-    )
+    // Runtime imports may create root-private ignored __pycache__ entries.
+    // Only reviewed tracked operations are release inputs, never interpreter
+    // caches or other ignored/private files; do not chmod/read those caches.
+    val ops = output.resolve("ops").createDirectories()
+    val opsPrefix = "runtime-generator/podman-ops/"
+    val trackedOps = commandOutput(listOf("git", "ls-files", "-z", "--", opsPrefix), generatorRoot)
+        .split('\u0000').filter { it.isNotBlank() }
+    if (trackedOps.isEmpty()) fail("missing tracked native operations")
+    trackedOps.forEach { relative ->
+        val name = relative.removePrefix(opsPrefix)
+        val source = generatorRoot.resolve(relative)
+        if (!relative.startsWith(opsPrefix) || name.contains('/') || name in setOf(".", "..") ||
+            !Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)) fail("unrecognized tracked native operation")
+        Files.copy(source, ops.resolve(name), StandardCopyOption.COPY_ATTRIBUTES)
+    }
     generatorRoot.resolve("ops/host-admin/provision-domain-accounts.sh")
         .copyTo(output.resolve("ops/provision-domain-accounts.sh"), overwrite = true)
     generatorRoot.resolve("ops/host-admin/migrate-domain-authorities.py")
