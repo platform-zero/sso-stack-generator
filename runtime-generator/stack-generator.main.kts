@@ -950,17 +950,45 @@ fun freezeLocalBuildImages(ir: ObjectNode, manifestPath: Path) {
     ir.put("quadletBuildImagesFrozen", true)
 }
 
+fun immutableOverlayFiles(module: ModuleCheckout, relative: Path): List<Triple<Path, String, Boolean>> {
+    if (relative.isAbsolute || relative.normalize() != relative || relative.any { it.toString() == ".." })
+        fail("noncanonical overlay in '${module.id}'")
+    // Read the reviewed Git tree, NOT the worktree. Ignored/private files and
+    // interpreter caches are never traversed; source links are rejected before
+    // any target content can be dereferenced/copied into a release.
+    val tree = commandOutput(listOf("git", "ls-tree", "-r", "-z", module.commit, "--", relative.toString()), module.dir)
+    val rows = tree.split('\u0000').filter(String::isNotEmpty)
+    if (rows.isEmpty()) fail("missing tracked overlay in '${module.id}'")
+    return rows.map { row ->
+        val fields = row.split('\t', limit = 2)
+        val header = fields.first().split(' ')
+        if (fields.size != 2 || header.size != 3 || header[0] !in setOf("100644", "100755") || header[1] != "blob" ||
+            !header[2].matches(Regex("[a-f0-9]{40,64}"))) fail("linked/special overlay in '${module.id}'")
+        val path = Path(fields[1])
+        if (path.isAbsolute || path.normalize() != path || !path.startsWith(relative))
+            fail("escaping overlay in '${module.id}'")
+        Triple(path, header[2], header[0] == "100755")
+    }
+}
+
+fun overlayBlob(module: ModuleCheckout, objectId: String): ByteArray {
+    val process = ProcessBuilder("git", "cat-file", "blob", objectId).directory(module.dir.toFile()).start()
+    val data = process.inputStream.readNBytes(64 * 1024 * 1024 + 1)
+    if (data.size > 64 * 1024 * 1024) { process.destroyForcibly(); fail("oversized module overlay") }
+    if (!process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS) || process.exitValue() != 0) {
+        process.destroyForcibly(); fail("cannot read reviewed overlay object in '${module.id}'")
+    }
+    return data
+}
+
 fun materializeModules(modules: List<ModuleCheckout>, output: Path) {
     val owners = mutableMapOf<Path, String>()
     modules.forEach { module ->
         module.metadata.path("overlays").forEach { overlayNode ->
             val relative = Path(overlayNode.asText())
             if (relative.startsWith("runtime.overlays") || relative.fileName.toString() == "stack.runtime.yaml") return@forEach
-            val source = module.dir.resolve(relative).normalize()
-            if (!source.startsWith(module.dir) || !source.exists()) fail("unsafe or missing overlay '${relative}' in '${module.id}'")
-            val files = if (source.isDirectory()) source.walk().filter(Path::isRegularFile).toList() else listOf(source)
-            files.forEach { file ->
-                val sourceRelative = module.dir.relativize(file)
+            immutableOverlayFiles(module, relative).forEach { (sourceRelative, blob, executable) ->
+                val content = overlayBlob(module, blob)
                 val destinationRelative = when {
                     module.id != "stack-foundation" && sourceRelative.toString() in setOf("stack.config/components.json", "stack.config/components.overlay.json") ->
                         Path("stack.config/components.external/${module.id}.json")
@@ -971,13 +999,15 @@ fun materializeModules(modules: List<ModuleCheckout>, output: Path) {
                 val destination = output.resolve("build").resolve(destinationRelative).normalize()
                 owners.put(destination, module.id)?.let { fail("overlay collision at $destination between '$it' and '${module.id}'") }
                 destination.parent.createDirectories()
-                file.copyTo(destination, overwrite = false)
+                Files.write(destination, content, java.nio.file.StandardOpenOption.CREATE_NEW)
+                Files.setPosixFilePermissions(destination, java.nio.file.attribute.PosixFilePermissions.fromString(if (executable) "rwxr-xr-x" else "rw-r--r--"))
                 if (destinationRelative.startsWith(Path("stack.config"))) {
                     val configRelative = Path("runtime/configs").resolve(Path("stack.config").relativize(destinationRelative))
                     val runtimeDestination = output.resolve(configRelative).normalize()
                     owners.put(runtimeDestination, module.id)?.let { fail("overlay collision at $runtimeDestination between '$it' and '${module.id}'") }
                     runtimeDestination.parent.createDirectories()
-                    file.copyTo(runtimeDestination, overwrite = false)
+                    Files.write(runtimeDestination, content, java.nio.file.StandardOpenOption.CREATE_NEW)
+                    Files.setPosixFilePermissions(runtimeDestination, java.nio.file.attribute.PosixFilePermissions.fromString(if (executable) "rwxr-xr-x" else "rw-r--r--"))
                 }
             }
         }
