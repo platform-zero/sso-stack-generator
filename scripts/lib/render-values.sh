@@ -174,7 +174,9 @@ load_site_values() {
   venue_prefix="$(yaml_get_scalar "$site_config_file" 'podman.unit_prefix')"
   venue_https="$(yaml_get_scalar "$site_config_file" 'podman.port_map."443"')"
   venue_http="$(yaml_get_scalar "$site_config_file" 'podman.port_map."80"')"
-  if [ -n "$venue_prefix" ] || [ -n "$venue_https" ] || [ -n "$venue_http" ]; then
+  if [ "$venue_prefix" = webservices ]; then
+    [ -z "$venue_https" ] && [ -z "$venue_http" ] || die 'ordinary native Caddy profile cannot redirect listeners'
+  elif [ -n "$venue_prefix" ] || [ -n "$venue_https" ] || [ -n "$venue_http" ]; then
     [[ $venue_prefix =~ ^p0test-[a-z0-9-]{1,24}$ ]] || die 'unreviewed isolated Caddy site namespace'
     render_set CADDY_VENUE_HTTPS_PORT "$venue_https"
     render_set CADDY_VENUE_HTTP_PORT "$venue_http"

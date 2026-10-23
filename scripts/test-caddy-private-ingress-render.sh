@@ -13,10 +13,23 @@ source=Path(sys.argv[1]).read_text()
 assert source.count('\npodman:\n')==1
 source=source.replace('\npodman:\n', '\npodman:\n  unit_prefix: p0test-r1\n  port_map:\n    "443": 56042\n    "80": 56045\n',1)
 Path(sys.argv[2]).write_text(source)
+base=Path(sys.argv[1]).read_text()
+normal=base.replace('\npodman:\n', '\npodman:\n  unit_prefix: webservices\n',1)
+Path(sys.argv[2]).with_name('normal.yaml').write_text(normal)
+Path(sys.argv[2]).with_name('mixed.yaml').write_text(normal.replace('  unit_prefix: webservices\n', '  unit_prefix: webservices\n  port_map:\n    "443": 56042\n    "80": 56045\n',1))
+Path(sys.argv[2]).with_name('unknown.yaml').write_text(normal.replace('unit_prefix: webservices', 'unit_prefix: unreviewed'))
 PY
 load_site_values "$original"
 legacy=$(build_caddy_global_options deploy "$(render_get CADDY_TLS_MODE)")
 [[ $legacy == *$'\tlocal_certs'* && $legacy != *default_bind* && $legacy != *https_port* && $legacy != *'admin off'* ]] || exit 1
+load_site_values "$work/normal.yaml"
+normal=$(build_caddy_global_options deploy "$(render_get CADDY_TLS_MODE)")
+[[ $normal == "$legacy" ]] || { echo 'explicit normal native profile changed Caddy listeners' >&2; exit 1; }
+for rejected in mixed unknown; do
+  if (load_site_values "$work/$rejected.yaml" >/dev/null 2>&1); then
+    echo "unreviewed mixed/native Caddy profile accepted: $rejected" >&2; exit 1
+  fi
+done
 load_site_values "$work/venue.yaml"
 private=$(build_caddy_global_options deploy "$(render_get CADDY_TLS_MODE)")
 [[ $private == *$'\tadmin off'* && $private == *$'\tdefault_bind 127.0.0.1'* && $private == *$'\thttp_port 56045'* &&
