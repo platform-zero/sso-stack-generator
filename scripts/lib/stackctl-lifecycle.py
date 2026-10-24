@@ -5,14 +5,21 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
 ROOT=Path(__file__).resolve().parents[2]
 
 
+def ops_directory():
+    # A generated distribution owns ops/; never fall back to a development
+    # checkout nested inside a bundle whose native payload is missing.
+    return ROOT/'ops' if (ROOT/'bundle.json').exists() else ROOT/'runtime-generator/podman-ops'
+
+
 def journal_module():
-    path=ROOT/'runtime-generator/podman-ops/install-journal.py'
+    path=ops_directory()/'install-journal.py'
     spec=importlib.util.spec_from_file_location('stackctl_native_journal',path)
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
     return module
@@ -59,17 +66,20 @@ def status(root, journal=None):
     return base
 
 
-def install_command(bundle, activate=False, image_inputs=None, resume=False):
+def install_command(bundle, activate=False, image_inputs=None, resume=None):
     bundle=bundle.absolute()
     if bundle.is_symlink() or not bundle.is_dir():raise ValueError('Plain generated bundle required')
     # The canonical installer owns all crypto, immutable supply, resource,
     # ownership, journal and activation gates. Do not duplicate or skip them.
-    args=['bash',str(ROOT/'runtime-generator/podman-ops/install-podman-bundle.sh'),'--bundle',str(bundle)]
+    args=['bash',str(ops_directory()/'install-podman-bundle.sh'),'--bundle',str(bundle)]
     if activate:
         if os.geteuid()!=0:raise ValueError('Activation requires root')
         args.append('--activate')
     if image_inputs is not None:args.extend(['--image-inputs',str(image_inputs.absolute())])
-    if resume:args.append('--resume-intent')
+    if resume is not None:
+        if not isinstance(resume,str) or not re.fullmatch(r'[a-f0-9]{64}',resume):
+            raise ValueError('Exact resume intent SHA-256 required')
+        args.extend(['--resume-intent',resume])
     return args
 
 
@@ -78,7 +88,7 @@ def main():
     p=commands.add_parser('status');p.add_argument('--state-root',required=True,type=Path);p.add_argument('--json',action='store_true')
     p=commands.add_parser('install');p.add_argument('--bundle',required=True,type=Path)
     p.add_argument('--activate',action='store_true');p.add_argument('--image-inputs',type=Path)
-    p.add_argument('--resume-intent',action='store_true');p.add_argument('--age-key-file',type=Path)
+    p.add_argument('--resume-intent',metavar='EXACT_SHA256');p.add_argument('--age-key-file',type=Path)
     args=parser.parse_args()
     try:
         if args.command=='install':

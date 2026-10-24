@@ -37,9 +37,14 @@ SERVICE_PROPERTIES = ('Result', 'Type', 'ExecMainStatus', 'ExecMainCode',
 PROPERTIES = COMMON_PROPERTIES + SERVICE_PROPERTIES
 
 
+def ops_directory():
+    # Bundle layout is authoritative even when its native payload is missing.
+    return ROOT / 'ops' if (ROOT / 'bundle.json').exists() else ROOT / 'runtime-generator/podman-ops'
+
+
 def journal_module():
     spec = importlib.util.spec_from_file_location('stackctl_operations_journal',
-        ROOT / 'runtime-generator/podman-ops/install-journal.py')
+        ops_directory() / 'install-journal.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

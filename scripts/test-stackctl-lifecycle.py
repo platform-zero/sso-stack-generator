@@ -34,9 +34,12 @@ class Status(unittest.TestCase):
             with patch.object(m.os,'geteuid',return_value=1000):
                 with self.assertRaises(ValueError):m.install_command(bundle,activate=True)
             with patch.object(m.os,'geteuid',return_value=0):
-                args=m.install_command(bundle,activate=True,image_inputs=bundle/'images',resume=True)
+                args=m.install_command(bundle,activate=True,image_inputs=bundle/'images',resume='a'*64)
                 self.assertIn('--activate',args);self.assertIn('--resume-intent',args)
+                self.assertEqual(args[args.index('--resume-intent')+1],'a'*64)
                 self.assertEqual(args[args.index('--image-inputs')+1],str(bundle/'images'))
+            for bad in (True,False,'','a'*63,'A'*64):
+                with self.assertRaises(ValueError):m.install_command(bundle,resume=bad)
 
     def test_absolute_root_is_required_before_inspection(self):
         with self.assertRaises(ValueError):m.status(Path('relative'))

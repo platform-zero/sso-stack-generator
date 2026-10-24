@@ -17,7 +17,7 @@ import sys
 
 sys.dont_write_bytecode = True
 # Reviewed frozen public native lifecycle source, not a live self-approved hash.
-OPERATIONS_SHA256 = '13a3056fa239ef99e4681f0e334419bb41e730e1e686488e05b27f74d2ba19e3'
+OPERATIONS_SHA256 = '782c592ca80da578d96c206a9fae098e94a674d7f8a8f93e5650eefa4fd43012'
 
 
 def operations():
