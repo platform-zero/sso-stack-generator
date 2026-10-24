@@ -19,7 +19,7 @@ import time
 import re
 import sys
 
-PHASES = ('preparing', 'units-selected', 'building', 'starting', 'active', 'failed', 'retired-failed')
+PHASES = ('preparing', 'units-selected', 'building', 'starting', 'active', 'failed', 'retired-failed', 'retired-clean')
 CORE_INPUTS = ('bundle.json', 'stack.ir.json', 'source-provenance.json')
 PINNED_INPUTS = ('podman-domains.json', 'site/agent-vm.json',
                  'site/agent-vm.provenance.json', 'site/manifest.json',
@@ -124,7 +124,7 @@ def update(root, bundle, release, phase, expected=''):
     inputs = fingerprint(bundle)
     if phase == 'preparing':
         previous = None
-        if old and old['phase'] not in ('active', 'retired-failed'):
+        if old and old['phase'] not in ('active', 'retired-failed', 'retired-clean'):
             if expected != digest(path) or old.get('inputs') != inputs:
                 raise ValueError('Pending installation needs exact CAS and unchanged inputs')
             # Retain only a previous-release claim made at the original,
@@ -150,11 +150,28 @@ def update(root, bundle, release, phase, expected=''):
             previous = str(old_release)
         value = {'schemaVersion': 1, 'release': str(release), 'inputs': inputs, 'phase': phase,
                  'previousRelease': previous,'steps': [phase],
-                 'resumedFrom': old.get('release') if old and old['phase'] not in ('active', 'retired-failed') else None}
+                 'resumedFrom': old.get('release') if old and old['phase'] not in ('active', 'retired-failed', 'retired-clean') else None}
+        # Original finance provenance ONLY, never an activation/readiness permit.
+        # Required for retained Run2: the owning arm validates it anew. Retired
+        # (data-disposed) attempts do not carry an original identity forward.
+        if old and old['phase'] not in ('retired-failed', 'retired-clean'):
+            fields = {'nativeFinanceOwnershipReceipt': 'root-native-finance-ownership',
+                      'nativeFinanceReference': 'root-native-finance-reference'}
+            for field, kind in fields.items():
+                if field not in old: continue
+                original = old[field]; prior = Path(old['release']) / 'installation-receipt.json'
+                if (read(prior) != old or prior.read_bytes() != path.read_bytes()
+                        or not isinstance(original, dict) or type(original.get('schemaVersion')) is not int
+                        or original['schemaVersion'] != 1 or original.get('kind') != kind
+                        or original.get('status') != 'completed'
+                        or (field == 'nativeFinanceOwnershipReceipt' and any(original.get(flag) is not False
+                            for flag in ('activationAuthorized', 'readinessAuthorized', 'journalWritten')))):
+                    raise ValueError('Original native finance provenance/dual records differ')
+                value[field] = original
     else:
         if not old or old.get('release') != str(release) or old.get('inputs') != inputs:
             raise ValueError('Installation journal binding mismatch')
-        if old['phase'] in ('active', 'failed', 'retired-failed'):
+        if old['phase'] in ('active', 'failed', 'retired-failed', 'retired-clean'):
             raise ValueError('Terminal installation journal cannot advance')
         if phase != 'failed' and PHASES.index(phase) != PHASES.index(old['phase']) + 1:
             raise ValueError('Installation phase ordering mismatch')
@@ -180,6 +197,339 @@ def update(root, bundle, release, phase, expected=''):
     return value
 
 
+def project_domain(root, release, domain):
+    """Canonical preparing-record owner; projector never mints its own lease."""
+    directory(root)
+    if release.parent != root / 'releases' or not standalone_profile(release):
+        raise ValueError('Projection requires the selected standalone release')
+    old = read(root / '.install-intent.json')
+    if (not old or old['phase'] != 'preparing' or old['release'] != str(release)
+            or read(release / 'installation-receipt.json') != old
+            or fingerprint(release) != old['inputs']):
+        raise ValueError('Projection requires identical preparing input authority')
+    if domain in old.get('domainRuntimeProjections', {}):
+        raise ValueError('Projection replay requires canonical failed-intent disposition')
+    source = Path(__file__).with_name('native-runtime-projection-owner.py')
+    spec = importlib.util.spec_from_file_location('native_journal_projection_owner', source)
+    owner = importlib.util.module_from_spec(spec); sys.modules[spec.name] = owner
+    spec.loader.exec_module(owner)
+    custody = owner.prepare_custody(root, release, old, domain)
+    value = dict(old, projectionCustody=custody)
+    write(release / 'installation-receipt.json', value)
+    write(root / '.install-intent.json', value)
+    proof = owner.project_and_handoff(root, release, value, domain)
+    projections = dict(value.get('domainRuntimeProjections', {}))
+    projections[domain] = proof
+    value = dict(value, domainRuntimeProjections=projections)
+    write(release / 'installation-receipt.json', value)
+    write(root / '.install-intent.json', value)
+    env_spec = importlib.util.spec_from_file_location('native_journal_projected_env_owner',
+               Path(__file__).with_name('native-projected-env-owner.py'))
+    env_owner = importlib.util.module_from_spec(env_spec); sys.modules[env_spec.name] = env_owner
+    env_spec.loader.exec_module(env_owner)
+    handoff = env_owner.copy_environment(root, release, value, domain)
+    if not isinstance(handoff, dict) or handoff.get('status') != 'completed':
+        raise ValueError('Canonical projected environment handoff incomplete')
+    projections[domain] = dict(proof, environmentStoreHandoff=handoff)
+    value = dict(value, domainRuntimeProjections=projections)
+    write(release / 'installation-receipt.json', value)
+    write(root / '.install-intent.json', value)
+    return projections[domain]
+
+
+def native_file_owner():
+    source = Path(__file__).with_name('native-install-files.py')
+    spec = importlib.util.spec_from_file_location('stack_native_file_owner', source)
+    owner = importlib.util.module_from_spec(spec)
+    exec(compile(source.read_bytes(), str(source), 'exec'), owner.__dict__)
+    return owner
+
+
+def runtime_environment_unit_owner():
+    source = Path(__file__).with_name('native-runtime-env-units.py')
+    spec = importlib.util.spec_from_file_location('stack_runtime_environment_unit_owner', source)
+    owner = importlib.util.module_from_spec(spec)
+    exec(compile(source.read_bytes(), str(source), 'exec'), owner.__dict__)
+    return owner
+
+
+def publish_runtime_environment_units(root, release):
+    """Seal exact adjunct custody before one-process file publication."""
+    owner = runtime_environment_unit_owner(); owner.o.lock_held(root)
+    directory(root); directory(release)
+    path, receipt = root / '.install-intent.json', release / 'installation-receipt.json'
+    old = read(path)
+    if (not old or old.get('phase') != 'preparing' or old.get('release') != str(release)
+            or release.parent != root / 'releases' or read(receipt) != old or digest(path) != digest(receipt)
+            or any(key in old for key in ('nativeRuntimeEnvUnitCustody', 'nativeRuntimeEnvUnits'))):
+        raise ValueError('Exact unpublished runtime environment unit transaction required')
+    key = (str(root), str(release))
+    try:
+        custody = owner.prepare_custody(root, release, old)
+        if read(path) != old or read(receipt) != old:
+            raise ValueError('Runtime environment unit preparation CAS changed')
+        prepared = dict(old, nativeRuntimeEnvUnitCustody=custody)
+        write(receipt, prepared); write(path, prepared)
+        proof = owner.publish(root, release, prepared)
+        if (read(path) != prepared or read(receipt) != prepared or digest(path) != digest(receipt)
+                or proof.get('kind') != 'native-runtime-env-units' or proof.get('status') != 'completed'
+                or proof.get('release') != str(release) or proof.get('inputs') != prepared.get('inputs')
+                or proof.get('custodySha256') != owner.p.sha(owner.p.encoded(custody))
+                or proof.get('intentSha256') != digest(path) or proof.get('receiptSha256') != digest(path)
+                or proof.get('runtimeDeferred') is not True or proof.get('updaterOwned') is not False
+                or proof.get('activationAuthorized') is not False or proof.get('readinessAuthorized') is not False):
+            raise ValueError('Runtime environment unit proof or record CAS differs')
+        final = dict(prepared, nativeRuntimeEnvUnits=proof)
+        write(receipt, final); write(path, final)
+        return proof
+    finally:
+        pending = getattr(owner, '_sessions', {}).pop(key, None)
+        if pending is not None: pending.close()
+
+
+def seal_runtime_environment_copies(root, release):
+    """Record actual Root-issued copies, never authorize a runtime restore."""
+    owner = runtime_environment_unit_owner(); owner.o.lock_held(root)
+    directory(root); directory(release)
+    path, receipt = root / '.install-intent.json', release / 'installation-receipt.json'
+    old = read(path)
+    if (not old or old.get('release') != str(release) or release.parent != root / 'releases'
+            or old.get('phase') not in {'preparing', 'units-selected', 'building', 'starting', 'active'}
+            or read(receipt) != old or digest(path) != digest(receipt)):
+        raise ValueError('Exact runtime copy observation transaction required')
+    proof = owner.seal_running_copies(root, release, old)
+    if (read(path) != old or read(receipt) != old or digest(path) != digest(receipt)
+            or proof.get('kind') != 'root-runtime-copy-observation' or proof.get('status') != 'completed'
+            or proof.get('release') != str(release) or proof.get('inputs') != old.get('inputs')
+            or proof.get('intentSha256') != digest(path) or proof.get('receiptSha256') != digest(path)
+            or proof.get('activationAuthorized') is not False or proof.get('readinessAuthorized') is not False
+            or proof.get('resetAuthorized') is not False or proof.get('journalWritten') is not False):
+        raise ValueError('Actual Root runtime copy proof or source CAS differs')
+    final = dict(old, nativeRuntimeEnvironmentCopies=proof)
+    write(receipt, final); write(path, final)
+    return proof
+
+
+def rootful_environment_owner():
+    source = Path(__file__).with_name('native-rootful-env-owner.py')
+    spec = importlib.util.spec_from_file_location('stack_rootful_environment_owner', source)
+    owner = importlib.util.module_from_spec(spec)
+    exec(compile(source.read_bytes(), str(source), 'exec'), owner.__dict__)
+    return owner
+
+
+def project_rootful_environment(root, release):
+    """Retain source FDs through custody sealing and exact persistent copy."""
+    owner = rootful_environment_owner(); owner.o.lock_held(root)
+    directory(root); directory(release)
+    path, receipt = root / '.install-intent.json', release / 'installation-receipt.json'
+    old = read(path)
+    if (not old or old.get('phase') != 'preparing' or old.get('release') != str(release)
+            or release.parent != root / 'releases' or read(receipt) != old or digest(path) != digest(receipt)
+            or any(key in old for key in ('rootfulEnvCustody', 'rootfulEnvironmentStoreHandoff'))):
+        raise ValueError('Exact unpublished rootful environment transaction required')
+    key = (str(root), str(release))
+    try:
+        custody = owner.prepare_custody(root, release, old)
+        if read(path) != old or read(receipt) != old:
+            raise ValueError('Rootful environment preparation record CAS changed')
+        prepared = dict(old, rootfulEnvCustody=custody)
+        write(receipt, prepared); write(path, prepared)
+        proof = owner.copy_environment(root, release, prepared)
+        if (read(path) != prepared or read(receipt) != prepared or digest(path) != digest(receipt)
+                or proof.get('kind') != 'rootful-persistent-environment' or proof.get('status') != 'completed'
+                or proof.get('release') != str(release) or proof.get('inputs') != prepared.get('inputs')
+                or proof.get('sourceCustodySha256') != owner.p.sha(owner.p.encoded(custody))
+                or proof.get('stateStore') != str(root / 'runtime-env') or proof.get('runtimeDeferred') is not True
+                or proof.get('activationAuthorized') is not False or proof.get('readinessAuthorized') is not False
+                or proof.get('removeUnselected') is not False):
+            raise ValueError('Rootful environment proof or journal CAS differs')
+        final = dict(prepared, rootfulEnvironmentStoreHandoff=proof)
+        write(receipt, final); write(path, final)
+        return proof
+    finally:
+        pending = getattr(owner, '_sessions', {}).pop(key, None)
+        if pending is not None: pending.close()
+
+
+def native_stop_selection(root, release):
+    """Read the exact sealed source union; never discover a live prefix."""
+    owner = native_file_owner(); o, p, native = owner.o, owner.p, owner.native
+    o.lock_held(root); directory(root); directory(release)
+    if release.parent != root / 'releases': raise ValueError('Selected stop source escapes metadata')
+    with p.directory(root) as fd:
+        o.root_directory(os.fstat(fd), private=True)
+        pin = p.custody_record(fd)
+        if pin['acl'] or pin['defaultAcl']: raise ValueError('Stop metadata root ACL differs')
+        raw, _ = p.read_at(fd, '.install-intent.json', private=True)
+        current = p.current_record(fd)
+    with p.directory(release) as fd:
+        o.root_directory(os.fstat(fd), private=True)
+        pin = p.custody_record(fd)
+        if pin['acl'] or pin['defaultAcl']: raise ValueError('Stop source root ACL differs')
+        receipt, _ = p.read_at(fd, 'installation-receipt.json', private=True)
+    value = p.strict(raw)
+    if (receipt != raw or value.get('release') != str(release)
+            or value.get('phase') not in {'preparing', 'units-selected', 'building', 'starting', 'active', 'failed'}
+            or set(value.get('inputs', {})) != p.INPUTS
+            or fingerprint(release, value['inputs'].keys()) != value['inputs']):
+        raise ValueError('Stop source private records/full inputs differ')
+    custody, proof = value.get('nativeUnitFileCustody'), value.get('nativeUnitFiles')
+    if (not isinstance(custody, dict) or not isinstance(proof, dict)
+            or proof.get('status') != 'completed' or proof.get('release') != str(release)
+            or custody.get('inputs') != value['inputs'] or proof.get('inputs') != value['inputs']):
+        raise ValueError('Exact selected-file ownership has not completed')
+    expected = standalone_binding(release)
+    scope, operator, authority = owner.storage.authority(release)
+    if expected != authority: raise ValueError('Stop storage source changed')
+    marker_fd, _ = o.open_absolute(scope, operator)
+    try: marker_body, _ = p.read_at(marker_fd, owner.storage.MARKER, private=True)
+    finally: os.close(marker_fd)
+    if p.strict(marker_body) != expected or p.sha(marker_body) != custody.get('scopeMarkerSha256'):
+        raise ValueError('Stop selection marker changed')
+    accounts = custody.get('accounts', {})
+    if set(accounts) != set(native.IDENTITIES): raise ValueError('Seven sealed stop actors required')
+    for name, account in accounts.items():
+        uid, user = native.IDENTITIES[name]
+        actual, group = o.pwd.getpwnam(user), o.grp.getgrnam(user)
+        if (account != dict(uid=uid, user=user, gid=actual.pw_gid, home=actual.pw_dir,
+                            subuidStart=owner.storage.namespace_root_id(user))
+                or (actual.pw_uid, actual.pw_name, actual.pw_dir) != (uid, user, '/home/' + user)
+                or group.gr_gid != actual.pw_gid or o.pwd.getpwuid(uid).pw_name != user
+                or o.grp.getgrgid(group.gr_gid).gr_name != user):
+            raise ValueError('Stop actor NSS/subrange changed')
+    old = custody.get('stopOnlyPrevious'); previous = None
+    if old is not None:
+        previous = p.canonical(old['release'])
+        if (previous.parent != root / 'releases' or previous == release
+                or native.source_plan(previous, previous=True) != old.get('source')):
+            raise ValueError('Stop-only previous source changed')
+    if current is not None:
+        target = current['target']
+        selected = p.canonical(target) if target.startswith('/') else root / p.relative(target)
+        if current['identity'][2:4] != [0, 0] or selected not in {release, previous}:
+            raise ValueError('Stop current is not selected by exact source custody')
+    selected = native.validate_installed(release, previous)['plan']
+    with p.directory(root) as fd:
+        final, _ = p.read_at(fd, '.install-intent.json', private=True)
+        final_current = p.current_record(fd)
+    with p.directory(release) as fd:
+        final_receipt, _ = p.read_at(fd, 'installation-receipt.json', private=True)
+    if final != raw or final_receipt != raw or final_current != current:
+        raise ValueError('Stop selection record/current CAS changed')
+    return selected
+
+
+def install_selected_files(root, release):
+    """Publish exact selected files in one retained-FD preparing transaction."""
+    owner = native_file_owner()
+    owner.o.lock_held(root)
+    directory(root); directory(release)
+    path, receipt = root / '.install-intent.json', release / 'installation-receipt.json'
+    old = read(path)
+    if (not old or old.get('phase') != 'preparing' or old.get('release') != str(release)
+            or release.parent != root / 'releases' or read(receipt) != old
+            or digest(path) != digest(receipt)
+            or any(key in old for key in ('nativeUnitFileCustody', 'nativeUnitFiles'))):
+        raise ValueError('Exact unpublished selected-file transaction required')
+    key = (str(root), str(release))
+    try:
+        custody = owner.prepare_custody(root, release, old)
+        if read(path) != old or read(receipt) != old:
+            raise ValueError('Selected-file preparation record CAS changed')
+        prepared = dict(old, nativeUnitFileCustody=custody)
+        write(receipt, prepared); write(path, prepared)
+        proof = owner.project_and_handoff(root, release, prepared)
+        if (read(path) != prepared or read(receipt) != prepared
+                or digest(path) != digest(receipt)
+                or proof.get('kind') != 'native-selected-unit-files' or proof.get('status') != 'completed'
+                or proof.get('release') != str(release) or proof.get('inputs') != prepared.get('inputs')
+                or proof.get('intentSha256') != digest(path) or proof.get('receiptSha256') != digest(path)
+                or proof.get('activationAuthorized') is not False or proof.get('readinessAuthorized') is not False):
+            raise ValueError('Selected-file publication proof or record CAS differs')
+        final = dict(prepared, nativeUnitFiles=proof)
+        write(receipt, final); write(path, final)
+        return proof
+    finally:
+        pending = getattr(owner, '_sessions', {}).pop(key, None)
+        if pending is not None: pending.close()
+
+
+def complete_clean_reset(root, expected):
+    """Consume a same-process stopped lease; only this owner retires records.
+
+    No caller-supplied report or boolean is accepted. The explicit synthetic
+    reset authority and exact scope/stop/source/CAS checks remain in the backend.
+    Caller must retain canonical inherited FD9 across ALL root record writes.
+    """
+    directory(root)
+    if not isinstance(expected, str) or re.fullmatch('[a-f0-9]{64}', expected) is None:
+        raise ValueError('Exact complete-clean intent CAS required')
+    owner_spec = importlib.util.spec_from_file_location('native_clean_lock_owner',
+                 Path(__file__).with_name('native-runtime-projection-owner.py'))
+    lock_owner = importlib.util.module_from_spec(owner_spec); sys.modules[owner_spec.name] = lock_owner
+    owner_spec.loader.exec_module(lock_owner)
+    lock_owner.lock_held(root)
+    path = root / '.install-intent.json'
+    old = read(path)
+    if not old or old['phase'] not in ('active', 'failed', 'retired-failed') or digest(path) != expected:
+        raise ValueError('Complete-clean requires exact eligible terminal intent')
+    release = Path(old['release'])
+    receipt_path = release / 'installation-receipt.json'
+    if release.parent != root / 'releases' or read(receipt_path) != old:
+        raise ValueError('Complete-clean source receipt differs')
+    reset_spec = importlib.util.spec_from_file_location('native_journal_clean_reset',
+                 Path(__file__).with_name('host-clean-reset.py'))
+    backend = importlib.util.module_from_spec(reset_spec); sys.modules[reset_spec.name] = backend
+    reset_spec.loader.exec_module(backend)
+    reviewed = backend.review_runtime_custody(root, expected)
+    custody = reviewed['cleanResetCustody']
+    if old.get('cleanResetCustody') != custody:
+        if digest(path) != expected or read(receipt_path) != old:
+            raise ValueError('Complete-clean custody publication CAS changed')
+        old = dict(old, cleanResetCustody=custody)
+        write(receipt_path, old)
+        write(path, old)
+        expected = digest(path)
+    reviewed = backend.review(root, expected)
+    plan_sha = reviewed['planSha256']
+    lease = backend.issue_stopped_lease(root, expected, plan_sha)
+    result = backend.execute(root, expected, plan_sha, lease)
+    if (digest(path) != expected or read(receipt_path) != old
+            or read(path) != old or result.get('completeCleanReset') is not True
+            or result.get('intentSha256') != expected or result.get('planSha256') != plan_sha
+            or result.get('phase') != 'complete-owned-synthetic-clean'
+            or result.get('requiredJournalTransition') != 'journal-owner-exact-CAS-retired-clean-no-restart'):
+        raise ValueError('Complete-clean result or unchanged root authority differs; inspect durable evidence')
+    prefix = result.get('claimPrefix', '')
+    match = re.fullmatch(r'\.clean-reset-(' + re.escape(plan_sha) + r'-[a-f0-9]{32})-', prefix)
+    if not match:
+        raise ValueError('Complete-clean operation identity differs')
+    attempt = match.group(1)
+    result_path = root / '.host-clean-reset' / (attempt + '-result.json')
+    intent_path = root / '.host-clean-reset' / (attempt + '-intent.json')
+    result_body, _ = backend.read_file(result_path, private=True, gid=0)
+    intent_body, _ = backend.read_file(intent_path, private=True, gid=0)
+    operation = backend.strict(intent_body)
+    if (backend.canonical(backend.strict(result_body)) != backend.canonical(result)
+            or operation.get('claimPrefix') != prefix or operation.get('intentSha256') != expected
+            or operation.get('planSha256') != plan_sha
+            or backend.sha(backend.canonical(operation.get('plan'))) != plan_sha):
+        raise ValueError('Complete-clean durable evidence differs')
+    lock_owner.lock_held(root)
+    if digest(path) != expected or read(receipt_path) != old:
+        raise ValueError('Complete-clean final journal CAS changed')
+    value = dict(old, phase='retired-clean', previousRelease=None,
+        steps=old['steps'] + ['retired-clean'],
+        completeCleanReset=dict(intentSha256=expected, planSha256=plan_sha,
+            resultPath=str(result_path), resultSha256=backend.sha(result_body),
+            applicationAcceptance=False, rootfulStoreColdAcceptance=False,
+            automaticRestart=False, dataCompatibilityProven=False))
+    write(receipt_path, value)
+    write(path, value)
+    return value['completeCleanReset']
+
+
 def standalone_binding(release):
     source = Path(__file__).with_name('grant-rootless-volume-parent-traverse.py')
     spec = importlib.util.spec_from_file_location('journal_storage_binding', source)
@@ -188,6 +538,15 @@ def standalone_binding(release):
     module.marker(scope, expected)
     module.safe_parent(scope, operator)
     return expected
+
+
+def native_stop_inventory(release):
+    """Current trusted selector, historical source policy, stop/read use ONLY."""
+    source = Path(__file__).with_name('native-selection.py')
+    spec = importlib.util.spec_from_file_location('stack_native_stop_selection', source)
+    module = importlib.util.module_from_spec(spec)
+    exec(compile(source.read_bytes(), str(source), 'exec'), module.__dict__)
+    return module.inventory(release, previous=True)
 
 
 def selected_quarantine_plans(release):
@@ -219,6 +578,13 @@ def selected_quarantine_plans(release):
         commands.append(('rootless-' + name, ['runuser', '-u', user, '--', 'env',
                          'HOME=' + account.pw_dir, 'XDG_RUNTIME_DIR=/run/user/' + str(uid),
                          'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/' + str(uid) + '/bus', 'systemctl', '--user']))
+    if standalone:
+        inventory = native_stop_inventory(release)
+        if set(inventory) != {label for label, _ in commands}:
+            raise ValueError('Historical stopped inventory scope mismatch')
+        # Include networks, all emitted targets and on-demand producers. A
+        # container-only scan falsely declared their selected managers stopped.
+        return [(label, command, sorted(inventory[label]['units'])) for label, command in commands]
     plans = []
     for label, command in commands:
         quadlet = release / 'quadlet' / label
@@ -265,6 +631,21 @@ def offline_actor(release, label):
             props.get('SubState') not in ('dead', 'failed') or props.get('MainPID') != '0' or props.get('Job') != ''):
         raise ValueError('Selected manager has pending activity')
     return row
+
+
+def assert_domain_offline(bundle, domain):
+    directory(bundle)
+    if not standalone_profile(bundle):
+        raise ValueError('Offline preparation requires standalone source authority')
+    label = 'rootless-' + domain
+    plans = [row for row in selected_quarantine_plans(bundle) if row[0] == label]
+    if len(plans) != 1:
+        raise ValueError('Unknown selected offline actor')
+    actor = offline_actor(bundle, label)
+    if actor is None:
+        raise ValueError('Stop the selected actor through its canonical lifecycle before preparing')
+    verify_offline_actor(actor, plans[0][1])
+    return {'domain': domain, 'uid': actor['uid'], 'status': 'offline-preparation-only'}
 
 
 def offline_control(command):
@@ -528,10 +909,160 @@ def retire_failed(root, expected, reviewed, verifier=verify_quarantined):
     return retired
 
 
+def native_finance_owner(release, old):
+    """Compile ONLY the selected immutable complete liveOps closure."""
+    owner = native_file_owner(); native = owner.native
+    bundle_body = native.read_file(release / 'bundle.json')
+    if native.sha(bundle_body) != old.get('inputs', {}).get('bundle.json'):
+        raise ValueError('Original selected finance bundle input SHA differs')
+    pins = native.strict(bundle_body).get('liveOps')
+    if (not isinstance(pins, dict) or not pins
+            or any(not re.fullmatch(r'ops/[A-Za-z0-9_.-]+', name) or not re.fullmatch('[a-f0-9]{64}', digest)
+                   for name, digest in pins.items())):
+        raise ValueError('Complete pinned finance operation sources required')
+    if set(native.children(release / 'ops')) != {name[4:] for name in pins}:
+        raise ValueError('Selected finance operation namespace differs')
+    bodies = {}
+    for name, expected in sorted(pins.items()):
+        body = native.read_file(release / name)
+        if native.sha(body) != expected: raise ValueError('Selected finance operation source SHA differs')
+        bodies[name] = body
+    name = 'ops/native-finance-ownership.py'
+    if name not in bodies: raise ValueError('Selected release lacks native finance owner')
+    spec = importlib.util.spec_from_file_location('journal_native_finance_owner', release / name)
+    module = importlib.util.module_from_spec(spec)
+    exec(compile(bodies[name], str(release / name), 'exec'), module.__dict__)
+    return module
+
+
+def publish_native_finance(root, release, action, expected=''):
+    """Original retained lifecycle only: arm/capture under the canonical FD9."""
+    if action not in ('arm', 'capture'): raise ValueError('Exact native finance action required')
+    native_stop_selection(root, release)  # Existing full-source/NSS/marker/unit reader.
+    reader = native_file_owner(); o, p = reader.o, reader.p
+    o.lock_held(root)
+    with p.directory(root) as root_fd, p.directory(release) as release_fd:
+        raw, _ = p.read_at(root_fd, '.install-intent.json', private=True)
+        receipt, _ = p.read_at(release_fd, 'installation-receipt.json', private=True)
+        old = p.strict(raw); current = p.current_record(root_fd)
+        if (raw != receipt or old.get('phase') != 'starting' or old.get('release') != str(release)
+                or type(old.get('schemaVersion')) is not int or old['schemaVersion'] != 1
+                or current is None or current['target'] not in (str(release), 'releases/' + release.name)
+                or (expected and p.sha(raw) != expected)):
+            raise ValueError('Exact starting native finance dual-record/current CAS required')
+        owner = native_finance_owner(release, old)
+        result = owner.transact(root, release, old, action)
+        if type(result) is not owner.RootFinanceResult:
+            raise ValueError('Only exact process-local native finance result may publish')
+        try:
+            field = 'financeOwnershipCustody' if action == 'arm' else 'nativeFinanceOwnershipReceipt'
+            if result.field != field or not isinstance(result.record, dict):
+                raise ValueError('Native finance result field/schema differs')
+            result.recheck()
+            if (p.read_at(root_fd, '.install-intent.json', private=True)[0] != raw
+                    or p.read_at(release_fd, 'installation-receipt.json', private=True)[0] != raw
+                    or p.current_record(root_fd) != current):
+                raise ValueError('Native finance pre-publication CAS changed')
+            value = dict(old, **{field: result.record})
+            o.lock_held(root)
+            write(release / 'installation-receipt.json', value)
+            if p.read_at(root_fd, '.install-intent.json', private=True)[0] != raw:
+                raise ValueError('Native finance publication interrupted/changed')
+            o.lock_held(root)
+            write(root / '.install-intent.json', value)
+            reference = result.publish(value)
+            if type(reference) is not owner.RootFinanceReference:
+                raise ValueError('Exact Root-issued physical finance reference required')
+            reference.recheck(value)
+            prepared_raw, _ = p.read_at(root_fd, '.install-intent.json', private=True)
+            if (p.strict(prepared_raw) != value
+                    or p.read_at(release_fd, 'installation-receipt.json', private=True)[0] != prepared_raw
+                    or p.current_record(root_fd) != current):
+                raise ValueError('Native finance physical-reference publication CAS changed')
+            final = dict(value, nativeFinanceReference=reference.record)
+            o.lock_held(root)
+            write(release / 'installation-receipt.json', final)
+            if p.read_at(root_fd, '.install-intent.json', private=True)[0] != prepared_raw:
+                raise ValueError('Native finance reference final publication interrupted')
+            o.lock_held(root)
+            write(root / '.install-intent.json', final)
+            final_raw, _ = p.read_at(root_fd, '.install-intent.json', private=True)
+            if (p.strict(final_raw) != final
+                    or final_raw != p.read_at(release_fd, 'installation-receipt.json', private=True)[0]
+                    or p.current_record(root_fd) != current):
+                raise ValueError('Native finance final dual records/current differ')
+            return {field: result.record, 'nativeFinanceReference': reference.record}
+        finally: result.close()
+
+
+def native_recovery_owner():
+    source = Path(__file__).with_name('native-recovery-owner.py')
+    spec = importlib.util.spec_from_file_location('journal_native_recovery_owner', source)
+    owner = importlib.util.module_from_spec(spec)
+    exec(compile(source.read_bytes(), str(source), 'exec'), owner.__dict__)
+    return owner
+
+
+def prepare_native_recovery(root, expected_intent_sha256, operation, operations):
+    """Publish SOURCE custody, never a serialized stopped-operation permit.
+
+    Caller retains the actual canonical FD9 flock OFD. Return a process-local
+    typed lease; only the new recovery dispatch consumes it. Normal phase,
+    projection, runtime, readiness and reset owners are deliberately unchanged.
+    """
+    owner = native_recovery_owner()
+    lease = owner.capture(root, expected_intent_sha256, operation, operations)
+    lease._owner = owner
+    try:
+        lease.guard()
+        old = lease.intent
+        new = dict(old, recoveryCustody=lease.custody)
+        if 'recoveryCustody' in old and old['recoveryCustody'] != lease.custody:
+            raise ValueError('Original recovery source custody drift; no rebase/adoption')
+        intent_path, receipt_path = Path(root) / '.install-intent.json', lease.release / 'installation-receipt.json'
+        raw = operations.body(intent_path, private=True)
+        if (owner.h.sha(raw) != expected_intent_sha256
+                or operations.body(receipt_path, private=True) != raw):
+            raise ValueError('Recovery dual-record publication CAS changed')
+        lease.api.o.lock_held(Path(root))
+        if new != old:
+            write(receipt_path, new)
+            # A crash/mismatch leaves an inert dual-record mismatch, never a
+            # usable lease or automatic rollback over another Root writer.
+            if operations.body(intent_path, private=True) != raw or read(receipt_path) != new:
+                raise ValueError('Recovery publication interrupted/changed')
+            lease.api.o.lock_held(Path(root))
+            write(intent_path, new)
+        if operations.body(intent_path, private=True) != operations.body(receipt_path, private=True):
+            raise ValueError('Recovery publication did not produce identical Root records')
+        lease.bind_published(new)
+        return lease
+    except BaseException:
+        lease.close()
+        raise
+
+
+def native_recovery(root, expected_intent_sha256, operation, operations):
+    """Complete one native backup/restore under the caller's existing FD9."""
+    lease = prepare_native_recovery(root, expected_intent_sha256, operation, operations)
+    return lease._owner.execute(lease)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, required=True)
     parser.add_argument('--inspect', action='store_true')
+    parser.add_argument('--project-domain')
+    parser.add_argument('--complete-clean-reset', action='store_true')
+    parser.add_argument('--install-selected-files', action='store_true')
+    parser.add_argument('--stop-selection', action='store_true')
+    parser.add_argument('--project-rootful-environment', action='store_true')
+    parser.add_argument('--install-runtime-environment-units', action='store_true')
+    parser.add_argument('--seal-runtime-environment-copies', action='store_true')
+    parser.add_argument('--native-finance-arm', action='store_true')
+    parser.add_argument('--native-finance-capture', action='store_true')
+    parser.add_argument('--scope')
+    parser.add_argument('--assert-domain-offline')
     parser.add_argument('--retire-failed', default='')
     parser.add_argument('--retire-unselected', default='')
     parser.add_argument('--seal-unselected', default='')
@@ -543,6 +1074,12 @@ def main():
     parser.add_argument('--expected', default='')
     args = parser.parse_args()
     if os.geteuid() != 0: parser.error('Root-owned installation journal required')
+    actions = (args.inspect, bool(args.project_domain), args.complete_clean_reset, args.install_selected_files, args.stop_selection,
+               args.project_rootful_environment, args.install_runtime_environment_units, args.seal_runtime_environment_copies,
+               args.native_finance_arm, args.native_finance_capture,
+               bool(args.assert_domain_offline), bool(args.retire_failed), bool(args.retire_unselected),
+               bool(args.seal_unselected), bool(args.quarantine_failed), args.phase is not None)
+    if sum(actions) != 1: parser.error('Exactly one canonical journal operation required')
     try:
         if args.retire_failed or args.quarantine_failed or args.retire_unselected or args.seal_unselected:
             if sum(bool(v) for v in (args.retire_failed, args.quarantine_failed, args.retire_unselected, args.seal_unselected)) != 1:
@@ -565,6 +1102,42 @@ def main():
                     result = retire_failed(args.root, args.retire_failed, args.reviewed_data_state)
                 print(json.dumps(result, sort_keys=True))
             finally: os.close(fd)
+        elif args.native_finance_arm or args.native_finance_capture:
+            if args.release is None or args.bundle is not None or args.reviewed_data_state or args.scope is not None:
+                raise ValueError('One source-bound original native finance operation required')
+            print(json.dumps(publish_native_finance(args.root, args.release,
+                'arm' if args.native_finance_arm else 'capture', args.expected), sort_keys=True))
+        elif args.install_runtime_environment_units or args.seal_runtime_environment_copies:
+            if args.release is None or args.bundle is not None or args.expected or args.reviewed_data_state:
+                raise ValueError('One source-bound runtime environment operation required')
+            operation = publish_runtime_environment_units if args.install_runtime_environment_units else seal_runtime_environment_copies
+            print(json.dumps(operation(args.root, args.release), sort_keys=True))
+        elif args.project_rootful_environment:
+            if args.release is None or args.bundle is not None or args.expected or args.reviewed_data_state:
+                raise ValueError('One source-bound persistent rootful environment projection required')
+            print(json.dumps(project_rootful_environment(args.root, args.release), sort_keys=True))
+        elif args.stop_selection:
+            if args.release is None or args.bundle is not None or args.scope is None:
+                raise ValueError('One exact source-bound stop scope required')
+            selected = native_stop_selection(args.root, args.release)
+            if args.scope not in selected['scopes']: raise ValueError('Unknown selected stop scope')
+            print('\n'.join(selected['scopes'][args.scope]['units']))
+        elif args.install_selected_files:
+            if args.release is None or args.bundle is not None or args.expected or args.reviewed_data_state:
+                raise ValueError('One source-bound selected-file publication required')
+            print(json.dumps(install_selected_files(args.root, args.release), sort_keys=True))
+        elif args.complete_clean_reset:
+            if args.phase is not None or args.inspect or args.project_domain or args.assert_domain_offline:
+                raise ValueError('One canonical complete-clean operation required')
+            print(json.dumps(complete_clean_reset(args.root, args.expected), sort_keys=True))
+        elif args.assert_domain_offline:
+            if args.bundle is None or args.phase is not None or args.project_domain:
+                raise ValueError('Offline actor preparation requires one source-bound operation')
+            print(json.dumps(assert_domain_offline(args.bundle, args.assert_domain_offline), sort_keys=True))
+        elif args.project_domain:
+            if args.release is None or args.inspect or args.phase is not None:
+                raise ValueError('One preparing projection operation required')
+            print(json.dumps(project_domain(args.root, args.release, args.project_domain), sort_keys=True))
         elif args.inspect:
             directory(args.root)
             path = args.root / '.install-intent.json'

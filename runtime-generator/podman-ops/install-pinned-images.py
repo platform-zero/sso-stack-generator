@@ -2,6 +2,7 @@
 """Import explicit hash-bound release images into only their selected authority stores."""
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -9,21 +10,29 @@ import pwd
 import re
 import stat
 import subprocess
+import sys
+import tarfile
+import zlib
 
 
 def protected(path):
     info = path.lstat()
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
-        raise ValueError('Image input must be root-owned regular non-writable file')
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1 or info.st_mode & 0o022:
+        raise ValueError('Image input must be root-owned unlinked regular non-writable file')
 
 
 def validate(bundle, inputs):
+    bundle, inputs = Path(bundle).absolute(), Path(inputs).absolute()
+    documents = [read_json(bundle / name) for name in
+                 ('bundle.json', 'podman-domains.json', 'site/manifest.json') if (bundle / name).exists()]
+    if any(d.get('deploymentMode') == 'standalone' for d in documents):
+        return validate_standalone(bundle, inputs)
     protected(inputs)
-    data = json.loads(inputs.read_text())
-    if data.get('schemaVersion') != 1 or not isinstance(data.get('images'), list):
+    data = read_json(inputs)
+    if type(data.get('schemaVersion')) is not int or data['schemaVersion'] != 1 or not isinstance(data.get('images'), list):
         raise ValueError('Invalid image input manifest')
-    ir = json.loads((bundle / 'stack.ir.json').read_text())
-    domains = {d['name']: d for d in json.loads((bundle / 'podman-domains.json').read_text())['domains']}
+    ir = read_json(bundle / 'stack.ir.json')
+    domains = {d['name']: d for d in read_json(bundle / 'podman-domains.json')['domains']}
     rows = []
     seen = set()
     for row in data['images']:
@@ -60,9 +69,261 @@ def validate(bundle, inputs):
     return rows
 
 
+def strict_json(source):
+    def pairs(rows):
+        result = {}
+        for key, value in rows:
+            if key in result:
+                raise ValueError('Duplicate JSON key')
+            result[key] = value
+        return result
+    return json.load(source, object_pairs_hook=pairs,
+                     parse_constant=lambda _: (_ for _ in ()).throw(ValueError('Non-finite JSON')))
+
+
+def read_json(path):
+    ancestry(path)
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > 2 * 1024**2:
+        raise ValueError('Bounded unlinked JSON regular file required')
+    fd = open_regular(path)
+    with os.fdopen(fd, 'r') as source:
+        if identity(os.fstat(source.fileno())) != identity(before):
+            raise ValueError('JSON source changed before opening')
+        result = strict_json(source)
+        if (identity(os.fstat(source.fileno())) != identity(before) or
+                identity(path.lstat()) != identity(before)):
+            raise ValueError('JSON source changed while reading')
+    if not isinstance(result, dict):
+        raise ValueError('JSON object required')
+    return result
+
+
+def ancestry(path, private=False):
+    if not path.is_absolute() or '..' in path.parts:
+        raise ValueError('Absolute canonical image input path required')
+    for parent in path.parents:
+        info = parent.lstat()
+        # Sticky root-owned ancestors allow isolated /tmp fixtures, never a
+        # writable control directory or a linked ancestor.
+        sticky = info.st_uid == 0 and info.st_mode & stat.S_ISVTX
+        if (not stat.S_ISDIR(info.st_mode) or
+                (private and (info.st_uid != 0 or (info.st_mode & 0o022 and not sticky)))):
+            raise ValueError('Unsafe image input control ancestry')
+        if private and parent == path.parent and info.st_mode & 0o077:
+            raise ValueError('Image input control directory must be root-private')
+
+
+def open_regular(path, private=False):
+    """Pin every directory FD: O_NOFOLLOW on the leaf alone is insufficient."""
+    if not path.is_absolute() or '..' in path.parts:
+        raise ValueError('Absolute canonical file path required')
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory = os.open('/', flags)
+    try:
+        for part in path.parts[1:-1]:
+            child = os.open(part, flags, dir_fd=directory)
+            os.close(directory); directory = child
+            info = os.fstat(directory)
+            sticky = info.st_uid == 0 and info.st_mode & stat.S_ISVTX
+            if private and (info.st_uid != 0 or (info.st_mode & 0o022 and not sticky)):
+                raise ValueError('Unsafe opened image control ancestor')
+        if private and os.fstat(directory).st_mode & 0o077:
+            raise ValueError('Opened image control directory must be private')
+        return os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    finally:
+        os.close(directory)
+
+
+def identity(info):
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+            info.st_ctime_ns, info.st_uid, info.st_mode, info.st_nlink)
+
+
+def capture(path, private=False):
+    ancestry(path, private)
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+        raise ValueError('Unlinked regular image/source file required')
+    if private:
+        protected(path)
+    fd = open_regular(path, private)
+    with os.fdopen(fd, 'rb') as source:
+        if identity(os.fstat(source.fileno())) != identity(before):
+            raise ValueError('Image input changed before opening')
+        digest = hashlib.sha256()
+        for block in iter(lambda: source.read(8 * 1024**2), b''):
+            digest.update(block)
+        if (identity(os.fstat(source.fileno())) != identity(before) or
+                identity(path.lstat()) != identity(before)):
+            raise ValueError('Image input changed while reading')
+    return identity(before), digest.hexdigest()
+
+
+class ValidatedRows(list):
+    """Public list result retaining source/proof/archive CAS authority."""
+    def __init__(self, rows, bundle, inputs, captures):
+        super().__init__(rows)
+        self.bundle, self.inputs, self.captures = bundle, inputs, captures
+        self.expected = [(image, archive, tuple(users)) for image, archive, users in rows]
+
+    def recheck(self):
+        if [(i, p, tuple(u)) for i, p, u in self] != self.expected:
+            raise ValueError('Validated image scope changed')
+        if os.path.lexists(self.inputs.parent / 'PENDING'):
+            raise ValueError('Release image package is pending')
+        for path, (before, private) in self.captures.items():
+            if capture(path, private) != before:
+                raise ValueError('Release image/source CAS changed')
+
+    def check_fd(self, image, archive, source):
+        before = self.captures.get(archive)
+        if (before is None or identity(os.fstat(source.fileno())) != before[0][0] or
+                not any(i == image and p == archive for i, p, _ in self.expected)):
+            raise ValueError('Opened archive differs from declared image CAS')
+        self.recheck()
+
+
+def package_verifier():
+    # Trusted bundled owning implementation; never write a bytecode cache.
+    source = Path(__file__).with_name('package-release-images.py')
+    spec = importlib.util.spec_from_file_location('_release_image_verifier', source)
+    module = importlib.util.module_from_spec(spec)
+    previous = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        # Compile the hash-bound source itself, not a timestamp-valid .pyc.
+        with os.fdopen(open_regular(source.absolute()), 'rb') as stream:
+            exec(compile(stream.read(), str(source), 'exec'), module.__dict__)
+    finally:
+        sys.dont_write_bytecode = previous
+    return module
+
+
+def validate_standalone(bundle, inputs):
+    captures = {}
+    def remember(path, private=False):
+        captures[path] = (capture(path, private), private)
+        return captures[path][0][1]
+    def document(path, private=False):
+        if path.lstat().st_size > 2 * 1024**2:
+            raise ValueError('Oversized release metadata')
+        remember(path, private)
+        return read_json(path)
+    if os.path.lexists(inputs.parent / 'PENDING'):
+        raise ValueError('Release image package is pending')
+    data = document(inputs, True)
+    proof = document(inputs.parent / 'release-image-proof.json', True)
+    metadata, ir, provenance, manifest, domains = [document(bundle / name) for name in
+        ('bundle.json', 'stack.ir.json', 'source-provenance.json', 'site/manifest.json', 'podman-domains.json')]
+    sha = lambda name: captures[bundle / name][0][1]
+    if ([d.get('deploymentMode') for d in (metadata, manifest, domains)] != ['standalone'] * 3 or
+            metadata.get('backend') != 'podman' or metadata.get('irSha256') != sha('stack.ir.json') or
+            metadata.get('sourceProvenanceSha256') != sha('source-provenance.json') or
+            provenance.get('manifestSha256') != sha('site/manifest.json')):
+        raise ValueError('Standalone bundle/source hash binding differs')
+    if (provenance.get('generatorDirty') is not False or provenance.get('siteDirty') is not False or
+            any(not isinstance(provenance.get(k), str) or not re.fullmatch(r'[a-f0-9]{40}', provenance[k])
+                for k in ('generatorCommit', 'siteCommit')) or
+            not isinstance(provenance.get('modules'), list) or
+            any(not isinstance(row, dict) or row.get('dirty') is not False or
+                not isinstance(row.get('commit'), str) or not re.fullmatch(r'[a-f0-9]{40}', row['commit'])
+                for row in provenance['modules']) or
+            ir.get('modules') != [{k: v for k, v in row.items() if k != 'dirty'} for row in provenance['modules']]):
+        raise ValueError('Clean owning source provenance required')
+    users = {d['name']: d['user'] for d in domains['domains']}
+    if (len(users) != len(domains['domains']) or len(set(users.values())) != len(users) or
+            any(not isinstance(u, str) or u == 'root' or not re.fullmatch(r'[a-z_][a-z0-9_-]{0,63}', u)
+                for u in users.values())):
+        raise ValueError('Unique selected image store authorities required')
+    selected, producers = {}, {}
+    for name, service in ir['services'].items():
+        image = service.get('image', '')
+        if 'build' in service or 'frozenBuildImage' in service:
+            if (ir.get('quadletBuildImagesFrozen') is not True or not isinstance(image, str) or
+                    not re.fullmatch(r'sha256:[0-9a-f]{64}', image) or service.get('frozenBuildImage') != image):
+                raise ValueError('Every selected build recipe must be frozen')
+            if 'build' in service:
+                producers[name] = image
+        if not isinstance(image, str):
+            raise ValueError('Invalid image reference')
+        if not image.startswith('sha256:'):
+            continue
+        if not re.fullmatch(r'sha256:[0-9a-f]{64}', image) or service.get('updatePolicy') != 'pinned':
+            raise ValueError('Exact pinned immutable image selection required')
+        if service.get('placement') == 'rootless' and service.get('rootlessDomain') in users:
+            user = users[service['rootlessDomain']]
+        elif service.get('placement') == 'rootful':
+            user = 'root'
+        else:
+            raise ValueError('Unselected image placement/store')
+        selected.setdefault(image, set()).add(user)
+    pins_sha = None
+    if producers:
+        relative = manifest.get('localBuildImagePinsPath')
+        if (not isinstance(relative, str) or not relative or Path(relative).is_absolute() or
+                '..' in Path(relative).parts or str(Path(relative)) != relative):
+            raise ValueError('Canonical frozen producer pins path required')
+        pins_path = bundle / 'site' / relative
+        pins = document(pins_path)
+        if (set(pins) != {'schemaVersion', 'images'} or type(pins.get('schemaVersion')) is not int or
+                pins['schemaVersion'] != 1 or pins['images'] != producers):
+            raise ValueError('Frozen producer pins do not cover exact selected recipes')
+        pins_sha = captures[pins_path][0][1]
+    binding = {'bundleIrSha256': sha('stack.ir.json'), 'sourceProvenanceSha256': sha('source-provenance.json'),
+               'siteManifestSha256': sha('site/manifest.json'), 'domainMetadataSha256': sha('podman-domains.json'),
+               'localBuildPinsSha256': pins_sha}
+    selected = {image: sorted(authorities) for image, authorities in sorted(selected.items())}
+    packager_sha = remember(bundle / 'ops/package-release-images.py')
+    if packager_sha != remember(Path(__file__).absolute().with_name('package-release-images.py')):
+        raise ValueError('Bundled packager differs from trusted verifier')
+    keys = {'schemaVersion', 'purpose', 'binding', 'imageAuthorities', 'inputSha256', 'inputMode',
+            'packagerSha256', 'ociProofs', 'imageInputsSha256', 'activationAuthorized', 'acceptedIntegratedInstalls'}
+    if (not selected or set(proof) != keys or type(proof.get('schemaVersion')) is not int or proof['schemaVersion'] != 1 or
+            proof['purpose'] != 'source-bound-release-images' or proof['binding'] != binding or
+            proof['imageAuthorities'] != selected or proof['imageInputsSha256'] != captures[inputs][0][1] or
+            proof['packagerSha256'] != packager_sha or proof['inputMode'] not in ('offline-supply', 'dedicated-cache-export') or
+            not isinstance(proof['inputSha256'], str) or not re.fullmatch(r'[0-9a-f]{64}', proof['inputSha256']) or
+            proof['activationAuthorized'] is not False or type(proof['acceptedIntegratedInstalls']) is not int or
+            proof['acceptedIntegratedInstalls'] != 0 or not isinstance(proof['ociProofs'], dict) or
+            set(proof['ociProofs']) != set(selected)):
+        raise ValueError('Protected release proof does not bind exact selected source/images')
+    if (set(data) != {'schemaVersion', 'images'} or type(data.get('schemaVersion')) is not int or
+            data['schemaVersion'] != 1 or not isinstance(data.get('images'), list)):
+        raise ValueError('Invalid standalone image input manifest')
+    rows, seen, filenames = [], set(), set()
+    verifier = package_verifier()
+    for row in data['images']:
+        if not isinstance(row, dict) or set(row) != {'image', 'archiveFilename', 'archiveSha256', 'archiveBytes'}:
+            raise ValueError('Exact archive input schema required')
+        image, filename = row['image'], row['archiveFilename']
+        if not isinstance(image, str) or image not in selected or image in seen:
+            raise ValueError('Unselected or duplicate image input')
+        if (not isinstance(filename, str) or Path(filename).name != filename or filename in ('', '.', '..') or
+                filename in filenames or filename in (inputs.name, 'release-image-proof.json', 'PENDING')):
+            raise ValueError('Unique sibling archive filename required')
+        archive = inputs.parent / filename
+        if archive.lstat().st_size > verifier.MAX_ARCHIVE:
+            raise ValueError('Oversized release archive')
+        archive_sha = remember(archive, True)
+        if (archive_sha != row['archiveSha256'] or type(row['archiveBytes']) is not int or
+                row['archiveBytes'] != captures[archive][0][0][2]):
+            raise ValueError('Release archive hash/size differs')
+        # Real closure verification, not producer assertions; no extraction.
+        if verifier.verify_oci(archive, image) != proof['ociProofs'][image]:
+            raise ValueError('Actual OCI config/ordered DiffIDs differ from protected proof')
+        rows.append((image, archive, selected[image]))
+        seen.add(image); filenames.add(filename)
+    if seen != set(selected):
+        raise ValueError('Release inputs do not cover exact selected image scope')
+    result = ValidatedRows(rows, bundle, inputs, captures)
+    result.recheck()
+    return result
+
+
 def rootful_command(bundle):
     """Never import/pull a venue's rootful image through the shared store."""
-    metadata = json.loads((bundle / 'podman-domains.json').read_text())
+    metadata = read_json(bundle / 'podman-domains.json')
     venue = metadata.get('venue')
     if venue is None:
         return ['podman']
@@ -116,7 +377,7 @@ def frozen_aliases(bundle, metadata):
     """Retain exact producer tags used by dynamic, non-Quadlet consumers too."""
     if bundle is None:
         return {}
-    ir = json.loads((bundle / 'stack.ir.json').read_text())
+    ir = read_json(bundle / 'stack.ir.json')
     domains = {d['name']: d['user'] for d in metadata['domains']}
     result = {}
     for name, service in ir['services'].items():
@@ -192,8 +453,24 @@ def image_load_timeout(archive_bytes):
 
 
 def install(rows, bundle=None):
+    bundle = Path(bundle).absolute() if bundle is not None else None
+    validated = isinstance(rows, ValidatedRows)
+    if validated:
+        if bundle is None or Path(bundle).absolute() != rows.bundle:
+            raise ValueError('Validated images require their exact candidate bundle')
+        rows.recheck()
+    elif bundle is not None and any(
+            read_json(bundle / name).get('deploymentMode') == 'standalone'
+            for name in ('bundle.json', 'podman-domains.json', 'site/manifest.json') if (bundle / name).exists()):
+        raise ValueError('Standalone image installation requires validated release proof')
+    def dispatch(command, **kwargs):
+        if validated:
+            rows.recheck()
+            if 'stdin' in kwargs:
+                rows.check_fd(image, archive, kwargs['stdin'])
+        return subprocess.run(command, **kwargs)
     os.chdir('/')
-    metadata = json.loads((bundle / 'podman-domains.json').read_text()) if bundle is not None else {}
+    metadata = read_json(bundle / 'podman-domains.json') if bundle is not None else {}
     aliases = frozen_aliases(bundle, metadata)
     domains = {d['user']: d for d in metadata.get('domains', [])}
     root_command = rootful_command(bundle) if bundle is not None else ['podman']
@@ -216,26 +493,29 @@ def install(rows, bundle=None):
                         raise ValueError('Image import scratch must be the private selected graph')
                     command.insert(command.index('podman'), 'TMPDIR=' + str(graph))
             def inspect(ref=image):
-                result = subprocess.run(command + ['image', 'inspect', ref, '--format', '{{.Id}}'],
+                result = dispatch(command + ['image', 'inspect', ref, '--format', '{{.Id}}'],
                                         capture_output=True, text=True, timeout=30)
                 return result.returncode == 0 and result.stdout.strip().removeprefix('sha256:') == image[7:]
             if not inspect():
-                with archive.open('rb') as source:
-                    subprocess.run(command + ['load'], stdin=source, capture_output=True, check=True,
+                fd = open_regular(archive)
+                with os.fdopen(fd, 'rb') as source:
+                    dispatch(command + ['load'], stdin=source, capture_output=True, check=True,
                                    timeout=image_load_timeout(os.fstat(source.fileno()).st_size))
                 if not inspect():
                     raise ValueError('Imported image differs from the pinned configuration ID')
             for alias in sorted(aliases.get((image, user), ())):
-                present = subprocess.run(command + ['image', 'exists', alias], capture_output=True, timeout=30)
+                present = dispatch(command + ['image', 'exists', alias], capture_output=True, timeout=30)
                 if present.returncode == 0:
                     if not inspect(alias):
                         raise ValueError('Frozen local tag collision; refusing to replace another image')
                 elif present.returncode == 1:
-                    subprocess.run(command + ['tag', image, alias], capture_output=True, check=True, timeout=30)
+                    dispatch(command + ['tag', image, alias], capture_output=True, check=True, timeout=30)
                     if not inspect(alias):
                         raise ValueError('Frozen local tag differs after exact import')
                 else:
                     raise ValueError('Frozen local tag inventory unavailable; no tag mutation')
+            if validated:
+                rows.recheck()
             print(json.dumps({'image': image, 'authority': user, 'verified': True}))
 
 
@@ -344,10 +624,12 @@ def main():
             raise ValueError('Protected release image inputs required')
         rows = validate(args.bundle, args.inputs) if args.inputs else []
         if not args.validate_only:
-            install(rows, args.bundle)
+            if args.inputs is not None:
+                install(rows, args.bundle)
             if args.prepare_registry:
                 prepare_registry(args.bundle)
-    except (ValueError, KeyError, OSError, subprocess.SubprocessError) as exc:
+    except (ValueError, KeyError, TypeError, AttributeError, IndexError, OSError,
+            UnicodeError, EOFError, tarfile.TarError, zlib.error, subprocess.SubprocessError) as exc:
         parser.exit(1, f'[pinned-images] rejected: {type(exc).__name__}; no image fallback\n')
 
 

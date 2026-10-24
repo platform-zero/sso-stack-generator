@@ -126,10 +126,14 @@ class StandaloneBundle(unittest.TestCase):
         self.manifest = {'schemaVersion': 2, 'site': 'latium', 'deploymentMode': 'standalone',
                          'storageScope': {'root': '/tmp/standalone-volumes', 'dataClass': 'synthetic'}}
         self.log_root = '/tmp/standalone-volumes/_logs/caddy'
-        self.ir = {'services': {'caddy': {'volumes': ['./configs:/etc/caddy:ro', self.log_root + ':/var/log/caddy']}},
-                   'volumes': {'caddy_ca': {'hostPath': '/tmp/standalone-volumes/caddy_ca'}}}
+        self.ir = {'services': {'caddy': {'placement': 'rootful', 'volumes': [
+            './configs/caddy/Caddyfile:/etc/caddy/Caddyfile:ro', 'caddy_certs:/certs',
+            'caddy_ca:/ca', self.log_root + ':/var/log/caddy']}},
+            'volumes': {'caddy_certs': {'hostPath': '/tmp/standalone-volumes/caddy_certs'},
+                        'caddy_ca': {'hostPath': '/tmp/standalone-volumes/caddy_ca',
+                                     'rootlessStrategy': 'shared', 'rootlessAccess': 'read-only'}}}
         self.domains = {'schemaVersion': 1, 'deploymentMode': 'standalone',
-                        'caddyLogRoot': self.log_root, 'domains': [{'uid': 42}],
+                        'caddyLogRoot': self.log_root, 'domains': [{'name': 'apps', 'uid': 42}],
                         'storageScope': self.manifest['storageScope']}
         self.seal()
 
@@ -202,14 +206,16 @@ class StandaloneBundle(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'storage scope'): module.verify(self.root)
 
     def test_foreign_journal_uid_scope_refused(self):
-        self.ir['services']['alloy'] = {'environment': {'STACK_LOG_UID_REGEX': '0|42'}}; self.seal()
+        self.ir['services']['alloy'] = {'environment': {'STACK_LOG_UID_REGEX': '0|42',
+            'STACK_LOG_UNIT_REGEX': '^(webservices-alloy[.]service;|webservices-caddy[.]service;)$'}}; self.seal()
         module.verify(self.root)
         self.ir['services']['alloy']['environment']['STACK_LOG_UID_REGEX'] = '.*'; self.seal()
         with self.assertRaisesRegex(ValueError, 'journal UID scope'): module.verify(self.root)
 
     def test_missing_or_duplicate_fixed_journal_uids_refused(self):
         self.ir['services']['alloy'] = {'environment': {'STACK_LOG_UID_REGEX': '0|42'}}
-        for rows in ([{}], [{'uid': True}], [{'uid': 42}, {'uid': 42}]):
+        for rows in ([{}], [{'name': 'apps', 'uid': True}],
+                     [{'name': 'apps', 'uid': 42}, {'name': 'other', 'uid': 42}]):
             self.domains['domains'] = rows; self.seal()
             with self.assertRaisesRegex(ValueError, 'journal UID scope'): module.verify(self.root)
 

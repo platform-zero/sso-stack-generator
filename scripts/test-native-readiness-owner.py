@@ -66,6 +66,27 @@ class SelectionTests(unittest.TestCase):
         self.stack['storage_binding'].return_value = (self.storage, {})
         self.stack['boot_id'].return_value = BOOT
         self.stack['read_file'].side_effect = self.reader
+        # These are selection/graph callback fixtures, not filesystem projection
+        # fixtures. The real seven-domain producer/verifier has its own suite.
+        self.projected = self.enterContext(mock.patch.object(o.projections, 'verify_prepared',
+            return_value={'bindingSha256': 'b' * 64}))
+        # Callback dependency model only; the real persistent Root source/FD
+        # verifier has independent writer/consumer suites, not a success shim.
+        self.root_environment = self.enterContext(mock.patch.object(o.rootful_environment, 'verify_environment',
+            return_value={'kind': 'rootful-persistent-environment-observation', 'bindingSha256': 'd' * 64,
+                          'activationAuthorized': False, 'readinessAuthorized': False}))
+        # Explicit callback models only; actual eight-role physical observers
+        # have separate runtime-unit/copy-observer fixture coverage.
+        self.unit_sources = self.enterContext(mock.patch.object(o.runtime_units, 'verify_prepared_units',
+            return_value={'kind': 'native-prepared-runtime-env-unit-observation', 'status': 'completed',
+                          'resetAuthorized': False, 'sourceSha256': 'e' * 64, 'selectionSourceSha256': '3' * 64,
+                          'copyCustodySha256': '1' * 64, 'runningEnvironmentChecked': False,
+                          'journalWritten': False, 'activationAuthorized': False, 'readinessAuthorized': False}))
+        self.runtime_copies = self.enterContext(mock.patch.object(o.runtime_units, 'verify_running_copies',
+            return_value={'kind': 'root-runtime-copy-observation-verified', 'status': 'completed',
+                          'runningEnvironmentChecked': True, 'resetAuthorized': False, 'bindingSha256': 'f' * 64,
+                          'sourceSha256': 'e' * 64, 'selectionSourceSha256': '3' * 64, 'copyCustodySha256': '1' * 64,
+                          'journalWritten': False, 'activationAuthorized': False, 'readinessAuthorized': False}))
         self.enterContext(mock.patch.object(o.Selection, 'installed_sources', return_value=True))
         self.enterContext(mock.patch.object(o.time, 'monotonic', return_value=10.0))
         self.enterContext(mock.patch.object(o.subprocess, 'run', side_effect=AssertionError('NO host operations')))
@@ -85,12 +106,84 @@ class SelectionTests(unittest.TestCase):
     def sealed(self):
         return o.seal_selection(ROOT, RELEASE, self.intent)
 
+    def test_missing_private_projection_refuses_before_seal(self):
+        self.projected.side_effect = ValueError('model missing private seal')
+        with self.assertRaises(ValueError):
+            self.sealed()
+        self.projected.assert_called_once_with(ROOT, RELEASE, self.intent)
+
+    def test_preparing_observes_source_without_runtime_reads(self):
+        proof = self.sealed()
+        self.assertEqual(proof['runtimeUnitSourceSha256'], '3' * 64)
+        self.unit_sources.assert_called()
+        self.runtime_copies.assert_not_called()
+
+    def test_runtime_unit_source_drift_after_selection_refuses(self):
+        self.intent['readiness'] = self.sealed(); self.sync()
+        self.unit_sources.return_value['selectionSourceSha256'] = '2' * 64
+        with self.assertRaises(o.Refused): self.select().snapshot()
+
+    def test_runtime_unit_source_observer_cannot_authorize_activation(self):
+        self.unit_sources.return_value['activationAuthorized'] = True
+        with self.assertRaises(o.Refused): self.sealed()
+
+    def test_building_requires_actual_root_copy_observation(self):
+        self.intent['readiness'] = self.sealed()
+        self.intent['phase'] = 'building'; self.sync()
+        self.runtime_copies.side_effect = ValueError('model missing Root-issued copies')
+        with self.assertRaises(ValueError): self.select().snapshot()
+
+    def test_runtime_copy_cues_must_match_prepared_source_observation(self):
+        self.intent['readiness'] = self.sealed()
+        self.intent['phase'] = 'building'; self.sync()
+        self.runtime_copies.return_value['copyCustodySha256'] = '2' * 64
+        with self.assertRaises(o.Refused): self.select().snapshot()
+
+    def test_captured_root_copy_binding_cannot_rebase(self):
+        self.intent['readiness'] = dict(self.sealed(), runtimeCopiesBindingSha256='f' * 64)
+        self.intent['phase'] = 'starting'; self.sync()
+        self.runtime_copies.return_value['bindingSha256'] = '2' * 64
+        with self.assertRaises(o.Refused): self.select().snapshot()
+
+    def test_prepared_unit_observer_must_be_completed(self):
+        self.unit_sources.return_value['status'] = 'pending'
+        with self.assertRaises(o.Refused): self.sealed()
+
+    def test_runtime_copy_observer_must_have_checked_runtime(self):
+        self.intent['readiness'] = self.sealed()
+        self.intent['phase'] = 'building'; self.sync()
+        self.runtime_copies.return_value['runningEnvironmentChecked'] = False
+        with self.assertRaises(o.Refused): self.select().snapshot()
+
+    def test_running_copy_observer_cannot_authorize_activation(self):
+        self.intent['readiness'] = self.sealed()
+        self.intent['phase'] = 'building'; self.sync()
+        self.runtime_copies.return_value['activationAuthorized'] = True
+        with self.assertRaises(o.Refused): self.select().snapshot()
+
+    def test_rootful_persistent_refusal_prevents_selection(self):
+        self.root_environment.side_effect = ValueError('model Root persistent drift')
+        before = dict(self.files)
+        with self.assertRaises(ValueError): self.sealed()
+        self.assertEqual(self.files, before)
+
+    def test_rootful_observation_cannot_grant_activation(self):
+        self.root_environment.return_value['activationAuthorized'] = True
+        with self.assertRaises(o.Refused): self.sealed()
+
+    def test_rootful_persistent_binding_drift_after_seal_refuses(self):
+        proof = self.sealed()
+        self.intent.update(phase='units-selected', readiness=proof); self.sync()
+        self.root_environment.return_value['bindingSha256'] = 'e' * 64
+        with self.assertRaises(o.Refused): self.select().snapshot()
+
     def test_seal_before_bootstrap_exact_inventory_and_original_start(self):
         proof = self.sealed()
         self.assertEqual(proof['bootId'], BOOT)
         self.assertEqual(proof['startMonotonicUSec'], 10_000_000)
         self.assertEqual(proof['renderedInputs'], {k: o.r.sha(v) for k, v in self.rendered.items()})
         self.assertEqual(proof['storageBinding'], self.storage)
+        self.assertEqual(proof['rootfulEnvironmentBindingSha256'], 'd' * 64)
         self.assertNotIn('images', proof)
         self.assertEqual(self.intent['phase'], 'preparing')
         self.stack['lock_held'].assert_called()
@@ -177,12 +270,13 @@ class OwnerAPITests(unittest.TestCase):
         self.plan = o.r.derive_plan(self.ir, self.domains, self.rendered)
         self.data = f.observations(self.plan)
         self.proof = {'schemaVersion': 1, 'bootId': BOOT, 'startMonotonicUSec': 1_000_000,
-                      'renderedInputs': {k: o.r.sha(v) for k, v in self.rendered.items()}, 'storageBinding': self.storage}
+                      'renderedInputs': {k: o.r.sha(v) for k, v in self.rendered.items()}, 'storageBinding': self.storage,
+                      'rootfulEnvironmentBindingSha256': 'd' * 64, 'runtimeUnitSourceSha256': '3' * 64}
         self.intent.update(phase='building', readiness=self.proof)
         self.selection = mock.Mock(plan=self.plan, ir=self.ir, domains=self.domains, rendered=self.rendered,
                                    release=RELEASE, cas='c' * 64)
         self.selection.left.return_value = 119
-        self.binding = {'readiness': self.proof, 'cas': 'c' * 64}
+        self.binding = {'readiness': self.proof, 'cas': 'c' * 64, 'runtimeCopiesBindingSha256': 'f' * 64}
         self.selection.snapshot.return_value = self.binding
         self.commands = {s: (['selected-manager', s], ['selected-store', s]) for s in {u.scope for u in self.plan}}
         self.selection.commands.return_value = self.commands
@@ -191,6 +285,10 @@ class OwnerAPITests(unittest.TestCase):
         self.selection.run.side_effect = self.query_run
         self.calls = []
         self.enterContext(mock.patch.object(o, 'Selection', return_value=self.selection))
+        self.prepared = self.enterContext(mock.patch.object(o.projections, 'verify_prepared',
+            return_value={'bindingSha256': 'b' * 64}))
+        self.running = self.enterContext(mock.patch.object(o.projections, 'verify_running',
+            return_value={'bindingSha256': 'c' * 64}))
         self.enterContext(mock.patch.object(o.subprocess, 'run', side_effect=AssertionError('NO host operations')))
 
     def query_run(self, argv, *, timeout):
@@ -217,6 +315,30 @@ class OwnerAPITests(unittest.TestCase):
         self.binding = {'cas': 'c' * 64, 'readiness': copy.deepcopy(self.intent['readiness'])}
         self.selection.snapshot.return_value = self.binding
         return self.intent['readiness']
+
+    def test_private_projection_refuses_before_any_image_query(self):
+        self.prepared.side_effect = ValueError('model private projection refusal')
+        with self.assertRaises(ValueError): self.capture()
+        self.assertFalse(self.calls)
+
+    def test_private_projection_drift_during_capture_refuses(self):
+        self.prepared.side_effect = [{'bindingSha256': 'b' * 64}, {'bindingSha256': 'd' * 64}]
+        with self.assertRaises(o.Refused): self.capture()
+
+    def test_missing_restored_environment_refuses_before_active_queries(self):
+        self.starting(); self.calls.clear()
+        self.running.side_effect = ValueError('model restored file missing')
+        with self.assertRaises(ValueError): o.verify_active_transition(ROOT, RELEASE, self.intent)
+        self.assertFalse(self.calls)
+
+    def test_runtime_inode_binding_drift_refuses_inside_graph_recheck(self):
+        self.starting()
+        self.running.side_effect = [{'bindingSha256': 'c' * 64}, {'bindingSha256': 'd' * 64}]
+        def sample(*args, **kwargs):
+            kwargs['recheck']()
+            raise AssertionError('changed private binding admitted')
+        with mock.patch.object(o.r, 'verify_graph', side_effect=sample):
+            with self.assertRaises(o.Refused): o.verify_active_transition(ROOT, RELEASE, self.intent)
 
     def test_capture_exact_all_required_services_including_oneshots(self):
         proof = self.capture()

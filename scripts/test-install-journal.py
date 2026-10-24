@@ -37,6 +37,25 @@ class InstallationJournal(unittest.TestCase):
         self.assertEqual(journal.read(self.release / 'installation-receipt.json'), journal.read(self.path))
         with self.assertRaises(ValueError): journal.update(self.root, self.bundle, self.release, 'failed')
 
+    def test_retired_clean_allows_new_attempt_without_rollback_claim(self):
+        journal.update(self.root, self.bundle, self.release, 'preparing')
+        value = dict(journal.read(self.path), phase='retired-clean',
+                     previousRelease=str(self.release), steps=['preparing', 'retired-clean'])
+        journal.write(self.release / 'installation-receipt.json', value)
+        journal.write(self.path, value)
+        following = self.root / 'releases/20261012T020000Z-222222222222'
+        journal.update(self.root, self.bundle, following, 'preparing')
+        current = journal.read(self.path)
+        self.assertIsNone(current['previousRelease'])
+        self.assertIsNone(current['resumedFrom'])
+        self.assertEqual(current['release'], str(following))
+
+    def test_generic_phase_cannot_forge_clean_retirement(self):
+        journal.update(self.root, self.bundle, self.release, 'preparing')
+        with self.assertRaises(ValueError):
+            journal.update(self.root, self.bundle, self.release, 'retired-clean')
+        self.assertEqual(journal.read(self.path)['phase'], 'preparing')
+
     def test_native_release_identity_collision_refuses_before_selected_stop(self):
         script=(source.parent/'install-podman-bundle.sh').read_text()
         guard='[ -z "$RESUME_INTENT" ] && { [ -e "$release" ] || [ -L "$release" ]; }'

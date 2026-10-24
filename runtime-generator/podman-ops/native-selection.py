@@ -18,7 +18,7 @@ using this plan, then recheck those bindings and these hashes before mutation.
 This module cannot establish that an arbitrary root-owned release is selected.
 A staged candidate need not have a receipt yet. Existing receipts, when present,
 are checked against their source pins; --previous requires a receipt. A
-retired-failed receipt is valid source custody, NOT permission to restart it.
+retired-failed/retired-clean receipt is valid source custody, NOT permission to restart it.
 No lock, account creation, subprocess, environment override or allow flag.
 """
 import argparse
@@ -425,7 +425,7 @@ def receipt_binding(bundle, plan, *, required=False):
     value = strict(raw)
     require(isinstance(value, dict) and type(value.get('schemaVersion')) is int and value['schemaVersion'] == 1
             and value.get('release') == str(bundle)
-            and value.get('phase') in ('preparing', 'units-selected', 'building', 'starting', 'active', 'failed', 'retired-failed'),
+            and value.get('phase') in ('preparing', 'units-selected', 'building', 'starting', 'active', 'failed', 'retired-failed', 'retired-clean'),
             'invalid selected source receipt')
     pins = value.get('inputs')
     require(isinstance(pins, dict) and {'bundle.json', 'stack.ir.json', 'podman-domains.json'} <= set(pins),

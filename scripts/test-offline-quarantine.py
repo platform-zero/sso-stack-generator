@@ -12,6 +12,23 @@ class OfflineQuarantine(unittest.TestCase):
   (self.root/'podman-domains.json').write_text(json.dumps({'deploymentMode':'standalone','domains':[self.row]}))
   self.command=['runuser','-u','fixture-finance','--','env','HOME=/home/fixture-finance','XDG_RUNTIME_DIR=/run/user/1801','DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1801/bus','systemctl','--user']
  def tearDown(self):self.t.cleanup()
+ def selected(self,inventory):
+  # This exercises the journal selection callback, not its separately tested
+  # source/UID validator. No actual NSS or manager queries are permitted.
+  original=J.Path.lstat
+  def root_stat(path):
+   info=original(path)
+   return SimpleNamespace(st_mode=info.st_mode,st_uid=0)
+  with patch.object(J,'directory'),patch.object(J,'standalone_binding'),patch.object(J.Path,'lstat',root_stat),patch.object(J.pwd,'getpwnam',return_value=SimpleNamespace(pw_uid=1801,pw_dir='/home/fixture-finance')),patch.object(J,'native_stop_inventory',return_value=inventory),patch.object(J.Path,'iterdir',side_effect=AssertionError('no manual filename scan')):
+   return J.selected_quarantine_plans(self.root)
+ def test_native_stop_plan_includes_networks_targets_and_on_demand_builds(self):
+  units=['webservices.target','webservices-fixture-network.service','webservices-fixture-build.service','webservices-on-demand.target']
+  plans=self.selected({'rootful':{'units':units},'rootless-finance':{'units':units}})
+  self.assertEqual([label for label,_,_ in plans],['rootful','rootless-finance'])
+  self.assertTrue(all(names==sorted(units) for _,_,names in plans))
+ def test_native_missing_or_extra_stop_scope_refuses(self):
+  for inventory in ({'rootful':{'units':[]}}, {'rootful':{'units':[]},'rootless-finance':{'units':[]},'rootless-foreign':{'units':[]}}):
+   with self.subTest(inventory=inventory),self.assertRaises(ValueError):self.selected(inventory)
  def test_offline_client_never_starts_manager(self):
   cmd=J.offline_control(self.command)
   self.assertEqual(cmd[-4:],['SYSTEMD_OFFLINE=1','systemctl','--user','--no-reload']);self.assertNotIn('start',cmd)

@@ -88,3 +88,74 @@ The generator refuses an unrecognized control-mount shape or ambiguous Caddy
 source block rather than guessing how to strip it. Input materialization changes
 happen in the newly generated artifact from owning source; do not patch installed
 Caddy output manually.
+
+## Native stopped backup and restore
+
+This is a bounded **synthetic, cold, same-machine, same-release and exact-receipt**
+recovery contract, not production/database-consistency or installed acceptance.
+It never stops/starts a manager, enables a trigger, restores Run, or prunes data.
+Stop through the canonical lifecycle first. Every selected manager must be
+cleanly inactive, selected units/APIs/triggers closed, NSS/subids/source/unit
+custody intact, and own/mapped processes and writable FDs/shared mappings absent.
+Physical reserves remain memory16GiB, root50GiB and stack100GiB, plus staging.
+
+Obtain current native selection pins without minting an operation permit:
+
+```sh
+stackctl backup --state-root /var/lib/webservices --plan --json
+```
+
+Pass `selectedRelease`, `intentSha256`, `receiptSha256` and `planSha256` explicitly
+as `--expected-release`, `--expected-intent-sha256`,
+`--expected-receipt-sha256` and `--expected-plan-sha256` respectively:
+
+```sh
+stackctl backup --state-root /var/lib/webservices <exact expected source hashes> \
+  --archive /root/stack-backups/snapshot.age --recipient age1...
+stackctl restore --state-root /var/lib/webservices <fresh exact expected source hashes> \
+  --archive /root/stack-backups/snapshot.age --archive-sha256 <ciphertext SHA256> \
+  --identity-file /root/separate-recovery-identity/identity.txt
+```
+
+Use pre-existing root-private directories outside both stack data and native
+metadata. Retain the identity separately from the archive directory. The only
+crypto backend is the root-trusted `/usr/bin/age`, executed by its held FD; there
+is no operator-home fallback or configurable executable. No private key or proof
+JSON is accepted on the command line. Identity material is passed by held FD.
+
+The public controller retains the existing canonical flock's actual open file
+description as FD9. The journal producer records `recoveryCustody` identically in
+both current Root records, without changing phase, steps or existing proofs.
+That record is source/directory custody, **not a persisted operation permit**.
+Execution additionally requires a fresh process-local, source-bound, expiring,
+one-use stopped lease for the exact destination/recipient or archive/key hashes.
+An unchanged existing custody record is reused, never rebased on drift. Refresh
+selection pins after the first publication. Any later receipt/source change
+makes that exact-receipt archive incompatible; it is not a migration format.
+
+Every selected IR mount is classified. Named persistent data and supported exact
+bind leaves are included; `%t/podman/podman.sock` and the exact selected actor
+socket are transport, not archive data. CI `forgejo-runner-ssh` / explicitly
+source-declared CI `dataRoot`, test result leaves, and Caddy logs/public trust
+have exact owning classifications. Whole state, graph/cache, home/auth stores,
+unclassified binds, cross-domain mounts and overlapping roots refuse explicitly.
+Canonical runtime/configuration is archived as checked **reference material**;
+native restore never replaces those immutable source/unit/projection inodes.
+Only selected mutable data roots are swapped, with originals retained and no
+restart. Actor `.config` must match the exact selected unit/account-config
+namespace; unknown files are refused before content is opened.
+
+Payload ACLs/xattrs, hardlinks, symlinks, special files, set-id metadata and mount
+boundaries are currently unsupported and **refused**, never silently omitted.
+Canonical ancestry ACL/defaults use the existing native source policy and are
+not changed. Only a newly-created empty Root-owned staging inode is sealed0700;
+existing data/source directories are never recursively repaired. Stable payload
+UID/GID/mode/mtime/bytes are checked; original displaced inodes remain retained.
+The authenticated plaintext tar is bounded to256MiB and held in a sealed memfd,
+never a filesystem spool. Larger backups refuse before publication.
+
+Wrong keys, tamper, source/CAS/lease loss and incomplete swaps do not authorize
+restart. Preserve the protected `.host-recovery` journal, stages and originals;
+there is no automatic public recovery/pruning or original-data adoption. The
+historical synthetic `host-recovery.py` controller API remains separate and its
+mock-crypto tests are not proof of installed or real consistent restoration.

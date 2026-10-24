@@ -39,6 +39,9 @@ r = load('_native_owner_graph', 'verify-native-readiness.py')
 storage = load('_native_owner_storage', 'grant-rootless-volume-parent-traverse.py')
 images = load('_native_owner_images', 'install-pinned-images.py')
 journal = load('_native_owner_journal', 'install-journal.py')
+projections = load('_native_owner_runtime_projections', 'verify-native-runtime-projections.py')
+rootful_environment = load('_native_owner_rootful_environment', 'native-rootful-env-owner.py')
+runtime_units = load('_native_owner_runtime_units', 'native-runtime-env-units.py')
 require = r.require
 Refused = r.Refused
 
@@ -273,6 +276,108 @@ def pointer(root, release, *, directories=None, owners=(0,)):
     return True
 
 
+def finance_reference_files():
+    """Exact nonsecret dynamic directory/file FD custody, no prefix adoption."""
+    slot = Path('/var/lib/webservices-native-finance')
+    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    pins = []; path = Path('/')
+    try:
+        root_directory(os.fstat(fd)); pins.append((path, identity(os.fstat(fd))))
+        for part in slot.parts[1:]:
+            path /= part
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd); fd = child; root_directory(os.fstat(fd))
+            pins.append((path, identity(os.fstat(fd))))
+        directory = os.fstat(fd)
+        require(directory.st_uid == 0 and directory.st_gid == 0 and stat.S_IMODE(directory.st_mode) == 0o755
+                and not os.listxattr(fd) and set(os.listdir(fd)) == {'input.json'}, 'Unknown Root finance reference directory')
+        leaf = os.open('input.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+        try:
+            before = os.fstat(leaf)
+            require(stat.S_ISREG(before.st_mode) and before.st_uid == 0 and before.st_gid == 0
+                    and before.st_nlink == 1 and stat.S_IMODE(before.st_mode) == 0o444
+                    and before.st_size <= 65536 and not os.listxattr(leaf), 'Unknown Root finance reference file')
+            body = os.pread(leaf, 65537, 0)
+            def mount_id(number):
+                text = Path('/proc/self/fdinfo/' + str(number)).read_text()
+                rows = [line.split()[1] for line in text.splitlines() if line.startswith('mnt_id:')]
+                require(len(rows) == 1 and rows[0].isdigit(), 'Unknown Root finance reference mount')
+                return int(rows[0])
+            dm, fm = mount_id(fd), mount_id(leaf)
+            require(dm == fm and len(body) == before.st_size and identity(before) == identity(os.fstat(leaf))
+                    == identity(os.stat('input.json', dir_fd=fd, follow_symlinks=False)), 'Root finance reference raced/remounted')
+            for named, pin in pins: require(identity(named.lstat()) == pin, 'Root finance reference ancestor replaced')
+            return dict(directory=dict(path=str(slot), identity=list(identity(directory)), mountId=dm),
+                        input=dict(path=str(slot / 'input.json'), identity=list(identity(before)), mountId=fm,
+                                   sha256=r.sha(body), content=r.strict(body)))
+        finally: os.close(leaf)
+    finally: os.close(fd)
+
+
+def verify_native_finance_reference(root, release, intent):
+    """Current Root-CAS observation only, NOT fresh identity/source permission.
+
+    Missing legacy descriptor returns None. A selected not-yet-armed source is
+    deferred until the canonical arm transaction; full active admission below
+    requires the actual typed Root reference, never a caller/env override.
+    """
+    profile = load('_native_finance_reference_profile', 'verify-agent-vm-bundle.py')
+    raw_ir = read_file(release / 'stack.ir.json')
+    require(r.sha(raw_ir) == intent['inputs']['stack.ir.json'], 'Finance reference source IR differs')
+    descriptor = profile.native_finance_reference(r.strict(raw_ir))
+    if descriptor is None:
+        require('nativeFinanceReference' not in intent, 'Legacy source cannot adopt finance reference ownership')
+        return None
+    proof = intent.get('nativeFinanceReference')
+    if proof is None: return dict(status='deferred', bindingSha256=None)
+    require(type(proof) is dict and set(proof) == {'schemaVersion', 'kind', 'status', 'root', 'release', 'inputs',
+            'intentSha256', 'descriptor', 'publisher', 'directory', 'input'}
+            and type(proof['schemaVersion']) is int and proof['schemaVersion'] == 1
+            and proof['kind'] == 'root-native-finance-reference' and proof['status'] == 'completed'
+            and proof['root'] == str(root) and proof['release'] in (str(release), intent.get('previousRelease'))
+            and proof['inputs'] == intent['inputs']
+            and proof['descriptor'] == descriptor and type(proof['intentSha256']) is str
+            and r.HEX.fullmatch(proof['intentSha256']), 'Unknown Root finance reference origin')
+    lock_held(root); private_root = directory_pin(root)
+    require(private_root[0] == 0 and private_root[2] == 0o700 and intent.get('release') == str(release),
+            'Finance reference requires exact private Root metadata owner')
+    pointer(root, release)
+    raw = read_file(root / '.install-intent.json', private=True)
+    require(r.strict(raw) == intent and read_file(release / 'installation-receipt.json', private=True) == raw,
+            'Finance reference current Root dual CAS differs')
+    publisher = proof['publisher']; metadata = r.strict(read_file(release / 'bundle.json'))
+    require(type(publisher) is dict and set(publisher) == {'path', 'sha256', 'origin'}
+            and publisher['path'] == descriptor['publisher'] and publisher['origin'] == descriptor['origin']
+            and publisher['sha256'] == metadata.get('liveOps', {}).get(descriptor['publisher'])
+            and r.sha(read_file(release / descriptor['publisher'])) == publisher['sha256'], 'Finance Root publisher source differs')
+    observed = finance_reference_files()
+    require(observed == {key: proof[key] for key in ('directory', 'input')}, 'Original Root finance reference inode/ACL/mount/bytes differ')
+    content = observed['input']['content']
+    require(content.get('kind') == 'root-native-finance-input' and content.get('root') == str(root)
+            and content.get('release') == proof['release'] and content.get('intentSha256') == proof['intentSha256']
+            and content.get('sourceSha256') == r.sha(read_file(release / 'runtime/configs/keycloak/configure-finance.sh')),
+            'Finance Root reference consumer source/CAS differs')
+    # Actual native original provenance is held in the protected paired Root
+    # records; the dynamic file transports it, never grants source permission.
+    native = intent.get('nativeFinanceOwnershipReceipt')
+    if content.get('status') == 'retained':
+        require(type(native) is dict and native.get('kind') == 'root-native-finance-ownership'
+                and native.get('status') == 'completed' and native.get('original', {}).get('kind') ==
+                'original-live-systemd-cid-keycloak-native-link'
+                and content.get('nativeFinanceOwnership') == native.get('nativeFinanceOwnership'), 'Finance original native origin differs')
+    else:
+        require(content.get('status') == 'fresh' and content.get('nativeFinanceOwnership') is None
+                and type(intent.get('financeOwnershipCustody')) is dict, 'Finance fresh original arm missing')
+    require(finance_reference_files() == observed and read_file(root / '.install-intent.json', private=True) == raw
+            and read_file(release / 'installation-receipt.json', private=True) == raw
+            and directory_pin(root) == private_root, 'Finance reference current CAS raced')
+    pointer(root, release)
+    return dict(kind='root-native-finance-reference-observation', status='completed',
+                bindingSha256=r.sha(r.frozen(proof).encode()), root=str(root), release=str(release),
+                intentSha256=r.sha(raw), reference=r.strict(r.frozen(proof)),
+                activationAuthorized=False, readinessAuthorized=False, journalWritten=False)
+
+
 class Selection:
     def __init__(self, root, release, prior_intent, phase):
         self.root = r.canonical(root); self.release = r.canonical(release)
@@ -323,19 +428,61 @@ class Selection:
         storage_pin, self.custody = storage_binding(self.release, remaining=self.left)
         scope = r.canonical(storage_pin['scope'])
         require(not scope.is_relative_to(self.root) and not self.root.is_relative_to(scope), 'metadata/storage overlap')
+        rootful = rootful_environment.verify_environment(self.root, self.release, self.prior)
+        require(rootful.get('kind') == 'rootful-persistent-environment-observation'
+                and isinstance(rootful.get('bindingSha256'), str) and r.HEX.fullmatch(rootful['bindingSha256'])
+                and rootful.get('activationAuthorized') is False and rootful.get('readinessAuthorized') is False,
+                'actual persistent Root environment observation required')
+        prepared = runtime_units.verify_prepared_units(self.root, self.release, self.prior)
+        require(prepared.get('kind') == 'native-prepared-runtime-env-unit-observation'
+                and prepared.get('status') == 'completed'
+                and prepared.get('resetAuthorized') is False
+                and isinstance(prepared.get('sourceSha256'), str) and r.HEX.fullmatch(prepared['sourceSha256'])
+                and isinstance(prepared.get('selectionSourceSha256'), str)
+                and r.HEX.fullmatch(prepared['selectionSourceSha256'])
+                and prepared.get('runningEnvironmentChecked') is False
+                and prepared.get('journalWritten') is False
+                and prepared.get('activationAuthorized') is False and prepared.get('readinessAuthorized') is False,
+                'actual persistent runtime-unit source observation required')
+        copies_binding = None
+        if self.prior.get('phase') in ('building', 'starting', 'active'):
+            copies = runtime_units.verify_running_copies(self.root, self.release, self.prior)
+            require(copies.get('kind') == 'root-runtime-copy-observation-verified'
+                    and copies.get('status') == 'completed'
+                    and copies.get('runningEnvironmentChecked') is True
+                    and copies.get('resetAuthorized') is False
+                    and isinstance(copies.get('bindingSha256'), str) and r.HEX.fullmatch(copies['bindingSha256'])
+                    and copies.get('sourceSha256') == prepared['sourceSha256']
+                    and copies.get('selectionSourceSha256') == prepared['selectionSourceSha256']
+                    and copies.get('copyCustodySha256') == prepared.get('copyCustodySha256')
+                    and copies.get('journalWritten') is False
+                    and copies.get('activationAuthorized') is False and copies.get('readinessAuthorized') is False,
+                    'actual Root-issued restored runtime copies required')
+            copies_binding = copies['bindingSha256']
         readiness = self.prior.get('readiness')
         if readiness is not None:
             require(isinstance(readiness, dict) and readiness.get('bootId') == boot_id()
                     and type(readiness.get('startMonotonicUSec')) is int
                     and 0 < readiness['startMonotonicUSec'] <= int(time.monotonic() * 1_000_000)
                     and readiness.get('renderedInputs') == rendered_pins
-                    and readiness.get('storageBinding') == storage_pin, 'stored readiness selection changed')
+                    and readiness.get('storageBinding') == storage_pin
+                    and readiness.get('rootfulEnvironmentBindingSha256') == rootful['bindingSha256']
+                    and readiness.get('runtimeUnitSourceSha256') == prepared['selectionSourceSha256']
+                    and ('runtimeCopiesBindingSha256' not in readiness
+                         or readiness['runtimeCopiesBindingSha256'] == copies_binding),
+                    'stored readiness selection changed')
         require(read_file(self.root / '.install-intent.json', private=True) == raw
                 and read_file(self.release / 'installation-receipt.json', private=True) == raw,
                 'journal changed during selection read')
         pointer(self.root, self.release); lock_held(self.root); self.left()
-        return {'intentSha256': self.cas, 'release': str(self.release), 'inputs': pins,
-                'renderedInputs': rendered_pins, 'storageBinding': storage_pin, 'readiness': readiness}
+        result = {'intentSha256': self.cas, 'release': str(self.release), 'inputs': pins,
+                  'renderedInputs': rendered_pins, 'storageBinding': storage_pin, 'readiness': readiness,
+                  'rootfulEnvironmentBindingSha256': rootful['bindingSha256'],
+                  'runtimeUnitSourceSha256': prepared['selectionSourceSha256'],
+                  'runtimeCopiesBindingSha256': copies_binding}
+        finance = verify_native_finance_reference(self.root, self.release, self.prior)
+        if finance is not None: result['nativeFinanceReferenceBindingSha256'] = finance['bindingSha256']
+        return result
 
     def account(self, scope):
         if scope == 'rootful': return None
@@ -503,6 +650,9 @@ def normalize_image(value):
 def seal_selection(root, release, prior_intent):
     selection = Selection(root, release, prior_intent, 'preparing')
     require('readiness' not in prior_intent, 'cannot reseal a prior readiness attempt')
+    # This validates ALL declared domains, including empty/on-demand-only roles;
+    # selected service targets alone cannot supply private projection custody.
+    projections.verify_prepared(root, release, prior_intent)
     # Capture BEFORE inventory work; installer must not launch bootstrap until
     # this returned metadata is durably in BOTH units-selected journal records.
     boot = boot_id(); start = int(time.monotonic() * 1_000_000)
@@ -511,14 +661,19 @@ def seal_selection(root, release, prior_intent):
     require(boot_id() == boot, 'boot changed while sealing selection')
     require(selection.snapshot() == binding, 'selection changed while sealing')
     return {'schemaVersion': 1, 'bootId': boot, 'startMonotonicUSec': start,
-            'renderedInputs': binding['renderedInputs'], 'storageBinding': binding['storageBinding']}
+            'renderedInputs': binding['renderedInputs'], 'storageBinding': binding['storageBinding'],
+            'rootfulEnvironmentBindingSha256': binding['rootfulEnvironmentBindingSha256'],
+            'runtimeUnitSourceSha256': binding['runtimeUnitSourceSha256']}
 
 
 def capture_images(root, release, prior_intent):
     selection = Selection(root, release, prior_intent, 'building')
+    projected = projections.verify_prepared(root, release, prior_intent)
     binding = selection.snapshot(); proof = prior_intent.get('readiness')
     require(isinstance(proof, dict) and set(proof) == {'schemaVersion', 'bootId', 'startMonotonicUSec',
-            'renderedInputs', 'storageBinding'} and proof['schemaVersion'] == 1, 'unsealed or already captured readiness')
+            'renderedInputs', 'storageBinding', 'rootfulEnvironmentBindingSha256', 'runtimeUnitSourceSha256'}
+            and proof['schemaVersion'] == 1 and binding['runtimeCopiesBindingSha256'] is not None,
+            'unsealed, missing Root runtime copies, or already captured readiness')
     selection.installed_sources()
     commands = selection.commands(); queries = r.SelectedQueries(selection.plan, commands, selection.run)
     pins_body = None
@@ -565,14 +720,23 @@ def capture_images(root, release, prior_intent):
             require(props['LoadState'] == 'loaded' and props['DropInPaths'] == '', 'unloaded or overridden selected source')
             loaded.setdefault(scope, {})[unit.name] = selection.source_identity(unit, props['SourcePath'], props['FragmentPath'])
     require(selection.snapshot() == binding, 'selection changed while capturing image identities')
-    return dict(proof, images=captured, loadedInputs=loaded, imageSupplyReviewed=reviewed)
+    require(projections.verify_prepared(root, release, prior_intent)['bindingSha256'] == projected['bindingSha256'],
+            'private projection changed while capturing images')
+    return dict(proof, images=captured, loadedInputs=loaded, imageSupplyReviewed=reviewed,
+                runtimeCopiesBindingSha256=binding['runtimeCopiesBindingSha256'])
 
 
 def verify_active_transition(root, release, prior_intent):
     selection = Selection(root, release, prior_intent, 'starting')
+    projected = projections.verify_running(root, release, prior_intent)
     binding = selection.snapshot(); proof = prior_intent.get('readiness')
+    if 'nativeFinanceReferenceBindingSha256' in binding:
+        require(type(binding['nativeFinanceReferenceBindingSha256']) is str
+                and r.HEX.fullmatch(binding['nativeFinanceReferenceBindingSha256']),
+                'Selected finance reference has not been Root-published')
     require(isinstance(proof, dict) and set(proof) == {'schemaVersion', 'bootId', 'startMonotonicUSec',
-            'renderedInputs', 'storageBinding', 'images', 'loadedInputs', 'imageSupplyReviewed'}
+            'renderedInputs', 'storageBinding', 'rootfulEnvironmentBindingSha256', 'runtimeUnitSourceSha256',
+            'runtimeCopiesBindingSha256', 'images', 'loadedInputs', 'imageSupplyReviewed'}
             and proof['schemaVersion'] == 1 and type(proof['imageSupplyReviewed']) is bool,
             'starting readiness metadata incomplete')
     expected_scopes = {u.scope for u in selection.plan}
@@ -591,6 +755,8 @@ def verify_active_transition(root, release, prior_intent):
     require(reviewed == proof['imageSupplyReviewed'], 'image supply review flag inconsistent')
     commands = selection.commands(); queries = r.SelectedQueries(selection.plan, commands, selection.run)
     def recheck():
+        require(projections.verify_running(root, release, prior_intent)['bindingSha256'] == projected['bindingSha256'],
+                'private projection or restored environment changed during graph observation')
         require(selection.snapshot() == binding and selection.commands() == commands, 'active selection/store changed')
         selection.installed_sources()
         # Required oneshots can have removed their containers. Bind their
@@ -619,4 +785,8 @@ def verify_active_transition(root, release, prior_intent):
                             timeout_seconds=min(120, selection.left()), poll_seconds=1)
     recheck(); selection.left()
     return dict(result, imageSupplyReviewed=reviewed, immutableSupplyAcceptance=False,
+                runtimeProjectionBindingSha256=projected['bindingSha256'],
+                rootfulEnvironmentBindingSha256=proof['rootfulEnvironmentBindingSha256'],
+                runtimeUnitSourceSha256=proof['runtimeUnitSourceSha256'],
+                runtimeCopiesBindingSha256=proof['runtimeCopiesBindingSha256'],
                 intentSha256=selection.cas)

@@ -8,8 +8,10 @@ import argparse
 import hashlib
 import importlib.util
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import os
 import re
+import stat
 import subprocess
 
 
@@ -21,13 +23,367 @@ def strict(path, *, include_bytes=False, limit=65536):
                 raise ValueError('Duplicate agent VM authority key')
             value[key] = item
         return value
-    if path.is_symlink() or not path.is_file() or path.stat().st_size > limit:
-        raise ValueError('Missing, linked or oversized agent VM input')
-    body = path.read_bytes()
+    # Open only bundle inputs; never follow an ancestor/final link or read a
+    # bind source. Installed root ownership/marker/CAS remain installer duties.
+    path = Path(os.path.abspath(path))
+    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in path.parts[1:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd); fd = child
+        leaf = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+        with os.fdopen(leaf, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > limit:
+                raise ValueError('Missing, linked or oversized agent VM input')
+            body = stream.read(limit + 1)
+    except OSError as error:
+        raise ValueError('Missing or linked agent VM input') from error
+    finally:
+        os.close(fd)
     if len(body) > limit:
         raise ValueError('Oversized agent VM input')
     decoded = json.loads(body, object_pairs_hook=pairs)
     return (decoded, body) if include_bytes else decoded
+
+
+def canonical_path(value):
+    """Lexical admission only: do not resolve/stat any host bind source."""
+    if (not isinstance(value, str) or not re.fullmatch(r'/[A-Za-z0-9_./@-]+', value)
+            or value.startswith('//') or str(PurePosixPath(value)) != value
+            or '..' in PurePosixPath(value).parts):
+        raise ValueError('Standalone noncanonical bind/storage path')
+    return PurePosixPath(value)
+
+
+def overlaps(a, b):
+    return a.is_relative_to(b) or b.is_relative_to(a)
+
+
+def standalone_identities(domains):
+    rows = domains.get('domains')
+    if not isinstance(rows, list) or not rows:
+        raise ValueError('Standalone journal UID scope needs domain identities')
+    identities = {}
+    for row in rows:
+        if (not isinstance(row, dict) or not isinstance(row.get('name'), str)
+                or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', row['name'])
+                or row['name'] == 'rootful' or row['name'] in identities
+                or type(row.get('uid')) is not int or row['uid'] <= 0
+                or row['uid'] in identities.values()):
+            raise ValueError('Standalone journal UID scope needs unique fixed identities')
+        identities[row['name']] = row['uid']
+    return identities
+
+
+def standalone_journal_scope(services, domains):
+    identities = standalone_identities(domains)
+    expected_uid = '|'.join(str(v) for v in sorted({0, *identities.values()}))
+    environment = services['alloy'].get('environment', {})
+    if not isinstance(environment, dict) or environment.get('STACK_LOG_UID_REGEX') != expected_uid:
+        raise ValueError('Standalone journal UID scope mismatch')
+    pairs = []
+    for name, service in sorted(services.items()):
+        # Preserve the owning collector's financial exclusion independently of
+        # its content filters: even the selected shared main DB stays private.
+        if 'firefly' in name or name == 'postgres':
+            continue
+        unit = 'webservices-' + name + '[.]service'
+        if service.get('placement', 'rootful') == 'rootful':
+            pairs.append(unit + ';')
+        else:
+            uid = identities.get(service.get('rootlessDomain'))
+            if uid is None:
+                raise ValueError('Standalone journal unit scope has unknown domain')
+            pairs.append('user@' + str(uid) + '[.]service;' + unit)
+    expected_unit = '^(' + '|'.join(pairs) + ')$'
+    if environment.get('STACK_LOG_UNIT_REGEX') != expected_unit:
+        raise ValueError('Standalone journal unit scope mismatch')
+
+
+def standalone_mount(mount):
+    if isinstance(mount, str):
+        parts = mount.split(':')
+        if len(parts) not in (2, 3) or not all(parts):
+            raise ValueError('Standalone ambiguous mount')
+        source, target = parts[:2]
+        options = parts[2].split(',') if len(parts) == 3 else []
+        if (len(set(options)) != len(options) or any(o not in
+                ('ro', 'rw', 'z', 'Z', 'U', 'bind', 'rbind', 'nodev', 'noexec', 'nosuid') for o in options)
+                or ('ro' in options and 'rw' in options)):
+            raise ValueError('Standalone ambiguous mount options')
+        read_only = 'ro' in options
+    elif isinstance(mount, dict):
+        if (set(mount) - {'source', 'target', 'read_only', 'type'}
+                or type(mount.get('read_only', False)) is not bool
+                or mount.get('type', 'bind') not in ('bind', 'volume')):
+            raise ValueError('Standalone ambiguous mount object')
+        source, target = mount.get('source'), mount.get('target')
+        read_only = mount.get('read_only', False)
+        options = ['ro'] if read_only else []
+    else:
+        raise ValueError('Standalone invalid mount')
+    if not isinstance(source, str) or not source or not isinstance(target, str):
+        raise ValueError('Standalone invalid mount endpoints')
+    canonical_path(target.rstrip('/') or '/')
+    return source, target.rstrip('/') or '/', read_only, options
+
+
+NATIVE_FINANCE_SOURCE = '/var/lib/webservices-native-finance'
+NATIVE_FINANCE_TARGET = '/run/p0-finance'
+
+
+def native_finance_reference(ir):
+    """Exact source descriptor only, NEVER physical custody or execution permission.
+
+    Old releases without this feature remain unchanged. No parent/prefix/alias,
+    other service, writable bind or site-editable identity value is admitted.
+    """
+    services = ir.get('services', {})
+    selected = []
+    for name, service in services.items():
+        for mount in service.get('volumes', []):
+            source, target, ro, options = standalone_mount(mount)
+            touches = source.startswith('/') and overlaps(canonical_path(source), PurePosixPath(NATIVE_FINANCE_SOURCE))
+            if touches or target == NATIVE_FINANCE_TARGET or target.startswith(NATIVE_FINANCE_TARGET + '/'):
+                if (name != 'keycloak-configure' or source != NATIVE_FINANCE_SOURCE
+                        or target != NATIVE_FINANCE_TARGET or not ro or options != ['ro']
+                        or service.get('placement') != 'rootful' or service.get('lifecycle') != 'oneshot'):
+                    raise ValueError('Exact readonly Root native finance reference required')
+                selected.append(name)
+        environment = service.get('environment', {})
+        if 'FIREFLY_NATIVE_OWNERSHIP_FILE' in environment and (name != 'keycloak-configure'
+                or environment['FIREFLY_NATIVE_OWNERSHIP_FILE'] != NATIVE_FINANCE_TARGET + '/input.json'):
+            raise ValueError('Native finance metadata reference cannot be site editable')
+    if not selected:
+        if any('FIREFLY_NATIVE_OWNERSHIP_FILE' in s.get('environment', {}) for s in services.values()):
+            raise ValueError('Native finance readonly reference mount missing')
+        return None
+    if (selected != ['keycloak-configure'] or services['keycloak-configure'].get('environment', {}).get(
+            'FIREFLY_NATIVE_OWNERSHIP_FILE') != NATIVE_FINANCE_TARGET + '/input.json'
+            or not {'postgres', 'keycloak', 'firefly-identity-check'} <= services.keys()):
+        raise ValueError('Native finance reference selected cohort differs')
+    return dict(schemaVersion=1, kind='native-finance-reference-descriptor', service='keycloak-configure',
+                placement='rootful', lifecycle='oneshot', source=NATIVE_FINANCE_SOURCE,
+                target=NATIVE_FINANCE_TARGET, readOnly=True, file='input.json',
+                publisher='ops/native-finance-ownership.py', origin='root-native-finance-ownership')
+
+
+def standalone_boundaries(ir, domains, scope):
+    services, volumes = ir.get('services'), ir.get('volumes', {})
+    if not isinstance(services, dict) or not isinstance(volumes, dict):
+        raise ValueError('Standalone service/volume inventory missing')
+    for name, service in services.items():
+        if (not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,95}', name) or not isinstance(service, dict)
+                or service.get('placement', 'rootful') not in ('rootful', 'rootless')
+                or not isinstance(service.get('volumes', []), list)):
+            raise ValueError('Standalone invalid selected service')
+    if any(s.get('placement') == 'rootless' for s in services.values()):
+        identities = standalone_identities(domains)
+        if any(s.get('rootlessDomain') not in identities for s in services.values()
+               if s.get('placement') == 'rootless'):
+            raise ValueError('Standalone service has unknown selected domain')
+    paths = {}
+    for name, volume in volumes.items():
+        if (not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', name) or not isinstance(volume, dict)):
+            raise ValueError('Standalone invalid named volume')
+        if 'hostPath' in volume:
+            paths[name] = canonical_path(volume['hostPath'])
+            if not paths[name].is_relative_to(scope) or paths[name] == scope:
+                raise ValueError('Standalone volume escapes selected storage scope')
+    # Classification is lexical source proof only. Actual Root publisher/CAS,
+    # inode/ACL/mount custody is observed after arm before original consumption.
+    native_finance_reference(ir)
+    protected = {}
+    for name in ('caddy_certs', 'caddy_ca', 'mail_tls'):
+        if name in volumes:
+            if name not in paths:
+                raise ValueError('Standalone trust volume needs scoped hostPath')
+            protected[name] = paths[name]
+    if 'caddy' in services:
+        if (services['caddy'].get('placement') != 'rootful'
+                or not {'caddy_certs', 'caddy_ca'} <= protected.keys()):
+            raise ValueError('Standalone signing store requires selected rootful Caddy')
+    if 'mailserver' in services and ('caddy' not in services or
+            not {'caddy_certs', 'caddy_ca', 'mail_tls'} <= protected.keys()):
+        raise ValueError('Standalone mail delegation requires selected trust volumes')
+    if len(set(protected.values())) != len(protected) or any(
+            overlaps(a, b) for n, a in protected.items() for m, b in protected.items() if n != m):
+        raise ValueError('Standalone trust storage roots overlap')
+    for name in ('caddy_ca', 'mail_tls'):
+        if name in protected and (volumes[name].get('rootlessStrategy') != 'shared'
+                                  or volumes[name].get('rootlessAccess') != 'read-only'):
+            raise ValueError('Standalone public trust/delegation must be host read-only')
+    if 'caddy_certs' in protected and (volumes['caddy_certs'].get('rootlessStrategy', 'copy') != 'copy'
+                                      or 'rootlessAccess' in volumes['caddy_certs']):
+        raise ValueError('Standalone signing store cannot grant rootless access')
+    managed = [PurePosixPath(p) for p in ('/run/p0-control', '/run/p0-lanes',
+               '/run/platform-zero', '/var/lib/platform-zero')]
+    mounts = {}
+    for name, service in services.items():
+        mounts[name] = []
+        for mount in service.get('volumes', []):
+            source, target, ro, options = standalone_mount(mount)
+            logical = source if source in volumes else None
+            if logical:
+                source_path = paths.get(source)
+                if source_path is None:
+                    raise ValueError('Standalone named volume lacks hostPath')
+            elif source.startswith('/'):
+                source_path = canonical_path(source)
+            else:
+                # Generated config binds and the selected user-runtime Podman
+                # socket are the only supported non-absolute bind spellings.
+                if source.startswith('./'):
+                    canonical_path('/' + source[2:])
+                    if not source.startswith(('./configs/', './build/', './repos/', './stack.')) and source != './repos':
+                        raise ValueError('Standalone unreviewed relative bind')
+                elif source == '%t/podman/podman.sock' and service.get('placement') == 'rootless':
+                    pass
+                else:
+                    raise ValueError('Standalone unresolved bind or named volume')
+                source_path = None
+            if source_path is not None:
+                if (any(overlaps(source_path, p) for p in managed)
+                        or any(p in ('lanes', 'worklanes', 'worklane', '.worklane', 'p0-lanes', 'p0-control')
+                               for p in source_path.parts)):
+                    raise ValueError('Standalone host cannot mount managed control sockets or lanes')
+                if (source_path.is_relative_to('/var/run') or source_path.is_relative_to('/proc')
+                        or source_path.is_relative_to('/dev/fd')):
+                    raise ValueError('Standalone noncanonical host bind alias')
+                if overlaps(source_path, PurePosixPath('/var/log/webservices/caddy')):
+                    raise ValueError('Standalone private ingress log root cannot reuse old host logs')
+            for authority, root in protected.items():
+                if logical != authority and (source_path is None or not overlaps(source_path, root)):
+                    continue
+                # Aliased names still carry the declared hostPath authority,
+                # even where a generic rootless copier would create a copy.
+                exact = source_path == root
+                publisher = name == 'caddy' and service.get('placement') == 'rootful'
+                if authority in ('caddy_ca', 'mail_tls') and logical and not publisher:
+                    policy = volumes[logical]
+                    if (policy.get('rootlessStrategy') != 'shared'
+                            or policy.get('rootlessAccess') != 'read-only'):
+                        raise ValueError('Standalone trust/delegation alias must remain host read-only')
+                if authority == 'caddy_certs':
+                    if not (publisher and exact and target == '/certs' and not set(options) - {'ro', 'rw'}):
+                        raise ValueError('Standalone signing store consumer boundary')
+                elif authority == 'caddy_ca':
+                    if publisher and exact and target == '/ca' and not set(options) - {'ro', 'rw'}:
+                        pass
+                    elif (not ro or set(options) != {'ro'} or source_path not in
+                          (root, root / 'caddy-ca.crt')):
+                        raise ValueError('Standalone public trust consumer must be read-only')
+                elif not (name == 'mailserver' and exact and target == '/caddy-mail'
+                          and ro and set(options) == {'ro'}):
+                    raise ValueError('Standalone mail leaf consumer boundary')
+            mounts[name].append((source_path, target, ro))
+    if 'caddy' in services:
+        if not any(p == protected['caddy_certs'] and t == '/certs' for p, t, _ in mounts['caddy']):
+            raise ValueError('Standalone signing store mount missing from selected Caddy')
+        if not any(p == protected['caddy_ca'] and t == '/ca' for p, t, _ in mounts['caddy']):
+            raise ValueError('Standalone public trust publisher mount missing')
+    if 'mailserver' in services:
+        mail = services['mailserver']
+        if mail.get('placement') == 'rootless':
+            identities = standalone_identities(domains)
+            if mail.get('rootlessDomain') not in identities:
+                raise ValueError('Standalone mail leaf has unknown selected domain')
+        elif mail.get('placement') != 'rootful':
+            raise ValueError('Standalone mail leaf has unknown placement')
+        if (protected['mail_tls'], '/caddy-mail', True) not in mounts['mailserver']:
+            raise ValueError('Standalone mail leaf delegation mount missing')
+    if 'alloy' in services:
+        standalone_journal_scope(services, domains)
+    return mounts
+
+
+def verify_live_ops(bundle, metadata):
+    """Validate emitted helper bytes; missing legacy maps grant no execution."""
+    if 'liveOps' not in metadata:
+        return None
+    pins = metadata['liveOps']
+    if (not isinstance(pins, dict) or not 0 < len(pins) <= 256
+            or any(not isinstance(name, str) or not re.fullmatch(r'ops/[A-Za-z0-9][A-Za-z0-9_.-]*', name)
+                   or not isinstance(sha, str) or not re.fullmatch(r'[a-f0-9]{64}', sha)
+                   for name, sha in pins.items())):
+        raise ValueError('Invalid emitted native helper pins')
+    ops = bundle / 'ops'
+    if not stat.S_ISDIR(ops.lstat().st_mode): raise ValueError('Native helper directory is linked or absent')
+    expected = {name.removeprefix('ops/') for name in pins}
+    if {path.name for path in ops.iterdir()} != expected:
+        raise ValueError('Native helper namespace differs from pins')
+    for name, sha in sorted(pins.items()):
+        path = bundle / name
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > 8 * 1024 * 1024:
+                raise ValueError('Unsafe emitted native helper')
+            digest = hashlib.sha256(); length = 0
+            while True:
+                body = os.read(fd, 65536)
+                if not body: break
+                length += len(body)
+                if length > 8 * 1024 * 1024: raise ValueError('Native helper grew during verification')
+                digest.update(body)
+            # A legitimate first read may update atime (notably after the
+            # generator chmods normalized output). Keep every security/content
+            # identity field, including nanosecond mtime/ctime, but not atime.
+            def identity(info):
+                return tuple(getattr(info, field) for field in (
+                    'st_dev', 'st_ino', 'st_mode', 'st_uid', 'st_gid',
+                    'st_nlink', 'st_size', 'st_mtime_ns', 'st_ctime_ns'))
+            if (digest.hexdigest() != sha or identity(os.fstat(fd)) != identity(before)
+                    or identity(path.lstat()) != identity(before)):
+                raise ValueError('Emitted native helper SHA/inode changed')
+        finally: os.close(fd)
+    if {path.name for path in ops.iterdir()} != expected:
+        raise ValueError('Native helper namespace changed during verification')
+    return pins
+
+
+def standalone_metadata_source(bundle, control=None):
+    """Canonical source/profile custody only; NEVER application mount admission.
+
+    Used by the metadata-privacy owner, whose only mutation is0755->0700 on
+    its held Root FD. Normal verify() still enforces every application boundary.
+    """
+    manifest, manifest_bytes = strict(bundle / 'site/manifest.json', include_bytes=True)
+    if manifest.get('deploymentMode') != 'standalone' or control is not None or 'agentVmSpec' in manifest:
+        raise ValueError('Standalone metadata source cannot manage control/guest roles')
+    for name in ('site/agent-vm.json', 'site/agent-vm.provenance.json',
+                 'maintenance-workspaces.json', 'software-workspaces.json'):
+        path = bundle / name
+        if path.exists() or path.is_symlink():
+            raise ValueError('Standalone host includes managed role inputs')
+    domains = strict(bundle / 'podman-domains.json')
+    metadata = strict(bundle / 'bundle.json')
+    verify_live_ops(bundle, metadata)
+    provenance, provenance_bytes = strict(bundle / 'source-provenance.json', include_bytes=True)
+    ir, ir_bytes = strict(bundle / 'stack.ir.json', include_bytes=True, limit=8 * 1024 * 1024)
+    if (domains.get('deploymentMode') != 'standalone' or 'venue' in domains
+            or metadata.get('deploymentMode') != 'standalone' or metadata.get('backend') != 'podman'
+            or provenance.get('manifestSha256') != hashlib.sha256(manifest_bytes).hexdigest()
+            or metadata.get('sourceProvenanceSha256') != hashlib.sha256(provenance_bytes).hexdigest()
+            or metadata.get('irSha256') != hashlib.sha256(ir_bytes).hexdigest()):
+        raise ValueError('Standalone host provenance/profile binding mismatch')
+    state_root = manifest.get('installerStateRoot', '/var/lib/webservices')
+    if (not isinstance(state_root, str)
+            or not re.fullmatch(r'/var/lib/(?:webservices|stack-[a-z0-9-]{1,48})', state_root)
+            or domains.get('installerStateRoot', '/var/lib/webservices') != state_root):
+        raise ValueError('Standalone installer state root binding mismatch')
+    scope = manifest.get('storageScope')
+    if (not isinstance(scope, dict) or set(scope) != {'root', 'dataClass'}
+            or scope.get('dataClass') not in ('synthetic', 'production')
+            or not isinstance(scope.get('root'), str)
+            or not re.fullmatch(r'/[A-Za-z0-9_./-]+', scope['root'])
+            or scope['root'] == '/' or '..' in Path(scope['root']).parts
+            or str(Path(scope['root'])) != scope['root'] or domains.get('storageScope') != scope):
+        raise ValueError('Standalone storage scope binding mismatch')
+    if Path(state_root).is_relative_to(scope['root']) or Path(scope['root']).is_relative_to(state_root):
+        raise ValueError('Installer metadata and application scope overlap')
+    return manifest, domains, ir, scope
 
 
 def verify(bundle, control=None):
@@ -37,66 +393,16 @@ def verify(bundle, control=None):
     if mode is not None and mode != 'standalone':
         raise ValueError('Unknown deployment mode')
     if mode == 'standalone':
-        if control is not None or 'agentVmSpec' in manifest:
-            raise ValueError('Standalone host cannot manage control/guest roles')
-        for name in ('site/agent-vm.json', 'site/agent-vm.provenance.json',
-                     'maintenance-workspaces.json', 'software-workspaces.json'):
-            path = bundle / name
-            if path.exists() or path.is_symlink():
-                raise ValueError('Standalone host includes managed role inputs')
-        domains = strict(bundle / 'podman-domains.json')
-        metadata = strict(bundle / 'bundle.json')
-        provenance, provenance_bytes = strict(bundle / 'source-provenance.json', include_bytes=True)
-        ir, ir_bytes = strict(bundle / 'stack.ir.json', include_bytes=True, limit=8 * 1024 * 1024)
-        if (domains.get('deploymentMode') != 'standalone' or 'venue' in domains
-                or metadata.get('deploymentMode') != 'standalone' or metadata.get('backend') != 'podman'
-                or provenance.get('manifestSha256') != hashlib.sha256(manifest_bytes).hexdigest()
-                or metadata.get('sourceProvenanceSha256') != hashlib.sha256(provenance_bytes).hexdigest()
-                or metadata.get('irSha256') != hashlib.sha256(ir_bytes).hexdigest()):
-            raise ValueError('Standalone host provenance/profile binding mismatch')
-        state_root = manifest.get('installerStateRoot', '/var/lib/webservices')
-        if (not isinstance(state_root, str)
-                or not re.fullmatch(r'/var/lib/(?:webservices|stack-[a-z0-9-]{1,48})', state_root)
-                or domains.get('installerStateRoot', '/var/lib/webservices') != state_root):
-            raise ValueError('Standalone installer state root binding mismatch')
-        scope = manifest.get('storageScope')
-        if (not isinstance(scope, dict) or set(scope) != {'root', 'dataClass'}
-                or scope.get('dataClass') not in ('synthetic', 'production')
-                or not isinstance(scope.get('root'), str)
-                or not re.fullmatch(r'/[A-Za-z0-9_./-]+', scope['root'])
-                or scope['root'] == '/' or '..' in Path(scope['root']).parts
-                or str(Path(scope['root'])) != scope['root'] or domains.get('storageScope') != scope):
-            raise ValueError('Standalone storage scope binding mismatch')
-        if (Path(state_root).is_relative_to(scope['root'])
-                or Path(scope['root']).is_relative_to(state_root)):
-            raise ValueError('Installer metadata and application scope overlap')
-        for service in ir.get('services', {}).values():
-            for mount in service.get('volumes', []):
-                source = mount.split(':', 1)[0] if isinstance(mount, str) else mount.get('source', '')
-                if source == '/run/p0-control' or source.startswith('/run/p0-control/'):
-                    raise ValueError('Standalone host cannot mount managed control sockets')
-                if source == '/var/log/webservices/caddy':
-                    raise ValueError('Standalone private ingress log root cannot reuse old host logs')
-        services = ir.get('services', {})
+        manifest, domains, ir, scope = standalone_metadata_source(bundle, control)
+        mounts = standalone_boundaries(ir, domains, canonical_path(scope['root']))
+        services = ir['services']
         if 'caddy' in services:
             ca = ir.get('volumes', {}).get('caddy_ca', {}).get('hostPath')
             log_root = domains.get('caddyLogRoot')
             if (not isinstance(ca, str) or not Path(ca).is_absolute() or '..' in Path(ca).parts
                     or log_root != str(Path(ca).parent / '_logs' / 'caddy')
-                    or not any(isinstance(v, str) and v.split(':', 2)[:2] == [log_root, '/var/log/caddy']
-                               for v in services['caddy'].get('volumes', []))):
+                    or (PurePosixPath(log_root), '/var/log/caddy', False) not in mounts['caddy']):
                 raise ValueError('Standalone private ingress log root mismatch')
-        if 'alloy' in services:
-            rows = domains.get('domains', [])
-            if not isinstance(rows, list) or not rows:
-                raise ValueError('Standalone journal UID scope needs domain identities')
-            uids = [row.get('uid') for row in rows if isinstance(row, dict)]
-            if (len(uids) != len(rows) or any(type(v) is not int or v <= 0 for v in uids)
-                    or len(set(uids)) != len(uids)):
-                raise ValueError('Standalone journal UID scope needs unique fixed identities')
-            expected = '|'.join(str(v) for v in sorted({0, *uids}))
-            if services['alloy'].get('environment', {}).get('STACK_LOG_UID_REGEX') != expected:
-                raise ValueError('Standalone journal UID scope mismatch')
         return {'site': manifest.get('site'), 'agentVm': 'not-managed',
                 'deploymentMode': 'standalone', 'rolesActivated': False}
     if manifest.get('site') != 'latium':

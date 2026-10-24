@@ -18,11 +18,30 @@ mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
 
-@unittest.skipUnless(os.geteuid() == 0, 'protected image fixtures require root')
 class PinnedImages(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
+        # Synthetic ownership only: no chown or privileged fixture execution.
+        self.owners = {}
+        real_lstat = Path.lstat
+        def fixture_lstat(path):
+            info = real_lstat(path)
+            if path == self.root or self.root in path.parents:
+                fields = {name: getattr(info, name) for name in dir(info) if name.startswith('st_')}
+                fields['st_uid'] = self.owners.get(path, 0)
+                return SimpleNamespace(**fields)
+            return info
+        ownership = patch.object(Path, 'lstat', fixture_lstat)
+        ownership.start(); self.addCleanup(ownership.stop)
+        real_fstat = os.fstat
+        def fixture_fstat(fd):
+            info = real_fstat(fd)
+            fields = {name: getattr(info, name) for name in dir(info) if name.startswith('st_')}
+            fields['st_uid'] = 0
+            return SimpleNamespace(**fields)
+        opened = patch.object(os, 'fstat', fixture_fstat)
+        opened.start(); self.addCleanup(opened.stop)
         self.image = 'sha256:' + 'a' * 64
         self.ir = {'services': {'selected': {'image': self.image, 'updatePolicy': 'pinned',
                    'placement': 'rootless', 'rootlessDomain': 'apps'}}}
@@ -30,6 +49,7 @@ class PinnedImages(unittest.TestCase):
         (self.root / 'podman-domains.json').write_text(json.dumps({'domains': [{'name': 'apps', 'user': 'service-apps'}]}))
         self.archive = self.root / 'release.tar'
         self.archive.write_bytes(b'fixture release input')
+        self.archive.chmod(0o600)
         self.row = {'image': self.image, 'archiveFilename': self.archive.name,
                     'archiveSha256': hashlib.sha256(self.archive.read_bytes()).hexdigest()}
         self.inputs = self.root / 'inputs.json'
@@ -37,6 +57,7 @@ class PinnedImages(unittest.TestCase):
 
     def save(self):
         self.inputs.write_text(json.dumps({'schemaVersion': 1, 'images': [self.row]}))
+        self.inputs.chmod(0o600)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -67,6 +88,20 @@ class PinnedImages(unittest.TestCase):
     def test_missing_input_refused(self):
         self.inputs.write_text(json.dumps({'schemaVersion': 1, 'images': []}))
         with self.assertRaises(ValueError): mod.validate(self.root, self.inputs)
+
+    def test_legacy_and_standalone_rootful_mapping_keeps_release_proof_gate(self):
+        # Command selection is not archive admission. The current standalone
+        # profile uses the global rootful store without the unshipped v2 helper.
+        with patch.object(mod.subprocess, 'run', side_effect=AssertionError('no engine calls')):
+            for mode in (None, 'standalone'):
+                with self.subTest(deploymentMode=mode):
+                    metadata = {'domains': []}
+                    if mode is not None:
+                        metadata['deploymentMode'] = mode
+                    (self.root / 'podman-domains.json').write_text(json.dumps(metadata))
+                    self.assertEqual(mod.rootful_command(self.root), ['podman'])
+            with self.assertRaisesRegex(ValueError, 'validated release proof'):
+                mod.install([(self.image, self.archive, ['root'])], self.root)
 
     def test_complete_venue_schema_routes_rootful_import_off_shared_graph(self):
         prefix='p0test-r1';state='/var/lib/'+prefix;graph='/mnt/stack/p0-existing-host-venue-r1/rootful-graph';run='/run/'+prefix+'-podman'
@@ -121,7 +156,7 @@ class PinnedImages(unittest.TestCase):
         self.ir['quadletBuildImagesFrozen']=True
         self.ir['services']['selected'].update({'build':{},'frozenBuildImage':self.image})
         (self.root/'stack.ir.json').write_text(json.dumps(self.ir))
-        graph=self.root/'graph';graph.mkdir(mode=0o700);os.chown(graph,3201,3201)
+        graph=self.root/'graph';graph.mkdir(mode=0o700);self.owners[graph]=3201
         (self.root/'podman-domains.json').write_text(json.dumps({'domains':[
             {'name':'apps','user':'service-apps','graphRoot':str(graph)}]}))
         return graph,'localhost/webservices/selected:bundle'
@@ -249,7 +284,7 @@ class PinnedImages(unittest.TestCase):
         self.assertNotIn('python3 "$BUNDLE/ops/install-pinned-images.py" --bundle "$BUNDLE" --prepare-registry',body)
 
     def test_operator_owned_generation_pin_is_not_admitted_as_protected(self):
-        os.chown(self.inputs,1000,1000)
+        self.owners[self.inputs] = 1000
         with self.assertRaises(ValueError):mod.protected(self.inputs)
         # This is a NEW isolated derived artifact, not a permission takeover.
         sealed=self.root/'sealed-inputs.json';sealed.write_bytes(self.inputs.read_bytes());sealed.chmod(0o600)

@@ -440,24 +440,38 @@ info = root.lstat()
 if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
     raise SystemExit('[podman-install] unsafe installation state root')
 if private_host:
-    directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        observed = os.fstat(directory_fd)
-        if (observed.st_dev, observed.st_ino, observed.st_uid, observed.st_mode) != (info.st_dev, info.st_ino, info.st_uid, info.st_mode):
-            raise SystemExit('[podman-install] changed installation state root')
-        os.fchmod(directory_fd, 0o700)
-    finally:
-        os.close(directory_fd)
+    if info.st_gid != 0 or stat.S_IMODE(info.st_mode) not in (0o700, 0o755):
+        raise SystemExit('[podman-install] unsupported existing metadata custody')
+    import errno
+    for attribute in ('system.posix_acl_access', 'system.posix_acl_default'):
+        try:
+            if os.getxattr(root, attribute, follow_symlinks=False):
+                raise SystemExit('[podman-install] existing metadata ACL differs')
+        except OSError as error:
+            if error.errno not in (errno.ENODATA, errno.ENOTSUP): raise
+    # No pre-lock chmod. Existing selected metadata is sealed only by the
+    # source/receipt/marker-bound canonical owner after inheriting FD9 below.
 fd = os.open(root / '.install.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
 try:
     info = os.fstat(fd)
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077 or info.st_nlink != 1:
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or (private_host and info.st_gid != 0)
+            or info.st_mode & 0o077 or info.st_nlink != 1 or (private_host and info.st_size != 0)):
         raise SystemExit('[podman-install] unsafe installation lock')
 finally:
     os.close(fd)
 PY
 exec 9<>"$STATE_ROOT/.install.lock"
 flock -n 9 || { printf '[podman-install] another selected-stack installation is active\n' >&2; exit 1; }
+if [ "$STANDALONE" = true ]; then
+  if [ -e "$STATE_ROOT/.install-intent.json" ] || [ -L "$STATE_ROOT/.install-intent.json" ]; then
+    metadata_seal_proof="$(mktemp "$STATE_ROOT/.native-metadata-seal-XXXXXXXX.json")"
+    python3 -B "$BUNDLE/ops/native-metadata-owner.py" --root "$STATE_ROOT" --bundle "$BUNDLE" > "$metadata_seal_proof"
+  else
+    [ "$(stat -c '%a' "$STATE_ROOT")" = 700 ] || {
+      printf '[podman-install] unbound existing metadata requires canonical source review\n' >&2; exit 1;
+    }
+  fi
+fi
 
 release_id="$(date -u +%Y%m%dT%H%M%SZ)-$(jq -r '.irSha256[0:12]' "$BUNDLE/bundle.json")"
 release="$STATE_ROOT/releases/$release_id"
@@ -502,7 +516,22 @@ ensure_rootless_domain() {
   expected_uid="${ROOTLESS_DOMAIN_UIDS[$index]}"
   expected_subuid="${ROOTLESS_DOMAIN_SUBUID_STARTS[$index]}"
   if ! id "$user" >/dev/null 2>&1; then
-    if [ -n "$expected_uid" ]; then
+    if [ "$STANDALONE" = true ]; then
+      [ -n "$expected_uid" ] || { printf 'standalone actor UID is required\n' >&2; exit 1; }
+      local group_gid group_record group_status
+      if group_record="$(getent group "$user")"; then
+        group_gid="$(printf '%s\n' "$group_record" | cut -d: -f3)"
+        [ "${group_record%%:*}" = "$user" ] && [ "$group_gid" = "$expected_uid" ] || { printf 'selected actor group drift\n' >&2; exit 1; }
+      else
+        group_status=$?
+        [ "$group_status" = 2 ] || { printf 'selected actor group lookup failed\n' >&2; exit 1; }
+        group_status=0
+        getent group "$expected_uid" >/dev/null || group_status=$?
+        [ "$group_status" = 2 ] || { printf 'selected actor GID occupied or lookup unknown\n' >&2; exit 1; }
+        groupadd --system --gid "$expected_uid" "$user"
+      fi
+      useradd --system --uid "$expected_uid" --gid "$expected_uid" --create-home --home-dir "/home/$user" --shell /usr/sbin/nologin "$user"
+    elif [ -n "$expected_uid" ]; then
       useradd --system --uid "$expected_uid" --create-home --home-dir "/home/$user" --shell /usr/sbin/nologin "$user"
     else
       useradd --system --create-home --home-dir "/home/$user" --shell /usr/sbin/nologin "$user"
@@ -510,6 +539,9 @@ ensure_rootless_domain() {
   fi
   uid="$(id -u "$user")"
   [ -z "$expected_uid" ] || [ "$uid" = "$expected_uid" ] || { printf 'uid drift for %s: expected %s, found %s\n' "$user" "$expected_uid" "$uid" >&2; exit 1; }
+  if [ "$STANDALONE" = true ]; then
+    [ "$(id -g "$user")" = "$expected_uid" ] || { printf 'selected actor primary GID drift\n' >&2; exit 1; }
+  fi
   home="$(getent passwd "$user" | cut -d: -f6)"
   if ! grep -q "^${user}:" /etc/subuid || ! grep -q "^${user}:" /etc/subgid; then
     subid_start="${expected_subuid:-$(next_subid_start)}"
@@ -527,8 +559,26 @@ ensure_rootless_domain() {
     printf 'incomplete or unequal subordinate-id ranges for %s\n' "$user" >&2; exit 1;
   }
   ROOTLESS_DOMAIN_SUBUID_STARTS[$index]="$current_subuid"
-  loginctl enable-linger "$user"
-  systemctl start "user@${uid}.service"
+  if [ "${2:-}" = identity-only ]; then
+    # Canonical selection/offline/private-directory gates validate ALL seven
+    # actor identities. Finish that graph before entering any per-role gate.
+    ROOTLESS_UIDS[$index]="$uid"
+    ROOTLESS_HOMES[$index]="$home"
+    return 0
+  fi
+  if [ "$STANDALONE" = true ]; then
+    # Never revive old actor units, sockets or namespace processes while their
+    # replacement private projection is still being prepared.
+    python3 -B "$BUNDLE/ops/install-journal.py" --root "$STATE_ROOT" --bundle "$BUNDLE" \
+      --assert-domain-offline "${ROOTLESS_DOMAIN_NAMES[$index]}" >/dev/null
+    python3 -B "$BUNDLE/ops/prepare-native-private-directories.py" --root "$STATE_ROOT" \
+      --bundle "$BUNDLE" --domain "${ROOTLESS_DOMAIN_NAMES[$index]}" >/dev/null
+    python3 -B "$BUNDLE/ops/prepare-native-account-config.py" --root "$STATE_ROOT" \
+      --bundle "$BUNDLE" --domain "${ROOTLESS_DOMAIN_NAMES[$index]}" >/dev/null
+  else
+    loginctl enable-linger "$user"
+    systemctl start "user@${uid}.service"
+  fi
   runtime="/run/user/${uid}/webservices"
   env_store="$state_root/runtime-env"
   quadlet_dir="$home/.config/containers/systemd"
@@ -547,38 +597,47 @@ ensure_rootless_domain() {
       /mnt/stack/podman/*) install -d -m 0710 -o root -g "$user" "$(dirname "$graph_root")" ;;
     esac
   fi
-  mkdir -p "${ROOTLESS_RELEASES[$index]}" "$state_root/releases" "$graph_root" "$volume_root" "$runtime" "$env_store" "$quadlet_dir" "$systemd_dir" "$home/.config/containers"
-  if command -v setfacl >/dev/null 2>&1; then
-    setfacl -b -k "$graph_root" "$volume_root"
+  if [ "$STANDALONE" = false ]; then
+    mkdir -p "$state_root/releases" "$graph_root" "$volume_root" "$env_store" "$quadlet_dir" "$systemd_dir" "$home/.config/containers"
   fi
-  chown "$user:$user" "$state_root" "$state_root/releases" "${ROOTLESS_RELEASES[$index]}" "$graph_root" "$volume_root" "$runtime" "$env_store"
-  # The account-private parent is setgid for host-side administration. Podman
-  # graph directories must not inherit that bit: it otherwise turns overlay
-  # layer roots into mode 2550 and prevents non-root container users from
-  # traversing their own root filesystem.
-  chmod 0700 "$graph_root"
   if [ "$STANDALONE" = true ]; then
-    chmod 0700 "$state_root" "$state_root/releases" "$volume_root" "$runtime"
+    # This is a NEW derived empty leaf, never an existing actor/private tree.
+    mkdir -m 0700 "${ROOTLESS_RELEASES[$index]}"
+    chown root:root "${ROOTLESS_RELEASES[$index]}"
+    chmod u-s,g-s "${ROOTLESS_RELEASES[$index]}"
+    setfacl -b -k "${ROOTLESS_RELEASES[$index]}"
+  else
+    mkdir -p "${ROOTLESS_RELEASES[$index]}" "$runtime"
+    chown "$user:$user" "${ROOTLESS_RELEASES[$index]}" "$runtime"
   fi
+  if [ "$STANDALONE" = false ]; then
+    if command -v setfacl >/dev/null 2>&1; then setfacl -b -k "$graph_root" "$volume_root"; fi
+    chown "$user:$user" "$state_root" "$state_root/releases" "$graph_root" "$volume_root" "$env_store"
+    chmod 0700 "$graph_root"
+  fi
+  # Standalone private roots were proven/created by the exact source owner;
+  # existing ACL/SGID/ownership failures require disposition, never repair.
   # The namespace-root proof requires an already private, correctly owned
   # graph leaf. Fresh mkdir creates root-owned leaves; do not validate/grant
   # their ancestry until the exact selected actor handoff above is complete.
   local traverse_args=(--domain "${ROOTLESS_DOMAIN_NAMES[$index]}" --user "$user" --volume-root "$volume_root")
   if [ "$STANDALONE" = true ]; then traverse_args+=(--bundle "$BUNDLE"); fi
   python3 "$BUNDLE/ops/grant-rootless-volume-parent-traverse.py" "${traverse_args[@]}"
-  find "$graph_root" -mindepth 1 -maxdepth 1 -type d -perm -2000 -exec chmod g-s {} +
-  if [ -d "$graph_root/overlay" ]; then
-    find "$graph_root/overlay" -mindepth 1 -maxdepth 1 -type d -exec chmod 0700 {} +
-    find "$graph_root/overlay" -mindepth 2 -maxdepth 2 -type d \
-      \( -name diff -o -name merged \) -exec chmod 0755 {} +
+  if [ "$STANDALONE" = false ]; then
+    find "$graph_root" -mindepth 1 -maxdepth 1 -type d -perm -2000 -exec chmod g-s {} +
+    if [ -d "$graph_root/overlay" ]; then
+      find "$graph_root/overlay" -mindepth 1 -maxdepth 1 -type d -exec chmod 0700 {} +
+      find "$graph_root/overlay" -mindepth 2 -maxdepth 2 -type d \
+        \( -name diff -o -name merged \) -exec chmod 0755 {} +
+    fi
+    chown -R "$user:$user" "$home/.config"
+    chmod 0700 "$env_store"
+    printf '[storage]\ndriver = "overlay"\ngraphroot = "%s"\n' "$graph_root" > "$home/.config/containers/storage.conf"
+    printf '[network]\ndefault_rootless_network_cmd = "pasta"\npasta_options = ["--map-host-loopback", "169.254.1.2"]\n' > "$home/.config/containers/containers.conf"
+    chown "$user:$user" "$home/.config/containers/storage.conf"
+    chown "$user:$user" "$home/.config/containers/containers.conf"
+    chmod 0600 "$home/.config/containers/storage.conf" "$home/.config/containers/containers.conf"
   fi
-  chown -R "$user:$user" "$home/.config"
-  chmod 0700 "$env_store"
-  printf '[storage]\ndriver = "overlay"\ngraphroot = "%s"\n' "$graph_root" > "$home/.config/containers/storage.conf"
-  printf '[network]\ndefault_rootless_network_cmd = "pasta"\npasta_options = ["--map-host-loopback", "169.254.1.2"]\n' > "$home/.config/containers/containers.conf"
-  chown "$user:$user" "$home/.config/containers/storage.conf"
-  chown "$user:$user" "$home/.config/containers/containers.conf"
-  chmod 0600 "$home/.config/containers/storage.conf" "$home/.config/containers/containers.conf"
 }
 
 user_systemctl() {
@@ -602,9 +661,14 @@ selected_container_units() {
 }
 
 stop_selected_services() {
-  local mode="$1" index="$2" source="$3"
+  local mode="$1" index="$2" source="$3" selected unit
   local -a units=()
-  mapfile -t units < <(selected_container_units "$source")
+  if [ "$STANDALONE" = true ]; then
+    selected="$(native_stop_units "$mode" "$index")" || return 1
+    while IFS= read -r unit; do [ -z "$unit" ] || units+=("$unit"); done <<<"$selected"
+  else
+    mapfile -t units < <(selected_container_units "$source")
+  fi
   [ "${#units[@]}" -gt 0 ] || return 0
   if [ "$mode" = rootless ]; then
     user_systemctl "$index" stop "${units[@]}"
@@ -613,8 +677,32 @@ stop_selected_services() {
   fi
 }
 
+native_selected_units() {
+  local mode="$1" index="$2" kind="$3" scope=rootful
+  if [ "$mode" = rootless ]; then scope="rootless-${ROOTLESS_DOMAIN_NAMES[$index]}"; fi
+  python3 -B "$release/ops/native-selection.py" --bundle "$release" --scope "$scope" --kind "$kind"
+}
+
+native_stop_units() {
+  local mode="$1" index="$2" scope=rootful
+  if [ "$mode" = rootless ]; then scope="rootless-${ROOTLESS_DOMAIN_NAMES[$index]}"; fi
+  python3 -B "$release/ops/install-journal.py" --root "$STATE_ROOT" --release "$release" \
+    --stop-selection --scope "$scope"
+}
+
+CADDY_EARLY_BUILD_COMPLETE=false
 build_selected_serially() {
-  local mode="$1" index="$2" source="$3" file unit
+  local mode="$1" index="$2" source="$3" file unit selected
+  if [ "$STANDALONE" = true ]; then
+    selected="$(native_selected_units "$mode" "$index" builds)" || return 1
+    while IFS= read -r unit; do
+      [ -n "$unit" ] || continue
+      if [ "$mode" = rootful ] && [ "$unit" = webservices-caddy-build.service ] && [ "$CADDY_EARLY_BUILD_COMPLETE" = true ]; then continue; fi
+      printf '[podman-install] exact serial source build: %s %s\n' "$mode" "$unit"
+      if [ "$mode" = rootless ]; then user_systemctl "$index" restart "$unit"; else systemctl restart "$unit"; fi
+    done <<<"$selected"
+    return 0
+  fi
   while IFS= read -r file; do
     unit="${file%.build}-build.service"
     printf '[podman-install] serial source build: %s %s\n' "$mode" "$unit"
@@ -627,8 +715,24 @@ build_selected_serially() {
 }
 
 cancel_webservices_start_jobs() {
-  local mode="$1" index="$2" job unit type state
+  local mode="$1" index="$2" job unit type state selected listing
   local -a jobs=()
+  if [ "$STANDALONE" = true ]; then
+    local -A allowed=()
+    selected="$(native_stop_units "$mode" "$index")" || return 1
+    while IFS= read -r unit; do [ -z "$unit" ] || allowed["$unit"]=1; done <<<"$selected"
+    if [ "$mode" = rootless ]; then
+      listing="$(user_systemctl "$index" list-jobs --no-legend --no-pager)" || return 1
+    else
+      listing="$(systemctl list-jobs --no-legend --no-pager)" || return 1
+    fi
+    while read -r job unit type state; do
+      if [[ "$job" =~ ^[1-9][0-9]*$ ]] && [ -n "$unit" ] && [ -n "${allowed[$unit]:-}" ] && [ "$type" != stop ]; then jobs+=("$job"); fi
+    done <<<"$listing"
+    [ "${#jobs[@]}" -gt 0 ] || return 0
+    if [ "$mode" = rootless ]; then user_systemctl "$index" cancel "${jobs[@]}"; else systemctl cancel "${jobs[@]}"; fi
+    return
+  fi
   if [ "$mode" = "rootless" ]; then
     while read -r job unit type state; do
       [[ "$unit" = webservices-* ]] && [ "$type" != "stop" ] && jobs+=("$job")
@@ -643,18 +747,43 @@ cancel_webservices_start_jobs() {
 }
 
 caddy_log_root="$(jq -r '.caddyLogRoot // "/var/log/webservices/caddy"' "$DOMAINS_FILE")"
-mkdir -p "$release" "$STATE_ROOT/releases" "$STATE_ROOT/test-results" "$STATE_ROOT/runtime-env" "$QUADLET_DIR" /run/webservices "$caddy_log_root"
-chmod 0700 "$STATE_ROOT/runtime-env"
+mkdir -p "$release" "$STATE_ROOT/releases" "$STATE_ROOT/test-results" "$QUADLET_DIR" "$caddy_log_root"
+if [ "$STANDALONE" = false ]; then
+  mkdir -p "$STATE_ROOT/runtime-env" /run/webservices
+  chmod 0700 "$STATE_ROOT/runtime-env"
+fi
+if [ "$STANDALONE" = true ]; then
+  # The native product uses serialized immutable upgrades, not the legacy
+  # updater namespace. Prove absence; never disable/adopt a foreign timer.
+  python3 -B - "$BUNDLE/ops/install-journal.py" "$STATE_ROOT" <<'PY'
+import importlib.util
+from pathlib import Path
+import sys
+source, root = map(Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location('native_updater_absence_journal', source)
+journal = importlib.util.module_from_spec(spec)
+exec(compile(source.read_bytes(), str(source), 'exec'), journal.__dict__)
+journal.native_file_owner().o.lock_held(root)
+for unit in ('webservices-auto-update.timer', 'webservices-auto-update.service'):
+    if not journal.unconfigured_unit(['systemctl'], unit):
+        raise ValueError('Native updater namespace is not unconfigured; exact owned disposition required')
+PY
+  for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+    ensure_rootless_domain "$i" identity-only
+  done
+fi
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   ensure_rootless_domain "$i"
 done
-if [ -n "$IMAGE_INPUTS" ]; then
+# Standalone actor image import is deferred until private projection is sealed:
+# rootless Podman import may itself leave a namespace process behind.
+if [ -n "$IMAGE_INPUTS" ] && [ "$STANDALONE" = false ]; then
   python3 "$BUNDLE/ops/install-pinned-images.py" --bundle "$BUNDLE" --inputs "$IMAGE_INPUTS"
 fi
 
 # The persistent rootful store is also the natural input for an update. Snapshot
 # it before stale-file cleanup so an in-place update cannot erase its own source.
-if [ "$(readlink -f "$ENV_DIR")" = "$(readlink -f "$STATE_ROOT/runtime-env")" ]; then
+if [ "$STANDALONE" = false ] && [ "$(readlink -f "$ENV_DIR")" = "$(readlink -f "$STATE_ROOT/runtime-env")" ]; then
   env_input_snapshot="$(mktemp -d)"
   cleanup_paths+=("$env_input_snapshot")
   chmod 0700 "$env_input_snapshot"
@@ -664,16 +793,20 @@ fi
 
 # A service moved between rootless domains can otherwise keep its old host port
 # and volume mounts while the replacement domain starts.
-cancel_webservices_start_jobs rootful 0
-for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
-  cancel_webservices_start_jobs rootless "$i"
-done
-systemctl stop webservices.target || true
-for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
-  user_systemctl "$i" stop webservices.target || true
-  user_systemctl "$i" reset-failed 'webservices-*' || true
-done
-systemctl reset-failed 'webservices-*' || true
+if [ "$STANDALONE" = false ]; then
+  cancel_webservices_start_jobs rootful 0
+  for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+    cancel_webservices_start_jobs rootless "$i"
+  done
+  systemctl stop webservices.target || true
+  for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+    user_systemctl "$i" stop webservices.target || true
+    user_systemctl "$i" reset-failed 'webservices-*' || true
+  done
+  systemctl reset-failed 'webservices-*' || true
+fi
+# Standalone callers must first stop through canonical exact source authority;
+# the retained-FD publisher below proves every actor/rootful unit/job quiescent.
 cp -a "$BUNDLE/." "$release/"
 # Archive copy also resets the destination owner. Seal this NEW derived stage
 # immediately, before preparation can fail; never adopt an original host tree.
@@ -685,6 +818,24 @@ else
   install -d -m 0755 "$release"
 fi
 install -d -m 0755 "$release/repos"
+if [ "$STANDALONE" = true ]; then
+  for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+    domain="${ROOTLESS_DOMAIN_NAMES[$i]}"
+    python3 -B "$release/ops/prepare-role-public-payload.py" --bundle "$release" --domain "$domain" >/dev/null
+    # Custody preparation, canonical journal writes and retained-FD handoff MUST
+    # run in this one Python process. No cross-process lease reconstruction.
+    python3 -B "$release/ops/install-journal.py" --root "$STATE_ROOT" --release "$release" \
+      --project-domain "$domain" >/dev/null
+  done
+  python3 -B "$release/ops/install-journal.py" --root "$STATE_ROOT" --release "$release" \
+    --project-rootful-environment >/dev/null
+  # Publish while managers/processes/API/boot/linger remain stopped. No current
+  # pointer moves until this exact source/previous union has been handed off.
+  python3 -B "$release/ops/install-journal.py" --root "$STATE_ROOT" --release "$release" \
+    --install-selected-files >/dev/null
+  python3 -B "$release/ops/install-journal.py" --root "$STATE_ROOT" --release "$release" \
+    --install-runtime-environment-units >/dev/null
+else
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user="${ROOTLESS_DOMAIN_USERS[$i]}"
   domain="${ROOTLESS_DOMAIN_NAMES[$i]}"
@@ -768,11 +919,15 @@ if [ -n "$test_runner_domain" ]; then
   user="${ROOTLESS_DOMAIN_USERS[$i]}"
   install -m 0600 -o "$user" -g "$user" "$BUNDLE/runtime/stack.env" "${ROOTLESS_RELEASES[$i]}/runtime/stack.env"
 fi
+fi # legacy whole-bundle / aggregate runner projection only
+if [ "$STANDALONE" = false ]; then
 chmod 0700 /run/webservices
 find "$STATE_ROOT/runtime-env" -maxdepth 1 -type f -name '*.env' -delete
-for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
-  find "${ROOTLESS_ENV_STORES[$i]}" -maxdepth 1 -type f -name '*.env' -delete
-done
+if [ "$STANDALONE" = false ]; then
+  for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+    find "${ROOTLESS_ENV_STORES[$i]}" -maxdepth 1 -type f -name '*.env' -delete
+  done
+fi
 for env_file in "$ENV_DIR"/*.env; do
   [ -e "$env_file" ] || continue
   destination="/run/webservices/${env_file##*/}"
@@ -786,6 +941,9 @@ for env_file in "$ENV_DIR"/*.env; do
   service="${service%.env}"
   domain="$(jq -r --arg service "$service" '.services[$service] | select(.placement == "rootless") | .rootlessDomain // empty' "$BUNDLE/stack.ir.json")"
   if [ -n "$domain" ]; then
+    # The standalone journal owner already copied exact projected bytes to the
+    # persistent store. Restore to runtime only after manager-created XDG paths.
+    [ "$STANDALONE" = false ] || continue
     i="$(domain_index_by_name "$domain")" || { printf 'environment names unknown domain: %s\n' "$domain" >&2; exit 1; }
     user="${ROOTLESS_DOMAIN_USERS[$i]}"
     rootless_destination="${ROOTLESS_RUNTIMES[$i]}/${env_file##*/}"
@@ -793,10 +951,20 @@ for env_file in "$ENV_DIR"/*.env; do
     install -m 0600 -o "$user" -g "$user" "$env_file" "${ROOTLESS_ENV_STORES[$i]}/${env_file##*/}"
   fi
 done
+fi # Legacy aggregate external ENV_DIR copies; standalone consumes named proofs.
 
+forgejo_runner_env="$ENV_DIR/forgejo-runner.env"
+if [ "$STANDALONE" = true ]; then
+  forgejo_domain="$(jq -r '.services["forgejo-runner"] | select(.placement == "rootless") | .rootlessDomain // empty' "$BUNDLE/stack.ir.json")"
+  forgejo_runner_env=""
+  if [ -n "$forgejo_domain" ]; then
+    forgejo_index="$(domain_index_by_name "$forgejo_domain")"
+    forgejo_runner_env="${ROOTLESS_ENV_STORES[$forgejo_index]}/forgejo-runner.env"
+  fi
+fi
 forgejo_runner_ssh_dir=""
-if [ -f "$ENV_DIR/forgejo-runner.env" ]; then
-  forgejo_runner_ssh_dir="$(sed -n 's/^FORGEJO_RUNNER_SSH_DIR=//p' "$ENV_DIR/forgejo-runner.env" | tail -n 1)"
+if [ -f "$forgejo_runner_env" ]; then
+  forgejo_runner_ssh_dir="$(sed -n 's/^FORGEJO_RUNNER_SSH_DIR=//p' "$forgejo_runner_env" | tail -n 1)"
 fi
 if [ -n "$forgejo_runner_ssh_dir" ]; then
   forgejo_domain="$(jq -er '.services["forgejo-runner"].rootlessDomain' "$BUNDLE/stack.ir.json")"
@@ -1035,40 +1203,71 @@ for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   ln -sfn "$rootless_release" "$state_root/.current-new"
   mv -Tf "$state_root/.current-new" "$state_root/current"
 done
-find "$QUADLET_DIR" -maxdepth 1 -type f -name 'webservices-*' -delete
-find /etc/systemd/system -maxdepth 1 -type f -name 'webservices-*.target' -delete
-find /etc/systemd/system -maxdepth 1 -type f -name 'webservices.target' -delete
-find "$release/quadlet/rootful" -maxdepth 1 -type f ! -name '*.target' -exec install -m 0644 {} "$QUADLET_DIR/" \;
-install -m 0644 "$release/quadlet/rootful"/*.target /etc/systemd/system/
-install_runtime_env_unit \
-  /etc/systemd/system/webservices-runtime-env.service \
-  /etc/systemd/system/webservices.target.d \
-  "$STATE_ROOT/runtime-env" \
-  /run/webservices
+if [ "$STANDALONE" = false ]; then
+  find "$QUADLET_DIR" -maxdepth 1 -type f -name 'webservices-*' -delete
+  find /etc/systemd/system -maxdepth 1 -type f -name 'webservices-*.target' -delete
+  find /etc/systemd/system -maxdepth 1 -type f -name 'webservices.target' -delete
+  find "$release/quadlet/rootful" -maxdepth 1 -type f ! -name '*.target' -exec install -m 0644 {} "$QUADLET_DIR/" \;
+  install -m 0644 "$release/quadlet/rootful"/*.target /etc/systemd/system/
+fi
+if [ "$STANDALONE" = false ]; then
+  install_runtime_env_unit \
+    /etc/systemd/system/webservices-runtime-env.service \
+    /etc/systemd/system/webservices.target.d \
+    "$STATE_ROOT/runtime-env" \
+    /run/webservices
+fi
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   domain="${ROOTLESS_DOMAIN_NAMES[$i]}"
   user="${ROOTLESS_DOMAIN_USERS[$i]}"
   rootless_release="${ROOTLESS_RELEASES[$i]}"
   rootless_quadlet_dir="${ROOTLESS_QUADLET_DIRS[$i]}"
   rootless_systemd_dir="${ROOTLESS_SYSTEMD_DIRS[$i]}"
-  find "$rootless_quadlet_dir" -maxdepth 1 -type f -name 'webservices-*' -delete
-  find "$rootless_systemd_dir" -maxdepth 1 -type f -name 'webservices-*.target' -delete
-  find "$rootless_systemd_dir" -maxdepth 1 -type f -name 'webservices.target' -delete
-  find "$rootless_release/quadlet/rootless-$domain" -maxdepth 1 -type f ! -name '*.target' -exec install -m 0644 -o "$user" -g "$user" {} "$rootless_quadlet_dir/" \;
-  install -m 0644 -o "$user" -g "$user" "$rootless_release/quadlet/rootless-$domain"/*.target "$rootless_systemd_dir/"
-  install_runtime_env_unit \
-    "$rootless_systemd_dir/webservices-runtime-env.service" \
-    "$rootless_systemd_dir/webservices.target.d" \
-    "${ROOTLESS_ENV_STORES[$i]}" \
-    "${ROOTLESS_RUNTIMES[$i]}" \
-    "$user" \
-    "$user"
+  if [ "$STANDALONE" = false ]; then
+    find "$rootless_quadlet_dir" -maxdepth 1 -type f -name 'webservices-*' -delete
+    find "$rootless_systemd_dir" -maxdepth 1 -type f -name 'webservices-*.target' -delete
+    find "$rootless_systemd_dir" -maxdepth 1 -type f -name 'webservices.target' -delete
+    find "$rootless_release/quadlet/rootless-$domain" -maxdepth 1 -type f ! -name '*.target' -exec install -m 0644 -o "$user" -g "$user" {} "$rootless_quadlet_dir/" \;
+    install -m 0644 -o "$user" -g "$user" "$rootless_release/quadlet/rootless-$domain"/*.target "$rootless_systemd_dir/"
+  fi
+  if [ "$STANDALONE" = false ]; then
+    install_runtime_env_unit \
+      "$rootless_systemd_dir/webservices-runtime-env.service" \
+      "$rootless_systemd_dir/webservices.target.d" \
+      "${ROOTLESS_ENV_STORES[$i]}" \
+      "${ROOTLESS_RUNTIMES[$i]}" \
+      "$user" \
+      "$user"
+  fi
 done
-install -m 0755 "$release/ops/webservices-auto-update" /usr/local/sbin/webservices-auto-update
-install -m 0644 "$release/ops/webservices-auto-update.service" "$release/ops/webservices-auto-update.timer" /etc/systemd/system/
+if [ "$STANDALONE" = false ]; then
+  install -m 0755 "$release/ops/webservices-auto-update" /usr/local/sbin/webservices-auto-update
+  install -m 0644 "$release/ops/webservices-auto-update.service" "$release/ops/webservices-auto-update.timer" /etc/systemd/system/
+fi
 
 quarantine_selections() {
   local i result=0
+  if [ "$STANDALONE" = true ]; then
+    # Borrow the actual inherited OFD, never re-open/reacquire a substitute
+    # lease. Canonical failed-current quarantine also closes actor API/linger
+    # and managers, not merely the target's enable symlinks.
+    python3 -B - "$STATE_ROOT" "$release" <<'PY'
+import importlib.util
+from pathlib import Path
+import sys
+root, release = map(Path, sys.argv[1:])
+source = release / 'ops/install-journal.py'
+spec = importlib.util.spec_from_file_location('installer_failure_journal', source)
+journal = importlib.util.module_from_spec(spec)
+exec(compile(source.read_bytes(), str(source), 'exec'), journal.__dict__)
+journal.native_file_owner().o.lock_held(root)
+value = journal.read(root / '.install-intent.json')
+if not value or value.get('release') != str(release) or value.get('phase') != 'failed':
+    raise ValueError('Exact failed selection required before canonical quarantine')
+journal.quarantine_failed(root, journal.digest(root / '.install-intent.json'))
+PY
+    return
+  fi
   # Failed/cancelled selections must not automatically restart on next boot.
   systemctl disable webservices.target webservices-auto-update.timer >/dev/null 2>&1 || result=1
   for i in "${!ROOTLESS_DOMAIN_USERS[@]}"; do
@@ -1085,12 +1284,12 @@ rollback() {
   journal failed || printf '[podman-install] failure journal could not be committed; inspect before retry\n' >&2
   printf '[podman-install] activation failed; stopping selected workloads/builds; preserving volumes\n' >&2
   local cleanup_failed=0
-  cancel_webservices_start_jobs rootful 0
-  systemctl stop webservices.target || true
+  cancel_webservices_start_jobs rootful 0 || cleanup_failed=1
+  if [ "$STANDALONE" = false ]; then systemctl stop webservices.target || true; fi
   stop_selected_services rootful 0 "$ROOTFUL_QUADLET_SOURCE" || cleanup_failed=1
   for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
-    cancel_webservices_start_jobs rootless "$i"
-    user_systemctl "$i" stop webservices.target || true
+    cancel_webservices_start_jobs rootless "$i" || cleanup_failed=1
+    if [ "$STANDALONE" = false ]; then user_systemctl "$i" stop webservices.target || true; fi
     stop_selected_services rootless "$i" "$BUNDLE/quadlet/rootless-${ROOTLESS_DOMAIN_NAMES[$i]}" || cleanup_failed=1
   done
   if [ "$cleanup_failed" -ne 0 ]; then
@@ -1206,7 +1405,13 @@ wait_for_target_services() {
 }
 
 restart_rootful_network_units() {
-  local units=()
+  local units=() selected
+  if [ "$STANDALONE" = true ]; then
+    selected="$(native_selected_units rootful 0 networks)" || return 1
+    while IFS= read -r unit; do [ -z "$unit" ] || units+=("$unit"); done <<<"$selected"
+    [ "${#units[@]}" -eq 0 ] || systemctl restart "${units[@]}"
+    return 0
+  fi
   while IFS= read -r unit; do
     [ -n "$unit" ] && units+=("$unit")
   done < <(systemctl list-unit-files 'webservices-*-network.service' --no-legend --no-pager | awk '{print $1}')
@@ -1214,7 +1419,13 @@ restart_rootful_network_units() {
 }
 
 restart_rootless_network_units() {
-  local index="$1" units=()
+  local index="$1" units=() selected
+  if [ "$STANDALONE" = true ]; then
+    selected="$(native_selected_units rootless "$index" networks)" || return 1
+    while IFS= read -r unit; do [ -z "$unit" ] || units+=("$unit"); done <<<"$selected"
+    [ "${#units[@]}" -eq 0 ] || user_systemctl "$index" restart "${units[@]}"
+    return 0
+  fi
   while IFS= read -r unit; do
     [ -n "$unit" ] && units+=("$unit")
   done < <(user_systemctl "$index" list-unit-files 'webservices-*-network.service' --no-legend --no-pager | awk '{print $1}')
@@ -1337,13 +1548,43 @@ grant_test_runner_managed_socket_access() {
   [ -S "$socket" ] && chgrp "$managed_user" "$socket" && chmod go+rw "$socket"
 }
 
+if [ "$STANDALONE" = true ]; then
+  # Exact source/runtime-unit proof was sealed BEFORE any manager bootstrap.
+  # Restore named files through the source-pinned units, not installer globs.
+  systemctl daemon-reload
+  systemctl start webservices-runtime-env.service
+  for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+    user="${ROOTLESS_DOMAIN_USERS[$i]}"
+    uid="${ROOTLESS_UIDS[$i]}"
+    loginctl enable-linger "$user"
+    systemctl start "user@${uid}.service"
+    user_systemctl "$i" daemon-reload
+    user_systemctl "$i" start webservices-runtime-env.service
+  done
+  python3 -B "$release/ops/install-journal.py" --root "$STATE_ROOT" --release "$release" \
+    --seal-runtime-environment-copies >/dev/null
+  if [ -n "$IMAGE_INPUTS" ]; then
+    python3 -B "$release/ops/install-pinned-images.py" --bundle "$release" --inputs "$IMAGE_INPUTS"
+  fi
+fi
 journal building
 if [ "$STANDALONE" = true ] && jq -e '.services.caddy' "$BUNDLE/stack.ir.json" >/dev/null; then
   python3 "$release/ops/runtime-trust.py" --bundle "$release" --prepare
 fi
 systemctl daemon-reload
 restart_rootful_network_units
-if systemctl list-unit-files webservices-caddy.service --no-legend --no-pager | grep -q '^webservices-caddy\.service'; then
+if [ "$STANDALONE" = true ]; then
+  native_rootful_services="$(native_selected_units rootful 0 services)"
+  native_rootful_builds="$(native_selected_units rootful 0 builds)"
+  if grep -Fqx webservices-caddy.service <<<"$native_rootful_services"; then
+    if grep -Fqx webservices-caddy-build.service <<<"$native_rootful_builds"; then
+      systemctl restart webservices-caddy-build.service
+      CADDY_EARLY_BUILD_COMPLETE=true
+    fi
+    systemctl restart webservices-caddy.service
+    python3 "$release/ops/runtime-trust.py" --bundle "$release" --publish-mail
+  fi
+elif systemctl list-unit-files webservices-caddy.service --no-legend --no-pager | grep -q '^webservices-caddy\.service'; then
   systemctl restart webservices-caddy.service
   if [ "$STANDALONE" = true ]; then
     python3 "$release/ops/runtime-trust.py" --bundle "$release" --publish-mail
@@ -1351,7 +1592,7 @@ if systemctl list-unit-files webservices-caddy.service --no-legend --no-pager | 
 fi
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user_systemctl "$i" daemon-reload
-  user_systemctl "$i" reset-failed 'webservices-*' || true
+  if [ "$STANDALONE" = false ]; then user_systemctl "$i" reset-failed 'webservices-*' || true; fi
   user_systemctl "$i" enable podman.socket
   user_systemctl "$i" restart podman.socket
   user_systemctl "$i" enable webservices.target
@@ -1370,25 +1611,32 @@ done
 # operator-owned generation workspace. Preserve the root-owner image gate.
 python3 "$release/ops/install-pinned-images.py" --bundle "$release" --prepare-registry
 journal starting
-if [ "$STANDALONE" = true ]; then
-  # Reviewed immutable upgrades use the serialized native operation owner.
-  # A persistent catch-up timer must not race a pending installation, nor run
-  # the legacy unscoped rollback updater after host admission.
-  systemctl disable --now webservices-auto-update.timer
-  systemctl stop webservices-auto-update.service
-else
+# Arm only the selected finance native collector before the ORIGINAL target
+# transaction. This publishes a readonly Root metadata slot, never ENV edits.
+if [ "$STANDALONE" = true ] && jq -e '.services["firefly-identity-check"] and .services["keycloak-configure"]' "$release/stack.ir.json" >/dev/null; then
+  python3 -B "$release/ops/install-journal.py" --root "$STATE_ROOT" --release "$release" --native-finance-arm >/dev/null
+fi
+if [ "$STANDALONE" = false ]; then
   systemctl enable --now webservices-auto-update.timer
 fi
+# Standalone updater absence was proved before account/bootstrap mutation;
+# no timer/service in an unowned legacy namespace is installed or disabled.
 # Launch both sides before readiness waits: selected rootless producers can
 # require rootful databases/mail, and rootful consumers require rootless peers.
 # Preparation remains serial; starting only one authority graph deadlocks a
 # genuinely empty installation (for example ERPNext waiting for MariaDB).
-systemctl reset-failed 'webservices-*' || true
+if [ "$STANDALONE" = false ]; then systemctl reset-failed 'webservices-*' || true; fi
 systemctl enable webservices.target
 systemctl --no-block restart webservices.target
 for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
   user_systemctl "$i" --no-block restart webservices.target
 done
+# Capture the original LIVE configure CID/kernel/systemd identity, then await
+# that exact oneshot's completion in-process. Missing the original refuses;
+# neither a replay nor stdout/logger strings can manufacture native origin.
+if [ "$STANDALONE" = true ] && jq -e '.services["firefly-identity-check"] and .services["keycloak-configure"]' "$release/stack.ir.json" >/dev/null; then
+  python3 -B "$release/ops/install-journal.py" --root "$STATE_ROOT" --release "$release" --native-finance-capture >/dev/null
+fi
 wait_for_cross_domain_producers
 retry_failed_rootless_services
 start_missing_rootless_daemons
