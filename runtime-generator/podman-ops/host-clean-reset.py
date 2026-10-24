@@ -76,6 +76,9 @@ IDENTITIES = {name: (780 + index, 'webservices-lab-' + name) for index, name in 
     ('platform', 'apps', 'homeassistant', 'finance', 'ci-runner', 'workloads', 'test-runners'))}
 HEX = re.compile(r'[a-f0-9]{64}')
 MAX_NODES = 250000
+# Finite exact synthetic-scope inventory capacity. Unrelated interface,
+# evidence, catalog and kernel bounds remain unchanged.
+MAX_SCOPE_NODES = 2000000
 MAX_FILE = 16 * 1024 * 1024
 UNDEFINED = 0xffffffff
 # Reviewed owning source identities. Do NOT accept arbitrary root-owned Python,
@@ -1128,7 +1131,180 @@ def original_fixture_profiles(selection):
             str(media / 'seafile-media'): profile(0o755, other=5)}
 
 
+def original_overlay_graphs(selection):
+    helpers = selection.get('pin', {}).get('helpers', {}); receipt = selection.get('receipt', {})
+    installer = '7d7f7b8758ab5320ea8d7614fe5be5493c717ff28e9d0f10a88afdf7078b3bf2'
+    if not (helpers.get('install-podman-bundle.sh', {}).get('sha256') == installer
+            and helpers.get('grant-rootless-volume-parent-traverse.py', {}).get('sha256')
+                == '0dcf715f2581a783702128d2fc12ff390fe21de45868bc4347dc809d08a74a32'
+            and receipt.get('phase') == 'retired-failed' and legacy_installer_published(installer, receipt)): return {}
+    result = {}
+    for row in selection['rows']:
+        actor = selection['actors'][row['name']]; graph = Path(row['graphRoot'])
+        control = selection.get('overlayStorageControls', {}).get(row['name'])
+        body = ('[storage]\ndriver = "overlay"\ngraphroot = "' + str(graph) + '"\n').encode()
+        if (control is not None and control['stat'] is not None and control['source'] == 'recognized-installer:storage.conf'
+                and control['path'] == str(Path(actor['home']) / '.config/containers/storage.conf')
+                and control['uid'] == actor['uid'] == row['uid'] and actor['gid'] == actor['uid']
+                and control['sha256'] == sha(body) and selection['roots'].get(graph) == row['name']
+                and graph in selection['policies'] and graph.is_relative_to(SCOPE) and graph != SCOPE):
+            result[str(graph)] = {'actor': actor, 'control': control}
+    return result
+
+
+def named_whiteout(parent, name, actor, expected=None):
+    """Named metadata ONLY: never open a device, not even with O_PATH."""
+    info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    require(stat.S_ISCHR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0 and info.st_rdev == 0
+            and (info.st_uid, info.st_gid) == (actor['uid'], actor['gid'])
+            and info.st_nlink == 1 and info.st_size == 0, 'Not an exact original overlay whiteout')
+    pin = fingerprint(info)
+    if expected is not None: require(pin == expected, 'Original whiteout named inode CAS changed')
+    # lgetxattr through a HELD parent; final component is never followed/opened.
+    path = '/proc/self/fd/' + str(parent) + '/' + name
+    for suffix in ('access', 'default'):
+        try: os.getxattr(path, 'system.posix_acl_' + suffix, follow_symlinks=False)
+        except OSError as error:
+            if error.errno in (errno.ENODATA, errno.ENOTSUP): continue
+            raise
+        raise Refusal('Unexpected original whiteout ACL; no clearance')
+    after = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    require(fingerprint(after) == pin and after.st_rdev == 0, 'Whiteout changed during named metadata observation')
+    return pin
+
+
+class OverlayWhiteoutCatalog:
+    """Original actor graph FD + private native storage CONTROL, not diff data.
+
+    Pinned c/storage archive_linux.go converts .wh.* to S_IFCHR/dev0 and chowns
+    through the extraction map; layers.go registers IDs; overlay.go uses id/diff.
+    NO engine, device open, mknod, permission repair or additional-store search.
+    """
+    def __init__(self, graph_fd, graph, selection, rule):
+        self.fds = []; self.graph = graph; self.selection = selection; self.actor = rule['actor']; self.control = rule['control']
+        try:
+            self.graph_fd = os.dup(graph_fd); self.fds.append(self.graph_fd)
+            require(custody(self.graph_fd) == selection['policies'][Path(graph)], 'Original private overlay graph custody differs')
+            self.mount = fd_mount_id(self.graph_fd); self.device = os.fstat(self.graph_fd).st_dev
+            self.fd = os.open('overlay-layers', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=self.graph_fd); self.fds.append(self.fd)
+            info = os.fstat(self.fd)
+            require((info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode), info.st_nlink)
+                    == (self.actor['uid'], self.actor['gid'], 0o700, 2) and info.st_dev == self.device
+                    and not acl(self.fd) and not acl(self.fd, True) and fd_mount_id(self.fd) == self.mount,
+                    'Original overlay layer-control directory differs')
+            self.parent = fingerprint(info)
+            raw, pin = self.read_control()
+            require(pin[0] == self.device, 'Overlay layer control crosses filesystem')
+            # Existing object strictness/duplicate/nonfinite checks stay global.
+            # This ONE native interface is a closed array, not authority JSON.
+            document = strict(b'{"layers":' + raw + b'}')
+            require(set(document) == {'layers'} and type(document['layers']) is list
+                    and 0 < len(document['layers']) <= MAX_NODES, 'Native overlay layer list refused')
+            self.rows = {}
+            for row in document['layers']:
+                require(type(row) is dict and type(row.get('id')) is str and HEX.fullmatch(row['id'])
+                        and row['id'] not in self.rows and type(row.get('parent', '')) is str
+                        and (row.get('parent', '') == '' or HEX.fullmatch(row['parent'])), 'Native layer ID/parent/uniqueness refused')
+                self.rows[row['id']] = row
+            self.proof = {'path': str(Path(graph) / 'overlay-layers/layers.json'), 'stat': pin, 'sha256': sha(raw),
+                          'parent': self.parent, 'mountId': self.mount, 'storageControl': self.control}
+            self.guard()
+        except BaseException:
+            self.close(); raise
+
+    def close(self):
+        while self.fds: os.close(self.fds.pop())
+
+    def read_control(self):
+        # Refuse a named special control inode BEFORE any data-open attempt.
+        info = os.stat('layers.json', dir_fd=self.fd, follow_symlinks=False)
+        require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_dev == self.device
+                and (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode))
+                    == (self.actor['uid'], self.actor['gid'], 0o600), 'Not an exact native regular layer-control file')
+        raw, pin = read_at(self.fd, 'layers.json', owner=self.actor['uid'], gid=self.actor['gid'], private=True,
+                           proof={'stat': fingerprint(info), 'mountId': self.mount})
+        require(pin == fingerprint(info), 'Native layer-control named/open CAS changed')
+        return raw, pin
+
+    def guard(self):
+        require(custody(self.graph_fd) == self.selection['policies'][Path(self.graph)]
+                and fd_mount_id(self.graph_fd) == self.mount and fingerprint(os.fstat(self.fd)) == self.parent
+                and fingerprint(os.stat('overlay-layers', dir_fd=self.graph_fd, follow_symlinks=False)) == self.parent
+                and fd_mount_id(self.fd) == self.mount, 'Original held/named overlay control namespace changed')
+        raw, pin = self.read_control()
+        require(pin == self.proof['stat'] and sha(raw) == self.proof['sha256'], 'Original layer registration/control bytes changed')
+        path = Path(self.control['path'])
+        with directory(path.parent, self.selection['externalPolicies']) as fd:
+            config_mount = fd_mount_id(fd)
+            named = os.stat(path.name, dir_fd=fd, follow_symlinks=False)
+            require(stat.S_ISREG(named.st_mode) and fingerprint(named) == self.control['stat'], 'Original storage control named inode changed')
+            body, pin = read_at(fd, path.name, owner=self.actor['uid'], gid=self.actor['gid'], private=True,
+                               proof={'stat': self.control['stat'], 'mountId': config_mount})
+        require(pin == self.control['stat'] and sha(body) == self.control['sha256'], 'Original native overlay storage configuration changed')
+        if 'storageControlMountId' not in self.proof: self.proof['storageControlMountId'] = config_mount
+        require(config_mount == self.proof['storageControlMountId'], 'Original storage control mount namespace changed')
+
+    def source(self, path, directories):
+        relative = path.relative_to(self.graph); parts = relative.parts
+        require(len(parts) >= 4 and parts[0] == 'overlay' and HEX.fullmatch(parts[1]) and parts[2] == 'diff'
+                and parts[1] in self.rows, 'Whiteout is not in an original registered layer diff')
+        row = self.rows[parts[1]]
+        fields = {'id', 'parent', 'created', 'compressed-diff-digest', 'compressed-size', 'compression', 'diff-digest', 'diff-size', 'uidset', 'gidset'}
+        # Go's known Layer fields are omitempty: e.g. uncompressed layers omit
+        # compression=0; a root layer omits parent. Do not require one row's
+        # accidental field count, or allow flags/maps/unknown profiles instead.
+        require({'id', 'created'} <= set(row) <= fields and type(row['created']) is str,
+                'Unreviewed native whiteout layer record profile')
+        for key in ('compressed-diff-digest', 'diff-digest'):
+            require(key not in row or type(row[key]) is str, 'Invalid native layer digest shape')
+        for key in ('compressed-size', 'diff-size', 'compression'):
+            require(key not in row or (type(row[key]) is int and 0 <= row[key] < 2**63), 'Invalid native layer integer shape')
+        require(row.get('compression', 0) <= 4, 'Unknown native layer compression profile')
+        for key in ('uidset', 'gidset'):
+            require(key not in row or (type(row[key]) is list and len(row[key]) <= MAX_NODES
+                    and all(type(value) is int and 0 <= value < 2**32 for value in row[key])), 'Invalid native layer numeric set')
+        chain = []; current = parts[1]
+        while current:
+            require(current in self.rows and current not in chain, 'Unregistered/cyclic original layer parent chain')
+            chain.append(current); value = self.rows[current]
+            require(type(value.get('flags', {})) is dict and value.get('flags', {}).get('incomplete', False) is False,
+                    'Incomplete/unknown layer provenance')
+            current = value.get('parent', '')
+        ancestors = {}
+        chain_fds = [(Path('.'), None), (Path('overlay'), 0o700), (Path('overlay') / parts[1], 0o700),
+                     (Path('overlay') / parts[1] / 'diff', 0o555)]
+        chain_fds += [(Path(*parts[:index + 1]), None) for index in range(3, len(parts) - 1)]
+        for index, (suffix, mode) in enumerate(chain_fds):
+            selected = Path(self.graph) / suffix; fd = directories.get(str(selected))
+            require(fd is not None, 'Original overlay ancestry FD unavailable')
+            info = os.fstat(fd)
+            own = ((info.st_uid, info.st_gid) == (self.actor['uid'], self.actor['gid'])) if index < 4 else (
+                owns(info.st_uid, self.actor) and owns(info.st_gid, self.actor))
+            require(info.st_dev == self.device and own
+                    and (mode is None or stat.S_IMODE(info.st_mode) == mode) and not acl(fd) and not acl(fd, True)
+                    and fd_mount_id(fd) == self.mount, 'Original own overlay diff ancestry/mount differs')
+            ancestors[str(selected)] = custody(fd)
+        self.guard()
+        return {'graph': self.graph, 'layer': parts[1], 'catalog': self.proof, 'layerSha256': sha(canonical(row)),
+                'parentChain': chain, 'ancestors': ancestors}
+
+
+def whiteout_source(path, directories, catalogs, resources, selection):
+    rules = original_overlay_graphs(selection)
+    graph = next((name for name in rules if path.is_relative_to(name)), None)
+    require(graph is not None and graph in directories, 'Special inode lacks ORIGINAL own graph/control authority')
+    if graph not in catalogs:
+        catalogs[graph] = OverlayWhiteoutCatalog(directories[graph], graph, selection, rules[graph])
+        resources.callback(catalogs[graph].close)
+    return catalogs[graph].source(path, directories), catalogs[graph]
+
+
 def scan(fd, selection, base=None, retain=None):
+    with contextlib.ExitStack() as resources:
+        return _scan(fd, selection, base, retain, resources)
+
+
+def _scan(fd, selection, base, retain, resources):
     """One FD walk, one hardlink census across ALL roots of each exact domain.
 
     Symlink targets are never even readlink'ed. Regular-file bytes are hashed,
@@ -1139,12 +1315,13 @@ def scan(fd, selection, base=None, retain=None):
     retain = set(retain or ())
     nodes = []; links = {}; initial = fingerprint(os.fstat(fd)); device = initial[0]
     fixtures = original_fixture_profiles(selection) if base == SCOPE else {}
+    directories = {}; catalogs = {}
     def visit(parent, relative):
         for name in sorted(os.listdir(parent)):
             require(name not in ('.', '..') and '/' not in name, 'Invalid scope entry')
             selected = base / relative / name; rel = str(relative / name)
             if base == SCOPE and rel == MARKER: continue
-            require(len(nodes) < MAX_NODES, 'Scope inventory node bound exceeded')
+            require(len(nodes) < (MAX_SCOPE_NODES if base == SCOPE else MAX_NODES), 'Scope inventory node bound exceeded')
             info = os.stat(name, dir_fd=parent, follow_symlinks=False)
             require(info.st_dev == device, 'Scope crosses a filesystem')
             owner = next((domain for root, domain in selection['roots'].items()
@@ -1167,6 +1344,7 @@ def scan(fd, selection, base=None, retain=None):
             if stat.S_ISDIR(info.st_mode):
                 node['kind'] = 'directory'
                 child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                directories[str(selected)] = child
                 try:
                     require(fingerprint(os.fstat(child)) == node['stat'], 'Directory scan open CAS changed')
                     node['acl'] = acl(child); node['defaultAcl'] = acl(child, True)
@@ -1181,7 +1359,8 @@ def scan(fd, selection, base=None, retain=None):
                         validate_data_acl(node, actor)
                     visit(child, relative / name)
                     require(fingerprint(os.fstat(child)) == node['stat'], 'Directory changed during scan')
-                finally: os.close(child)
+                finally:
+                    directories.pop(str(selected)); os.close(child)
             elif stat.S_ISREG(info.st_mode):
                 node['kind'] = 'file'; child = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
                 try:
@@ -1195,6 +1374,11 @@ def scan(fd, selection, base=None, retain=None):
             elif stat.S_ISLNK(info.st_mode):
                 require(info.st_nlink == 1 and not node['retain'], 'Linked scope symlink or linked retained root')
                 node['kind'] = 'inert-symlink'
+            elif base == SCOPE and actor is not None and stat.S_ISCHR(info.st_mode) and info.st_rdev == 0:
+                named_whiteout(parent, name, actor, node['stat'])
+                source, catalog = whiteout_source(selected, directories, catalogs, resources, selection)
+                node.update(kind='overlay-whiteout', rdev=0, overlaySource=source)
+                named_whiteout(parent, name, actor, node['stat']); catalog.guard()
             else:
                 raise Refusal('Special inode in selected scope')
             require(fingerprint(os.stat(name, dir_fd=parent, follow_symlinks=False)) == node['stat'], 'Scope entry changed during scan')
@@ -1226,6 +1410,7 @@ def scan(fd, selection, base=None, retain=None):
                 node['sha256'] = digest.hexdigest()
             finally: os.close(child)
         finally: os.close(parent)
+    for catalog in catalogs.values(): catalog.guard()
     require(fingerprint(os.fstat(fd)) == initial, 'Scope root changed during inventory')
     return nodes
 
@@ -1533,6 +1718,9 @@ def external_plan(selection, *, custody_inventory=False, _network_stop=None):
                             'source': 'recognized-installer:runtime-env-dropin-parent'})
     selection['unitAuthorities'] = authorities
     selection['externalPolicies'] = policies
+    selection['overlayStorageControls'] = {name: item for name, actor in selection['actors'].items() for item in result
+        if item['path'] == str(Path(actor['home']) / '.config/containers/storage.conf')
+        and item['source'] == 'recognized-installer:storage.conf' and item['stat'] is not None}
     if _network_stop is None: stopped(selection)
     else: _stopped_observation(selection, _network_stop)
     # Only these exact runtime locations may be named in receipt custody.
@@ -2402,13 +2590,18 @@ def claim(parent, name, destination, expected):
     return after
 
 
-def erase(fd, nodes, expected_names=None, claim_prefix=None, before_root=None, after_root=None):
+def erase(fd, nodes, expected_names=None, claim_prefix=None, before_root=None, after_root=None, selection=None):
+    with contextlib.ExitStack() as resources:
+        return _erase(fd, nodes, expected_names, claim_prefix, before_root, after_root, selection, resources)
+
+
+def _erase(fd, nodes, expected_names, claim_prefix, before_root, after_root, selection, resources):
     """Real FD deletions; never follow links. Internal hardlink CAS is adjusted
     ONLY for our own successful unlink, using a pinned O_PATH inode descriptor.
     """
     by_parent = {}
     for node in nodes: by_parent.setdefault(str(Path(node['path']).parent), []).append(node)
-    hardlinks = {}; pinned = {}; serial = [0]
+    hardlinks = {}; pinned = {}; serial = [0]; directories = {}; catalogs = {}
     claim_prefix = claim_prefix or uuid.uuid4().hex
     require(re.fullmatch(r'[a-f0-9-]+', claim_prefix), 'Invalid operation claim identity')
     def visit(parent, relative):
@@ -2421,6 +2614,12 @@ def erase(fd, nodes, expected_names=None, claim_prefix=None, before_root=None, a
             current = os.stat(name, dir_fd=parent, follow_symlinks=False)
             expected_stat = hardlinks.get(key, node['stat'])
             require(fingerprint(current) == expected_stat, 'Deletion inode fingerprint CAS changed')
+            whiteout = None
+            if node['kind'] == 'overlay-whiteout':
+                require(selection is not None and node.get('rdev') == 0, 'Whiteout erasure lacks original source binding')
+                source, whiteout = whiteout_source(SCOPE / node['path'], directories, catalogs, resources, selection)
+                require(source == node['overlaySource'], 'Original whiteout graph/layer/control/ancestry CAS changed')
+                named_whiteout(parent, name, whiteout.actor, expected_stat)
             if before_root is not None:
                 before_root(node)
                 require(fingerprint(os.stat(name, dir_fd=parent, follow_symlinks=False)) == expected_stat,
@@ -2431,15 +2630,18 @@ def erase(fd, nodes, expected_names=None, claim_prefix=None, before_root=None, a
                 expected_stat = claim(parent, name, destination, expected_stat)
                 name = destination
                 if node['kind'] == 'file': hardlinks[key] = expected_stat
+                if whiteout is not None: named_whiteout(parent, name, whiteout.actor, expected_stat)
             if node['kind'] == 'directory':
                 child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                directories[str(SCOPE / node['path'])] = child
                 try:
                     require(fingerprint(os.fstat(child)) == expected_stat
                             and acl(child) == node['acl'] and acl(child, True) == node['defaultAcl'], 'Deletion directory open/ACL changed')
                     visit(child, Path(node['path']))
                     require(stable(os.stat(name, dir_fd=parent, follow_symlinks=False)) == stable(os.fstat(child)),
                             'Deletion directory replaced')
-                finally: os.close(child)
+                finally:
+                    directories.pop(str(SCOPE / node['path'])); os.close(child)
                 if not node['retain']: os.rmdir(name, dir_fd=parent)
             else:
                 if node['kind'] == 'file':
@@ -2457,7 +2659,16 @@ def erase(fd, nodes, expected_names=None, claim_prefix=None, before_root=None, a
                         require(digest.hexdigest() == node['sha256'] and fingerprint(os.fstat(child)) == expected_stat,
                                 'Deletion file hash CAS changed')
                     finally: os.close(child)
+                if whiteout is not None:
+                    whiteout.guard(); named_whiteout(parent, name, whiteout.actor, expected_stat)
                 os.unlink(name, dir_fd=parent)
+                if whiteout is not None:
+                    # No force/retry or device FD. Prove exact claimed name gone,
+                    # original layer/control/config still unchanged after unlink.
+                    try: os.stat(name, dir_fd=parent, follow_symlinks=False)
+                    except FileNotFoundError: pass
+                    else: raise Refusal('Claimed original whiteout remains/reappeared')
+                    whiteout.guard()
                 if key in pinned:
                     after = fingerprint(os.fstat(pinned[key]))
                     require(after[:5] == expected_stat[:5] and after[5] == expected_stat[5] - 1
@@ -2591,7 +2802,7 @@ def execute(root, expectedIntentSha, expectedPlanSha, lease):
                                                         if Path(node['path']).parent == Path('.')]], claim_prefix=attempt,
                           before_root=lambda node: verify() if SCOPE / node['path'] in selection['roots'] else None,
                           after_root=lambda node: removed_roots.add(str(SCOPE / node['path']))
-                              if SCOPE / node['path'] in selection['roots'] else None)
+                              if SCOPE / node['path'] in selection['roots'] else None, selection=selection)
                 result['emptied'].append(str(SCOPE))
                 write_evidence(evidence, attempt + '-progress-' + str(root_progress[0]) + '.json', result)
                 policies = {Path(path): pin for path, pin in plan['external']['custody'].items()}

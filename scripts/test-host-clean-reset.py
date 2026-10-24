@@ -1472,6 +1472,225 @@ class Clean(unittest.TestCase):
         self.assertTrue(private.exists()); self.assertFalse(self.cold_calls)
 
     @contextlib.contextmanager
+    def overlay_whiteout_fixture(self, domain='apps'):
+        # Explicit MODELS of verified original public source/version/UID facts.
+        # Real temp directories/control files/FDs/renames/unlinks; device type is
+        # modeled over an EMPTY regular inode. NEVER mknod/open a device here.
+        row = next(row for row in self.rows if row['name'] == domain); graph = Path(row['graphRoot']); graph.chmod(0o2700)
+        selection = m.binding(self.root, self.intent)
+        selection['pin'] = copy.deepcopy(selection['pin']); selection['receipt'] = copy.deepcopy(selection['receipt'])
+        selection['pin']['helpers']['install-podman-bundle.sh']['sha256'] = '7d7f7b8758ab5320ea8d7614fe5be5493c717ff28e9d0f10a88afdf7078b3bf2'
+        selection['pin']['helpers']['grant-rootless-volume-parent-traverse.py']['sha256'] = '0dcf715f2581a783702128d2fc12ff390fe21de45868bc4347dc809d08a74a32'
+        selection['receipt']['steps'] = ['preparing', 'units-selected', 'failed', 'retired-failed']
+        self.patch(m, 'LEGACY_SOURCE_INSTALLERS', new=m.LEGACY_SOURCE_INSTALLERS | {'7d7f7b8758ab5320ea8d7614fe5be5493c717ff28e9d0f10a88afdf7078b3bf2'})
+        for entry in selection['rows']:
+            owner = selection['actors'][entry['name']]; config = self.physical(Path(owner['home']) / '.config/containers/storage.conf')
+            self.put(config, ('[storage]\ndriver = "overlay"\ngraphroot = "' + entry['graphRoot'] + '"\n').encode(), 0o600)
+            self.own(config, owner['uid'], owner['gid'])
+        m.external_plan(selection)
+        actor = selection['actors'][domain]; layer = 'a' * 64; parent = 'b' * 64
+        metadata = graph / 'overlay-layers/layers.json'; diff = graph / 'overlay' / layer / 'diff'
+        leaf = diff / 'etc/alternatives/removed'; leaf.parent.mkdir(parents=True)
+        metadata.parent.mkdir(mode=0o700)
+        for path in [metadata.parent, graph / 'overlay', graph / 'overlay' / layer, diff]:
+            path.chmod(0o700); self.own(path, actor['uid'], actor['gid'])
+        for path in [diff / 'etc', leaf.parent]: path.chmod(0o755); self.own(path, actor['uid'], actor['gid'])
+        base = {'id': parent, 'created': '2026-01-01T00:00:00Z', 'compressed-diff-digest': 'sha256:' + 'c' * 64,
+                'compressed-size': 1, 'compression': 2, 'diff-digest': 'sha256:' + 'd' * 64, 'diff-size': 1, 'uidset': [0], 'gidset': [0]}
+        rows = [base, dict(base, id=layer, parent=parent)]
+        self.put(metadata, json.dumps(rows).encode(), 0o600); self.own(metadata, actor['uid'], actor['gid'])
+        leaf.touch(mode=0); self.own(leaf, actor['uid'], actor['gid'])
+        key = self.key(leaf); diff_key = self.key(diff); state = {'mode': stat.S_IFCHR, 'rdev': 0}
+        old_stat, old_fstat, old_open = m.os.stat, m.os.fstat, m.os.open
+        def model(info):
+            identity = (info.st_dev, info.st_ino)
+            if identity == diff_key: return ModelStat(info, info.st_uid, info.st_gid, stat.S_IFDIR | 0o555)
+            if identity != key: return info
+            value = ModelStat(info, state.get('uid', info.st_uid), state.get('gid', info.st_gid), state['mode'])
+            value.st_rdev = state['rdev']
+            for name in ('nlink', 'size'):
+                if name in state: setattr(value, 'st_' + name, state[name])
+            return value
+        def no_device(name, *args, **kwargs):
+            self.assertNotEqual(str(name), str(leaf)); self.assertNotEqual(str(name), 'removed')
+            return old_open(name, *args, **kwargs)
+        with patch.object(m.os, 'stat', new=lambda *a, **kw: model(old_stat(*a, **kw))), \
+             patch.object(m.os, 'fstat', new=lambda *a, **kw: model(old_fstat(*a, **kw))), \
+             patch.object(m.os, 'open', new=no_device), patch.object(m, 'fd_mount_id', return_value=123):
+            yield selection, graph, metadata, leaf, rows, state
+
+    def erase_overlay_fixture(self, selection, nodes):
+        with m.directory(self.scope, selection['policies']) as fd:
+            expected = [m.MARKER, *[Path(node['path']).name for node in nodes if Path(node['path']).parent == Path('.')]]
+            m.erase(fd, nodes, expected_names=expected, selection=selection)
+
+    def test_overlay_whiteout_registered_own_layer_scan_and_atomic_erase_never_open_device(self):
+        with self.overlay_whiteout_fixture() as (selection, graph, metadata, leaf, _, _):
+            first = self.scan_original_fixture(selection); second = self.scan_original_fixture(selection)
+            self.assertEqual(first, second)
+            nodes = [node for node in first if node['kind'] == 'overlay-whiteout']; self.assertEqual(len(nodes), 1)
+            self.assertEqual(nodes[0]['rdev'], 0); self.assertEqual(nodes[0]['overlaySource']['catalog']['sha256'], m.sha(metadata.read_bytes()))
+            self.erase_overlay_fixture(selection, first)
+            self.assertFalse(graph.exists()); self.assertTrue((self.scope / m.MARKER).exists()); self.assertTrue((self.outside / 'keep').exists())
+            self.assertFalse(self.cold_calls)
+
+    def test_overlay_whiteout_wrong_type_device_owner_mode_size_and_alias_are_strict(self):
+        with self.overlay_whiteout_fixture() as (selection, _, _, leaf, _, state):
+            cases = [{'mode': stat.S_IFCHR | 0o600}, {'mode': stat.S_IFBLK}, {'mode': stat.S_IFIFO}, {'mode': stat.S_IFSOCK},
+                     {'rdev': os.makedev(1, 3)}, {'uid': 0}, {'gid': 0}, {'uid': 782}, {'gid': 782}, {'size': 1}, {'nlink': 2}]
+            for change in cases:
+                state.clear(); state.update(mode=stat.S_IFCHR, rdev=0); state.update(change)
+                with self.subTest(change=change), self.assertRaises(m.Refusal): self.scan_original_fixture(selection)
+            self.assertTrue(leaf.exists())
+
+    def test_overlay_whiteout_registration_parent_schema_duplicates_and_nonfinite_refuse(self):
+        with self.overlay_whiteout_fixture() as (selection, _, metadata, _, rows, _):
+            cases = [b'null', b'{}', b'[]', json.dumps([rows[0]]).encode(), json.dumps(rows + [rows[-1]]).encode(),
+                     b'[{"id":"' + b'a' * 64 + b'","id":"' + b'a' * 64 + b'"}]',
+                     json.dumps([rows[0], dict(rows[-1], parent='e' * 64)]).encode(),
+                     json.dumps([dict(rows[0], parent='a' * 64), rows[-1]]).encode(),
+                     json.dumps([rows[0], dict(rows[-1], flags={'incomplete': True})]).encode(),
+                     json.dumps([rows[0], dict(rows[-1], future='not a permission')]).encode(), b'[NaN]']
+            for body in cases:
+                self.put(metadata, body, 0o600)
+                with self.subTest(body=body[:80]), self.assertRaises((m.Refusal, ValueError)): self.scan_original_fixture(selection)
+            with self.assertRaises(m.Refusal): m.strict(b'[]')  # global authority remains object-only
+
+    def test_overlay_whiteout_original_producer_publication_storage_control_required(self):
+        with self.overlay_whiteout_fixture() as (selection, _, _, _, _, _):
+            variants = []
+            bad = dict(selection, overlayStorageControls={}); variants.append(bad)
+            bad = dict(selection, receipt=dict(selection['receipt'], steps=['preparing', 'failed'])); variants.append(bad)
+            bad = dict(selection, receipt=dict(selection['receipt'], phase='active')); variants.append(bad)
+            pin = copy.deepcopy(selection['pin']); pin['helpers']['install-podman-bundle.sh']['sha256'] = 'f' * 64
+            variants.append(dict(selection, pin=pin))
+            controls = copy.deepcopy(selection['overlayStorageControls']); controls['apps']['sha256'] = 'e' * 64
+            variants.append(dict(selection, overlayStorageControls=controls))
+            for index, bad in enumerate(variants):
+                with self.subTest(index=index), self.assertRaises(m.Refusal): self.scan_original_fixture(bad)
+            control = Path(selection['overlayStorageControls']['apps']['path']); self.put(self.physical(control), b'foreign config', 0o600)
+            with self.assertRaises(m.Refusal): self.scan_original_fixture(selection)
+
+    def test_overlay_whiteout_no_cross_domain_volume_state_root_or_unregistered_path_allowance(self):
+        with self.overlay_whiteout_fixture() as (selection, graph, _, leaf, _, _):
+            actor = selection['actors']['apps']
+            destinations = [Path(next(row['volumeRoot'] for row in self.rows if row['name'] == 'apps')) / 'removed',
+                            Path(next(row['stateRoot'] for row in self.rows if row['name'] == 'apps')) / 'removed',
+                            graph / 'overlay' / ('e' * 64) / 'diff/removed', graph / 'removed', self.scope / 'removed',
+                            Path(next(row['graphRoot'] for row in self.rows if row['name'] == 'finance')) / 'removed']
+            for path in destinations:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                # Every new directory remains within this selected temp fixture.
+                for parent in path.parents:
+                    if parent == graph: break
+                    if parent.is_relative_to(graph): self.own(parent, actor['uid'], actor['gid'])
+                leaf.rename(path)
+                with self.subTest(path=path), self.assertRaises(m.Refusal): self.scan_original_fixture(selection)
+                path.rename(leaf)
+
+    def test_overlay_whiteout_each_other_original_graph_needs_its_own_control_registration(self):
+        with self.overlay_whiteout_fixture(domain='platform') as (selection, _, _, _, _, _):
+            self.assertEqual(len([n for n in self.scan_original_fixture(selection) if n['kind'] == 'overlay-whiteout']), 1)
+            controls = copy.deepcopy(selection['overlayStorageControls']); controls['platform'] = controls['apps']
+            with self.assertRaises(m.Refusal): self.scan_original_fixture(dict(selection, overlayStorageControls=controls))
+
+    def test_overlay_whiteout_catalog_byte_change_before_erase_refuses(self):
+        with self.overlay_whiteout_fixture() as (selection, _, metadata, _, rows, _):
+            first = self.scan_original_fixture(selection)
+            self.put(metadata, json.dumps([rows[0], dict(rows[-1], created='2026-02-01T00:00:00Z')]).encode(), 0o600)
+            with self.assertRaises(m.Refusal): self.erase_overlay_fixture(selection, first)
+
+    def test_overlay_whiteout_omitempty_fields_follow_known_native_source_not_one_row_count(self):
+        with self.overlay_whiteout_fixture() as (selection, _, metadata, _, rows, _):
+            rows[-1].pop('compression'); rows[-1].pop('compressed-size')
+            self.put(metadata, json.dumps(rows).encode(), 0o600)
+            self.assertEqual(len([n for n in self.scan_original_fixture(selection) if n['kind'] == 'overlay-whiteout']), 1)
+            for change in ({'uidset': [True]}, {'gidset': [-1]}, {'diff-size': 1.5}, {'compression': 5}, {'created': None}):
+                self.put(metadata, json.dumps([rows[0], dict(rows[-1], **change)]).encode(), 0o600)
+                with self.subTest(change=change), self.assertRaises(m.Refusal): self.scan_original_fixture(selection)
+            self.put(metadata, json.dumps([dict(rows[0], flags={'incomplete': True}), rows[-1]]).encode(), 0o600)
+            with self.assertRaises(m.Refusal): self.scan_original_fixture(selection)
+
+    def test_overlay_whiteout_modeled_mount_alias_and_original_metadata_directory_swap_refuse(self):
+        with self.overlay_whiteout_fixture() as (selection, graph, metadata, leaf, _, _):
+            config = self.physical(Path(selection['overlayStorageControls']['apps']['path']))
+            for key in (self.key(metadata.parent), self.key(metadata), self.key(leaf.parent), self.key(config)):
+                with self.subTest(aliasKey=key), patch.object(m, 'fd_mount_id', side_effect=lambda fd: 124 if self.key_fd(fd) == key else 123), self.assertRaises(m.Refusal):
+                    self.scan_original_fixture(selection)
+            first = self.scan_original_fixture(selection)
+            original = metadata.parent; renamed = graph / 'retained-layer-control'; original.rename(renamed)
+            original.mkdir(mode=0o700); self.own(original, selection['actors']['apps']['uid'])
+            self.put(original / 'layers.json', (renamed / 'layers.json').read_bytes(), 0o600)
+            self.own(original / 'layers.json', selection['actors']['apps']['uid'])
+            with self.assertRaises(m.Refusal): self.erase_overlay_fixture(selection, first)
+
+    def test_overlay_whiteout_special_control_rejected_before_open_and_named_acl_refused(self):
+        with self.overlay_whiteout_fixture() as (selection, _, metadata, _, _, _):
+            key = self.key(metadata); original_stat = m.os.stat; original_open = m.os.open
+            def special_control(*args, **kwargs):
+                info = original_stat(*args, **kwargs)
+                return ModelStat(info, info.st_uid, info.st_gid, stat.S_IFCHR) if (info.st_dev, info.st_ino) == key else info
+            def opened(name, *args, **kwargs):
+                self.assertNotEqual(str(name), 'layers.json', 'Special control must not reach data-open')
+                return original_open(name, *args, **kwargs)
+            with patch.object(m.os, 'stat', new=special_control), patch.object(m.os, 'open', new=opened), self.assertRaises(m.Refusal):
+                self.scan_original_fixture(selection)
+            original_xattr = m.os.getxattr
+            def foreign_acl(path, *args, **kwargs):
+                if str(path).endswith('/removed'): return b'foreign metadata ACL model'
+                return original_xattr(path, *args, **kwargs)
+            with patch.object(m.os, 'getxattr', new=foreign_acl), self.assertRaises(m.Refusal): self.scan_original_fixture(selection)
+
+    def test_overlay_whiteout_control_symlink_hardlink_and_foreign_acl_refuse(self):
+        with self.overlay_whiteout_fixture() as (selection, _, metadata, _, _, _):
+            original = metadata.with_name('retained-control'); metadata.rename(original); metadata.symlink_to(original)
+            with self.assertRaises((m.Refusal, OSError)): self.scan_original_fixture(selection)
+            metadata.unlink(); original.rename(metadata)
+            alias = self.outside / 'external-control-alias'; os.link(metadata, alias)
+            with self.assertRaises(m.Refusal): self.scan_original_fixture(selection)
+            alias.unlink(); self.set_acl(metadata.parent, [[2, 7, 1001]])
+            with self.assertRaises(m.Refusal): self.scan_original_fixture(selection)
+
+    def test_overlay_whiteout_postclaim_rdev_change_preserves_claimed_inode_without_unlink(self):
+        with self.overlay_whiteout_fixture() as (selection, _, _, leaf, _, state):
+            nodes = self.scan_original_fixture(selection); original = m.claim; claimed = []
+            def changed(fd, name, destination, pin):
+                value = original(fd, name, destination, pin)
+                if name == 'removed': claimed.append(destination); state['rdev'] = os.makedev(1, 3)
+                return value
+            with patch.object(m, 'claim', side_effect=changed), self.assertRaises(m.Refusal): self.erase_overlay_fixture(selection, nodes)
+            self.assertEqual(len(claimed), 1)
+            self.assertTrue(any(p.name == claimed[0] for p in self.scope.rglob('*')))
+
+    def test_overlay_whiteout_unchanged_metadata_required_after_unlink_no_retry(self):
+        with self.overlay_whiteout_fixture() as (selection, _, _, _, rows, _):
+            nodes = self.scan_original_fixture(selection); original_unlink = m.os.unlink; original_guard = m.OverlayWhiteoutCatalog.guard
+            deleted = []; changed = []
+            def unlink(name, *args, **kwargs):
+                special = stat.S_ISCHR(m.os.stat(name, dir_fd=kwargs.get('dir_fd'), follow_symlinks=False).st_mode)
+                result = original_unlink(name, *args, **kwargs)
+                if special: deleted.append(str(name))
+                return result
+            def guard(catalog):
+                if deleted and not changed:
+                    changed.append(True)
+                    fd = os.open('layers.json', os.O_WRONLY | os.O_TRUNC, dir_fd=catalog.fd)
+                    try: os.write(fd, json.dumps([rows[0], dict(rows[-1], created='2026-03-01T00:00:00Z')]).encode())
+                    finally: os.close(fd)
+                return original_guard(catalog)
+            with patch.object(m.os, 'unlink', side_effect=unlink), patch.object(m.OverlayWhiteoutCatalog, 'guard', new=guard), self.assertRaises(m.Refusal):
+                self.erase_overlay_fixture(selection, nodes)
+            self.assertEqual(len(deleted), 1); self.assertEqual(changed, [True])
+
+    def test_overlay_whiteout_scope_capacity_is_finite_and_other_bounds_unchanged(self):
+        self.assertEqual(m.MAX_SCOPE_NODES, 2000000); self.assertEqual(m.MAX_NODES, 250000)
+        with self.overlay_whiteout_fixture() as (selection, _, _, _, _, _):
+            nodes = self.scan_original_fixture(selection)
+            with patch.object(m, 'MAX_SCOPE_NODES', len(nodes)):
+                self.assertEqual(nodes, self.scan_original_fixture(selection))
+            with patch.object(m, 'MAX_SCOPE_NODES', len(nodes) - 1), self.assertRaises(m.Refusal): self.scan_original_fixture(selection)
+
+    @contextlib.contextmanager
     def synthetic_default_fixture(self, parent_present=True):
         network = {'name': 'podman', 'id': '2f259bab93aaaaa2542ba43ef33eb990d0999ee1b9924b557b7be53c0b7a1bb9',
                    'driver': 'bridge', 'network_interface': 'podman0', 'created': '2026-10-24T16:58:52.144575746+11:00',
