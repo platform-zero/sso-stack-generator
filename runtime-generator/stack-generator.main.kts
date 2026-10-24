@@ -2422,6 +2422,9 @@ fun renderPodman(ir: ObjectNode, output: Path) {
     val unitPrefix = activePodmanPolicy.unitPrefix
     val loopbacks = loopbackEndpoints(ir, output)
     (listOf(rootfulDomain) + rootlessDomains).forEach { domain ->
+        // Cumulative module rings retain idle actors and their closed targets.
+        // Empty domains have no service/network writer to create this parent.
+        output.resolve(domain.quadletDir).createDirectories()
         val usedNetworks = ir.path("services").fieldsMap()
             .filter { (_, service) -> podmanDomainForService(service).name == domain.name }
             .flatMap { (_, service) ->

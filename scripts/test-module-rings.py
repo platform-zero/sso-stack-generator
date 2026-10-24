@@ -81,6 +81,11 @@ class Planning(unittest.TestCase):
   self.assertEqual(out['podman']['domains']['apps']['modules'],[])
  def test_malformed_placement_projection_refuses(self):
   with self.assertRaises(ValueError):r.project_config({'podman':{'domains':[]}},r.plan(*self.fixture())['rings'][0])
+ def test_generator_creates_idle_actor_target_parent_without_needing_a_service(self):
+  text=(Path(__file__).parents[1]/'runtime-generator/stack-generator.main.kts').read_text()
+  render=text.split('fun renderPodman(',1)[1].split('val usedNetworks',1)[0]
+  self.assertIn('(listOf(rootfulDomain) + rootlessDomains).forEach { domain ->',render)
+  self.assertIn('output.resolve(domain.quadletDir).createDirectories()',render)
  def test_duplicate_json_key_refuses(self):
   with tempfile.TemporaryDirectory() as temp:
    p=Path(temp)/'public.json';p.write_text('{"modules":[],"modules":["foreign"]}')
