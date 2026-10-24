@@ -739,7 +739,7 @@ class Session:
             props = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
             expected_drop = str(allowed_drop) if self.file_entries[allowed_drop]['before'] is not None else ''
             require(result.returncode == 0 and props.get('Id') == unit and props.get('ActiveState') in ('inactive', 'failed')
-                    and props.get('MainPID') in ('0', '') and props.get('Job') == ''
+                    and props.get('MainPID', '' if unit == 'webservices.target' else None) in ('0', '') and props.get('Job') == ''
                     and props.get('LoadState') in ('not-found', 'loaded')
                     and set(props.get('Names', '').split()) <= {unit}
                     and props.get('DropInPaths') in ({'', expected_drop} if unit == 'webservices.target' else {''}),
