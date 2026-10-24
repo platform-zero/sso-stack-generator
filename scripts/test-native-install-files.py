@@ -577,6 +577,21 @@ class StoppedGate(unittest.TestCase):
             return SimpleNamespace(returncode=0, stdout=body)
         patch.object(subprocess, 'run', side_effect=query).start()
 
+    def test_finite_descriptor_capacity_raises_only_own_soft_limit(self):
+        with patch.object(m.resource, 'getrlimit', return_value=(1024, 524288)), patch.object(m.resource, 'setrlimit') as change:
+            m.descriptor_capacity()
+            change.assert_called_once_with(m.resource.RLIMIT_NOFILE, (65536, 524288))
+
+    def test_descriptor_capacity_does_not_lower_existing_capacity(self):
+        for soft, hard in ((131072, 524288), (m.resource.RLIM_INFINITY, m.resource.RLIM_INFINITY)):
+            with patch.object(m.resource, 'getrlimit', return_value=(soft, hard)), patch.object(m.resource, 'setrlimit') as change:
+                m.descriptor_capacity(); change.assert_not_called()
+
+    def test_insufficient_hard_descriptor_limit_refuses_without_bypass(self):
+        with patch.object(m.resource, 'getrlimit', return_value=(1024, 4096)), patch.object(m.resource, 'setrlimit') as change:
+            with self.assertRaises(ValueError): m.descriptor_capacity()
+            change.assert_not_called()
+
     def test_exact_rootful_not_found_and_all_seven_stopped_actor_gates(self):
         m.stopped(self.release, self.plan)
         self.assertEqual({call.args[1] for call in self.inactive.call_args_list}, set(n.IDENTITIES))

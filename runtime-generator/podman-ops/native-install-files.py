@@ -18,6 +18,7 @@ import errno
 import os
 from pathlib import Path
 import secrets
+import resource
 import stat
 import struct
 import subprocess
@@ -778,7 +779,24 @@ class Session:
                 'exchange restoration CAS differs; canonical disposition required')
 
 
+def descriptor_capacity():
+    """Finite process-local capacity for held source/projection CAS descriptors.
+
+    The publisher intentionally holds its source FDs while the independent
+    verifier holds a second complete snapshot; a shell's inherited1024 soft
+    limit is not the graph's capacity contract. Never change the hard limit,
+    host limits, or a custody/ownership gate.
+    """
+    budget = 65536
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    require(hard == resource.RLIM_INFINITY or hard >= budget,
+            'selected descriptor capacity unavailable')
+    if soft != resource.RLIM_INFINITY and soft < budget:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (budget, hard))
+
+
 def prepare_custody(root, release, prior_intent):
+    descriptor_capacity()
     key = (str(root), str(release))
     require(key not in _sessions, 'unconsumed selected file custody already exists')
     session = Session(root, release, prior_intent)
