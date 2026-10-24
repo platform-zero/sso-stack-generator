@@ -89,6 +89,36 @@ source block rather than guessing how to strip it. Input materialization changes
 happen in the newly generated artifact from owning source; do not patch installed
 Caddy output manually.
 
+## Native Seafile ownership preparation
+
+The bundled installer invokes internal journal preparation **before** any domain
+runtime projection. This is not a public permit-emitter or a replacement install
+command. Exact preparing dual records, FD9, immutable inputs, storage marker,
+offline actors, public-slot custody and an explicit enabled realm-owner subject
+bind the operation. Caller-provided authorization files/hashes and replayed or
+already-projected preparation are refused.
+
+Main uses its own protocol validator; it never imports service Python as Host
+Root. The owning module independently validates the same authorization in its
+mapped native namespace. Temporary initialization uses the selected immutable
+images, eventual actor UID/GID maps, a networkless private loopback namespace,
+a finite unprivileged relay and a fixed read-only public hosts file. No host
+listeners or actor managers are activated. Executable configuration is staged in
+the private release worktree, not noexec `/run`; one-shot credentials stay in a
+private temporary capsule and never become normal service environment values.
+
+An upstream byte-contract check precedes data creation. Native exit zero,
+account/CAS proof, a separate read-only native verification, bounded clean stops
+and final source/custody rechecks must all succeed before Main publishes the
+normal hash-pinned authorization and derived environment. A log proof alone
+confers no admission. Failures consume preparation and preserve data/evidence;
+there is no adoption, retry repair, data deletion or predecessor restart.
+
+The current executor is fresh-only and deliberately refuses an existing
+predecessor until its canonical owned-state carry-forward/recovery lifecycle is
+implemented and qualified. Source tests and public namespace probes are not
+installed bootstrap, application, upgrade or recovery acceptance.
+
 ## Native stopped backup and restore
 
 This is a bounded **synthetic, cold, same-machine, same-release and exact-receipt**

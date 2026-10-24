@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Private metadata journal for the existing, serialized Podman installer.
 
-No service, volume, account, credential or source mutation/replay. A pending
-attempt requires exact journal CAS plus an unchanged input fingerprint.
+No implicit mutation/replay. Explicit native preparation is delegated only to
+source-bound owners under the canonical lock. A pending attempt requires exact
+journal CAS plus an unchanged input fingerprint.
 """
 import argparse
 import hashlib
@@ -201,6 +202,52 @@ def update(root, bundle, release, phase, expected=''):
     write(release / 'installation-receipt.json', value)
     write(path, value)
     return value
+
+
+def seafile_preparation_owner():
+    source = Path(__file__).with_name('native-seafile-bootstrap.py')
+    spec = importlib.util.spec_from_file_location('canonical_native_seafile_bootstrap', source)
+    owner = importlib.util.module_from_spec(spec); sys.modules[spec.name] = owner
+    spec.loader.exec_module(owner)
+    return owner
+
+
+def prepare_seafile(root, release):
+    """Canonical Main producer, before any runtime projection or service start."""
+    directory(root); directory(release)
+    old = read(root / '.install-intent.json')
+    if (release.parent != root / 'releases' or not standalone_profile(release)
+            or not old or old.get('phase') != 'preparing' or old.get('release') != str(release)
+            or read(release / 'installation-receipt.json') != old or fingerprint(release) != old['inputs']
+            or old.get('domainRuntimeProjections') or old.get('nativeSeafilePreparation')
+            or old.get('nativeSeafileOwnership')):
+        raise ValueError('Exact unpublished standalone preparing Seafile source required')
+    owner = seafile_preparation_owner()
+    owner.load_protocol().projection_owner().lock_held(root)
+    if 'seafile' not in json.loads((release / 'stack.ir.json').read_bytes())['services']:
+        return dict(module='seafile', status='not-selected')
+    try:
+        preparation = owner.Fresh(root, release, old)
+        native = release / 'native-seafile'
+        native.mkdir(mode=0o700)
+        directory(native)
+        original = (root / '.install-intent.json').read_bytes()
+        if hashlib.sha256(original).hexdigest() != preparation.binding.receipt_sha:
+            raise ValueError('Original Seafile preparation receipt changed')
+        # Immutable canonical origin snapshot, NOT a caller-minted permit.
+        write(native / 'preparation-receipt.json', old, raw=original)
+        value = dict(old, nativeSeafilePreparation=preparation.plan)
+        write(release / 'installation-receipt.json', value)
+        write(root / '.install-intent.json', value)
+        result = preparation.run(value)
+        proof = preparation.publish(value, result)
+        value = dict(value, nativeSeafileOwnership=proof)
+        write(release / 'installation-receipt.json', value)
+        write(root / '.install-intent.json', value)
+        return proof
+    except Exception as error:
+        # Preserve trusted guard locations, never selected module exception text.
+        raise ValueError('Canonical native Seafile preparation refused').with_traceback(error.__traceback__) from None
 
 
 def project_domain(root, release, domain):
@@ -951,26 +998,41 @@ def retire_unselected(root, expected, reviewed, verifier=verify_unselected_prepa
     if fingerprint(release, value['inputs'].keys()) != value['inputs']:
         raise ValueError('Unselected release input binding changed')
     current = unselected_clean_current_pin(root, release)
-    verifier(root, release, value)
-    if (digest(path) != expected or read(release / 'installation-receipt.json') not in (value, retired)
-            or fingerprint(release, value['inputs'].keys()) != value['inputs']
-            or unselected_clean_current_pin(root, release) != current):
-        raise ValueError('Unselected preparation CAS changed during review')
-    write(release / 'installation-receipt.json', retired)
-    if current is not None:
-        prior_path = (root / 'current').resolve() / 'installation-receipt.json'
-        prior = read(prior_path); body = prior_path.read_bytes()
-        if (unselected_clean_current_pin(root, release) != current
-                or hashlib.sha256(body).hexdigest() != current[-1]):
-            raise ValueError('Clean-current authority changed before publication')
-        write(path, prior, raw=body)
-    else:
-        path.unlink()
-        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try: os.fsync(fd)
-        finally: os.close(fd)
-    return dict(retired, rootAuthorityRelease=prior['release'] if current is not None else None,
-                globalIntentCleared=current is None)
+    pointer = None
+    try:
+        if current is not None:
+            # Holding the original symlink inode defeats same-target ABA even
+            # when ext4 reuses an inode and its cached nanosecond timestamp.
+            pointer = os.open(root / 'current', os.O_PATH | os.O_NOFOLLOW)
+            info = os.fstat(pointer)
+            if ((info.st_dev, info.st_ino, info.st_ctime_ns) != current[:3]
+                    or not stat.S_ISLNK(info.st_mode) or info.st_nlink != 1
+                    or unselected_clean_current_pin(root, release) != current):
+                raise ValueError('Retained clean-current pointer changed before review')
+        verifier(root, release, value)
+        if (digest(path) != expected or read(release / 'installation-receipt.json') not in (value, retired)
+                or fingerprint(release, value['inputs'].keys()) != value['inputs']
+                or unselected_clean_current_pin(root, release) != current
+                or (pointer is not None and os.fstat(pointer).st_nlink != 1)):
+            raise ValueError('Unselected preparation CAS changed during review')
+        write(release / 'installation-receipt.json', retired)
+        if current is not None:
+            prior_path = (root / 'current').resolve() / 'installation-receipt.json'
+            prior = read(prior_path); body = prior_path.read_bytes()
+            if (unselected_clean_current_pin(root, release) != current
+                    or os.fstat(pointer).st_nlink != 1
+                    or hashlib.sha256(body).hexdigest() != current[-1]):
+                raise ValueError('Clean-current authority changed before publication')
+            write(path, prior, raw=body)
+        else:
+            path.unlink()
+            fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try: os.fsync(fd)
+            finally: os.close(fd)
+        return dict(retired, rootAuthorityRelease=prior['release'] if current is not None else None,
+                    globalIntentCleared=current is None)
+    finally:
+        if pointer is not None: os.close(pointer)
 
 
 def quarantine_failed(root, expected, reviewed, verifier=verify_quarantined, wait_seconds=120):
@@ -1197,6 +1259,7 @@ def main():
     parser.add_argument('--root', type=Path, required=True)
     parser.add_argument('--inspect', action='store_true')
     parser.add_argument('--project-domain')
+    parser.add_argument('--prepare-seafile', action='store_true')
     parser.add_argument('--complete-clean-reset', action='store_true')
     parser.add_argument('--install-selected-files', action='store_true')
     parser.add_argument('--stop-selection', action='store_true')
@@ -1219,7 +1282,7 @@ def main():
     parser.add_argument('--expected', default='')
     args = parser.parse_args()
     if os.geteuid() != 0: parser.error('Root-owned installation journal required')
-    actions = (args.inspect, bool(args.project_domain), args.complete_clean_reset, args.install_selected_files, args.stop_selection,
+    actions = (args.inspect, bool(args.project_domain), args.prepare_seafile, args.complete_clean_reset, args.install_selected_files, args.stop_selection,
                args.project_rootful_environment, args.install_runtime_environment_units, args.seal_runtime_environment_copies,
                args.native_finance_arm, args.native_finance_capture,
                bool(args.assert_domain_offline), bool(args.retire_failed), bool(args.retire_unselected), bool(args.retire_empty_preparation),
@@ -1249,6 +1312,10 @@ def main():
                     result = retire_failed(args.root, args.retire_failed, args.reviewed_data_state)
                 print(json.dumps(result, sort_keys=True))
             finally: os.close(fd)
+        elif args.prepare_seafile:
+            if args.release is None or args.bundle is not None or args.expected or args.reviewed_data_state or args.scope is not None:
+                raise ValueError('One exact source-bound native Seafile preparation required')
+            print(json.dumps(prepare_seafile(args.root, args.release), sort_keys=True))
         elif args.native_finance_arm or args.native_finance_capture:
             if args.release is None or args.bundle is not None or args.reviewed_data_state or args.scope is not None:
                 raise ValueError('One source-bound original native finance operation required')

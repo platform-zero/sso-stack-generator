@@ -822,6 +822,13 @@ if [ "$STANDALONE" = true ]; then
   for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
     domain="${ROOTLESS_DOMAIN_NAMES[$i]}"
     python3 -B "$release/ops/prepare-role-public-payload.py" --bundle "$release" --domain "$domain" >/dev/null
+  done
+  # Main must produce Seafile's real native ownership input before the strict
+  # config projection reads it. No placeholder JSON or missing-source bypass.
+  python3 -B "$release/ops/install-journal.py" --root "$STATE_ROOT" --release "$release" \
+    --prepare-seafile >/dev/null
+  for i in "${!ROOTLESS_DOMAIN_NAMES[@]}"; do
+    domain="${ROOTLESS_DOMAIN_NAMES[$i]}"
     # Custody preparation, canonical journal writes and retained-FD handoff MUST
     # run in this one Python process. No cross-process lease reconstruction.
     python3 -B "$release/ops/install-journal.py" --root "$STATE_ROOT" --release "$release" \

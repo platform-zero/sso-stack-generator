@@ -345,6 +345,18 @@ class InstallationJournal(unittest.TestCase):
         with self.assertRaises(ValueError):journal.retire_unselected(self.root,expected,True,replace)
         self.assertEqual(journal.digest(self.path),expected)
 
+    def test_partial_unselected_held_symlink_refuses_even_a_stale_equal_pin(self):
+        prior,body,expected=self.partial_unselected_fixture()
+        pin=journal.unselected_clean_current_pin(self.root,self.release)
+        def replace(*args):
+            current=self.root/'current';current.unlink();current.symlink_to(prior)
+        # Model a coarse/reused timestamp pin while exercising the REAL O_PATH
+        # inode lifetime/link-count guard in this isolated Root fixture.
+        with patch.object(journal,'unselected_clean_current_pin',return_value=pin):
+            with self.assertRaises(ValueError):journal.retire_unselected(self.root,expected,True,replace)
+        self.assertEqual(journal.digest(self.path),expected)
+        self.assertEqual(journal.read(self.release/'installation-receipt.json')['phase'],'failed')
+
     def test_partial_unselected_exact_interrupted_leaf_publication_recovers(self):
         prior,body,expected=self.partial_unselected_fixture();original=journal.read(self.path)
         retired=dict(original,phase='retired-failed',steps=['preparing','failed','retired-failed'],
@@ -586,6 +598,93 @@ class InstallationJournal(unittest.TestCase):
             journal.write(self.path,dict(journal.read(self.path),phase='retired-failed'))
             with self.assertRaises(ValueError):journal.quarantine_failed(self.root,journal.digest(self.path),True,lambda p:None)
             stop.assert_not_called()
+
+    def seafile_model_preparing(self, selected=True):
+        # Root-isolated journal I/O with a MODEL owner, never native admission.
+        (self.bundle/'site').mkdir()
+        profile=dict(deploymentMode='standalone',installerStateRoot=str(self.root))
+        (self.bundle/'site/manifest.json').write_text(json.dumps(profile))
+        (self.bundle/'podman-domains.json').write_text(json.dumps(profile))
+        (self.bundle/'stack.ir.json').write_text(json.dumps(dict(services={'seafile':{}} if selected else {})))
+        journal.update(self.root,self.bundle,self.release,'preparing');self.copy_pins_to_release()
+        return self.path.read_bytes()
+
+    def seafile_model_owner(self, fail=None):
+        events=[];outer=self
+        class ModelPreparation:
+            def __init__(self,root,release,old):
+                events.append('construct')
+                if fail=='construct':raise RuntimeError('private-sentinel-never-echo')
+                self.binding=SimpleNamespace(receipt_sha=journal.digest(outer.path))
+                self.plan=dict(schemaVersion=1,status='preparing',scope='MODEL ONLY')
+            def run(self,value):
+                events.append('run')
+                outer.assertEqual(journal.read(outer.path),value)
+                outer.assertEqual(journal.read(outer.release/'installation-receipt.json'),value)
+                snapshot=outer.release/'native-seafile/preparation-receipt.json'
+                outer.assertEqual(journal.digest(snapshot),self.binding.receipt_sha)
+                if fail=='run':raise RuntimeError('private-sentinel-never-echo')
+                return dict(scope='MODEL ONLY')
+            def publish(self,value,result):
+                events.append('publish')
+                outer.assertNotIn('nativeSeafileOwnership',journal.read(outer.path))
+                return dict(status='completed',scope='MODEL ONLY')
+        protocol=SimpleNamespace(projection_owner=lambda:SimpleNamespace(lock_held=lambda root:None))
+        return SimpleNamespace(Fresh=ModelPreparation,load_protocol=lambda:protocol),events
+
+    def test_seafile_canonical_model_writes_origin_and_start_before_executor(self):
+        original=self.seafile_model_preparing();owner,events=self.seafile_model_owner()
+        with patch.object(journal,'seafile_preparation_owner',return_value=owner):
+            result=journal.prepare_seafile(self.root,self.release)
+        self.assertEqual(events,['construct','run','publish'])
+        self.assertEqual(result,dict(status='completed',scope='MODEL ONLY'))
+        final=journal.read(self.path)
+        self.assertEqual(final,journal.read(self.release/'installation-receipt.json'))
+        self.assertEqual((self.release/'native-seafile/preparation-receipt.json').read_bytes(),original)
+        self.assertIn('nativeSeafileOwnership',final)
+
+    def test_seafile_constructor_refusal_retains_original_records_and_redacts_values(self):
+        original=self.seafile_model_preparing();owner,events=self.seafile_model_owner('construct')
+        with patch.object(journal,'seafile_preparation_owner',return_value=owner):
+            with self.assertRaises(ValueError) as result:journal.prepare_seafile(self.root,self.release)
+        self.assertNotIn('private-sentinel',str(result.exception))
+        self.assertEqual(self.path.read_bytes(),original)
+        self.assertEqual((self.release/'installation-receipt.json').read_bytes(),original)
+        self.assertFalse((self.release/'native-seafile').exists())
+
+    def test_seafile_native_model_failure_keeps_consumed_start_and_no_ownership(self):
+        original=self.seafile_model_preparing();owner,events=self.seafile_model_owner('run')
+        with patch.object(journal,'seafile_preparation_owner',return_value=owner):
+            with self.assertRaises(ValueError) as result:journal.prepare_seafile(self.root,self.release)
+        self.assertNotIn('private-sentinel',str(result.exception))
+        current=journal.read(self.path)
+        self.assertEqual(current,journal.read(self.release/'installation-receipt.json'))
+        self.assertIn('nativeSeafilePreparation',current);self.assertNotIn('nativeSeafileOwnership',current)
+        self.assertEqual((self.release/'native-seafile/preparation-receipt.json').read_bytes(),original)
+        with patch.object(journal,'seafile_preparation_owner') as factory:
+            with self.assertRaises(ValueError):journal.prepare_seafile(self.root,self.release)
+            factory.assert_not_called()
+
+    def test_unselected_seafile_is_not_an_authorization_producer(self):
+        original=self.seafile_model_preparing(False);owner,events=self.seafile_model_owner()
+        with patch.object(journal,'seafile_preparation_owner',return_value=owner):
+            self.assertEqual(journal.prepare_seafile(self.root,self.release)['status'],'not-selected')
+        self.assertEqual(events,[]);self.assertEqual(self.path.read_bytes(),original)
+        self.assertFalse((self.release/'native-seafile').exists())
+
+    def test_seafile_changed_input_or_projection_replay_refuses_before_owner(self):
+        self.seafile_model_preparing()
+        old=(self.release/'stack.ir.json').read_bytes()
+        (self.release/'stack.ir.json').write_bytes(old+b' ')
+        with patch.object(journal,'seafile_preparation_owner') as factory:
+            with self.assertRaises(ValueError):journal.prepare_seafile(self.root,self.release)
+            factory.assert_not_called()
+        (self.release/'stack.ir.json').write_bytes(old)
+        value=dict(journal.read(self.path),domainRuntimeProjections={'platform':{'status':'fixture'}})
+        journal.write(self.path,value);journal.write(self.release/'installation-receipt.json',value)
+        with patch.object(journal,'seafile_preparation_owner') as factory:
+            with self.assertRaises(ValueError):journal.prepare_seafile(self.root,self.release)
+            factory.assert_not_called()
 
     def test_links_permissions_and_escaped_receipts_refused(self):
         journal.update(self.root, self.bundle, self.release, 'preparing')
