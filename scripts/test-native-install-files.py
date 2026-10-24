@@ -588,6 +588,20 @@ class StoppedGate(unittest.TestCase):
         self.props[1]['FragmentPath'] = '/etc/systemd/system/webservices.target'
         m.stopped(self.release, self.plan)
 
+    def test_target_interface_may_omit_inapplicable_main_pid_only(self):
+        del self.props[1]['MainPID']
+        m.stopped(self.release, self.plan)
+        self.props[1].update(LoadState='loaded', FragmentPath='/etc/systemd/system/webservices.target')
+        m.stopped(self.release, self.plan)
+        del self.props[0]['MainPID']
+        with self.assertRaises(ValueError): m.stopped(self.release, self.plan)
+
+    def test_target_active_or_supplied_nonzero_main_pid_still_refuses(self):
+        for key, value in (('MainPID', '7'), ('ActiveState', 'active'), ('Job', '23')):
+            original = self.props[1][key]; self.props[1][key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError): m.stopped(self.release, self.plan)
+            self.props[1][key] = original
+
     def test_active_job_alias_dropin_source_and_pid_refuse(self):
         for key, value in (('ActiveState', 'active'), ('Job', '23'), ('Names', 'webservices-edge.service foreign.service'),
                            ('MainPID', '7'), ('DropInPaths', '/etc/systemd/system/foreign.conf')):

@@ -94,9 +94,13 @@ def stopped(release, plan):
             sources.setdefault(seal['unit'], set()).add(str(native.destination('rootful', entry, rel)))
     for props in blocks:
         unit = props['Id']
+        # systemd target interfaces have no MainPID property. Only that exact
+        # source-selected type may omit it; every service still needs an
+        # explicit empty/zero PID, and supplied nonzero target PIDs refuse.
+        main_pid = props.get('MainPID', '' if unit.endswith('.target') else None)
         require(props.get('LoadState') in ('loaded', 'not-found')
                 and props.get('ActiveState') in ('inactive', 'failed')
-                and props.get('MainPID') in ('', '0') and props.get('Job') == ''
+                and main_pid in ('', '0') and props.get('Job') == ''
                 and props.get('DropInPaths') == '' and set(props.get('Names', '').split()) <= {unit},
                 'rootful selected unit active, aliased, overridden or pending')
         if props['LoadState'] == 'loaded':
