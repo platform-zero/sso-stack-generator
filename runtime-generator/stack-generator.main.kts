@@ -1271,7 +1271,7 @@ fun standaloneResultsMount(name: String, service: ObjectNode, scopeRoot: Path): 
     val domain = activePodmanPolicy.domains.singleOrNull { it.name == "test-runners" }
         ?: fail("standalone results requires its selected native domain")
     val root = Path(domain.volumeRoot)
-    if (domain.uid != 786 || domain.user != "webservices-test-runners" || "test-runners" !in domain.modules ||
+    if (domain.uid != 786 || domain.user != "webservices-lab-test-runners" || "test-runners" !in domain.modules ||
         service.path("rootlessUser").asText() != domain.user || service.path("rootlessVolumeRoot").asText() != domain.volumeRoot ||
         !domain.volumeRoot.matches(Regex("/[A-Za-z0-9_./-]+")) || !root.isAbsolute || root.normalize().toString() != domain.volumeRoot || !root.startsWith(scopeRoot) || root == scopeRoot ||
         domain.volumeRoot.contains('$') || domain.volumeRoot.contains(':') || domain.volumeRoot.contains('\n'))

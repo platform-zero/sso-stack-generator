@@ -32,7 +32,7 @@ functions = '\n'.join([
 metadata = yaml.safe_load((MODULE / 'stack.runtime.yaml').read_text())
 scope = '/mnt/stack/synthetic-results'
 volume = scope + '/volumes/test-runners'
-domain = dict(name='test-runners', user='webservices-test-runners', uid=786,
+domain = dict(name='test-runners', user='webservices-lab-test-runners', uid=786,
               modules=['test-runners'], stateRoot=scope + '/podman/test-runners/state',
               graphRoot=scope + '/podman/test-runners/storage', volumeRoot=volume)
 ir = dict(services=metadata['services'], volumes={'caddy_ca': {'hostPath': scope + '/volumes/platform/caddy_ca'}})
