@@ -352,7 +352,7 @@ def binding(bundle, anchors, scope, marker):
         raise Refusal('view descriptor source/rendered hash differs')
     # Quadlet is the active backend, not merely an IR declaration.
     unit = anchors.read(bundle / 'quadlet/rootful/webservices-node-exporter.container').decode()
-    if check_unit(unit, root) != str(stack_view):
+    if check_unit(unit, root, service.get('resources', {}).get('limits', {})) != str(stack_view):
         raise Refusal('selected unit stack source escapes exact scope')
     return dict(release=str(bundle), inputs=inputs, selectedScope=str(scope),
                 scopeMarkerSha256=sha(marker_body), runtimeIrSha256=inputs['stack.ir.json'],
@@ -361,7 +361,29 @@ def binding(bundle, anchors, scope, marker):
                 initialReceiptSha256=sha(receipt_body)), receipt
 
 
-def check_unit(unit, installer_root):
+def resource_arguments(limits):
+    if not isinstance(limits, dict):
+        raise Refusal('invalid exporter source resource limits')
+    result = []
+    for key in ('memory', 'cpus'):
+        raw = limits.get(key)
+        if raw is None or str(raw).strip() == '':
+            continue
+        value = str(raw).strip()
+        expression = re.fullmatch(r'\$\{[A-Z_][A-Z0-9_]*:-([^}]+)}', value)
+        if expression: value = expression[1].strip()
+        if key == 'memory':
+            value = re.sub(r'[kmgtpe](?=[iIbB]*$)', lambda match: match[0].upper(), value)
+            valid = re.fullmatch(r'[1-9][0-9]*(?:\.[0-9]+)?[KMGTPE]?[iI]?[bB]?', value)
+        else:
+            valid = re.fullmatch(r'(?:[1-9][0-9]*|0\.[0-9]+|[1-9][0-9]*\.[0-9]+)', value)
+            valid = valid and float(value) > 0
+        if not valid: raise Refusal('invalid exporter source resource limit')
+        result.append('--' + key + '=' + value)
+    return result
+
+
+def check_unit(unit, installer_root, limits=None):
     section, fields, sections = None, {}, set()
     for raw in unit.splitlines():
         line = raw.strip()
@@ -392,7 +414,7 @@ def check_unit(unit, installer_root):
                 raise Refusal('unsupported exporter unit authority')
         elif section != '[Install]' or key != 'WantedBy':
             raise Refusal('unsupported selected unit directive')
-    exact = dict(Pid=['host'], User=['65534:65534'], ReadOnly=['true'],
+    exact = dict(User=['65534:65534'], ReadOnly=['true'],
                  DropCapability=['ALL'], NoNewPrivileges=['true'], Network=['host'],
                  Image=['docker.io/' + IMAGE], ContainerName=['node-exporter'])
     for key, value in exact.items():
@@ -418,8 +440,10 @@ def check_unit(unit, installer_root):
     if len(fields.get('Exec', [])) != 1 or shlex.split(fields['Exec'][0]) != COMMAND:
         raise Refusal('selected exporter unit argv differs')
     args = fields.get('PodmanArgs', [])
-    if len(args) != 1 or shlex.split(args[0]) not in (['--image-volume=ignore'],
-            ['--image-volume=ignore', '--sdnotify=healthy']):
+    resources = resource_arguments({} if limits is None else limits)
+    if len(args) != 1 or shlex.split(args[0]) not in (
+            ['--image-volume=ignore', *resources, '--pid=host'],
+            ['--image-volume=ignore', '--sdnotify=healthy', *resources, '--pid=host']):
         raise Refusal('unsupported exporter engine arguments')
     return stack_source
 

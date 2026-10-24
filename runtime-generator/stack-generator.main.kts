@@ -2242,17 +2242,19 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
     if (notifyHealthy) podmanArgs += "--sdnotify=healthy"
     resourceLimit(limits.path("memory"), "memory")?.let { podmanArgs += "--memory=$it" }
     resourceLimit(limits.path("cpus"), "cpus")?.let { podmanArgs += "--cpus=$it" }
-    lines += "PodmanArgs=${podmanArgs.joinToString(" ")}"
-    service.path("ephemeralImageVolumes").forEach { lines += "Tmpfs=${it.asText()}" }
-    service.path("userns").textOrNull()?.let { lines += "UserNS=$it" }
     service.path("pidMode").textOrNull()?.let {
         if (it !in setOf("host", "private")) fail("unsupported PID namespace mode")
         if (activePodmanPolicy.standalone && it == "host" &&
             (name != "node-exporter" || service.path("user").asText() != "65534:65534" ||
              !service.path("readOnly").asBoolean(false) || "ALL" !in service.path("capDrop").map(JsonNode::asText)))
             fail("unreviewed standalone host PID namespace authority")
-        lines += "Pid=$it"
+        // Podman 5.4 Quadlet has no [Container] Pid= directive. Preserve the
+        // reviewed namespace through its native engine argument instead.
+        podmanArgs += "--pid=$it"
     }
+    lines += "PodmanArgs=${podmanArgs.joinToString(" ")}"
+    service.path("ephemeralImageVolumes").forEach { lines += "Tmpfs=${it.asText()}" }
+    service.path("userns").textOrNull()?.let { lines += "UserNS=$it" }
     service.path("groupAdd").forEach { lines += "GroupAdd=${it.asText()}" }
     service.path("devices").forEach { lines += "AddDevice=${it.asText()}" }
     resourceLimit(limits.path("pids"), "pids")?.let { lines += "PidsLimit=$it" }

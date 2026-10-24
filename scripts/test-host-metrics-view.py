@@ -25,6 +25,8 @@ MODULE = SOURCE.parents[2].parent / 'module-delivery/node-exporter'
 
 class Views(unittest.TestCase):
     def setUp(self):
+        previous_umask = os.umask(0o077)
+        self.addCleanup(os.umask, previous_umask)
         self.temp = tempfile.TemporaryDirectory(prefix='host-metrics-test-')
         self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name)
@@ -50,8 +52,8 @@ class Views(unittest.TestCase):
         self.stack.parent.mkdir(parents=True, mode=0o700)
         self.unit = self.bundle / 'quadlet/rootful/webservices-node-exporter.container'
         self.put(self.unit, ('[Container]\nImage=docker.io/' + h.IMAGE + '\nContainerName=node-exporter\n'
-                 'Pid=host\nUser=65534:65534\nReadOnly=true\nDropCapability=ALL\n'
-                 'NoNewPrivileges=true\nNetwork=host\nPodmanArgs=--image-volume=ignore\n'
+                 'User=65534:65534\nReadOnly=true\nDropCapability=ALL\n'
+                 'NoNewPrivileges=true\nNetwork=host\nPodmanArgs=--image-volume=ignore --pid=host\n'
                  'Volume=' + str(self.install / 'current/runtime/configs/node-exporter/rootfs-view') + ':/host:ro\n'
                  'Volume=' + str(self.stack) + ':/host/mnt/stack:ro\n'
                  'Exec=' + ' '.join(json.dumps(v) for v in h.COMMAND) + '\n').encode())
@@ -272,7 +274,9 @@ class Views(unittest.TestCase):
 
     def test_quadlet_omission_broad_mount_extra_engine_args_and_wrong_scope_rejected(self):
         original = self.unit.read_bytes()
-        for wrong in (original.replace(b'Pid=host\n', b''),
+        for wrong in (original.replace(b' --pid=host', b''),
+                      original.replace(b' --pid=host', b' --pid=private'),
+                      original + b'Pid=host\n',
                       original.replace(b'User=65534:65534', b'User=0:0'),
                       original.replace(b'PodmanArgs=--image-volume=ignore', b'PodmanArgs=--privileged'),
                       original + b'Volume=/:/host:ro\n',
@@ -283,6 +287,24 @@ class Views(unittest.TestCase):
             self.put(self.unit, wrong)
             self.assert_refused()
         self.assertFalse(self.root.exists())
+
+    def test_source_bound_resource_flags_and_host_pid_namespace_match_real_generator_shape(self):
+        text = self.unit.read_text()
+        limits = {'memory': '2G', 'cpus': '2.0'}
+        rendered = text.replace('--image-volume=ignore --pid=host',
+                                '--image-volume=ignore --memory=2G --cpus=2.0 --pid=host')
+        self.assertEqual(h.check_unit(rendered, self.install, limits), str(self.stack))
+        for wrong in (rendered.replace('--memory=2G', '--memory=1G'),
+                      rendered.replace('--cpus=2.0', '--cpus=1.0'),
+                      rendered.replace('--pid=host', '--pid=private'),
+                      rendered.replace('--pid=host', '--pid=host --pid=private')):
+            with self.assertRaises(ValueError): h.check_unit(wrong, self.install, limits)
+        with self.assertRaises(ValueError): h.check_unit(rendered, self.install)
+        self.assertEqual(h.resource_arguments({'memory': '${MEM:-2g}', 'cpus': '${CPU:-2.0}'}),
+                         ['--memory=2G', '--cpus=2.0'])
+        for limits in ({'memory': '0G'}, {'memory': '2G --privileged'}, {'cpus': '0'},
+                       {'cpus': 'NaN'}, {'memory': '${MEM}'}, []):
+            with self.assertRaises(ValueError): h.resource_arguments(limits)
 
     def test_readonly_native_host_supported_or_fail_closed_never_bind_ro_substitution(self):
         self.native = self.mountinfo(root_opts='ro,relatime', super_opts='ro,errors=remount-ro')
