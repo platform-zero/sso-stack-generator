@@ -276,9 +276,30 @@ class Fresh:
         self.require(cid in self.cids, 'Foreign native preparation CID')
         return self.p.strict(self.command(['inspect', '--format={{json .State}}', cid], cleanup=cleanup).stdout)
 
-    def start_relay(self, database_cid):
+    def relay_namespace(self, database_cid):
         state = self.state(database_cid)
         self.require(state.get('Running') is True and type(state.get('Pid')) is int and state['Pid'] > 1)
+        pid = state['Pid']; process = os.pidfd_open(pid); namespace = None
+        try:
+            namespace = os.open('/proc/' + str(pid) + '/ns/net', os.O_RDONLY | os.O_CLOEXEC)
+            info = os.fstat(namespace); host = os.stat('/proc/self/ns/net')
+            self.require((info.st_dev, info.st_ino) != (host.st_dev, host.st_ino),
+                         'Host network namespace refused')
+            groups = Path('/proc/' + str(pid) + '/cgroup').read_bytes()
+            self.require(len(groups) <= 65536 and any(
+                'libpod-' + database_cid + '.scope' in line.decode().split('/') for line in groups.splitlines()),
+                'Native relay process cgroup differs')
+            after = self.state(database_cid)
+            self.require(after.get('Running') is True and after.get('Pid') == pid
+                         and not select.select([process], [], [], 0)[0],
+                         'Native relay process identity changed')
+            result, namespace = namespace, None
+            return result
+        finally:
+            os.close(process)
+            if namespace is not None: os.close(namespace)
+
+    def start_relay(self, database_cid):
         env = self.environments['seafile']
         pairs = [[int(env['SEAFILE_MYSQL_DB_PORT']), 3306], [int(env['REDIS_PORT']), 6379]]
         pairs = [pair for pair in pairs if pair[0] != pair[1]]
@@ -287,12 +308,16 @@ class Fresh:
         source = Path(__file__).with_name('native-seafile-loopback.py').read_bytes()
         # Public source only on argv; no Root input/credential/FD9 crosses exec.
         account = self.accounts['platform']
-        self.relay = subprocess.Popen(['/usr/bin/nsenter', '--target=' + str(state['Pid']), '--net', '--',
-            '/usr/bin/setpriv', '--reuid=' + str(account.pw_uid), '--regid=' + str(account.pw_gid),
-            '--clear-groups', '--inh-caps=-all', '--bounding-set=-all', '--no-new-privs', '--',
-            '/usr/bin/python3', '-B', '-c', source.decode(), json.dumps(pairs)],
-            env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': '/'}, stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, close_fds=True)
+        namespace = self.relay_namespace(database_cid)
+        try:
+            self.relay = subprocess.Popen(['/usr/bin/nsenter', '--net=/proc/self/fd/' + str(namespace), '--',
+                '/usr/bin/setpriv', '--reuid=' + str(account.pw_uid), '--regid=' + str(account.pw_gid),
+                '--clear-groups', '--inh-caps=-all', '--bounding-set=-all', '--no-new-privs', '--',
+                '/usr/bin/python3', '-B', '-c', source.decode(), json.dumps(pairs)],
+                env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': '/'}, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, close_fds=True, pass_fds=(namespace,))
+        finally:
+            os.close(namespace)
         ready, _, _ = select.select([self.relay.stdout], [], [], 10)
         self.require(ready and self.relay.stdout.readline() == b'SEAFILE_PRIVATE_LOOPBACK_READY\n',
                      'Native private loopback unavailable')

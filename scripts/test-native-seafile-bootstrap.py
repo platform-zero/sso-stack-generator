@@ -84,6 +84,27 @@ class Models(unittest.TestCase):
     with self.subTest(kind='link' if path.is_symlink() else 'file'),self.assertRaises(FileExistsError):
      b.Fresh.file(f,path,b'replacement',uid=os.getuid(),gid=os.getgid())
    self.assertEqual(target.read_bytes(),b'protected-model')
+ def test_host_network_namespace_is_refused_before_any_relay_exec(self):
+  with tempfile.TemporaryDirectory() as temp:
+   f=self.fixture(temp);f.cids=[CID]
+   f.environments={'seafile':{'SEAFILE_MYSQL_DB_PORT':'25003','REDIS_PORT':'25004'}}
+   f.command=mock.Mock(return_value=types.SimpleNamespace(stdout=json.dumps({'Running':True,'Pid':os.getpid()}).encode()))
+   with mock.patch.object(b.subprocess,'Popen') as opening:
+    with self.assertRaises(p.Refused):f.start_relay(CID)
+    opening.assert_not_called()
+ def test_relay_exec_receives_only_held_namespace_fd_and_closes_parent_copy(self):
+  with tempfile.TemporaryDirectory() as temp:
+   f=self.fixture(temp);f.environments={'seafile':{'SEAFILE_MYSQL_DB_PORT':'25003','REDIS_PORT':'25004'}}
+   path=Path(temp)/'public-model-only';path.write_bytes(b'not-a-namespace; subprocess mocked')
+   fd=os.open(path,os.O_RDONLY);f.relay_namespace=mock.Mock(return_value=fd)
+   process=mock.Mock();process.stdout=mock.Mock();process.stdout.readline.return_value=b'SEAFILE_PRIVATE_LOOPBACK_READY\n'
+   with mock.patch.object(b.subprocess,'Popen',return_value=process) as opening,mock.patch.object(b.select,'select',return_value=([process.stdout],[],[])):
+    f.start_relay(CID)
+   argv=opening.call_args.args[0];kwargs=opening.call_args.kwargs
+   self.assertIn('--net=/proc/self/fd/'+str(fd),argv)
+   self.assertFalse(any(arg.startswith('--target') for arg in argv))
+   self.assertEqual(kwargs['pass_fds'],(fd,));self.assertTrue(kwargs['close_fds'])
+   with self.assertRaises(OSError):os.fstat(fd)
  def test_name_collision_never_creates_container(self):
   with tempfile.TemporaryDirectory() as temp:
    f=self.fixture(temp);f.command=mock.Mock(return_value=types.SimpleNamespace(returncode=0,stdout=b''))
