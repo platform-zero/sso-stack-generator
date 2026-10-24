@@ -28,6 +28,10 @@ class Planning(unittest.TestCase):
   self.assertEqual(p['fullServiceCount'],5);self.assertEqual(len(p['fullModulePins']),6)
   self.assertNotIn('components',p['rings'][0]['manifest'])
   self.assertEqual(p['rings'][0]['manifest']['secretStore'],'./encrypted.json')
+ def test_unselected_optional_runner_tool_not_referenced_by_foundation(self):
+  args=self.fixture();args[0]['nativeAcceptanceImagePinsPath']='global.settings/native-retained-acceptance-image.json'
+  self.assertNotIn('nativeAcceptanceImagePinsPath',r.plan(*args)['rings'][0]['manifest'])
+  self.assertIn('nativeAcceptanceImagePinsPath',args[0])
  def test_transitive_service_dependency(self):
   args=self.fixture();args[2]['services']['edge']['dependencies']={'identity':'completed'}
   self.assertIn('database',r.plan(*args)['rings'][0]['modules'])

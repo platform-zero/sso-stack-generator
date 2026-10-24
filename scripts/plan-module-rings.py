@@ -83,6 +83,10 @@ def plan(manifest, lock, ir, policy):
         # Module selection is authoritative. Do not retain unrelated app component
         # names or silently add the broad legacy "core" service group.
         derived.pop('components', None)
+        # This optional tool's source contract explicitly belongs to test-runners;
+        # a foundation without that module must not reference its build artifact.
+        if 'test-runners' not in cumulative:
+            derived.pop('nativeAcceptanceImagePinsPath', None)
         result.append({'name': ring['name'], 'declaredModules': sorted(roots),
                        'addedModules': sorted(cumulative - before),
                        'dependencyPromotions': sorted(cumulative - before - roots),
