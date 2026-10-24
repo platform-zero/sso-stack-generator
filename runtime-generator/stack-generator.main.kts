@@ -1431,7 +1431,10 @@ fun requireStandaloneCaddyPrivacy(source: String, output: Path) {
     // logger, request, error or contextual fields; standard access logs are off.
     val sourceSha = MessageDigest.getInstance("SHA-256").digest(source.toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it) }
-    if (sourceSha != "044edc77e93f38d4f0d3b4e7d8cd0a0d778e59f83bf2e686e19be7758d816568")
+    // Reviewed immutable-sub forwarding delta: clears caller identity before
+    // shortcuts, strips integration identity, fixed issuer. No logger/encoder,
+    // ingress guard, import or managed-control change; still ONE exact template.
+    if (sourceSha != "cd5297dd239b573ea677539a61415a21cd0ed9d32917b064120ea640862775e6")
         fail("standalone ingress requires the reviewed metadata-only Caddy source")
     val plugin = output.resolve("build/stack.containers/caddy-ingress")
     listOf(output, output.resolve("build"), output.resolve("build/stack.containers"), plugin).forEach {
