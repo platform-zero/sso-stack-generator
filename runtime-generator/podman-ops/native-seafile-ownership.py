@@ -210,6 +210,50 @@ def existing_material(contract, fresh_raw, marker, files, proof):
     return raw
 
 
+def carried_material(normal_raw, origin_snapshot, prior_ownership, prior_environment,
+                     prior_files, marker_sha, identity, email, database, current_files):
+    """Pure prior-owned protocol conversion, NOT adoption/native admission.
+
+    A canonical executor must independently bind the selected previous Root
+    release and these private bytes, qualify images, prove unchanged existing
+    data, run native verify-only/CAS and clean stop before publishing anything.
+    No password or fresh authorization is produced here.
+    """
+    require(isinstance(prior_ownership, dict) and type(prior_ownership.get('schemaVersion')) is int
+            and prior_ownership['schemaVersion'] == 1
+            and prior_ownership.get('module') == 'seafile' and prior_ownership.get('status') == 'completed'
+            and prior_ownership.get('nativeTemporaryStop') is True)
+    require(sha(normal_raw) == prior_ownership.get('authorizationSha256')
+            and sha(prior_environment) == prior_ownership.get('derivedEnvironmentSha256'))
+    auth = strict(normal_raw)
+    require(isinstance(auth, dict) and set(auth) == FIELDS)
+    marker = encoded({key: auth[key] for key in MARKER_FIELDS})
+    require(implementation_sha(prior_files) == auth['implementation_sha256'])
+    validate_authorization(normal_raw, sha(normal_raw), 'verify-existing', marker,
+                           b'\0'.join(prior_files[name] for name in IMPLEMENTATION_FILES))
+    origin = strict(origin_snapshot)
+    require(isinstance(origin, dict) and type(origin.get('schemaVersion')) is int
+            and origin['schemaVersion'] == 1
+            and origin.get('phase') == 'preparing' and origin.get('steps') == ['preparing']
+            and origin.get('previousRelease') is None and isinstance(origin.get('inputs'), dict)
+            and origin['inputs'] and not origin.get('domainRuntimeProjections')
+            and not origin.get('nativeSeafileOwnership') and not origin.get('nativeSeafilePreparation'))
+    require(sha(origin_snapshot) == auth['receipt_sha256']
+            and prior_ownership.get('ownershipOriginReceiptSha256', prior_ownership.get('preparationReceiptSha256')) == auth['receipt_sha256'])
+    require(prior_ownership.get('implementationSha256') == auth['implementation_sha256']
+            and prior_ownership.get('scopeMarkerSha256') == marker_sha == auth['scope_id']
+            and auth['shared_identity'] == identity and auth['contact_email'] == email
+            and auth['database_scope'] == database)
+    native_proof(PROOF_PREFIX + encoded(prior_ownership.get('existingReadback')), auth)
+    # Only reviewed implementation changes. Identity/origin/nonce/DB scope and
+    # native account CAS stay exact; no contact or credential rotation implied.
+    converted = dict(auth, implementation_sha256=implementation_sha(current_files))
+    raw = encoded(converted)
+    validate_authorization(raw, sha(raw), 'verify-existing', marker,
+                           b'\0'.join(current_files[name] for name in IMPLEMENTATION_FILES))
+    return raw, marker
+
+
 def projection_owner():
     source = Path(__file__).with_name('native-runtime-projection-owner.py')
     spec = importlib.util.spec_from_file_location('native_seafile_source_owner', source)

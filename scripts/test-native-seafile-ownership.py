@@ -110,6 +110,61 @@ class Protocol(unittest.TestCase):
    with self.assertRaises(contract.Refusal):
     owner.fresh_material(contract,'a'*64,'b'*64,'synthetic',identity,'owner@fixture.invalid',self.database,self.files,self.password,'c'*64)
 
+class CarriedProtocol(unittest.TestCase):
+ """Pure format conversion only; no selected previous release/native authority."""
+ def setUp(self):
+  Protocol.setUp(self)
+  self.origin=owner.encoded(dict(schemaVersion=1,phase='preparing',steps=['preparing'],previousRelease=None,inputs={'synthetic':'source-only-origin'}))
+  raw,marker=owner.fresh_material(owner,owner.sha(self.origin),'b'*64,'synthetic',self.identity,'owner@fixture.invalid',self.database,self.files,self.password,'c'*64)
+  auth=owner.strict(raw);proof={key:auth[key] for key in owner.PROOF_FIELDS-{'local_user','account_sha256'}}
+  proof.update(local_user=owner.subject_key(self.identity),account_sha256='d'*64)
+  normal=owner.existing_material(owner,raw,marker,self.files,proof)
+  environment=b'SEAFILE_ADMIN_AUTHORIZATION_SHA256='+owner.sha(normal).encode()+b'\n'
+  prior=dict(schemaVersion=1,module='seafile',status='completed',nativeTemporaryStop=True,
+   authorizationSha256=owner.sha(normal),derivedEnvironmentSha256=owner.sha(environment),
+   preparationReceiptSha256=owner.sha(self.origin),implementationSha256=owner.implementation_sha(self.files),
+   scopeMarkerSha256='b'*64,existingReadback=dict(proof,operation='verify-existing'))
+  self.kw=dict(normal_raw=normal,origin_snapshot=self.origin,prior_ownership=prior,prior_environment=environment,
+   prior_files=self.files,marker_sha='b'*64,identity=self.identity,email='owner@fixture.invalid',database=self.database,current_files=self.files)
+  self.original_marker=marker
+ def test_byte_identical_carry_and_reviewed_implementation_rebind_preserve_native_cas(self):
+  for files in (self.files,dict(self.files,**{owner.IMPLEMENTATION_FILES[0]:b'reviewed-new-implementation'})):
+   raw,marker=owner.carried_material(**dict(self.kw,current_files=files));auth=owner.strict(raw)
+   self.assertEqual(marker,self.original_marker);self.assertIsNone(auth['password_sha256'])
+   self.assertEqual(auth['expected_account_sha256'],'d'*64)
+   self.assertEqual(auth['local_user'],owner.subject_key(self.identity))
+   self.assertEqual(auth['receipt_sha256'],owner.sha(self.origin))
+   contract.validate_authorization(raw,owner.sha(raw),'verify-existing',marker,b'\0'.join(files[n] for n in owner.IMPLEMENTATION_FILES))
+ def test_chained_origin_is_original_not_previous_preparation(self):
+  prior=dict(self.kw['prior_ownership'],preparationReceiptSha256='e'*64,ownershipOriginReceiptSha256=owner.sha(self.origin))
+  self.assertEqual(owner.carried_material(**dict(self.kw,prior_ownership=prior))[0],self.kw['normal_raw'])
+  prior['ownershipOriginReceiptSha256']='f'*64
+  with self.assertRaises(owner.Refused):owner.carried_material(**dict(self.kw,prior_ownership=prior))
+ def test_scope_subject_contact_and_database_drift_refuse(self):
+  for changes in (dict(marker_sha='e'*64),dict(identity=dict(self.identity,subject='foreign')),dict(email='other@fixture.invalid'),dict(database=dict(self.database,port=3306))):
+   with self.subTest(field=next(iter(changes))),self.assertRaises(owner.Refused):owner.carried_material(**dict(self.kw,**changes))
+ def test_failed_unstopped_wrong_schema_or_foreign_provenance_refuse(self):
+  for changes in (dict(status='failed'),dict(nativeTemporaryStop=False),dict(schemaVersion=True),dict(module='other'),dict(authorizationSha256='e'*64),dict(derivedEnvironmentSha256='e'*64),dict(implementationSha256='e'*64),dict(scopeMarkerSha256='e'*64),dict(preparationReceiptSha256='e'*64)):
+   with self.subTest(field=next(iter(changes))),self.assertRaises(owner.Refused):owner.carried_material(**dict(self.kw,prior_ownership=dict(self.kw['prior_ownership'],**changes)))
+ def test_changed_account_cas_or_readback_implementation_refuse(self):
+  for changes in (dict(account_sha256='e'*64),dict(implementation_sha256='e'*64),dict(operation='create-fresh'),dict(version=True)):
+   prior=copy.deepcopy(self.kw['prior_ownership']);prior['existingReadback'].update(changes)
+   with self.subTest(field=next(iter(changes))),self.assertRaises(owner.Refused):owner.carried_material(**dict(self.kw,prior_ownership=prior))
+ def test_missing_or_changed_old_new_implementation_refuse(self):
+  for which in ('prior_files','current_files'):
+   for name in owner.IMPLEMENTATION_FILES:
+    files=dict(self.files);del files[name]
+    with self.subTest(which=which,name=name),self.assertRaises(owner.Refused):owner.carried_material(**dict(self.kw,**{which:files}))
+  files=dict(self.files);files[owner.IMPLEMENTATION_FILES[0]]+=b'caller-change'
+  with self.assertRaises(owner.Refused):owner.carried_material(**dict(self.kw,prior_files=files))
+ def test_origin_bytes_and_environment_bytes_are_not_replaceable(self):
+  for changes in (dict(origin_snapshot=self.origin+b' '),dict(prior_environment=self.kw['prior_environment']+b'changed')):
+   with self.subTest(field=next(iter(changes))),self.assertRaises(owner.Refused):owner.carried_material(**dict(self.kw,**changes))
+ def test_nonfresh_original_snapshot_never_becomes_adoption(self):
+  for changes in (dict(schemaVersion=True),dict(phase='failed'),dict(previousRelease='/unissued'),dict(steps=['preparing','active']),dict(inputs={}),dict(nativeSeafileOwnership={'status':'completed'})):
+   origin=owner.encoded(dict(owner.strict(self.origin),**changes))
+   with self.subTest(field=next(iter(changes))),self.assertRaises(owner.Refused):owner.carried_material(**dict(self.kw,origin_snapshot=origin))
+
 class ExplicitIdentity(unittest.TestCase):
  def setUp(self):
   self.values=dict(DOMAIN='fixture.invalid',KEYCLOAK_OWNER_SUBJECT='explicit-sub',FIREFLY_OWNER_SUBJECT='explicit-sub',KEYCLOAK_OWNER_USERNAME='owner',KEYCLOAK_OWNER_EMAIL='owner@fixture.invalid')
