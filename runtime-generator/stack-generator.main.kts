@@ -1423,6 +1423,56 @@ fun applyStandaloneHostProfile(ir: ObjectNode, manifest: JsonNode) {
     ir.set<ArrayNode>("deferredCapabilities", arr())
 }
 
+fun requireStandaloneCaddyPrivacy(source: String, output: Path) {
+    // A finite reviewed native source contract, NOT a format-name waiver or a
+    // permissive Caddyfile parser. Any extra logger/import/block (even filtered)
+    // changes this approved template and requires a new owning source review.
+    // The native encoder serializes only schema/ts/level, never Zap message,
+    // logger, request, error or contextual fields; standard access logs are off.
+    val sourceSha = MessageDigest.getInstance("SHA-256").digest(source.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
+    if (sourceSha != "044edc77e93f38d4f0d3b4e7d8cd0a0d778e59f83bf2e686e19be7758d816568")
+        fail("standalone ingress requires the reviewed metadata-only Caddy source")
+    val plugin = output.resolve("build/stack.containers/caddy-ingress")
+    listOf(output, output.resolve("build"), output.resolve("build/stack.containers"), plugin).forEach {
+        if (!it.isDirectory() || it.isSymbolicLink()) fail("standalone native encoder source missing or linked")
+    }
+    val pins = mapOf(
+        "encoder.go" to "59ba0d7348bcb51dbcc40bee81fbfcbbd8b76f59fa83a9461837fd2c257c8d3f",
+        "Containerfile" to "2d9c533d78fabce12e2fa64d63104c7e6ab60d738d4192dd5bf4cb9948c23a2f",
+        "SOURCES.sha256" to "b0438ee8b0f94ceea3ff47ed19229a567a1fd5aff3461bde708bcd1221e27faa"
+    )
+    pins.forEach { (name, digest) ->
+        val path = plugin.resolve(name)
+        if (!path.isRegularFile() || path.isSymbolicLink() || sha256(path) != digest)
+            fail("standalone requires the reviewed native metadata encoder/build source")
+    }
+    // The pinned builder compiles this local module and checks both native
+    // modules. Check its entire pinned source inventory here as well, so an
+    // additional/mutated Go source cannot redefine the approved log behavior.
+    val expected = mutableMapOf<String, String>()
+    plugin.resolve("SOURCES.sha256").readLines().forEach { line ->
+        val match = Regex("([a-f0-9]{64})  (\\./[A-Za-z0-9_./-]+)").matchEntire(line)
+            ?: fail("invalid reviewed native encoder source inventory")
+        val name = match.groupValues[2].removePrefix("./")
+        val relative = Path(name)
+        if (relative.isAbsolute || relative.normalize().toString() != name || relative.startsWith("..") ||
+            expected.put(name, match.groupValues[1]) != null)
+            fail("ambiguous reviewed native encoder source inventory")
+    }
+    val files = mutableSetOf<String>()
+    Files.walk(plugin).use { paths -> paths.forEach { path ->
+        if (path.isSymbolicLink()) fail("linked native encoder source")
+        if (path.isRegularFile()) files += plugin.relativize(path).toString()
+        else if (!path.isDirectory()) fail("special native encoder source")
+    } }
+    if (files != expected.keys + setOf("SOURCES.sha256", "build-recipe.json"))
+        fail("additional or missing native encoder source")
+    expected.forEach { (name, digest) ->
+        if (sha256(plugin.resolve(name)) != digest) fail("native encoder source differs from reviewed inventory")
+    }
+}
+
 fun materializeStandaloneHostInputs(manifest: ObjectNode, output: Path) {
     if (!standaloneHost(manifest)) return
     listOf("build/stack.config/caddy/Caddyfile", "runtime/configs/caddy/Caddyfile").forEach { relative ->
@@ -1432,7 +1482,7 @@ fun materializeStandaloneHostInputs(manifest: ObjectNode, output: Path) {
         val end = "# webservices-component-end caddy"
         val source = caddy.readText()
         if (source.split(start).size != 2 || source.split(end).size != 2) fail("ambiguous managed-control Caddy block")
-        if (source.split("request>uri replace").size < 3) fail("standalone ingress requires access/error URI redaction")
+        requireStandaloneCaddyPrivacy(source, output)
         val before = source.substringBefore(start)
         val managed = source.substringAfter(start).substringBefore(end)
         if (!managed.contains("unix//run/p0-control/http.sock") || !managed.contains("control.{"))
