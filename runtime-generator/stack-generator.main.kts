@@ -829,6 +829,35 @@ fun sourceProvenance(manifest: Path, modules: List<ModuleCheckout>): ObjectNode 
     return provenance
 }
 
+fun resolveModuleIntegrations(service: ObjectNode, selected: Set<String>) {
+    val integrations = service.remove("moduleIntegrations") ?: return
+    if (!integrations.isObject) fail("module integrations must be an object")
+    integrations.fields().forEachRemaining { (module, patch) ->
+        if (!module.matches(Regex("[a-z0-9][a-z0-9-]*")) || !patch.isObject ||
+            patch.fieldNames().asSequence().toSet() != setOf("environment", "volumes") ||
+            !patch.path("environment").isObject || !patch.path("volumes").isArray ||
+            patch.path("environment").any { !it.isTextual } || patch.path("volumes").any { !it.isTextual })
+            fail("module integration permits only literal environment and volume declarations")
+        val environment = service.path("environment")
+        if (!environment.isObject || !service.path("volumes").isArray ||
+            patch.path("environment").fieldNames().asSequence().any { environment.has(it) } ||
+            patch.path("volumes").any { incoming -> service.path("volumes").any { it == incoming } })
+            fail("module integration conflicts with base service declarations")
+        if (module in selected) {
+            val mergedEnvironment = service.get("environment") as ObjectNode
+            patch.path("environment").fields().forEachRemaining { (key, value) ->
+                if (mergedEnvironment.has(key)) fail("module integrations conflict")
+                mergedEnvironment.set<JsonNode>(key, value.deepCopy())
+            }
+            val mergedVolumes = service.get("volumes") as ArrayNode
+            patch.path("volumes").forEach { value ->
+                if (mergedVolumes.any { it == value }) fail("module integrations conflict")
+                mergedVolumes.add(value.deepCopy<JsonNode>())
+            }
+        }
+    }
+}
+
 fun buildIr(manifestPath: Path, modulesDir: Path): Pair<ObjectNode, List<ModuleCheckout>> {
     val manifest = readTree(manifestPath)
     if (manifest.path("schemaVersion").asInt() != 2) fail("site manifest schemaVersion must be 2")
@@ -863,6 +892,7 @@ fun buildIr(manifestPath: Path, modulesDir: Path): Pair<ObjectNode, List<ModuleC
         runtime.path("services").fieldsMap().forEach { (name, raw) ->
             owners.put(name, module.id)?.let { fail("service '$name' is owned by both '$it' and '${module.id}'") }
             val service = substituteTree(raw, variables) as ObjectNode
+            resolveModuleIntegrations(service, requested.toSet())
             service.put("module", module.id)
             service.put("target", runtime.path("target").asText("apps"))
             services.set<ObjectNode>(name, service)

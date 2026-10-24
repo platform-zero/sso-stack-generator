@@ -46,6 +46,18 @@
         "placement": {"enum": ["rootful", "rootless"]},
         "dependencies": {"type": "object", "additionalProperties": {"$ref": "#/$defs/dependency"}},
         "environment": {"type": "object"},
+        "moduleIntegrations": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[a-z0-9][a-z0-9-]*$"},
+          "additionalProperties": {
+            "type": "object", "additionalProperties": false,
+            "required": ["environment", "volumes"],
+            "properties": {
+              "environment": {"type": "object", "additionalProperties": {"type": "string"}},
+              "volumes": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        },
         "networks": {"type": "object"},
         "volumes": {"type": "array"},
         "ports": {"type": "array"},

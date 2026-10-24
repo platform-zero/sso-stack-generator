@@ -63,6 +63,19 @@ gateway is stateless. Keep MariaDB/Seafile outside that ring if not required;
 if a real dependency introduces them, refuse and resolve that boundary rather
 than silently omitting a required service.
 
+## Optional module integrations
+
+A service may declare `moduleIntegrations.<module-id>` with exactly `environment`
+(string values) and `volumes` (literal string mounts). Normal generation resolves
+that patch **only** when its named module is selected, rejects collisions or any
+other kind of override, and removes the integration declaration from final IR.
+This is source assembly, never a runtime bypass or permission grant. The selected
+cohort still passes every ordinary mount/source/ownership validator. In particular,
+the Keycloak configurator's exact Root finance reference is present only with the
+Firefly III module; a selected finance cohort still requires its unchanged native
+publisher/CAS/identity-check contract. Existing component-delimited script rendering
+likewise omits the unselected finance calls, not the finance safety checks.
+
 After cumulative calibration reaches the complete selected inventory, freeze
 one final source/module/image/configuration/harness/fault tuple and execute the
 required identical full clean installations. Ring passes, image qualification
