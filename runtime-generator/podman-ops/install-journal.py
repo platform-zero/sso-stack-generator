@@ -735,7 +735,11 @@ def unselected_preparation_binding(root, release):
     binding = standalone_binding(release)
     if binding['scope']['dataClass'] != 'synthetic':
         raise ValueError('Unselected retirement requires an explicitly synthetic scope')
-    pointers = [root / 'current', root / 'previous']
+    # A different already-clean retained current is metadata, not an active
+    # predecessor or this preparation's selection. Pin it independently; never
+    # infer compatibility or adopt its stores.
+    unselected_clean_current_pin(root, release)
+    pointers = [root / 'previous']
     config_roots = unselected_configuration_roots(binding['domains'])
     for row in binding['domains']:
         pointers.extend(Path(row['stateRoot']) / name for name in ('current', 'previous'))
@@ -754,6 +758,10 @@ def verify_unselected_preparation(root, release, value):
     unselected_preparation_binding(root, release)
     os.chdir('/')
     for label, command, units in selected_quarantine_plans(release):
+        actor = offline_actor(release, label)
+        if actor is not None:
+            verify_offline_actor(actor, command)
+            continue
         result = subprocess.run(command + ['show', *units, '-p', 'ActiveState', '--value'],
                                 capture_output=True, text=True, timeout=30)
         states = [s for s in result.stdout.splitlines() if s]
@@ -905,6 +913,22 @@ def retire_empty_preparation(root, bundle, expected, reviewed, verifier=None):
                 globalIntentCleared=current is None)
 
 
+def unselected_clean_current_pin(root, release):
+    current = root / 'current'
+    if not current.exists() and not current.is_symlink(): return None
+    info = current.lstat()
+    if not stat.S_ISLNK(info.st_mode) or (info.st_uid, info.st_gid) != (0, 0):
+        raise ValueError('Untrusted retained unselected-current pointer')
+    target = current.resolve(strict=True)
+    if target == release or target.parent != root / 'releases':
+        raise ValueError('Unselected preparation is current or escaped root')
+    directory(target)
+    receipt = target / 'installation-receipt.json'; prior = read(receipt)
+    if not prior or prior['phase'] != 'retired-clean' or prior.get('release') != str(target):
+        raise ValueError('Retained current must already be clean-retired')
+    return (info.st_dev, info.st_ino, info.st_ctime_ns, os.readlink(current), digest(receipt))
+
+
 def retire_unselected(root, expected, reviewed, verifier=verify_unselected_preparation):
     """Exact-CAS terminal disposition; no stop/restart/data/account mutation."""
     directory(root)
@@ -918,17 +942,35 @@ def retire_unselected(root, expected, reviewed, verifier=verify_unselected_prepa
     release = Path(value['release'])
     if release.parent != root / 'releases': raise ValueError('Unselected release escaped receipt root')
     directory(release)
-    if read(release / 'installation-receipt.json') != value:
-        raise ValueError('Unselected release receipt binding changed')
-    if fingerprint(release, value['inputs'].keys()) != value['inputs']:
-        raise ValueError('Unselected release input binding changed')
-    verifier(root, release, value)
-    if digest(path) != expected: raise ValueError('Unselected preparation CAS changed during review')
     retired = dict(value, phase='retired-failed', steps=['preparing', 'failed', 'retired-failed'],
                    retiredIntentSha256=expected, neverSelectedProved=True, dataPreserved=True,
                    dataCompatibilityProved=False)
-    write(release / 'installation-receipt.json', retired); write(path, retired)
-    return retired
+    # Recover ONLY this exact operation's interrupted leaf-before-root write.
+    if read(release / 'installation-receipt.json') not in (value, retired):
+        raise ValueError('Unselected release receipt binding changed')
+    if fingerprint(release, value['inputs'].keys()) != value['inputs']:
+        raise ValueError('Unselected release input binding changed')
+    current = unselected_clean_current_pin(root, release)
+    verifier(root, release, value)
+    if (digest(path) != expected or read(release / 'installation-receipt.json') not in (value, retired)
+            or fingerprint(release, value['inputs'].keys()) != value['inputs']
+            or unselected_clean_current_pin(root, release) != current):
+        raise ValueError('Unselected preparation CAS changed during review')
+    write(release / 'installation-receipt.json', retired)
+    if current is not None:
+        prior_path = (root / 'current').resolve() / 'installation-receipt.json'
+        prior = read(prior_path); body = prior_path.read_bytes()
+        if (unselected_clean_current_pin(root, release) != current
+                or hashlib.sha256(body).hexdigest() != current[-1]):
+            raise ValueError('Clean-current authority changed before publication')
+        write(path, prior, raw=body)
+    else:
+        path.unlink()
+        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try: os.fsync(fd)
+        finally: os.close(fd)
+    return dict(retired, rootAuthorityRelease=prior['release'] if current is not None else None,
+                globalIntentCleared=current is None)
 
 
 def quarantine_failed(root, expected, reviewed, verifier=verify_quarantined, wait_seconds=120):
@@ -1252,7 +1294,16 @@ def main():
             if args.bundle is None or args.release is None or args.phase is None:
                 raise ValueError('Journal inputs required')
             update(args.root, args.bundle, args.release, args.phase, args.expected)
-    except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError):
+    except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        # Trusted ops guard locations ONLY. Never exception data, source lines,
+        # private paths, locals, values or an untrusted traceback rendering.
+        frames = []; trace = error.__traceback__
+        while trace:
+            code = trace.tb_frame.f_code; source = Path(code.co_filename)
+            if source.parent == Path(__file__).parent:
+                frames.append(source.name + ':' + str(trace.tb_lineno) + ':' + code.co_name)
+            trace = trace.tb_next
+        if frames: print('guard: ' + ' > '.join(frames[-16:]), file=sys.stderr)
         raise SystemExit('Installation journal refused; inspect before retry') from None
 
 if __name__ == '__main__': main()

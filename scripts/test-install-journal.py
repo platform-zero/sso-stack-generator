@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Run as root: journal permissions, ordered phases, CAS and unchanged inputs."""
 import importlib.util
+import contextlib
+import io
+import sys
 import os
 from pathlib import Path
 import tempfile
@@ -300,6 +303,86 @@ class InstallationJournal(unittest.TestCase):
         self.assertEqual(value['steps'],['preparing','failed','retired-failed'])
         self.assertTrue(value['neverSelectedProved']); self.assertFalse(value['dataCompatibilityProved'])
         self.assertEqual(value['retiredIntentSha256'],expected)
+
+    def partial_unselected_fixture(self):
+        self.failed_empty_preparation();self.copy_pins_to_release()
+        value=dict(journal.read(self.path),domainRuntimeProjections={'platform':{'synthetic':'partial projection'}},
+                   projectionCustody={'synthetic':'held-source model'})
+        journal.write(self.path,value);journal.write(self.release/'installation-receipt.json',value)
+        prior=self.root/'releases/clean-current';prior.mkdir()
+        body=(json.dumps(dict(schemaVersion=1,phase='retired-clean',release=str(prior)),indent=2)+'\n').encode()
+        (prior/'installation-receipt.json').write_bytes(body);(prior/'installation-receipt.json').chmod(0o600)
+        (self.root/'current').symlink_to(prior)
+        return prior,body,journal.digest(self.path)
+
+    def test_partial_unselected_retirement_restores_only_exact_clean_current_bytes(self):
+        prior,body,expected=self.partial_unselected_fixture();before=self.path.read_bytes()
+        result=journal.retire_unselected(self.root,expected,True,lambda *a:None)
+        self.assertEqual(self.path.read_bytes(),body)
+        self.assertEqual((prior/'installation-receipt.json').read_bytes(),body)
+        self.assertEqual((self.root/'current').resolve(),prior)
+        self.assertTrue(result['neverSelectedProved']);self.assertFalse(result['dataCompatibilityProved'])
+        self.assertEqual(result['rootAuthorityRelease'],str(prior))
+        self.assertEqual(journal.read(self.release/'installation-receipt.json')['domainRuntimeProjections'],
+                         json.loads(before)['domainRuntimeProjections'])
+
+    def test_partial_unselected_active_selected_and_foreign_current_refuse(self):
+        prior,body,expected=self.partial_unselected_fixture();current=self.root/'current'
+        for target,phase in ((prior,'active'),(prior,'retired-failed'),(self.release,None)):
+            current.unlink();current.symlink_to(target)
+            if phase:journal.write(prior/'installation-receipt.json',dict(schemaVersion=1,phase=phase,release=str(prior)))
+            with self.assertRaises(ValueError):journal.retire_unselected(self.root,expected,True,lambda *a:None)
+            self.assertEqual(journal.digest(self.path),expected)
+
+    def test_partial_unselected_current_and_source_rechecked_after_review(self):
+        prior,body,expected=self.partial_unselected_fixture()
+        def mutate(*a):(self.release/'stack.ir.json').write_bytes(b'{"changed":true}')
+        with self.assertRaises(ValueError):journal.retire_unselected(self.root,expected,True,mutate)
+        self.assertEqual(journal.digest(self.path),expected)
+        self.copy_pins_to_release()
+        def replace(*a):
+            current=self.root/'current';current.unlink();current.symlink_to(prior)
+        with self.assertRaises(ValueError):journal.retire_unselected(self.root,expected,True,replace)
+        self.assertEqual(journal.digest(self.path),expected)
+
+    def test_partial_unselected_exact_interrupted_leaf_publication_recovers(self):
+        prior,body,expected=self.partial_unselected_fixture();original=journal.read(self.path)
+        retired=dict(original,phase='retired-failed',steps=['preparing','failed','retired-failed'],
+                     retiredIntentSha256=expected,neverSelectedProved=True,dataPreserved=True,dataCompatibilityProved=False)
+        journal.write(self.release/'installation-receipt.json',retired)
+        journal.retire_unselected(self.root,expected,True,lambda *a:None)
+        self.assertEqual(self.path.read_bytes(),body)
+        self.assertEqual(journal.read(self.release/'installation-receipt.json'),retired)
+
+    def test_partial_unselected_native_offline_actor_gate_without_starting_manager(self):
+        prior,body,expected=self.partial_unselected_fixture()
+        binding={'scope':{'dataClass':'synthetic'},'domains':[]};actor={'uid':781,'user':'synthetic-actor'}
+        command=['synthetic-readonly-systemctl']
+        with patch.object(journal,'standalone_binding',return_value=binding), \
+             patch.object(journal,'unselected_configuration_roots',return_value=[]), \
+             patch.object(journal,'selected_quarantine_plans',return_value=[('rootless-apps',command,[])]), \
+             patch.object(journal,'offline_actor',return_value=actor), \
+             patch.object(journal,'verify_offline_actor') as verify, \
+             patch.object(journal.subprocess,'run',side_effect=AssertionError('must use canonical offline actor, not a bus/manager')):
+            journal.verify_unselected_preparation(self.root,self.release,{})
+            verify.assert_called_once_with(actor,command)
+
+    def test_unselected_no_current_clears_allocator_but_keeps_full_failed_leaf(self):
+        journal.update(self.root,self.bundle,self.release,'preparing');self.copy_pins_to_release()
+        result=journal.retire_unselected(self.root,journal.digest(self.path),True,lambda *a:None)
+        self.assertFalse(self.path.exists());self.assertTrue(result['globalIntentCleared'])
+        self.assertEqual(journal.read(self.release/'installation-receipt.json')['phase'],'retired-failed')
+        self.assertTrue((self.release/'stack.ir.json').is_file())
+
+    def test_journal_cli_diagnostic_has_only_trusted_guard_without_values_or_paths(self):
+        output=io.StringIO();secret='PRIVATE_EXCEPTION_VALUE_SENTINEL'
+        with patch.object(sys,'argv',['install-journal.py','--root',str(self.root),'--release',str(self.release),'--project-domain','apps']), \
+             patch.object(journal,'project_domain',side_effect=ValueError(secret)),contextlib.redirect_stderr(output):
+            with self.assertRaises(SystemExit):journal.main()
+        value=output.getvalue()
+        self.assertIn('guard: install-journal.py:',value)
+        self.assertNotIn(secret,value);self.assertNotIn(str(self.root),value)
+        self.assertNotIn('raise ',value);self.assertNotIn('Traceback',value)
 
     def test_unselected_retirement_refuses_selection_history_input_and_receipt_drift(self):
         journal.update(self.root,self.bundle,self.release,'preparing'); self.copy_pins_to_release()
