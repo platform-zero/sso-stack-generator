@@ -689,7 +689,7 @@ def verify_offline_actor(row, command):
         raise ValueError('Stopped actor manager job remains')
 
 
-def verify_quarantined(release):
+def verify_quarantined(release, allow_unconfigured=False):
     """Read actual selected managers; no service/volume mutation or trigger replay."""
     plans = selected_quarantine_plans(release)
     os.chdir('/')
@@ -705,7 +705,8 @@ def verify_quarantined(release):
             raise ValueError('Failed selection not stopped; retirement refused')
         result = subprocess.run(command + ['is-enabled', 'webservices.target'],
                                 capture_output=True, text=True, timeout=10)
-        if result.stdout.strip() not in ('disabled', 'masked'):
+        if (result.stdout.strip() not in ('disabled', 'masked')
+                and not (allow_unconfigured and unconfigured_unit(command, 'webservices.target'))):
             raise ValueError('Failed selection boot trigger not quarantined')
         result = subprocess.run(command + ['list-jobs', '--no-legend', '--no-pager'],
                                 capture_output=True, text=True, timeout=15)
@@ -806,7 +807,7 @@ def seal_unselected(root, expected, reviewed):
             'dataPreserved': True, 'applicationAcceptance': False}
 
 
-def retire_empty_preparation(root, bundle, expected, reviewed, verifier=verify_quarantined):
+def retire_empty_preparation(root, bundle, expected, reviewed, verifier=None):
     """Retire only a failed synthetic receipt leaf, before any source copy.
 
     The original separate source is mandatory: an empty release cannot prove
@@ -854,7 +855,12 @@ def retire_empty_preparation(root, bundle, expected, reviewed, verifier=verify_q
     current = current_pin()
     # Query only this source's selected services, boot/API triggers and jobs.
     # Existing canonical offline-actor/NSS/process checks remain authoritative.
-    verifier(bundle)
+    if verifier is None:
+        # No units have been installed from this receipt-only leaf. Absence is
+        # accepted only with native not-found/inactive/no-fragment evidence.
+        verify_quarantined(bundle, allow_unconfigured=True)
+    else:
+        verifier(bundle)
     if (digest(path) != expected or not empty_leaf() or fingerprint(bundle) != value['inputs']
             or current_pin() != current):
         raise ValueError('Empty preparation CAS changed during offline review')

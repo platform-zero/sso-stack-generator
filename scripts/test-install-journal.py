@@ -371,6 +371,25 @@ class InstallationJournal(unittest.TestCase):
                 with patch.object(journal.subprocess,'run',side_effect=unsafe):
                     with self.assertRaises(ValueError):journal.verify_quarantined(self.release)
 
+    def test_receipt_only_absent_boot_requires_exact_native_unconfigured_properties(self):
+        missing='LoadState=not-found\nActiveState=inactive\nFragmentPath=\nUnitFileState=\n'
+        def result(properties):
+            def run(command,**kwargs):
+                if 'LoadState' in command:return SimpleNamespace(returncode=0,stdout=properties)
+                if 'show' in command:return SimpleNamespace(returncode=0,stdout='inactive\n')
+                if 'is-enabled' in command:return SimpleNamespace(returncode=4,stdout='not-found\n')
+                return SimpleNamespace(returncode=0,stdout='')
+            return run
+        plans=[('rootful',['systemctl'],['webservices-caddy.service'])]
+        with patch.object(journal,'selected_quarantine_plans',return_value=plans):
+            with patch.object(journal.subprocess,'run',side_effect=result(missing)):
+                with self.assertRaises(ValueError):journal.verify_quarantined(self.bundle)
+                journal.verify_quarantined(self.bundle,allow_unconfigured=True)
+            for bad in (missing.replace('not-found','loaded'),missing.replace('inactive','active'),
+                        missing.replace('FragmentPath=','FragmentPath=/foreign/unit'),missing.replace('UnitFileState=','UnitFileState=enabled')):
+                with patch.object(journal.subprocess,'run',side_effect=result(bad)):
+                    with self.assertRaises(ValueError):journal.verify_quarantined(self.bundle,allow_unconfigured=True)
+
     def test_exact_failed_quarantine_only_stops_selected_units_and_keeps_intent(self):
         account=self.selected_fixture()
         journal.update(self.root,self.bundle,self.release,'preparing')
