@@ -49,7 +49,10 @@ MAX_ARCHIVE = MAX_BYTES + MAX_MANIFEST + MAX_ENTRIES * 2048 + 10240
 MIN_FREE_BYTES = 1024 ** 3
 PROCESS_TIMEOUT = 90
 # Authentication must complete before extraction; never spill plaintext to disk.
-MAX_AUTHENTICATED_BYTES = 256 * 1024 ** 2
+# Cover the existing four-GiB payload contract, including the one-GiB acceptance
+# fixture. Admission and each chunk retain the physical host memory reserve.
+MAX_AUTHENTICATED_BYTES = MAX_ARCHIVE
+MIN_AUTHENTICATION_FREE_BYTES = 16 * 1024 ** 3
 HOME_ROOT = Path('/home')
 CHUNK = 1024 * 1024
 
@@ -1054,7 +1057,22 @@ class Backend:
         if path.is_relative_to(scope) or path.is_relative_to(self.root):
             raise ValueError('Keys/archives must be outside selected data and native metadata')
 
+    @staticmethod
+    def authentication_capacity(remaining):
+        if not isinstance(remaining, int) or remaining < 0:
+            raise ValueError('Invalid authenticated-memory capacity request')
+        rows = [line.split()[1:] for line in Path('/proc/meminfo').read_text().splitlines()
+                if line.startswith('MemAvailable:')]
+        if (len(rows) != 1 or len(rows[0]) != 2 or rows[0][1] != 'kB'
+                or not rows[0][0].isdigit()
+                or int(rows[0][0]) * 1024 < MIN_AUTHENTICATION_FREE_BYTES + remaining):
+            raise ValueError('Authenticated recovery would cross physical memory reserve')
+
     def decrypt(self, archive, key, destination):
+        # Ciphertext is uncompressed age output; its length conservatively
+        # budgets plaintext before any allocation. The independent plaintext
+        # ceiling and live per-chunk reserve still apply to a hostile producer.
+        self.authentication_capacity(min(archive.stat().st_size, MAX_ARCHIVE, MAX_AUTHENTICATED_BYTES))
         with contextlib.ExitStack() as cleanup:
             encrypted = cleanup.enter_context(os.fdopen(file_fd(archive, private=True), 'rb'))
             identity_fd = file_fd(key, private=True, limit=65536)
@@ -1066,6 +1084,7 @@ class Backend:
                     total += len(block)
                     if total > min(MAX_ARCHIVE, MAX_AUTHENTICATED_BYTES):
                         raise ValueError('Decrypted archive exceeds bounded anonymous-memory policy')
+                    self.authentication_capacity(len(block))
                     output.write(block)
             self.subprocess(['--decrypt', '--identity', '/proc/self/fd/' + str(identity_fd)],
                             source=encrypted, consume=consume, pass_fds=(identity_fd,))

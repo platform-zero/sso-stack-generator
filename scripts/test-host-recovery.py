@@ -852,6 +852,39 @@ class Recovery(unittest.TestCase):
         with self.assertRaises(ValueError): self.backend.plan()
         self.assertEqual(self.root.stat().st_mode & 0o777, 0o755)
 
+    def test_full_payload_contract_covers_one_gib_fixture_without_unbounded_memory(self):
+        manifest, _ = self.backend.inventory()
+        manifest['entries'].append({'size': 1024 ** 3})
+        size = self.backend.archive_bytes(manifest)
+        self.assertGreater(size, 1024 ** 3)
+        self.assertLessEqual(size, r.MAX_AUTHENTICATED_BYTES)
+        self.assertEqual(r.MAX_AUTHENTICATED_BYTES, r.MAX_ARCHIVE)
+
+    def test_authentication_memory_capacity_retains_sixteen_gib_physical_reserve(self):
+        reserve = r.MIN_AUTHENTICATION_FREE_BYTES
+        requested = 1024 ** 3
+        for delta, allowed in ((0, True), (-1024, False)):
+            text = 'MemAvailable: %d kB\n' % ((reserve + requested + delta) // 1024)
+            with patch.object(r.Path, 'read_text', return_value=text):
+                if allowed: self.backend.authentication_capacity(requested)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'physical memory reserve'):
+                        self.backend.authentication_capacity(requested)
+        for text in ('', 'MemAvailable: invalid kB\n', 'MemAvailable: 999999999 bytes\n',
+                     'MemAvailable: 999999999 kB\nMemAvailable: 999999999 kB\n'):
+            with patch.object(r.Path, 'read_text', return_value=text):
+                with self.assertRaises(ValueError): self.backend.authentication_capacity(requested)
+        with self.assertRaises(ValueError): self.backend.authentication_capacity(-1)
+
+    def test_restore_memory_pressure_during_decrypt_refuses_before_payload_swap(self):
+        self.backup(); before = self.originals()
+        with patch.object(self.backend, 'authentication_capacity',
+                          side_effect=[None, ValueError('physical memory reserve')]) as capacity:
+            with self.assertRaisesRegex(ValueError, 'physical memory reserve'): self.restore()
+        self.assertEqual(capacity.call_count, 2)
+        self.assertEqual(self.originals(), before)
+        self.assertFalse(list(self.backend.state.rglob('authenticated.tar')))
+
     def test_anonymous_authenticated_archive_bound_never_spills_to_disk(self):
         self.backup(); before = self.originals()
         with patch.object(r, 'MAX_AUTHENTICATED_BYTES', 16):

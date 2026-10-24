@@ -151,8 +151,13 @@ Canonical ancestry ACL/defaults use the existing native source policy and are
 not changed. Only a newly-created empty Root-owned staging inode is sealed0700;
 existing data/source directories are never recursively repaired. Stable payload
 UID/GID/mode/mtime/bytes are checked; original displaced inodes remain retained.
-The authenticated plaintext tar is bounded to256MiB and held in a sealed memfd,
-never a filesystem spool. Larger backups refuse before publication.
+The authenticated plaintext tar is bounded by the existing four-GiB payload
+limit plus manifest/tar overhead and held in a sealed memfd, never a filesystem
+spool. Restore budgets the encrypted input size before allocation and checks
+available physical memory before each plaintext chunk, retaining at least16GiB
+available RAM. Larger backups or insufficient restore capacity refuse rather
+than omit payload or cross the host reserve. These are source/runtime limits,
+not proof of a populated installed recovery pass.
 
 Wrong keys, tamper, source/CAS/lease loss and incomplete swaps do not authorize
 restart. Preserve the protected `.host-recovery` journal, stages and originals;
