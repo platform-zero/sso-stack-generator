@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read-only cumulative module planning; never installation/activation authority."""
 import argparse
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -96,6 +97,35 @@ def plan(manifest, lock, ir, policy):
             'activationAuthority': False, 'fullModulePins': dict(sorted(pins.items())),
             'fullServiceCount': len(services), 'serviceDependencyEdges': sorted(edges, key=lambda e: (e['consumer'], e['provider'])),
             'rings': result}
+
+
+def project_config(config, ring):
+    """Project placement references, never actor identities, roots or grants.
+
+    Call on a separate private site's public configuration before generation.
+    The normal generator still validates the resulting complete policy.
+    """
+    require(isinstance(config, dict) and isinstance(ring, dict))
+    modules = identifiers(ring.get('modules'), True)
+    services = identifiers(ring.get('services'), True)
+    result = copy.deepcopy(config)
+    policy = result.get('podman'); require(isinstance(policy, dict))
+    for key, selected in (('rootful_modules', modules), ('rootful_services', services)):
+        if key in policy:
+            identifiers(policy[key]); policy[key] = [name for name in policy[key] if name in selected]
+    if 'service_domains' in policy:
+        require(isinstance(policy['service_domains'], dict))
+        policy['service_domains'] = {name: domain for name, domain in policy['service_domains'].items() if name in services}
+    domains = policy.get('domains'); require(isinstance(domains, dict))
+    for domain in domains.values():
+        require(isinstance(domain, dict)); identifiers(domain.get('modules', []))
+        if 'modules' in domain:
+            domain['modules'] = [name for name in domain['modules'] if name in modules]
+    if 'cross_domain_endpoints' in policy:
+        require(isinstance(policy['cross_domain_endpoints'], list))
+        require(all(isinstance(endpoint, dict) and isinstance(endpoint.get('service'), str) for endpoint in policy['cross_domain_endpoints']))
+        policy['cross_domain_endpoints'] = [endpoint for endpoint in policy['cross_domain_endpoints'] if endpoint['service'] in services]
+    return result
 
 
 def read_json(path):

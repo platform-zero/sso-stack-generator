@@ -32,9 +32,15 @@ It has **no** installation, journal, credential, runtime or activation authority
 1. Keep the full site manifest/lock and delivery scope authoritative and unchanged.
    Create a separate **private site source snapshot**, not a modified sealed bundle.
 2. Select that ring's derived `manifest` from the plan in this source snapshot,
-   alongside the same relative site inputs. Commit the private snapshot before
-   normal generation. Its components follow explicit module selection rather
-   than retaining unrelated application component names.
+   alongside the same relative site inputs. Use this script's pure
+   `project_config(config, ring)` helper on the snapshot's public stack config:
+   retain every actor/UID/subuid/root/capability/grant, but filter module/service
+   placement references and endpoint providers to the selected ring. Keep the
+   original full policy unchanged. Likewise select only that ring's exact local
+   build-image pins; the generator rejects missing **or extra** pins. Commit
+   the private snapshot before normal generation. Its components follow explicit
+   module selection rather than retaining unrelated application component names.
+   Unselected optional runner tooling is not referenced until its module enters.
 3. Run the normal generator using its pinned clean module checkouts. Generation
    still validates the selected modules and their real metadata dependencies.
 4. Independently qualify the exact selected recipes/COPY inputs and images.

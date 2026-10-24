@@ -67,6 +67,20 @@ class Planning(unittest.TestCase):
  def test_zero_service_plugin_is_still_required(self):
   args=self.fixture();args[3]['rings'][1]['modules'].remove('build-plugin')
   with self.assertRaises(ValueError):r.plan(*args)
+ def test_project_only_selected_references_preserves_all_role_identity_and_scope(self):
+  config={'storage':{'volume_root':'synthetic-only'},'podman':{'rootful_modules':['edge','application'],'rootful_services':['edge','application'],'service_domains':{'identity':'platform','application':'apps'},'domains':{'platform':{'modules':['identity','database'],'uid':780,'subuid_start':200000,'state_root':'unchanged-platform','allow_dependencies':['apps']},'apps':{'modules':['application'],'uid':781,'state_root':'unchanged-apps','host_capabilities':['unchanged']}},'cross_domain_endpoints':[{'service':'database','host_port':25001,'consumers':['apps']},{'service':'application','host_port':25002,'consumers':['platform']}]}}
+  before=copy.deepcopy(config);ring=r.plan(*self.fixture())['rings'][0];out=r.project_config(config,ring)
+  self.assertEqual(config,before);self.assertEqual(out['storage'],before['storage'])
+  self.assertEqual(out['podman']['rootful_modules'],['edge'])
+  self.assertEqual(out['podman']['rootful_services'],['edge'])
+  self.assertEqual(out['podman']['service_domains'],{'identity':'platform'})
+  self.assertEqual(out['podman']['cross_domain_endpoints'],[before['podman']['cross_domain_endpoints'][0]])
+  self.assertEqual(set(out['podman']['domains']),set(before['podman']['domains']))
+  for name,domain in out['podman']['domains'].items():
+   self.assertEqual({k:v for k,v in domain.items() if k!='modules'},{k:v for k,v in before['podman']['domains'][name].items() if k!='modules'})
+  self.assertEqual(out['podman']['domains']['apps']['modules'],[])
+ def test_malformed_placement_projection_refuses(self):
+  with self.assertRaises(ValueError):r.project_config({'podman':{'domains':[]}},r.plan(*self.fixture())['rings'][0])
  def test_duplicate_json_key_refuses(self):
   with tempfile.TemporaryDirectory() as temp:
    p=Path(temp)/'public.json';p.write_text('{"modules":[],"modules":["foreign"]}')
