@@ -256,6 +256,10 @@ class Fresh:
             arguments += ['--volume=' + str(self.capsule / 'seafile-admin') + ':/run/seafile-admin:ro']
         entrypoint = self.source[name].get('entrypoint') or []
         self.require(isinstance(entrypoint, list) and all(isinstance(arg, str) for arg in entrypoint))
+        # Match the canonical Quadlet systemdQuote's ONE Compose-dollar
+        # unescape, without systemd's subsequent dollar/percent encoding.
+        # Do not expand variables as Host Root: the child shell owns them.
+        entrypoint = [arg.replace('$$', '$') for arg in entrypoint]
         if entrypoint:
             arguments += ['--entrypoint=' + entrypoint[0]]
         command = self.source[name].get('command') or []
@@ -263,6 +267,7 @@ class Fresh:
             import shlex
             command = shlex.split(command)
         self.require(isinstance(command, list) and all(isinstance(arg, str) for arg in command))
+        command = [arg.replace('$$', '$') for arg in command]
         arguments += [self.images[name], *entrypoint[1:], *command]
         if action:
             arguments.append(action)
@@ -427,7 +432,9 @@ class Fresh:
             self.require(self.state(qualifier).get('Running') is False
                          and self.state(qualifier).get('ExitCode') == 0, 'Native source qualifier refused')
             self.command(['rm', qualifier]); self.cids.remove(qualifier)
-            qualifier_cidfile.unlink(); del self.cidfiles[qualifier_cidfile]
+            # Podman rm may already remove its own --cidfile. Native CID
+            # removal succeeded above; this private name is optional cleanup.
+            qualifier_cidfile.unlink(missing_ok=True); del self.cidfiles[qualifier_cidfile]
             self.check(expected)
             self.prepare_data()
             auth_dir = self.capsule / 'seafile-admin'; auth_dir.mkdir(mode=0o700)

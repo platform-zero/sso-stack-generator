@@ -69,6 +69,28 @@ class Models(unittest.TestCase):
      self.assertEqual(creation[-1],'--bootstrap-owned-admin')
      self.assertTrue(any(':/run/seafile-admin:ro' in arg for arg in creation))
      self.assertFalse(any('authorization.json:/run' in arg for arg in creation))
+ def test_actual_shell_gets_one_compose_dollar_unescape_not_pid_as_password(self):
+  with tempfile.TemporaryDirectory() as temp:
+   f=self.fixture(temp);calls=[]
+   script='printf "%s|%s|%s" "$${VALKEY_PASSWORD}" "$$$$" "50%"'
+   f.source['valkey']['entrypoint']=['/bin/sh','-c',script]
+   def command(arguments,**kw):
+    calls.append(arguments);return types.SimpleNamespace(returncode=1 if arguments[0]=='container' else 0,stdout=CID.encode())
+   f.command=command;f.create('valkey');creation=calls[-1]
+   child=creation[-1];self.assertEqual(child,script.replace('$$','$'))
+   self.assertNotIn('synthetic-shell-fixture-only',' '.join(creation))
+   result=subprocess.run(['/bin/sh','-c',child],env={'VALKEY_PASSWORD':'synthetic-shell-fixture-only'},capture_output=True,check=True)
+   value,pid,percent=result.stdout.split(b'|')
+   self.assertEqual(value,b'synthetic-shell-fixture-only');self.assertTrue(pid.isdigit());self.assertEqual(percent,b'50%')
+ def test_direct_command_unescape_never_expands_host_variables_or_systemd_percent(self):
+  with tempfile.TemporaryDirectory() as temp:
+   f=self.fixture(temp);calls=[];f.source['mariadb']['command']='--literal=$${CHILD_ONLY} --pid=$$$$ --percent=50%'
+   def command(arguments,**kw):
+    calls.append(arguments);return types.SimpleNamespace(returncode=1 if arguments[0]=='container' else 0,stdout=CID.encode())
+   f.command=command
+   with mock.patch.dict(os.environ,{'CHILD_ONLY':'host-only-sentinel'}):f.create('mariadb')
+   self.assertEqual(calls[-1][-3:],['--literal=${CHILD_ONLY}','--pid=$$','--percent=50%'])
+   self.assertNotIn('host-only-sentinel',' '.join(calls[-1]))
  def test_all_data_absence_preflight_before_first_creation(self):
   with tempfile.TemporaryDirectory() as temp:
    f=self.fixture(temp)
@@ -105,6 +127,26 @@ class Models(unittest.TestCase):
    self.assertFalse(any(arg.startswith('--target') for arg in argv))
    self.assertEqual(kwargs['pass_fds'],(fd,));self.assertTrue(kwargs['close_fds'])
    with self.assertRaises(OSError):os.fstat(fd)
+ def test_qualifier_success_accepts_native_auto_removed_or_retained_own_cidfile(self):
+  for auto_removed in (False,True):
+   with self.subTest(auto_removed=auto_removed),tempfile.TemporaryDirectory() as temp:
+    f=self.fixture(temp);capsule=Path(temp)/'capsule';capsule.mkdir();files=[]
+    f.check=mock.Mock();f.state=lambda cid:dict(Running=False,ExitCode=0)
+    f.prepare_data=mock.Mock(side_effect=p.Refused('model-stop-after-qualifier-cleanup'))
+    f.stop_all=mock.Mock(return_value=True)
+    def command(arguments,**kw):
+     if arguments[0]=='container':return types.SimpleNamespace(returncode=1,stdout=b'')
+     if arguments[0]=='create':
+      path=Path(next(arg.split('=',1)[1] for arg in arguments if arg.startswith('--cidfile=')));path.write_text(CID);files.append(path)
+      return types.SimpleNamespace(returncode=0,stdout=CID.encode())
+     if arguments[0]=='rm' and auto_removed:files[-1].unlink()
+     return types.SimpleNamespace(returncode=0,stdout=b'')
+    f.command=command
+    with mock.patch.object(b.tempfile,'mkdtemp',return_value=str(capsule)):
+     with self.assertRaises(p.Refused):f.run({})
+    f.prepare_data.assert_called_once();f.stop_all.assert_called_once()
+    self.assertEqual(f.cidfiles,{});self.assertEqual(f.cids,[])
+    self.assertFalse(capsule.exists())
  def test_name_collision_never_creates_container(self):
   with tempfile.TemporaryDirectory() as temp:
    f=self.fixture(temp);f.command=mock.Mock(return_value=types.SimpleNamespace(returncode=0,stdout=b''))
