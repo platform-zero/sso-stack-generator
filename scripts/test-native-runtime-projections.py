@@ -9,6 +9,8 @@ import copy
 import importlib.util
 import os
 from pathlib import Path
+import shutil
+from types import SimpleNamespace
 import subprocess
 import unittest
 from unittest.mock import patch
@@ -582,6 +584,77 @@ class Projections(f.Owner):
 
     def bind_retired(self):
         return v.bind_retired_current(self.install, self.release, self.intent)
+
+    def empty_receipt_source_stage(self):
+        stage=self.base/'separate-sealed-stage'
+        shutil.copytree(self.release,stage)
+        (stage/'installation-receipt.json').unlink()
+        for item in self.release.iterdir():
+            if item.name=='installation-receipt.json':continue
+            if item.is_dir():shutil.rmtree(item)
+            else:item.unlink()
+        self.assertEqual(sorted(p.name for p in self.release.iterdir()),['installation-receipt.json'])
+        return stage
+
+    def test_retired_early_empty_leaf_binds_original_separate_source_without_copy(self):
+        stage=self.empty_receipt_source_stage()
+        with self.assertRaisesRegex(ValueError,'pinned source input missing'):self.bind_retired()
+        result=v.bind_retired_current(self.install,self.release,self.intent,source_bundle=stage)
+        self.assertEqual(result['release'],str(self.previous))
+        self.assertEqual(result['candidateInputs'],self.intent['inputs'])
+        self.assertFalse(result['activationAuthorized'])
+        self.assertFalse(result['readinessAuthorized'])
+        self.assertEqual(sorted(p.name for p in self.release.iterdir()),['installation-receipt.json'])
+
+    def test_retired_early_preparation_adapter_forwards_real_sealed_source(self):
+        stage=self.empty_receipt_source_stage()
+        adapter=SimpleNamespace(root=self.install,release=self.release,expected=self.intent,bundle=stage)
+        with p.directory(self.install) as fd:current=p.current_record(fd)
+        o.Session.check_current(adapter,current,self.install,self.release,(0,))
+        self.assertEqual(adapter.retired_current['release'],str(self.previous))
+        self.assertFalse(adapter.retired_current['activationAuthorized'])
+
+    def test_retired_early_source_changed_bytes_refused(self):
+        stage=self.empty_receipt_source_stage();self.put(stage/'stack.ir.json',b'{}\n')
+        with self.assertRaisesRegex(ValueError,'source input SHA'):
+            v.bind_retired_current(self.install,self.release,self.intent,source_bundle=stage)
+
+    def test_retired_early_source_cannot_be_metadata_root_or_release(self):
+        self.empty_receipt_source_stage()
+        for source in (self.release,self.install,self.install.parent):
+            with self.assertRaisesRegex(ValueError,'separate early preparing source'):
+                v.bind_retired_current(self.install,self.release,self.intent,source_bundle=source)
+
+    def test_retired_early_source_root_must_remain_private(self):
+        stage=self.empty_receipt_source_stage();stage.chmod(0o755)
+        with self.assertRaises(ValueError):
+            v.bind_retired_current(self.install,self.release,self.intent,source_bundle=stage)
+
+    def test_retired_early_source_foreign_owner_refused(self):
+        stage=self.empty_receipt_source_stage();self.set_owner(stage,1000,1000)
+        with self.assertRaises(ValueError):
+            v.bind_retired_current(self.install,self.release,self.intent,source_bundle=stage)
+
+    def test_retired_early_source_requires_receipt_only_leaf(self):
+        stage=self.empty_receipt_source_stage();self.put(self.release/'unexpected',b'no adoption\n')
+        with self.assertRaisesRegex(ValueError,'only its receipt'):
+            v.bind_retired_current(self.install,self.release,self.intent,source_bundle=stage)
+
+    def test_retired_early_source_not_allowed_after_preparing(self):
+        stage=self.empty_receipt_source_stage();self.intent['phase']='building';self.sync()
+        with self.assertRaises(ValueError):
+            v.bind_retired_current(self.install,self.release,self.intent,source_bundle=stage)
+
+    def test_retired_early_source_inode_replacement_between_sweeps_refused(self):
+        stage=self.empty_receipt_source_stage();original=v.Snapshot.retired_binding;calls=[]
+        def sweep(snapshot):
+            result=original(snapshot);calls.append(True)
+            if len(calls)==1:
+                path=stage/'stack.ir.json';body=path.read_bytes();path.unlink();self.put(path,body)
+            return result
+        with patch.object(v.Snapshot,'retired_binding',side_effect=sweep,autospec=True):
+            with self.assertRaisesRegex(ValueError,'changed between complete sweeps'):
+                v.bind_retired_current(self.install,self.release,self.intent,source_bundle=stage)
 
     def test_retired_bind_before_any_projection_is_source_only(self):
         self.intent.pop('domainRuntimeProjections'); self.intent.pop('projectionCustody'); self.sync()

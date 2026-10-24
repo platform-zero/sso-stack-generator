@@ -19,6 +19,7 @@ import importlib.util
 import os
 from pathlib import Path
 import stat
+import struct
 import time
 
 _source = Path(__file__).with_name('native-runtime-projection-owner.py')
@@ -192,10 +193,22 @@ class Preparation:
         finally: os.close(walk)
         try:
             info = os.fstat(fd); p.controlled(info, private=private)
-            require(info.st_gid == 0 and not info.st_mode & 0o7000
-                    and not p.acl_bytes(fd, 'system.posix_acl_access')
-                    and not p.acl_bytes(fd, 'system.posix_acl_default'), 'root source/record file custody differs')
-            before = record(fd); data = bytearray()
+            before = record(fd)
+            scope_marker = (private and parent == getattr(self, 'scope_fd', None) and name == storage.MARKER)
+            if scope_marker:
+                # Preserve only this held scope's exact native private marker;
+                # actor files, source and canonical records remain gid0/noACL.
+                require((self.operator.pw_uid, self.operator.pw_gid) == (1000, 1000), 'marker operator differs')
+                rows = ((1, 6, 0xffffffff), (2, 7, 1000), (4, 7, 0xffffffff),
+                        (16, 0, 0xffffffff), (32, 0, 0xffffffff))
+                native_acl = (struct.pack('<I', 2) + b''.join(struct.pack('<HHI', *row) for row in rows)).hex()
+                require((before['uid'], before['mode']) == (0, 0o600) and before['gid'] in (0, 1000)
+                        and before['acl'] in ('', native_acl) and not before['defaultAcl'],
+                        'private scope marker profile differs')
+            else:
+                require(info.st_gid == 0 and not info.st_mode & 0o7000
+                        and not before['acl'] and not before['defaultAcl'], 'root source/record file custody differs')
+            data = bytearray()
             while len(data) <= p.MAX_FILE:
                 chunk = os.read(fd, min(65536, p.MAX_FILE + 1 - len(data)))
                 if not chunk: break

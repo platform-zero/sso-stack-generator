@@ -160,7 +160,7 @@ def inactive(release, domain):
 _retired_source_verifier = None
 
 
-def retired_current_source(root, release, intent):
+def retired_current_source(root, release, intent, source_bundle=None):
     """Source-only terminal-current custody; never runtime/inactive admission.
 
     Lazy import avoids the verifier's read-only owner dependency forming an
@@ -169,7 +169,9 @@ def retired_current_source(root, release, intent):
     global _retired_source_verifier
     if _retired_source_verifier is None:
         _retired_source_verifier = load('_projection_retired_source', 'verify-native-runtime-projections.py')
-    return _retired_source_verifier.bind_retired_current(root, release, intent)
+    if source_bundle is None:
+        return _retired_source_verifier.bind_retired_current(root, release, intent)
+    return _retired_source_verifier.bind_retired_current(root, release, intent, source_bundle=source_bundle)
 
 
 class Session:
@@ -413,7 +415,8 @@ class Session:
                 # is independently derived and rechecked throughout this FD
                 # transaction; all existing inactive/actor gates still apply.
                 self.retired_current = p.strict(p.encoded(
-                    retired_current_source(self.root, self.release, self.expected)))
+                    retired_current_source(self.root, self.release, self.expected,
+                                           source_bundle=getattr(self, 'bundle', None))))
                 require(self.retired_current.get('release') == str(path), 'retired current source differs')
             else:
                 require(str(path) == self.expected.get('previousRelease'), 'prior/new root current binding differs')
@@ -502,7 +505,8 @@ class Session:
         self.check_records()
         self.check_accounts()
         if self.retired_current is not None:
-            require(retired_current_source(self.root, self.release, self.expected) == self.retired_current,
+            require(retired_current_source(self.root, self.release, self.expected,
+                                           source_bundle=getattr(self, 'bundle', None)) == self.retired_current,
                     'retired stop-only source/current custody changed')
         fd, pins = open_absolute(self.scope.parent, self.operator)
         try:

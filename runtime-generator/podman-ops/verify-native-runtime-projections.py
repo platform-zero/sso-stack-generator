@@ -44,8 +44,9 @@ def digest(value):
 
 
 class Snapshot:
-    def __init__(self, root, release, intent, running, deadline):
+    def __init__(self, root, release, intent, running, deadline, source_bundle=None):
         self.root, self.release = p.canonical(str(root)), p.canonical(str(release))
+        self.source_bundle = p.canonical(str(source_bundle)) if source_bundle is not None else None
         self.intent = p.strict(p.encoded(intent)); self.running = running
         self.fds = []; self.observed = {}; self.deadline = deadline
         self.pointer_choices = {'old', 'selected'}
@@ -493,15 +494,29 @@ class Snapshot:
         inputs = self.intent.get('inputs')
         require(isinstance(inputs, dict) and set(inputs) == p.INPUTS
                 and all(inputs[n] is not None for n in p.REQUIRED), 'full root input pins required')
+        source_fd, source_path = release_fd, self.release
+        if self.source_bundle is not None:
+            # Early directory/account preparation has an intentionally empty
+            # receipt leaf. Bind its ORIGINAL separate sealed staging inputs,
+            # not nonexistent copied source and never a caller-issued permit.
+            require(not self.running and phase == 'preparing'
+                    and not self.source_bundle.is_relative_to(self.root)
+                    and not self.root.is_relative_to(self.source_bundle), 'separate early preparing source required')
+            require(sorted(os.listdir(release_fd)) == ['installation-receipt.json'],
+                    'early preparing release must contain only its receipt')
+            source_fd = self.absolute(self.source_bundle); source_path = self.source_bundle
+            o.root_directory(os.fstat(source_fd), private=True)
+            require(not p.acl_bytes(source_fd, 'system.posix_acl_access')
+                    and not p.acl_bytes(source_fd, 'system.posix_acl_default'), 'early source directory ACL differs')
         bodies = {}
         for name, sha in sorted(inputs.items()):
             try:
-                body, record = self.root_file(release_fd, name)
+                body, record = self.root_file(source_fd, name)
             except FileNotFoundError:
                 require(sha is None, 'pinned source input missing')
                 continue
             require(digest(sha) and p.sha(body) == sha, 'root source input SHA differs')
-            bodies[name] = body; self.remember(self.release / name, record)
+            bodies[name] = body; self.remember(source_path / name, record)
         metadata, manifest, ir = (p.strict(bodies[n]) for n in ('podman-domains.json', 'site/manifest.json', 'stack.ir.json'))
         require(metadata.get('deploymentMode') == manifest.get('deploymentMode') == 'standalone'
                 and metadata.get('installerStateRoot') == str(self.root)
@@ -625,18 +640,20 @@ def verify(root, release, intent, running):
                 bindingSha256=p.sha(p.encoded(baseline)), activationAuthorized=False, readinessAuthorized=False)
 
 
-def bind_retired_current(root, release, intent):
+def bind_retired_current(root, release, intent, source_bundle=None):
     """Source-only original retired-current custody, even before projections.
 
     Returned equality excludes candidate journal bytes/inodes, NOT their check.
     No graph/runtime/projection/environment/start/reset authority is supplied.
+    Early receipt-only callers MUST supply their separate sealed source bundle;
+    all source hashes still bind to the exact real preparing dual records.
     The caller may retain and compare this stable custody as the preparing
     journal legitimately acquires projectionCustody/domainRuntimeProjections.
     """
     intent = p.strict(p.encoded(intent)); baseline = None
     deadline = time.monotonic() + 120
     for _ in range(2):
-        snapshot = Snapshot(root, release, intent, False, deadline)
+        snapshot = Snapshot(root, release, intent, False, deadline, source_bundle=source_bundle)
         try:
             result = snapshot.retired_binding()
         finally:

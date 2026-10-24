@@ -39,6 +39,7 @@ class AccountConfig(unittest.TestCase):
     write_records = fixture.Metadata.write_records
     close_lock = fixture.Metadata.close_lock
     set_owner = fixture.Metadata.set_owner
+    set_native_marker_acl = fixture.Metadata.set_native_marker_acl
 
     def setUp(self):
         fixture.Metadata.setUp(self)
@@ -334,6 +335,38 @@ class AccountConfig(unittest.TestCase):
             with self.assertRaises(OSError): self.prepare()
         self.assertEqual(list((self.home / '.config/containers').iterdir()), [self.home / '.config/containers/systemd'])
         self.assertEqual(self.published, [])
+
+    def test_native_private_marker_gid_and_raw_acl_preserved_during_account_preparation(self):
+        marker,value=self.set_native_marker_acl();body=marker.read_bytes()
+        result=self.prepare()
+        self.assertFalse(result['activationAuthorized'])
+        self.assertEqual(marker.read_bytes(),body)
+        self.assertEqual(self.acls[self.key(marker)],(value,b''))
+        self.assertEqual(self.virtual[self.key(marker)],(0,1000))
+        self.assertNotIn(marker,self.changed_nodes)
+
+    def test_native_marker_foreign_gid_named_actor_mask_and_default_refuse(self):
+        marker,value=self.set_native_marker_acl()
+        for options in ('gid','named','mask','default'):
+            self.set_native_marker_acl()
+            if options=='gid':self.set_owner(marker,0,1001)
+            elif options=='named':self.set_native_marker_acl(user=1001)
+            elif options=='mask':self.set_native_marker_acl(mask=1)
+            else:self.acls[self.key(marker)]=(value,value)
+            with self.subTest(profile=options),self.assertRaises(ValueError):self.prepare()
+            self.assertEqual(self.created_dirs,set())
+            self.assertEqual(self.published,[])
+
+    def test_native_marker_profile_does_not_relax_install_intent_group(self):
+        self.set_native_marker_acl();self.set_owner(self.root/'.install-intent.json',0,1000)
+        with self.assertRaisesRegex(ValueError,'custody differs'):self.prepare()
+        self.assertEqual(self.created_dirs,set())
+
+    def test_native_marker_raw_acl_cas_cannot_rebase_to_empty_profile(self):
+        marker,value=self.set_native_marker_acl()
+        self.offline.hook=lambda:self.acls.__setitem__(self.key(marker),(b'',b''))
+        with self.assertRaisesRegex(ValueError,'marker CAS'):self.prepare()
+        self.assertEqual(self.created_dirs,set())
 
     def test_old21_marker_and_no_private_scope_graphs_supported(self):
         self.assertEqual(len(self.marker['roots']), 21)
