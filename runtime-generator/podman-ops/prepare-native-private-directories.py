@@ -20,6 +20,7 @@ import importlib.util
 import os
 from pathlib import Path
 import stat
+import struct
 import time
 
 _source = Path(__file__).with_name('native-runtime-projection-owner.py')
@@ -236,15 +237,35 @@ class Preparation:
         p.relative(name)
         before = os.stat(name, dir_fd=fd, follow_symlinks=False)
         p.controlled(before, private=private_file)
-        require(before.st_gid == 0, 'root file group differs')
+        scope_marker = (private_file and name == storage.MARKER
+                        and fd == self.fds.get(getattr(self, 'scope', None)))
+        require(before.st_gid in (0, 1000) if scope_marker else before.st_gid == 0,
+                'root file group differs')
         body, identity = p.read_at(fd, name, private=private_file)
         require(p.identity(before) == identity, 'root file pre-open inode CAS differs')
         child = p.child_open(fd, name, FILE)
         try:
-            require(list(identity) == list(p.identity(os.fstat(child)))
-                    and os.fstat(child).st_gid == 0 and not p.acl_bytes(child, 'system.posix_acl_access')
-                    and not p.acl_bytes(child, 'system.posix_acl_default'), 'root file ownership/ACL/CAS differs')
-            return body, dict(identity=list(identity), mountId=p.mount_id(child), sha256=p.sha(body))
+            require(list(identity) == list(p.identity(os.fstat(child))), 'root file inode CAS differs')
+            observed = record(child)
+            if scope_marker:
+                # Only the exact held selected scope's original0600 marker may
+                # retain native operator-GID/mask0 inheritance. Never normalize
+                # it or extend this profile to receipts/source/other paths.
+                require((self.operator.pw_uid, self.operator.pw_gid) == (1000, 1000), 'marker operator differs')
+                rows = ((1, 6, 0xffffffff), (2, 7, 1000), (4, 7, 0xffffffff),
+                        (16, 0, 0xffffffff), (32, 0, 0xffffffff))
+                native_acl = (struct.pack('<I', 2) + b''.join(struct.pack('<HHI', *row) for row in rows)).hex()
+                require((observed['uid'], observed['mode']) == (0, 0o600)
+                        and observed['gid'] in (0, 1000) and observed['acl'] in ('', native_acl)
+                        and not observed['defaultAcl'], 'private scope marker profile differs')
+            else:
+                require(observed['gid'] == 0 and not observed['acl'] and not observed['defaultAcl'],
+                        'root file ownership/ACL/CAS differs')
+            require(observed == record(child), 'root file metadata CAS differs')
+            pin = dict(identity=list(identity), mountId=p.mount_id(child), sha256=p.sha(body))
+            if scope_marker:
+                pin.update(acl=observed['acl'], defaultAcl=observed['defaultAcl'])
+            return body, pin
         finally:
             os.close(child)
 

@@ -446,6 +446,57 @@ class Directories(unittest.TestCase):
         with self.assertRaisesRegex(m.Refused, 'root-sealed'):
             self.prepare()
 
+    def native_marker(self, gid=1000, uid=1000, mask=0, default=False, access=True):
+        marker=self.scope/m.storage.MARKER
+        self.set_owner(marker,0,gid)
+        rows=((1,6,0xffffffff),(2,7,uid),(4,7,0xffffffff),(16,mask,0xffffffff),(32,0,0xffffffff))
+        body=struct.pack('<I',2)+b''.join(struct.pack('<HHI',*row) for row in rows)
+        self.acls[self.key(marker)]=(body if access else b'',body if default else b'')
+        return marker
+
+    def test_exact_native_private_marker_preserved_during_new_directory_preparation(self):
+        marker=self.native_marker();before=(marker.read_bytes(),self.virtual[self.key(marker)],self.acls[self.key(marker)],marker.stat().st_mode)
+        result=self.prepare()
+        self.assertFalse(result['activationAuthorized'])
+        self.assertEqual((marker.read_bytes(),self.virtual[self.key(marker)],self.acls[self.key(marker)],marker.stat().st_mode),before)
+        self.assertNotIn(marker,self.created)
+
+    def test_native_operator_gid_private_marker_without_acl_allowed(self):
+        self.native_marker(access=False)
+        self.assertFalse(self.prepare()['activationAuthorized'])
+
+    def test_native_marker_foreign_gid_named_actor_mask_and_default_acl_refuse_before_mkdir(self):
+        for options in ({'gid':1001},{'uid':1001},{'mask':1},{'default':True}):
+            with self.subTest(options=options):
+                self.native_marker(**options)
+                with self.assertRaises(m.Refused):self.prepare()
+                self.assertEqual(self.created,set())
+                self.assertEqual(self.changed,[])
+
+    def test_operator_gid_is_not_accepted_for_install_intent(self):
+        self.native_marker();self.set_owner(self.root/'.install-intent.json',0,1000)
+        with self.assertRaisesRegex(m.Refused,'root file group differs'):self.prepare()
+        self.assertEqual(self.created,set())
+
+    def test_marker_profile_never_applies_to_same_name_outside_held_scope(self):
+        self.native_marker()
+        with m_test_preparation(self) as prep:
+            other=self.root/m.storage.MARKER;self.put(other,p.encoded(self.marker));self.set_owner(other,0,1000)
+            with self.assertRaisesRegex(m.Refused,'root file group differs'):
+                prep.read_file(prep.root_fd,m.storage.MARKER,True)
+
+    def test_marker_profile_requires_private_read(self):
+        self.native_marker()
+        with m_test_preparation(self) as prep:
+            with self.assertRaisesRegex(m.Refused,'root file group differs'):
+                prep.read_file(prep.fds[self.scope],m.storage.MARKER,False)
+
+    def test_native_marker_raw_acl_cas_cannot_rebase_to_other_allowed_profile(self):
+        marker=self.native_marker()
+        self.offline.hook=lambda:self.acls.__setitem__(self.key(marker),(b'',b''))
+        with self.assertRaisesRegex(m.Refused,'scope marker CAS'):self.prepare()
+        self.assertEqual(self.created,set())
+
     def test_marker_hardlink_refused(self):
         os.link(self.scope / m.storage.MARKER, self.scope / 'alias')
         with self.assertRaises(m.Refused):
