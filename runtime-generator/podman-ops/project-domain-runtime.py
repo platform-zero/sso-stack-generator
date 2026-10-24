@@ -406,10 +406,24 @@ def operator_defaults(body, uid, gid):
 
 def custody_permissions(record, owner, gid, actors, operator=False, root_ancestor=False,
                         operator_uid=None):
-    valid_mode = (not record['mode'] & 0o022 and record['mode'] & 0o700 == 0o700
+    # Native delegated shared ancestors may be Root-owned while retaining the
+    # operator's exact SGID/mask7 policy. This is NEVER a private leaf, scope,
+    # source-file or generic writable-root exception: callers select ancestry
+    # from the protected all-domain DAG and supply canonical traversal IDs.
+    native_shared = (root_ancestor and not operator
+                     and (owner, gid, operator_uid) == (0, 1000, 1000)
+                     and (record['uid'], record['gid'], record['mode']) == (0, 1000, 0o2770))
+    valid_mode = (native_shared or not record['mode'] & 0o022 and record['mode'] & 0o700 == 0o700
                   if root_ancestor else record['mode'] in ((0o700, 0o2770) if operator else (0o700,)))
     if (record['uid'] != owner or record['gid'] != gid or not valid_mode):
         raise Refusal('exact selected custody owner/group/mode required')
+    if native_shared:
+        default_rows = ((1, 7, 0xffffffff), (2, 7, 1000), (4, 7, 0xffffffff),
+                        (16, 7, 0xffffffff), (32, 0, 0xffffffff))
+        native_default = (struct.pack('<I', 2)
+                          + b''.join(struct.pack('<HHI', *row) for row in default_rows)).hex()
+        if not record['acl'] or record['defaultAcl'] != native_default:
+            raise Refusal('native shared ancestor requires exact access/default ACL')
     if record['defaultAcl']:
         if operator and record['mode'] == 0o2770:
             operator_defaults(record['defaultAcl'], owner, gid)
@@ -444,6 +458,8 @@ def custody_permissions(record, owner, gid, actors, operator=False, root_ancesto
         elif tag not in (1, 4, 16, 32) or identifier != 0xffffffff:
             raise Refusal('foreign custody ACL class')
     basic = {tag: permission for (tag, _), permission in entries.items() if tag != 2}
+    if native_shared and (entries.get((2, 1000)) != 7 or basic.get(4) != 7):
+        raise Refusal('native shared ancestor operator/group policy differs')
     if (set(basic) != {1, 4, 16, 32} or basic[1] != 7
             or basic[32] != (record['mode'] & 7 if root_ancestor else 0)
             or basic[16] != ((record['mode'] >> 3) & 7)
@@ -554,6 +570,9 @@ class Custody:
                 custody_permissions(record, OWNER, OWNER, set())
             elif node in actor_roots or node == destination.parent.parent:
                 custody_permissions(record, selected['uid'], proof['actorGid'], set())
+            elif node != scope and (record['uid'], record['gid'], record['mode']) == (0, 1000, 0o2770):
+                custody_permissions(record, OWNER, proof['operatorGid'], actors,
+                                    root_ancestor=True, operator_uid=proof['operatorUid'])
             elif node != scope and record['uid'] == OWNER:
                 controlled(os.fstat(self.fds[node]), directory=True)
                 custody_permissions(record, OWNER, record['gid'], actors,

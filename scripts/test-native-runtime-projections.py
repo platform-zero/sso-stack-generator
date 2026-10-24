@@ -62,6 +62,13 @@ class Projections(f.Owner):
                 (self.install / 'current').symlink_to('releases/previous')
             self.prior['previousRelease'] = None if retired else str(self.previous)
             self.write_records(self.prior)
+        if self._testMethodName.startswith('test_native_shared_'):
+            # Native delegated shared ancestors before ANY of the seven real
+            # producers, persistent copiers or environment handoffs run.
+            for name in ('state','graph','volumes'):
+                parent=self.scope/name;self.set_owner(parent,0,1000)
+                access,_=self.acls[self.key(parent)]
+                self.acls[self.key(parent)]=(access,f.acl([(2,7,1000)]))
         # Virtual ownership only; guard every ownership mutation to temp scope.
         def chown(fd, uid, gid):
             path = self.fd_paths[fd]
@@ -204,6 +211,14 @@ class Projections(f.Owner):
     def reject(self, running=False):
         with self.assertRaises((ValueError, OSError, KeyError, TypeError)):
             self.run_verify(running)
+
+    def test_native_shared_root_owned_all_seven_real_producers_copy_environment_and_verify(self):
+        result=self.run_verify()
+        self.assertEqual(result['domains'],sorted(o.native.IDENTITIES))
+        self.assertFalse(result['activationAuthorized'])
+        for name in ('state','graph','volumes'):
+            self.assertEqual(self.virtual[self.key(self.scope/name)],(0,1000))
+            self.assertEqual(self.acls[self.key(self.scope/name)][1],f.acl([(2,7,1000)]))
 
     def test_preparing_old_pointers_all_seven_real_producer_copy(self):
         before = (self.install / '.install-intent.json').read_bytes()

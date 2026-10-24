@@ -356,6 +356,9 @@ class Session:
                     raise Refused('fresh selected runtime must be absent')
             elif node in actor_roots or node == self.state / 'releases':
                 p.custody_permissions(record, self.row['uid'], self.actor.pw_gid, set())
+            elif node != self.scope and (record['uid'], record['gid'], record['mode']) == (0, 1000, 0o2770):
+                p.custody_permissions(record, 0, 1000, self.execute_ids,
+                                      root_ancestor=True, operator_uid=self.operator.pw_uid)
             elif (node == self.scope / 'volumes' and node == p.canonical(self.row['volumeRoot']).parent
                   and (record['uid'], record['gid'], record['mode']) == (0, self.operator.pw_gid, 0o755)):
                 # Sole selected shared public-traversal parent. Preserve its

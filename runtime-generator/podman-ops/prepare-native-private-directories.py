@@ -346,6 +346,9 @@ class Preparation:
     def shared_permissions(self, path, fd):
         value = record(fd)
         require(stat.S_ISDIR(os.fstat(fd).st_mode), 'shared ancestor is not a directory')
+        if path != self.scope and (value['uid'], value['gid'], value['mode']) == (0, 1000, 0o2770):
+            p.custody_permissions(value, 0, 1000, self.execute_ids, root_ancestor=True, operator_uid=1000)
+            return
         if (path == self.scope / 'volumes' == p.canonical(self.row['volumeRoot']).parent
                 and (value['uid'], value['gid'], value['mode']) == (0, 1000, 0o755)):
             p.custody_permissions(value, 0, 1000, self.execute_ids, root_ancestor=True, operator_uid=1000)

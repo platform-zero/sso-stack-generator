@@ -225,6 +225,8 @@ class Snapshot:
             require(rec == expected, 'original source graph inode/mount/ACL differs')
             if node in roots or node in (slot, state / 'releases'):
                 p.custody_permissions(rec, row['uid'], account.pw_gid, set())
+            elif node != scope and (rec['uid'], rec['gid'], rec['mode']) == (0, 1000, 0o2770):
+                p.custody_permissions(rec, 0, 1000, ids, root_ancestor=True, operator_uid=operator.pw_uid)
             elif node == scope / 'volumes' and node == p.canonical(row['volumeRoot']).parent and rec['uid'] == 0:
                 p.custody_permissions(rec, 0, operator.pw_gid, ids, root_ancestor=True,
                                       operator_uid=operator.pw_uid)

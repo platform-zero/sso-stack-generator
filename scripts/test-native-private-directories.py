@@ -273,6 +273,44 @@ class Directories(unittest.TestCase):
         self.assertEqual(proof['directories'][str(self.state)]['defaultAcl'], '')
         self.assertTrue(any(item[:2] == ('removeacl', self.state) for item in self.changed))
 
+    def native_shared_parent(self,name):
+        parent=self.shared(name);self.set_owner(parent,0,1000)
+        traversal=[(2,1,row['uid']) for row in self.rows]
+        self.acls[self.key(parent)]=(acl([(2,7,1000),*traversal]),acl([(2,7,1000)]))
+        return parent
+
+    def test_native_root_owned_delegated_shared_parents_preserved_and_private_children_sealed(self):
+        parents=[self.native_shared_parent(name) for name in ('state','graphs','volumes')]
+        before={parent:(self.virtual[self.key(parent)],self.acls[self.key(parent)]) for parent in parents}
+        proof=self.prepare()
+        for parent in parents:
+            self.assertEqual((self.virtual[self.key(parent)],self.acls[self.key(parent)]),before[parent])
+            self.assertFalse(any(item[1]==parent for item in self.changed))
+        for key in m.KEYS:
+            record=proof['directories'][self.row[key]]
+            self.assertEqual((record['uid'],record['mode'],record['acl'],record['defaultAcl']),
+                             (self.row['uid'],0o700,'',''))
+        self.assertFalse(proof['activationAuthorized'])
+
+    def test_native_root_shared_missing_acl_default_foreign_writer_and_group_refuse(self):
+        parent=self.native_shared_parent('state');valid=self.acls[self.key(parent)]
+        invalid=[(b'',valid[1]),(valid[0],b''),
+                 (acl([(2,7,1000),(2,7,self.rows[0]['uid'])]),valid[1]),
+                 (acl([(2,7,1000),(2,1,9999)]),valid[1]),
+                 (valid[0],acl([(2,7,1000),(2,1,self.rows[0]['uid'])]))]
+        for access,default in invalid:
+            self.acls[self.key(parent)]=(access,default)
+            with self.subTest(acl=(access.hex(),default.hex())),self.assertRaises(ValueError):self.prepare()
+            self.assertEqual(self.created,set());self.assertEqual(self.changed,[])
+        self.acls[self.key(parent)]=valid;self.set_owner(parent,0,1001)
+        with self.assertRaises(ValueError):self.prepare()
+        self.assertEqual(self.created,set())
+
+    def test_native_root_shared_profile_cannot_replace_scope_owner(self):
+        self.set_owner(self.scope,0,1000)
+        with self.assertRaises(ValueError):self.prepare()
+        self.assertEqual(self.created,set())
+
     def test_old_public_volume_parent_preserved_exactly(self):
         parent = self.shared('volumes'); parent.chmod(0o755); self.set_owner(parent, 0, 1000)
         self.acls[self.key(parent)] = (acl([(2, 7, 1000), *[(2, 1, row['uid']) for row in self.rows]], mask=5, other=5),

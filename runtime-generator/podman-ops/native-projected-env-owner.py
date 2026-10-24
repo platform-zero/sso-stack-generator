@@ -112,6 +112,9 @@ class Copy(owner.Session):
                 expected = dict(expected, uid=self.row['uid'], gid=self.actor.pw_gid, mode=0o700)
             if node in actor_roots or node in (self.slot, self.state / 'releases'):
                 p.custody_permissions(record, self.row['uid'], self.actor.pw_gid, set())
+            elif node != self.scope and (record['uid'], record['gid'], record['mode']) == (0, 1000, 0o2770):
+                p.custody_permissions(record, 0, 1000, self.execute_ids,
+                                      root_ancestor=True, operator_uid=self.operator.pw_uid)
             elif (node == self.scope / 'volumes' and node == p.canonical(self.row['volumeRoot']).parent
                   and (record['uid'], record['gid'], record['mode']) == (0, self.operator.pw_gid, 0o755)):
                 # Same sole public-traversal exception as the owning projector.
