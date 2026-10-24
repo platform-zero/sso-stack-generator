@@ -2472,7 +2472,13 @@ fun renderPodman(ir: ObjectNode, output: Path) {
             }
             output.resolve("${domain.quadletDir}/$unitPrefix-$name.network").apply { parent.createDirectories(); writeText(lines.joinToString("\n", postfix = "\n")) }
         }
-        if (domain.name != "rootful" && activePodmanPolicy.crossDomainEndpoints.any { domain.name in it.consumers }) {
+        // Idle actors retain their target set, never an unreferenced bridge.
+        // Match container emission exactly; selection must continue refusing
+        // extra network authority rather than accepting unused source files.
+        val hasContainers = ir.path("services").fieldsMap().any { (_, service) ->
+            podmanDomainForService(service).name == domain.name && quadletEmitted(service)
+        }
+        if (hasContainers && domain.name != "rootful" && activePodmanPolicy.crossDomainEndpoints.any { domain.name in it.consumers }) {
             output.resolve("${domain.quadletDir}/$unitPrefix-p0-egress.network").apply {
                 parent.createDirectories()
                 writeText("[Network]\nNetworkName=${podmanNetworkName(domain, "p0-egress")}\nDriver=bridge\n")

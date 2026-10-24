@@ -92,6 +92,9 @@ jq -e '.schemaVersion == 1 and (.domains | type == "array" and length > 0)' "$DO
 STANDALONE=false
 if [ "$(jq -r '.deploymentMode // ""' "$DOMAINS_FILE")" = standalone ]; then
   STANDALONE=true
+  # Validate the identical candidate source closure during preflight too;
+  # an idle actor is not permission to admit unreferenced network units.
+  python3 "$BUNDLE/ops/native-selection.py" --bundle "$BUNDLE" --json >/dev/null
   if [ "$ACTIVATION_ROLLBACK" != 0 ]; then
     printf '[podman-install] standalone predecessor restart requires explicit compatible-data recovery, not an environment override\n' >&2
     exit 1

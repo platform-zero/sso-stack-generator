@@ -191,6 +191,19 @@ class SelectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             n.inventory(self.bundle)
 
+    def test_unreferenced_egress_bridge_is_refused(self):
+        root = self.bundle / 'quadlet/rootless-apps'
+        put(root / 'webservices-p0-egress.network', b'[Network]\nNetworkName=webservices_apps_p0-egress\nDriver=bridge\n')
+        with self.assertRaises(ValueError):
+            n.inventory(self.bundle)
+
+    def test_standalone_preflight_checks_the_same_exact_source_closure(self):
+        source = SOURCE.with_name('install-podman-bundle.sh').read_text()
+        check = 'python3 "$BUNDLE/ops/native-selection.py" --bundle "$BUNDLE" --json >/dev/null'
+        self.assertIn(check, source)
+        self.assertLess(source.index('STANDALONE=true'), source.index(check))
+        self.assertLess(source.index(check), source.index("printf '[podman-install] preflight passed"))
+
     def test_cli_exact_lists_json_validation_no_acceptance_claim(self):
         code, out, err = self.cli('--scope', 'rootless-apps', '--kind', 'builds')
         self.assertEqual((code, out, err), (0, 'webservices-bootstrap-build.service\n', ''))
