@@ -734,13 +734,15 @@ def binding(root, expected):
         if pin.get('origin') == 'canonical-backend-sibling-stop-only':
             _, current = helper_bytes(release, name)
             require(current == pin, 'Canonical stop-only donor CAS changed during use')
-    return {'root': root, 'release': release, 'receipt': receipt, 'rows': rows, 'roots': roots,
+    selection = {'root': root, 'release': release, 'receipt': receipt, 'rows': rows, 'roots': roots,
             'actors': actors, 'policies': policies, 'modules': modules, 'ir': ir,
             'pin': {'intentSha256': expected, 'journal': journal_pin, 'receipt': receipt_pin,
                     'release': str(release), 'pointer': fingerprint(pointer), 'marker': marker_pin,
                     'markerSha256': sha(marker_raw), 'sourceInputs': source_pins, 'helpers': helpers,
                     'allocation': allocation, 'selection': selected, 'absentPrivateRoots': sorted(absent_roots),
                     'custody': {str(path): pin for path, pin in sorted(policies.items())}}}
+    selection['pin']['originalFixtureProfiles'] = original_fixture_profiles(selection)
+    return selection
 
 
 def run_read(command):
@@ -1069,6 +1071,63 @@ def owns(value, actor, group=False):
                                                 or actor['start'] <= value < actor['start'] + 65536))
 
 
+def original_fixture_profiles(selection):
+    """Closed OLD source contract only; never a current-NSS/group permission.
+
+    binding() has verified original dual receipts, input/provenance hashes,
+    marker/allocation and these exact owning helper bytes.  Public installer
+    creates IR hostPaths, grants shared strategy access to the ORIGINAL actor;
+    original empty named inputs/ancestors are distinct from private data roots.
+    No inode, caller JSON flag, regenerated input or audit hash selects a rule.
+    """
+    pin = selection.get('pin', {}); helpers = pin.get('helpers', {}); receipt = selection.get('receipt', {})
+    installer = '7d7f7b8758ab5320ea8d7614fe5be5493c717ff28e9d0f10a88afdf7078b3bf2'
+    if not (helpers.get('install-podman-bundle.sh', {}).get('sha256') == installer
+            and helpers.get('grant-rootless-volume-parent-traverse.py', {}).get('sha256')
+                == '0dcf715f2581a783702128d2fc12ff390fe21de45868bc4347dc809d08a74a32'
+            and receipt.get('phase') == 'retired-failed' and legacy_installer_published(installer, receipt)
+            and all(HEX.fullmatch(pin.get('sourceInputs', {}).get(name, {}).get('sha256', ''))
+                    and receipt.get('inputs', {}).get(name) == pin['sourceInputs'][name]['sha256']
+                    for name in ('stack.ir.json', 'site/manifest.json'))
+            and selection.get('actors', {}).get('apps', {}).get('uid') == 781
+            and selection['actors']['apps'].get('gid') == 781): return {}
+    base = SCOPE / 'fixtures'; media = base / 'media'
+    volumes = {'jellyfin_media': {'hostPath': str(media / 'jellyfin-media'), 'rootlessStrategy': 'shared'},
+               'qbittorrent_data': {'hostPath': str(media / 'qbittorrent'), 'rootlessStrategy': 'shared'},
+               'seafile_files': {'hostPath': str(media / 'seafile-media'), 'rootlessStrategy': 'copy'}}
+    ir = selection['ir']
+    declared = {name: value for name, value in ir.get('volumes', {}).items()
+                if name in volumes or (isinstance(value, dict) and isinstance(value.get('hostPath'), str)
+                    and (value['hostPath'] == str(base) or value['hostPath'].startswith(str(base) + '/')))}
+    if declared != volumes: return {}
+    expected = {name: {'module': name, 'placement': 'rootless', 'rootlessDomain': 'apps', 'mounts': [mount]}
+                for name, mount in [('jellyfin', 'jellyfin_media:/media:ro'),
+                                    ('qbittorrent', 'qbittorrent_data:/downloads'), ('seafile', 'seafile_files:/shared')]}
+    expected['volume-init'] = {'module': 'stack-foundation', 'placement': 'rootful', 'rootlessDomain': None,
+                              'mounts': sorted(value['hostPath'] + ':' + value['hostPath'] + ':rw' for value in volumes.values())}
+    consumers = {}
+    for name, service in ir.get('services', {}).items():
+        mounts = []
+        for mount in service.get('volumes', []):
+            source = mount.split(':', 1)[0] if isinstance(mount, str) else mount.get('source', '')
+            if source in volumes or source == str(base) or source.startswith(str(base) + '/'):
+                if not isinstance(mount, str): return {}
+                mounts.append(mount)
+        if mounts: consumers[name] = {'module': service.get('module'), 'placement': service.get('placement', 'rootful'),
+                                      'rootlessDomain': service.get('rootlessDomain'), 'mounts': sorted(mounts)}
+    if consumers != expected: return {}
+    def profile(mode, other=0, mask=5, apps=False, children=()):
+        access = [[1, 7, UNDEFINED], [2, 7, 1000], [4, 7, UNDEFINED], [16, mask, UNDEFINED], [32, other, UNDEFINED]]
+        default = [[1, 7, UNDEFINED], [2, 7, 1000], [4, 7, UNDEFINED], [16, 7, UNDEFINED], [32, 0, UNDEFINED]]
+        if apps: access.append([2, 7, 781]); default.append([2, 7, 781])
+        return {'uid': 0, 'gid': 1000, 'mode': mode, 'acl': sorted(access), 'defaultAcl': sorted(default), 'children': sorted(children)}
+    return {str(base): profile(0o2750, children=['media']),
+            str(media): profile(0o2750, children=['jellyfin-media', 'qbittorrent', 'seafile-media']),
+            str(media / 'jellyfin-media'): profile(0o775, other=5, mask=7, apps=True),
+            str(media / 'qbittorrent'): profile(0o755, other=5, apps=True),
+            str(media / 'seafile-media'): profile(0o755, other=5)}
+
+
 def scan(fd, selection, base=None, retain=None):
     """One FD walk, one hardlink census across ALL roots of each exact domain.
 
@@ -1079,6 +1138,7 @@ def scan(fd, selection, base=None, retain=None):
     base = SCOPE if base is None else base
     retain = set(retain or ())
     nodes = []; links = {}; initial = fingerprint(os.fstat(fd)); device = initial[0]
+    fixtures = original_fixture_profiles(selection) if base == SCOPE else {}
     def visit(parent, relative):
         for name in sorted(os.listdir(parent)):
             require(name not in ('.', '..') and '/' not in name, 'Invalid scope entry')
@@ -1093,7 +1153,12 @@ def scan(fd, selection, base=None, retain=None):
             if base != SCOPE:
                 actor = selection.get('externalActor'); owner = actor['name'] if actor else None
             shared = selected in retain and selected in selection['policies']
-            require(shared or (owns(info.st_uid, actor) and owns(info.st_gid, actor, True)),
+            fixture = fixtures.get(str(selected))
+            if fixture is not None:
+                require(actor is None and not shared and not selected in retain and stat.S_ISDIR(info.st_mode)
+                        and (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode))
+                            == (fixture['uid'], fixture['gid'], fixture['mode']), 'Original fixture directory identity/profile differs')
+            require(shared or fixture is not None or (owns(info.st_uid, actor) and owns(info.st_gid, actor, True)),
                     'Foreign or cross-domain UID/GID in exact scope')
             require(shared or actor is not None or stat.S_ISLNK(info.st_mode) or not info.st_mode & 0o002,
                     'Public-writable temporary artifact outside a private domain')
@@ -1105,7 +1170,12 @@ def scan(fd, selection, base=None, retain=None):
                 try:
                     require(fingerprint(os.fstat(child)) == node['stat'], 'Directory scan open CAS changed')
                     node['acl'] = acl(child); node['defaultAcl'] = acl(child, True)
-                    if shared or (selected in selection['roots'] and selected in selection['policies']):
+                    if fixture is not None:
+                        require(node['acl'] == fixture['acl'] and node['defaultAcl'] == fixture['defaultAcl']
+                                and sorted(os.listdir(child)) == fixture['children']
+                                and info.st_nlink == 2 + len(fixture['children']),
+                                'Original empty fixture ACL/membership differs; no adoption or repair')
+                    elif shared or (selected in selection['roots'] and selected in selection['policies']):
                         require(custody(child) == selection['policies'][selected], 'Sealed scoped directory CAS changed')
                     else:
                         validate_data_acl(node, actor)

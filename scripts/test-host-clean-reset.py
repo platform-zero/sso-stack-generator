@@ -1341,6 +1341,136 @@ class Clean(unittest.TestCase):
             with self.assertRaises(m.Refusal): m._dispatch_network_stop('webservices-caddy-network.service')
             self.assertEqual(dispatch.call_count, 3)
 
+    def original_fixture_selection(self):
+        # MODEL already-verified original source/public-version frame, not actual
+        # original IR bytes or an installed custody proof. Real temp FD/inodes.
+        selection = m.binding(self.root, self.intent)
+        selection['pin'] = copy.deepcopy(selection['pin']); selection['receipt'] = copy.deepcopy(selection['receipt'])
+        selection['ir'] = copy.deepcopy(selection['ir'])
+        selection['receipt']['steps'] = ['preparing', 'units-selected', 'failed', 'retired-failed']
+        selection['pin']['helpers']['install-podman-bundle.sh']['sha256'] = '7d7f7b8758ab5320ea8d7614fe5be5493c717ff28e9d0f10a88afdf7078b3bf2'
+        selection['pin']['helpers']['grant-rootless-volume-parent-traverse.py']['sha256'] = '0dcf715f2581a783702128d2fc12ff390fe21de45868bc4347dc809d08a74a32'
+        media = self.scope / 'fixtures/media'
+        volumes = {'jellyfin_media': {'hostPath': str(media / 'jellyfin-media'), 'rootlessStrategy': 'shared'},
+                   'qbittorrent_data': {'hostPath': str(media / 'qbittorrent'), 'rootlessStrategy': 'shared'},
+                   'seafile_files': {'hostPath': str(media / 'seafile-media'), 'rootlessStrategy': 'copy'}}
+        selection['ir']['volumes'].update(volumes)
+        for name, mount in [('jellyfin', 'jellyfin_media:/media:ro'), ('qbittorrent', 'qbittorrent_data:/downloads'), ('seafile', 'seafile_files:/shared')]:
+            selection['ir']['services'][name] = {'module': name, 'placement': 'rootless', 'rootlessDomain': 'apps', 'volumes': [mount]}
+        selection['ir']['services']['volume-init'] = {'module': 'stack-foundation', 'placement': 'rootful',
+            'volumes': [value['hostPath'] + ':' + value['hostPath'] + ':rw' for value in volumes.values()]}
+        profiles = m.original_fixture_profiles(selection); self.assertEqual(len(profiles), 5)
+        for name, profile in profiles.items():
+            path = Path(name); path.mkdir(parents=True, exist_ok=True); path.chmod(profile['mode'])
+            self.own(path, profile['uid'], profile['gid']); self.set_acl(path, profile['acl'], profile['defaultAcl'])
+        return selection
+
+    def scan_original_fixture(self, selection):
+        retained = set(selection['policies']) - {m.SHARED, m.SCOPE} - set(selection['roots'])
+        with m.directory(self.scope, selection['policies']) as fd: return m.scan(fd, selection, retain=retained)
+
+    def test_original_fixture_exact_source_contract_and_empty_numeric_profiles_pass(self):
+        selection = self.original_fixture_selection(); profiles = m.original_fixture_profiles(selection)
+        before = {name: m.fingerprint(m.os.stat(name)) for name in profiles}
+        nodes = self.scan_original_fixture(selection)
+        fixtures = [node for node in nodes if str(self.scope / node['path']) in profiles]
+        self.assertEqual(len(fixtures), 5)
+        self.assertTrue(all(node['kind'] == 'directory' and node['domain'] is None and node['retain'] is False for node in fixtures))
+        self.assertEqual(before, {name: m.fingerprint(m.os.stat(name)) for name in profiles})
+        self.assertFalse(self.cold_calls)  # no native engine, mutator, repair or directory adoption
+
+    def test_original_fixture_empty_directory_erase_is_not_retained_infrastructure(self):
+        selection = self.original_fixture_selection(); nodes = self.scan_original_fixture(selection)
+        with m.directory(self.scope, selection['policies']) as fd:
+            expected = [m.MARKER, *[Path(node['path']).name for node in nodes if Path(node['path']).parent == Path('.')]]
+            m.erase(fd, nodes, expected_names=expected)
+        self.assertFalse((self.scope / 'fixtures').exists())
+        self.assertTrue(all(node['kind'] == 'directory' and node['retain'] for node in self.scan_original_fixture(selection)))
+        self.assertTrue((self.scope / m.MARKER).exists()); self.assertTrue((self.outside / 'keep').exists())
+
+    def test_original_fixture_unpublished_unknown_helpers_inputs_phase_or_actor_never_qualify(self):
+        selection = self.original_fixture_selection(); profiles = m.original_fixture_profiles(selection)
+        def copied(): return dict(selection, pin=copy.deepcopy(selection['pin']), receipt=copy.deepcopy(selection['receipt']),
+                                  actors=copy.deepcopy(selection['actors']), ir=copy.deepcopy(selection['ir']))
+        variants = []
+        for name in ('install-podman-bundle.sh', 'grant-rootless-volume-parent-traverse.py'):
+            bad = copied(); bad['pin']['helpers'][name]['sha256'] = 'f' * 64; variants.append(bad)
+        bad = copied(); bad['receipt']['steps'] = ['preparing', 'failed']; variants.append(bad)
+        bad = copied(); bad['receipt']['phase'] = 'active'; variants.append(bad)
+        bad = copied(); bad['pin']['sourceInputs']['stack.ir.json']['sha256'] = 'e' * 64; variants.append(bad)
+        for field in ('uid', 'gid'):
+            bad = copied(); bad['actors']['apps'][field] = 782; variants.append(bad)
+        for index, bad in enumerate(variants):
+            # An output-shaped JSON dictionary can never confer permissions.
+            bad['pin']['originalFixtureProfiles'] = profiles
+            with self.subTest(index=index):
+                self.assertEqual(m.original_fixture_profiles(bad), {})
+                with self.assertRaises(m.Refusal): self.scan_original_fixture(bad)
+
+    def test_original_fixture_any_changed_declaration_or_consumer_stays_foreign(self):
+        selection = self.original_fixture_selection()
+        variants = []
+        for change in ({'rootlessStrategy': 'copy'}, {'rootlessAccess': 'read-only'}, {'extra': 'not reviewed'}, {'hostPath': str(self.scope / 'other')}):
+            ir = copy.deepcopy(selection['ir']); ir['volumes']['jellyfin_media'].update(change); variants.append(ir)
+        ir = copy.deepcopy(selection['ir']); ir['volumes']['extra'] = {'hostPath': str(self.scope / 'fixtures/media/extra')}; variants.append(ir)
+        for change in ({'rootlessDomain': 'platform'}, {'module': 'foreign'}, {'volumes': ['jellyfin_media:/media:rw']}):
+            ir = copy.deepcopy(selection['ir']); ir['services']['jellyfin'].update(change); variants.append(ir)
+        ir = copy.deepcopy(selection['ir']); ir['services'].pop('volume-init'); variants.append(ir)
+        for index, ir in enumerate(variants):
+            bad = dict(selection, ir=ir)
+            with self.subTest(index=index):
+                self.assertEqual(m.original_fixture_profiles(bad), {})
+                with self.assertRaises(m.Refusal): self.scan_original_fixture(bad)
+
+    def test_original_fixture_uid_gid_mode_access_and_default_acl_exact_not_cleared(self):
+        selection = self.original_fixture_selection(); path = self.scope / 'fixtures'
+        profile = m.original_fixture_profiles(selection)[str(path)]
+        for uid, gid, mode in [(1, 1000, 0o2750), (0, 1001, 0o2750), (0, 0, 0o2750), (0, 1000, 0o2770), (0, 1000, 0o750)]:
+            self.own(path, uid, gid); path.chmod(mode)
+            with self.subTest(uid=uid, gid=gid, mode=mode), self.assertRaises(m.Refusal): self.scan_original_fixture(selection)
+        self.own(path, 0, 1000); path.chmod(profile['mode'])
+        for access, default in [(profile['acl'] + [[2, 7, 1001]], profile['defaultAcl']),
+                                (profile['acl'], profile['defaultAcl'] + [[2, 7, 782]]), ([], []),
+                                (profile['acl'], [])]:
+            self.set_acl(path, access, default)
+            with self.subTest(access=access, default=default), self.assertRaises(m.Refusal): self.scan_original_fixture(selection)
+            self.assertEqual(self.acls[self.key(path)], access); self.assertEqual(self.defaults[self.key(path)], default)
+
+    def test_original_fixture_nonempty_or_undeclared_child_refuses_before_body_read(self):
+        selection = self.original_fixture_selection(); path = self.scope / 'fixtures/media/jellyfin-media/unproven'
+        self.put(path, b'NEVER READ THIS SYNTHETIC BODY'); original = m.os.open
+        def no_body(name, *args, **kwargs):
+            self.assertNotEqual(str(name), 'unproven'); return original(name, *args, **kwargs)
+        with patch.object(m.os, 'open', side_effect=no_body), self.assertRaises(m.Refusal): self.scan_original_fixture(selection)
+        self.assertEqual(path.read_bytes(), b'NEVER READ THIS SYNTHETIC BODY'); path.unlink()
+        child = self.scope / 'fixtures/undeclared'; child.mkdir(); self.own(child, 0, 1000)
+        with self.assertRaises(m.Refusal): self.scan_original_fixture(selection)
+        self.assertTrue(child.exists())
+
+    def test_original_fixture_symlink_and_original_inode_replacement_refuse(self):
+        selection = self.original_fixture_selection(); path = self.scope / 'fixtures/media/seafile-media'
+        retained = self.outside / 'retained-source-leaf'; path.rename(retained); path.symlink_to(self.outside, target_is_directory=True)
+        with patch.object(m.os, 'readlink', side_effect=AssertionError('No symlink target authority')), self.assertRaises(m.Refusal):
+            self.scan_original_fixture(selection)
+        path.unlink(); retained.rename(path)
+        original = m.os.listdir; changed = []
+        def listdir(fd):
+            result = original(fd)
+            if isinstance(fd, int) and self.key_fd(fd) == self.key(path) and not changed:
+                changed.append(True); path.rename(retained); path.mkdir(mode=0o755); self.own(path, 0, 1000)
+            return result
+        with patch.object(m.os, 'listdir', side_effect=listdir), self.assertRaises(m.Refusal): self.scan_original_fixture(selection)
+        self.assertTrue(retained.exists()); self.assertTrue(path.exists())
+
+    def test_original_fixture_does_not_authorize_same_gid_elsewhere_or_private_domains(self):
+        selection = self.original_fixture_selection(); foreign = self.scope / 'foreign-operator-group'
+        foreign.mkdir(mode=0o750); self.own(foreign, 0, 1000)
+        with self.assertRaises(m.Refusal): self.scan_original_fixture(selection)
+        foreign.rmdir(); private = Path(next(row['volumeRoot'] for row in self.rows if row['name'] == 'apps')) / 'foreign-group'
+        private.mkdir(mode=0o700); self.own(private, 0, 1000)
+        with self.assertRaises(m.Refusal): self.scan_original_fixture(selection)
+        self.assertTrue(private.exists()); self.assertFalse(self.cold_calls)
+
     @contextlib.contextmanager
     def synthetic_default_fixture(self, parent_present=True):
         network = {'name': 'podman', 'id': '2f259bab93aaaaa2542ba43ef33eb990d0999ee1b9924b557b7be53c0b7a1bb9',
