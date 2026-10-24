@@ -82,7 +82,51 @@ class InstallationJournal(unittest.TestCase):
         self.assertEqual((self.root/'current').resolve(),prior)
         self.assertEqual(self.release.stat().st_mode & 0o7777,0o755)
         self.assertEqual(sorted(p.name for p in self.release.iterdir()),['installation-receipt.json'])
-        self.assertEqual(journal.read(self.path),journal.read(self.release/'installation-receipt.json'))
+        self.assertEqual(self.path.read_bytes(),(prior/'installation-receipt.json').read_bytes())
+        self.assertEqual(journal.read(self.release/'installation-receipt.json')['phase'],'retired-failed')
+        self.assertEqual(result['rootAuthorityRelease'],str(prior))
+        self.assertFalse(result['globalIntentCleared'])
+
+    def test_empty_preparation_without_current_clears_only_allocator_lease(self):
+        expected=self.failed_empty_preparation()
+        result=journal.retire_empty_preparation(self.root,self.bundle,expected,True,verifier=lambda _:None)
+        self.assertFalse(self.path.exists())
+        self.assertTrue(result['globalIntentCleared'])
+        self.assertIsNone(result['rootAuthorityRelease'])
+        self.assertEqual(journal.read(self.release/'installation-receipt.json')['phase'],'retired-failed')
+
+    def test_already_retired_empty_leaf_restores_exact_existing_clean_current_bytes(self):
+        expected=self.failed_empty_preparation()
+        value=journal.read(self.path)
+        retired=dict(value,phase='retired-failed',steps=['preparing','failed','retired-failed'],
+                     retiredIntentSha256=expected,neverSelectedProved=True,emptyPreparationOnly=True,
+                     dataPreserved=True,dataCompatibilityProved=False,activationAuthorized=False)
+        journal.write(self.path,retired);journal.write(self.release/'installation-receipt.json',retired)
+        prior=self.root/'releases/20261011T010000Z-333333333333';prior.mkdir()
+        prior_body=(json.dumps(dict(schemaVersion=1,phase='retired-clean',release=str(prior)),indent=2)+'\n').encode()
+        (prior/'installation-receipt.json').write_bytes(prior_body);(prior/'installation-receipt.json').chmod(0o600)
+        (self.root/'current').symlink_to(prior)
+        result=journal.retire_empty_preparation(self.root,self.bundle,journal.digest(self.path),True,verifier=lambda _:None)
+        self.assertEqual(self.path.read_bytes(),prior_body)
+        self.assertEqual((prior/'installation-receipt.json').read_bytes(),prior_body)
+        self.assertEqual(journal.read(self.release/'installation-receipt.json'),retired)
+        self.assertEqual(result['rootAuthorityRelease'],str(prior))
+
+    def test_empty_retirement_recovers_interruption_between_receipt_and_root_authority(self):
+        expected=self.failed_empty_preparation()
+        prior=self.root/'releases/20261011T010000Z-333333333333';prior.mkdir()
+        journal.write(prior/'installation-receipt.json',dict(schemaVersion=1,phase='retired-clean',release=str(prior)))
+        (self.root/'current').symlink_to(prior)
+        original=journal.write
+        def interrupt(path,value,raw=None):
+            if path==self.path:raise OSError('synthetic publication interruption')
+            return original(path,value,raw=raw)
+        with patch.object(journal,'write',side_effect=interrupt),self.assertRaises(OSError):
+            journal.retire_empty_preparation(self.root,self.bundle,expected,True,verifier=lambda _:None)
+        self.assertEqual(journal.digest(self.path),expected)
+        self.assertEqual(journal.read(self.release/'installation-receipt.json')['retiredIntentSha256'],expected)
+        journal.retire_empty_preparation(self.root,self.bundle,expected,True,verifier=lambda _:None)
+        self.assertEqual(self.path.read_bytes(),(prior/'installation-receipt.json').read_bytes())
 
     def test_empty_preparation_refuses_copied_source_before_verifier(self):
         expected=self.failed_empty_preparation();self.copy_pins_to_release()

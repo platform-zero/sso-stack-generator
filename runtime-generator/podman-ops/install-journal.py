@@ -50,13 +50,16 @@ def read(path):
     return value
 
 
-def write(path, value):
+def write(path, value, raw=None):
     directory(path.parent)
     read(path)
+    if raw is not None and json.loads(raw) != value:
+        raise ValueError('Raw canonical record does not match validated value')
+    body = raw if raw is not None else (json.dumps(value, sort_keys=True) + '\n').encode()
     fd, name = tempfile.mkstemp(prefix='.install-journal-', dir=path.parent)
     try:
-        with os.fdopen(fd, 'w') as output:
-            json.dump(value, output, sort_keys=True); output.write('\n')
+        with os.fdopen(fd, 'wb') as output:
+            output.write(body)
             output.flush(); os.fsync(output.fileno())
         os.chmod(name, 0o600); os.replace(name, path)
         fd = os.open(path.parent, os.O_DIRECTORY)
@@ -812,22 +815,38 @@ def retire_empty_preparation(root, bundle, expected, reviewed, verifier=None):
 
     The original separate source is mandatory: an empty release cannot prove
     its own input binding. No permissions, pointers, actors or data are changed.
-    A retained clean current is not adopted or granted rollback/readiness.
+    Clear the abandoned allocator lease, restoring only exact existing clean-
+    current metadata when present. Never adopt data or grant rollback/readiness.
     """
     directory(root)
     path = root / '.install-intent.json'; value = read(path)
+    failed = value and value['phase'] == 'failed' and value.get('steps') == ['preparing', 'failed']
+    retired_empty = (value and value['phase'] == 'retired-failed'
+                     and value.get('steps') == ['preparing', 'failed', 'retired-failed']
+                     and value.get('emptyPreparationOnly') is True and value.get('neverSelectedProved') is True
+                     and value.get('activationAuthorized') is False and value.get('dataCompatibilityProved') is False
+                     and value.get('dataPreserved') is True
+                     and isinstance(value.get('retiredIntentSha256'), str)
+                     and re.fullmatch(r'[a-f0-9]{64}', value['retiredIntentSha256']))
     if (not reviewed or bundle is None or not re.fullmatch(r'[a-f0-9]{64}', expected)
-            or not value or digest(path) != expected or value['phase'] != 'failed'
-            or value.get('steps') != ['preparing', 'failed'] or value.get('previousRelease') is not None):
+            or not value or digest(path) != expected or not (failed or retired_empty)
+            or value.get('previousRelease') is not None):
         raise ValueError('Exact reviewed failed initial preparation required')
+    retired = (dict(value, phase='retired-failed', steps=value['steps'] + ['retired-failed'],
+                    retiredIntentSha256=expected, neverSelectedProved=True, emptyPreparationOnly=True,
+                    dataPreserved=True, dataCompatibilityProved=False, activationAuthorized=False)
+               if failed else value)
     release = Path(value['release'])
     if release.parent != root / 'releases' or bundle == release or bundle.is_relative_to(release):
         raise ValueError('Separate source and exact empty release required')
     directory(release); directory(bundle)
     def empty_leaf():
+        receipt = read(release / 'installation-receipt.json')
+        # The second alternative recovers interruption after publishing only
+        # this operation's exactly derived terminal receipt, never other drift.
         return (sorted(item.name for item in release.iterdir()) == ['installation-receipt.json']
-                and read(release / 'installation-receipt.json') == value
-                and (release / 'installation-receipt.json').read_bytes() == path.read_bytes())
+                and (receipt == retired or receipt == value
+                     and (release / 'installation-receipt.json').read_bytes() == path.read_bytes()))
     if not empty_leaf() or fingerprint(bundle) != value['inputs']:
         raise ValueError('Empty preparation/source/dual-record binding changed')
     manifest = json.loads((bundle / 'site/manifest.json').read_text())
@@ -864,11 +883,26 @@ def retire_empty_preparation(root, bundle, expected, reviewed, verifier=None):
     if (digest(path) != expected or not empty_leaf() or fingerprint(bundle) != value['inputs']
             or current_pin() != current):
         raise ValueError('Empty preparation CAS changed during offline review')
-    retired = dict(value, phase='retired-failed', steps=value['steps'] + ['retired-failed'],
-                   retiredIntentSha256=expected, neverSelectedProved=True, emptyPreparationOnly=True,
-                   dataPreserved=True, dataCompatibilityProved=False, activationAuthorized=False)
-    write(release / 'installation-receipt.json', retired); write(path, retired)
-    return retired
+    write(release / 'installation-receipt.json', retired)
+    if current is not None:
+        # The abandoned empty leaf is NOT selected source. Restore only the
+        # exact existing clean-current metadata authority, never data/actors or
+        # an active predecessor. Keep its original canonical bytes unchanged.
+        prior_path = (root / 'current').resolve() / 'installation-receipt.json'
+        prior = read(prior_path); body = prior_path.read_bytes()
+        if current_pin() != current or hashlib.sha256(body).hexdigest() != current[-1]:
+            raise ValueError('Clean-current authority changed before publication')
+        write(path, prior, raw=body)
+    else:
+        # No selected source existed. Drop only the terminal allocator lease;
+        # retain the abandoned leaf's immutable failed evidence, not a fake
+        # selected source that could pass future metadata admission.
+        path.unlink()
+        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try: os.fsync(fd)
+        finally: os.close(fd)
+    return dict(retired, rootAuthorityRelease=prior['release'] if current is not None else None,
+                globalIntentCleared=current is None)
 
 
 def retire_unselected(root, expected, reviewed, verifier=verify_unselected_preparation):
