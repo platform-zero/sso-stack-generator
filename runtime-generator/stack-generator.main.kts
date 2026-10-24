@@ -1247,10 +1247,105 @@ fun standaloneStorageMarkerSha(manifest: JsonNode): String {
         .joinToString("") { "%02x".format(it) }
 }
 
+// Root-selected non-client peers are topology, never inferred identities. The
+// Caddy adapter separately validates overlap with its trusted-proxy inventory.
+fun standaloneResultsMount(name: String, service: ObjectNode, scopeRoot: Path): String? {
+    val dynamic = "\${TEST_RESULTS_HOST_DIR:?TEST_RESULTS_HOST_DIR must be set by run-tests.sh}"
+    val target = "/app/test-results"
+    val marker = service.path("x-standalone-results-mount")
+    val candidates = service.path("volumes").filter { mount ->
+        if (mount.isTextual) mount.asText().contains("TEST_RESULTS_HOST_DIR") || mount.asText().contains(target)
+        else mount.path("source").asText().contains("TEST_RESULTS_HOST_DIR") || mount.path("target").asText() == target
+    }
+    if (marker.isMissingNode && candidates.isEmpty() && name !in setOf("test-runner", "test-runner-managed")) return null
+    if (name !in setOf("test-runner", "test-runner-managed") || service.path("module").asText() != "test-runners" ||
+        service.path("lifecycle").asText() != "on-demand" || service.path("placement").asText() != "rootless" ||
+        service.path("rootlessDomain").asText() != "test-runners") fail("unreviewed standalone results service/domain")
+    if (!marker.isObject || marker.fieldNames().asSequence().toSet() != setOf("version", "target") ||
+        !marker.path("version").isInt || marker.path("version").asInt() != 1 || marker.path("target").asText() != target)
+        fail("standalone results requires the exact owning-module mount marker")
+    val mount = candidates.singleOrNull() ?: fail("standalone results requires one exact structured bind")
+    if (!mount.isObject || mount.fieldNames().asSequence().toSet() != setOf("type", "source", "target") ||
+        mount.path("type").asText() != "bind" || mount.path("source").asText() != dynamic || mount.path("target").asText() != target)
+        fail("standalone results bind contract differs")
+    val domain = activePodmanPolicy.domains.singleOrNull { it.name == "test-runners" }
+        ?: fail("standalone results requires its selected native domain")
+    val root = Path(domain.volumeRoot)
+    if (domain.uid != 786 || domain.user != "webservices-test-runners" || "test-runners" !in domain.modules ||
+        service.path("rootlessUser").asText() != domain.user || service.path("rootlessVolumeRoot").asText() != domain.volumeRoot ||
+        !domain.volumeRoot.matches(Regex("/[A-Za-z0-9_./-]+")) || !root.isAbsolute || root.normalize().toString() != domain.volumeRoot || !root.startsWith(scopeRoot) || root == scopeRoot ||
+        domain.volumeRoot.contains('$') || domain.volumeRoot.contains(':') || domain.volumeRoot.contains('\n'))
+        fail("standalone results requires the admitted canonical actor volume root")
+    // Keep the existing pwuser runner, but map its UID/GID to actor 786.
+    // The actor-created 0700 leaf needs neither :U nor ownership repair.
+    if (service.has("userns") || service.has("user") || service.path("environment").has("TEST_RUNNER_STANDALONE_RESULTS"))
+        fail("standalone results ownership contract cannot be overridden")
+    service.put("userns", "keep-id:uid=1000,gid=1000")
+    // keep-id otherwise selects the mapped user before image-only CA bootstrap.
+    service.put("user", "0:0")
+    service.withObject("environment").put("TEST_RUNNER_STANDALONE_RESULTS", "v1")
+    return "$root/test-results"
+}
+
+fun standaloneIngressDirectPeers(manifest: JsonNode): List<String> {
+    val selected = manifest.path("ingressDirectNonClientCidrs")
+    if (selected.isMissingNode) return emptyList()
+    if (!selected.isArray || selected.size() > 64) fail("invalid ingressDirectNonClientCidrs inventory")
+    val result = selected.map { value ->
+        if (!value.isTextual) fail("non-text ingress direct peer CIDR")
+        val text = value.asText()
+        val parts = text.split('/')
+        if (parts.size != 2 || !parts[0].matches(Regex("[0-9a-f:.]+"))) fail("invalid ingress direct peer CIDR")
+        val bits = parts[1].toIntOrNull() ?: fail("invalid ingress direct peer prefix")
+        if (parts[1] != bits.toString()) fail("noncanonical ingress direct peer prefix")
+        val ipv6 = ':' in parts[0]
+        val bytes = if (ipv6) {
+            // A colon and this numeric-only grammar prevent DNS resolution.
+            try { java.net.InetAddress.getByName(parts[0]).address.map { it.toInt() and 255 } }
+            catch (_: Exception) { fail("invalid IPv6 ingress direct peer") }
+        } else {
+            val octets = parts[0].split('.')
+            if (octets.size != 4) fail("invalid IPv4 ingress direct peer")
+            octets.map { val n = it.toIntOrNull() ?: fail("invalid IPv4 ingress direct peer")
+                if (n !in 0..255 || it != n.toString()) fail("noncanonical IPv4 ingress direct peer")
+                n }
+        }
+        val width = if (ipv6) 128 else 32
+        if (bytes.size != width / 8 || bits !in 0..width) fail("invalid ingress direct peer family/prefix")
+        if ((bits until width).any { bit -> (bytes[bit / 8] and (1 shl (7 - bit % 8))) != 0 })
+            fail("ingress direct peer CIDR has host bits")
+        val privatePeer = if (ipv6) {
+            ((bytes[0] and 254) == 252 && bits >= 7) ||
+                (bits == 128 && bytes.dropLast(1).all { it == 0 } && bytes.last() == 1)
+        } else (bytes[0] == 10 && bits >= 8) || (bytes[0] == 127 && bits >= 8) ||
+            (bytes[0] == 172 && bytes[1] in 16..31 && bits >= 12) ||
+            (bytes[0] == 192 && bytes[1] == 168 && bits >= 16)
+        if (!privatePeer) fail("ingress non-client inventory must be wholly private/loopback")
+        if (ipv6) {
+            val words = (0 until 8).map { (bytes[2 * it] shl 8) or bytes[2 * it + 1] }
+            var start = -1; var length = 1; var i = 0
+            while (i < words.size) {
+                if (words[i] != 0) { i++; continue }
+                var end = i; while (end < words.size && words[end] == 0) end++
+                if (end - i > length) { start = i; length = end - i }
+                i = end
+            }
+            val canonical = if (start < 0) words.joinToString(":") { it.toString(16) }
+                else words.take(start).joinToString(":") { it.toString(16) } + "::" +
+                    words.drop(start + length).joinToString(":") { it.toString(16) }
+            if (parts[0] != canonical) fail("noncanonical IPv6 ingress direct peer")
+        }
+        text
+    }
+    if (result.distinct().size != result.size) fail("duplicate ingress direct peer CIDR")
+    return result
+}
+
 fun applyStandaloneHostProfile(ir: ObjectNode, manifest: JsonNode) {
     if (!standaloneHost(manifest)) return
     if (activePodmanPolicy.unitPrefix != "webservices") fail("standalone deployment requires the ordinary native host profile")
     val scopeRoot = Path(manifest.path("storageScope").path("root").asText())
+    val ingressDirectPeers = standaloneIngressDirectPeers(manifest)
     fun requireScoped(root: String) {
         val path = Path(root).normalize()
         if (!path.startsWith(scopeRoot) || path == scopeRoot) fail("standalone private storage escapes its declared scope")
@@ -1259,6 +1354,7 @@ fun applyStandaloneHostProfile(ir: ObjectNode, manifest: JsonNode) {
     ir.path("volumes").fieldsMap().forEach { (_, volume) -> volume.path("hostPath").textOrNull()?.let(::requireScoped) }
     ir.path("services").fieldsMap().forEach { (name, raw) ->
         val service = raw as ObjectNode
+        val resultsSource = standaloneResultsMount(name, service, scopeRoot)
         if (name == "volume-init") {
             val check = service.path("x-standalone-storage-check")
             if (service.path("placement").asText() != "rootful" || check.path("version").asInt() != 1 ||
@@ -1274,6 +1370,10 @@ fun applyStandaloneHostProfile(ir: ObjectNode, manifest: JsonNode) {
             service.put("readOnly", true); service.set<ArrayNode>("capDrop", arr().add("ALL"))
             service.set<ArrayNode>("securityOpt", arr().add("no-new-privileges:true"))
             service.put("storageProvisioningOwner", "native-installer")
+        }
+        if (name == "caddy") {
+            // Literal sealed IR input, not an ambient or master-secret override.
+            service.withObject("environment").put("P0_INGRESS_DIRECT_NON_CLIENT_CIDRS", ingressDirectPeers.joinToString(" "))
         }
         if (name == "alloy") {
             val uids = setOf(0) + activePodmanPolicy.domains.map { it.uid ?: fail("standalone journal scope requires fixed domain UIDs") }
@@ -1299,6 +1399,8 @@ fun applyStandaloneHostProfile(ir: ObjectNode, manifest: JsonNode) {
                     fun stateRoot(domain: String): String = activePodmanPolicy.domains.singleOrNull { it.name == domain }?.stateRoot
                         ?: fail("standalone bind requires selected domain '$domain'")
                     val replacement = when (source) {
+                        "\${TEST_RESULTS_HOST_DIR:?TEST_RESULTS_HOST_DIR must be set by run-tests.sh}" ->
+                            resultsSource ?: fail("unreviewed dynamic standalone results source")
                         "/var/log/webservices/caddy" -> standaloneCaddyLogRoot()
                         "/mnt/stack/forgejo-runner-ssh" -> stateRoot("ci-runner") + "/forgejo-runner-ssh"
                         "/mnt/stack/podman/test-runners/state/test-runner/results" -> stateRoot("test-runners") + "/test-runner/results"
@@ -2656,6 +2758,23 @@ fun commandGenerate(options: Map<String, String>) {
         if (standaloneHost(readTree(manifest))) metadata.put("deploymentMode", "standalone")
         metadata.put("irSha256", sha256(staging.resolve("stack.ir.json")))
         metadata.put("sourceProvenanceSha256", sha256(staging.resolve("source-provenance.json")))
+        if (backend == "podman") {
+            // Pin every emitted transitive native helper before the receipt
+            // pins bundle.json. Never mint helper pins from an installed tree.
+            val liveOps = obj()
+            Files.list(staging.resolve("ops")).use { files ->
+                files.sorted().forEach { source ->
+                    val name = source.fileName.toString()
+                    if (!Regex("[A-Za-z0-9][A-Za-z0-9_.-]*").matches(name) ||
+                        !Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)) {
+                        fail("unrecognized native operations artifact")
+                    }
+                    liveOps.put("ops/$name", sha256(source))
+                }
+            }
+            if (liveOps.size() == 0) fail("missing native operations pins")
+            metadata.set<ObjectNode>("liveOps", liveOps)
+        }
         metadata.set<ArrayNode>("deferredCapabilities", ir.path("deferredCapabilities").deepCopy())
         writeJson(staging.resolve("bundle.json"), metadata)
         normalizeArtifactPermissions(staging)
