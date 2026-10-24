@@ -5,8 +5,10 @@ No chown, setfacl, system identity lookup, service query, network or host instal
 The production source/provenance, marker, journal, DAG and fingerprint validators
 are NOT mocked. These are isolated source tests, not installed/owner acceptance.
 """
+import contextlib
 import errno
 import importlib.util
+import io
 import os
 from pathlib import Path
 import stat
@@ -31,6 +33,19 @@ def acl(named=(), group=7, mask=7, other=0):
 
 
 class Directories(unittest.TestCase):
+    def test_cli_failure_exposes_code_guard_only_never_exception_values(self):
+        output=io.StringIO()
+        with patch('sys.argv',['prepare','--bundle','/private/input','--root','/private/state','--domain','platform']), \
+             patch.object(m,'prepare',side_effect=ValueError('secret-sentinel /private/key-content')), \
+             contextlib.redirect_stderr(output), self.assertRaises(SystemExit) as error:
+            m.main()
+        self.assertEqual(error.exception.code,1)
+        self.assertIn('native private directory preparation refused',output.getvalue())
+        self.assertIn('guard: prepare-native-private-directories.py:',output.getvalue())
+        self.assertNotIn('secret-sentinel',output.getvalue())
+        self.assertNotIn('/private',output.getvalue())
+        self.assertNotIn(str(SOURCE.parent),output.getvalue())
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='private-directory-model-')
         self.addCleanup(self.temp.cleanup)

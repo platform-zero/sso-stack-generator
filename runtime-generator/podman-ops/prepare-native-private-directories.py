@@ -506,9 +506,16 @@ def main():
     try:
         print(p.encoded(prepare(args.bundle, args.domain, args.root)).decode(), end='')
     except (ValueError, OSError, KeyError, TypeError) as error:
-        # Only a stable path/value-free dependency, never exception data.
+        # Never format exception data, paths, locals or source lines. Operator
+        # diagnostics identify only trusted ops code guards (basename/line/name).
         message = RESET if isinstance(error, Refused) and str(error) == RESET else 'native private directory preparation refused'
-        parser.exit(1, message + '\n')
+        frames = []; tb = error.__traceback__
+        while tb is not None:
+            code = tb.tb_frame.f_code
+            if Path(code.co_filename).parent == Path(__file__).parent:
+                frames.append(f'{Path(code.co_filename).name}:{tb.tb_lineno}:{code.co_name}')
+            tb = tb.tb_next
+        parser.exit(1, message + '\n' + 'guard: ' + ' > '.join(frames[-16:]) + '\n')
 
 
 if __name__ == '__main__':

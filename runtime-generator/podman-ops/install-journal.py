@@ -189,7 +189,10 @@ def update(root, bundle, release, phase, expected=''):
                 # supplied token or a target-active assertion. Refusal writes
                 # no active receipt/intent and leaves failed/pending evidence.
                 value['nativeReadiness'] = owner.verify_active_transition(root, release, old)
-    release.mkdir(mode=0o755, parents=True, exist_ok=True)
+    # Native private-directory preparation consumes this new receipt leaf
+    # BEFORE source copying. Its root-only custody must not depend on umask.
+    # Never normalize an existing release's permissions here.
+    release.mkdir(mode=0o700, parents=True, exist_ok=True)
     directory(release)
     # Preserve each immutable release's own compact receipt, not an experiment backup.
     write(release / 'installation-receipt.json', value)
@@ -803,6 +806,65 @@ def seal_unselected(root, expected, reviewed):
             'dataPreserved': True, 'applicationAcceptance': False}
 
 
+def retire_empty_preparation(root, bundle, expected, reviewed, verifier=verify_quarantined):
+    """Retire only a failed synthetic receipt leaf, before any source copy.
+
+    The original separate source is mandatory: an empty release cannot prove
+    its own input binding. No permissions, pointers, actors or data are changed.
+    A retained clean current is not adopted or granted rollback/readiness.
+    """
+    directory(root)
+    path = root / '.install-intent.json'; value = read(path)
+    if (not reviewed or bundle is None or not re.fullmatch(r'[a-f0-9]{64}', expected)
+            or not value or digest(path) != expected or value['phase'] != 'failed'
+            or value.get('steps') != ['preparing', 'failed'] or value.get('previousRelease') is not None):
+        raise ValueError('Exact reviewed failed initial preparation required')
+    release = Path(value['release'])
+    if release.parent != root / 'releases' or bundle == release or bundle.is_relative_to(release):
+        raise ValueError('Separate source and exact empty release required')
+    directory(release); directory(bundle)
+    def empty_leaf():
+        return (sorted(item.name for item in release.iterdir()) == ['installation-receipt.json']
+                and read(release / 'installation-receipt.json') == value
+                and (release / 'installation-receipt.json').read_bytes() == path.read_bytes())
+    if not empty_leaf() or fingerprint(bundle) != value['inputs']:
+        raise ValueError('Empty preparation/source/dual-record binding changed')
+    manifest = json.loads((bundle / 'site/manifest.json').read_text())
+    metadata = json.loads((bundle / 'podman-domains.json').read_text())
+    if (manifest.get('deploymentMode') != 'standalone' or metadata.get('deploymentMode') != 'standalone'
+            or manifest.get('installerStateRoot') != str(root) or metadata.get('installerStateRoot') != str(root)
+            or not isinstance(manifest.get('storageScope'), dict)
+            or manifest['storageScope'].get('dataClass') != 'synthetic'
+            or metadata.get('storageScope') != manifest['storageScope']):
+        raise ValueError('Only the exact standalone synthetic preparation may retire')
+    def current_pin():
+        current = root / 'current'
+        if not current.exists() and not current.is_symlink(): return None
+        info = current.lstat()
+        if not stat.S_ISLNK(info.st_mode) or info.st_uid != 0:
+            raise ValueError('Untrusted retained current pointer')
+        target = current.resolve(strict=True)
+        if target == release or target.parent != root / 'releases':
+            raise ValueError('Empty preparation is selected or current escaped root')
+        directory(target)
+        receipt = target / 'installation-receipt.json'; prior = read(receipt)
+        if not prior or prior['phase'] != 'retired-clean' or prior.get('release') != str(target):
+            raise ValueError('Retained current must already be clean-retired')
+        return (info.st_dev, info.st_ino, info.st_ctime_ns, os.readlink(current), digest(receipt))
+    current = current_pin()
+    # Query only this source's selected services, boot/API triggers and jobs.
+    # Existing canonical offline-actor/NSS/process checks remain authoritative.
+    verifier(bundle)
+    if (digest(path) != expected or not empty_leaf() or fingerprint(bundle) != value['inputs']
+            or current_pin() != current):
+        raise ValueError('Empty preparation CAS changed during offline review')
+    retired = dict(value, phase='retired-failed', steps=value['steps'] + ['retired-failed'],
+                   retiredIntentSha256=expected, neverSelectedProved=True, emptyPreparationOnly=True,
+                   dataPreserved=True, dataCompatibilityProved=False, activationAuthorized=False)
+    write(release / 'installation-receipt.json', retired); write(path, retired)
+    return retired
+
+
 def retire_unselected(root, expected, reviewed, verifier=verify_unselected_preparation):
     """Exact-CAS terminal disposition; no stop/restart/data/account mutation."""
     directory(root)
@@ -1065,6 +1127,7 @@ def main():
     parser.add_argument('--assert-domain-offline')
     parser.add_argument('--retire-failed', default='')
     parser.add_argument('--retire-unselected', default='')
+    parser.add_argument('--retire-empty-preparation', default='')
     parser.add_argument('--seal-unselected', default='')
     parser.add_argument('--quarantine-failed', default='')
     parser.add_argument('--reviewed-data-state', action='store_true')
@@ -1077,12 +1140,12 @@ def main():
     actions = (args.inspect, bool(args.project_domain), args.complete_clean_reset, args.install_selected_files, args.stop_selection,
                args.project_rootful_environment, args.install_runtime_environment_units, args.seal_runtime_environment_copies,
                args.native_finance_arm, args.native_finance_capture,
-               bool(args.assert_domain_offline), bool(args.retire_failed), bool(args.retire_unselected),
+               bool(args.assert_domain_offline), bool(args.retire_failed), bool(args.retire_unselected), bool(args.retire_empty_preparation),
                bool(args.seal_unselected), bool(args.quarantine_failed), args.phase is not None)
     if sum(actions) != 1: parser.error('Exactly one canonical journal operation required')
     try:
-        if args.retire_failed or args.quarantine_failed or args.retire_unselected or args.seal_unselected:
-            if sum(bool(v) for v in (args.retire_failed, args.quarantine_failed, args.retire_unselected, args.seal_unselected)) != 1:
+        if args.retire_failed or args.quarantine_failed or args.retire_unselected or args.seal_unselected or args.retire_empty_preparation:
+            if sum(bool(v) for v in (args.retire_failed, args.quarantine_failed, args.retire_unselected, args.seal_unselected, args.retire_empty_preparation)) != 1:
                 raise ValueError('One exact recovery operation at a time')
             directory(args.root)
             lock = args.root / '.install.lock'
@@ -1092,7 +1155,9 @@ def main():
                 if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
                     raise ValueError('Unsafe installation lock')
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                if args.seal_unselected:
+                if args.retire_empty_preparation:
+                    result = retire_empty_preparation(args.root, args.bundle, args.retire_empty_preparation, args.reviewed_data_state)
+                elif args.seal_unselected:
                     result = seal_unselected(args.root, args.seal_unselected, args.reviewed_data_state)
                 elif args.retire_unselected:
                     result = retire_unselected(args.root, args.retire_unselected, args.reviewed_data_state)

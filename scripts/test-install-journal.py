@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run as root: journal permissions, ordered phases, CAS and unchanged inputs."""
 import importlib.util
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -36,6 +37,95 @@ class InstallationJournal(unittest.TestCase):
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(journal.read(self.release / 'installation-receipt.json'), journal.read(self.path))
         with self.assertRaises(ValueError): journal.update(self.root, self.bundle, self.release, 'failed')
+
+    def test_new_preparing_leaf_passes_native_private_guard_under_normal_umasks(self):
+        helper_path=source.with_name('prepare-native-private-directories.py')
+        helper_spec=importlib.util.spec_from_file_location('native_private_leaf_fixture',helper_path)
+        helper=importlib.util.module_from_spec(helper_spec);helper_spec.loader.exec_module(helper)
+        for mask in (0o022,0o000):
+            with self.subTest(umask=oct(mask)):
+                root=self.root/str(mask);root.mkdir()
+                release=root/'releases/20261012T020000Z-222222222222'
+                before=os.umask(mask)
+                try:journal.update(root,self.bundle,release,'preparing')
+                finally:os.umask(before)
+                self.assertEqual(release.stat().st_mode & 0o7777,0o700)
+                fd=os.open(release,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+                try:helper.root_private(fd)
+                finally:os.close(fd)
+                self.assertEqual((release/'installation-receipt.json').stat().st_mode & 0o7777,0o600)
+                self.assertEqual((release/'installation-receipt.json').read_bytes(),(root/'.install-intent.json').read_bytes())
+
+    def failed_empty_preparation(self):
+        scope={'root':str(self.root/'synthetic-scope'),'dataClass':'synthetic'}
+        profile={'deploymentMode':'standalone','installerStateRoot':str(self.root),'storageScope':scope}
+        (self.bundle/'site').mkdir()
+        (self.bundle/'site/manifest.json').write_text(json.dumps(profile))
+        (self.bundle/'podman-domains.json').write_text(json.dumps(profile))
+        journal.update(self.root,self.bundle,self.release,'preparing')
+        journal.update(self.root,self.bundle,self.release,'failed')
+        return journal.digest(self.path)
+
+    def test_empty_preparation_retirement_preserves_clean_current_and_permissions(self):
+        expected=self.failed_empty_preparation()
+        prior=self.root/'releases/20261011T010000Z-333333333333';prior.mkdir()
+        journal.write(prior/'installation-receipt.json',dict(schemaVersion=1,phase='retired-clean',release=str(prior)))
+        (self.root/'current').symlink_to(prior)
+        self.release.chmod(0o755)  # Actual failed journal-created metadata shape.
+        visited=[]
+        result=journal.retire_empty_preparation(self.root,self.bundle,expected,True,verifier=visited.append)
+        self.assertEqual(visited,[self.bundle])
+        self.assertEqual(result['phase'],'retired-failed')
+        self.assertTrue(result['emptyPreparationOnly'])
+        self.assertFalse(result['dataCompatibilityProved'])
+        self.assertFalse(result['activationAuthorized'])
+        self.assertEqual((self.root/'current').resolve(),prior)
+        self.assertEqual(self.release.stat().st_mode & 0o7777,0o755)
+        self.assertEqual(sorted(p.name for p in self.release.iterdir()),['installation-receipt.json'])
+        self.assertEqual(journal.read(self.path),journal.read(self.release/'installation-receipt.json'))
+
+    def test_empty_preparation_refuses_copied_source_before_verifier(self):
+        expected=self.failed_empty_preparation();self.copy_pins_to_release()
+        with self.assertRaises(ValueError):
+            journal.retire_empty_preparation(self.root,self.bundle,expected,True,verifier=lambda _:self.fail('unexpected verifier'))
+        self.assertEqual(journal.digest(self.path),expected)
+
+    def test_empty_preparation_refuses_changed_source(self):
+        expected=self.failed_empty_preparation();(self.bundle/'stack.ir.json').write_text('{"changed":true}')
+        with self.assertRaises(ValueError):journal.retire_empty_preparation(self.root,self.bundle,expected,True)
+        self.assertEqual(journal.digest(self.path),expected)
+
+    def test_empty_preparation_requires_offline_review_without_mutation(self):
+        expected=self.failed_empty_preparation()
+        def refuse(_):raise ValueError('actor not offline')
+        with self.assertRaises(ValueError):journal.retire_empty_preparation(self.root,self.bundle,expected,True,verifier=refuse)
+        self.assertEqual(journal.digest(self.path),expected)
+
+    def test_empty_preparation_cas_rechecks_current_and_source_after_review(self):
+        expected=self.failed_empty_preparation()
+        def change(_):(self.bundle/'stack.ir.json').write_text('{"changed":true}')
+        with self.assertRaises(ValueError):journal.retire_empty_preparation(self.root,self.bundle,expected,True,verifier=change)
+        self.assertEqual(journal.digest(self.path),expected)
+
+    def test_empty_preparation_refuses_selected_or_active_current(self):
+        expected=self.failed_empty_preparation();current=self.root/'current';current.symlink_to(self.release)
+        with self.assertRaises(ValueError):journal.retire_empty_preparation(self.root,self.bundle,expected,True)
+        current.unlink();prior=self.root/'releases/20261011T010000Z-333333333333';prior.mkdir()
+        journal.write(prior/'installation-receipt.json',dict(schemaVersion=1,phase='active',release=str(prior)))
+        current.symlink_to(prior)
+        with self.assertRaises(ValueError):journal.retire_empty_preparation(self.root,self.bundle,expected,True)
+        self.assertEqual(journal.digest(self.path),expected)
+
+    def test_empty_preparation_refuses_production_and_missing_review(self):
+        expected=self.failed_empty_preparation()
+        with self.assertRaises(ValueError):journal.retire_empty_preparation(self.root,self.bundle,expected,False)
+        for name in ('site/manifest.json','podman-domains.json'):
+            path=self.bundle/name;value=json.loads(path.read_text());value['storageScope']['dataClass']='production';path.write_text(json.dumps(value))
+        value=journal.read(self.path);value['inputs']=journal.fingerprint(self.bundle)
+        journal.write(self.path,value);journal.write(self.release/'installation-receipt.json',value)
+        expected=journal.digest(self.path)
+        with self.assertRaises(ValueError):journal.retire_empty_preparation(self.root,self.bundle,expected,True)
+        self.assertEqual(journal.digest(self.path),expected)
 
     def test_retired_clean_allows_new_attempt_without_rollback_claim(self):
         journal.update(self.root, self.bundle, self.release, 'preparing')
