@@ -271,7 +271,7 @@ class StoppedRecoveryLease:
         finance_entries = None
         configs = []; namespaces = {}
         if finance_root is not None:
-            rows = h.tree_entries(finance_root, 'root', [0, 0], {'uids': [0], 'gids': [0], 'ranges': []},
+            rows = h.tree_entries(finance_root, 'root', [0, 0], self.finance_reference_owners(),
                                   {'root', 'root/input.json'})
             finance_entries = h.sha(h.canonical(h.content_rows(rows)))
             namespaces[str(finance_root)] = ['.', 'input.json']
@@ -323,6 +323,16 @@ class StoppedRecoveryLease:
             result[str(gid)] = dict(members=sorted(grp.getgrgid(gid).gr_mem),
                 primary=sorted(a.pw_name for a in pwd.getpwall() if a.pw_gid == gid))
         return result
+
+    def finance_reference_owners(self):
+        # This is the completed ACTUAL Root observer result, not a source/site
+        # permission flag. Preserve UID0 and exactly its physically pinned GID
+        # for archive-only reference custody; never restore/adopt/rekey it.
+        reference = self.finance_reference['reference']
+        directory, leaf = reference['directory']['identity'], reference['input']['identity']
+        require(len(directory) == len(leaf) == 9 and directory[2] == leaf[2] == 0
+                and type(directory[3]) is int and directory[3] == leaf[3], 'Original finance reference owner differs')
+        return dict(uids=[0], gids=[directory[3]], ranges=[])
 
     def observe_finance(self):
         selected = [row for row in self.classification if row['kind'] == 'root-control-reference']

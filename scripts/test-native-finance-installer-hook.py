@@ -81,6 +81,8 @@ class ConsumerTransport(unittest.TestCase):
         script=c.path/'transport-finance.sh'
         input_path=c.path/'root-input.json'
         source=FINANCE.read_text().replace('/run/p0-finance/input.json',str(input_path))
+        namespace=c.path/'modeled-rootful-uid-map';namespace.write_text('0 0 4294967295\n')
+        source=source.replace('/proc/self/uid_map',str(namespace))
         # Test-only stat projection. No attempt to create Root-owned host files.
         source=source.replace("$(stat -c '%u:%g:%a:%h' -- \"$finance_input\")",'0:0:444:1')
         script.write_text(source)

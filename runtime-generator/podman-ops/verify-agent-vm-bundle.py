@@ -133,7 +133,7 @@ NATIVE_FINANCE_SOURCE = '/var/lib/webservices-native-finance'
 NATIVE_FINANCE_TARGET = '/run/p0-finance'
 
 
-def native_finance_reference(ir):
+def native_finance_reference(ir, domains=None):
     """Exact source descriptor only, NEVER physical custody or execution permission.
 
     Old releases without this feature remain unchanged. No parent/prefix/alias,
@@ -148,7 +148,7 @@ def native_finance_reference(ir):
             if touches or target == NATIVE_FINANCE_TARGET or target.startswith(NATIVE_FINANCE_TARGET + '/'):
                 if (name != 'keycloak-configure' or source != NATIVE_FINANCE_SOURCE
                         or target != NATIVE_FINANCE_TARGET or not ro or options != ['ro']
-                        or service.get('placement') != 'rootful' or service.get('lifecycle') != 'oneshot'):
+                        or service.get('placement') not in ('rootful', 'rootless') or service.get('lifecycle') != 'oneshot'):
                     raise ValueError('Exact readonly Root native finance reference required')
                 selected.append(name)
         environment = service.get('environment', {})
@@ -163,10 +163,53 @@ def native_finance_reference(ir):
             'FIREFLY_NATIVE_OWNERSHIP_FILE') != NATIVE_FINANCE_TARGET + '/input.json'
             or not {'postgres', 'keycloak', 'firefly-identity-check'} <= services.keys()):
         raise ValueError('Native finance reference selected cohort differs')
-    return dict(schemaVersion=1, kind='native-finance-reference-descriptor', service='keycloak-configure',
-                placement='rootful', lifecycle='oneshot', source=NATIVE_FINANCE_SOURCE,
+    placement = services['keycloak-configure']['placement']
+    descriptor = dict(schemaVersion=1, kind='native-finance-reference-descriptor', service='keycloak-configure',
+                placement=placement, lifecycle='oneshot', source=NATIVE_FINANCE_SOURCE,
                 target=NATIVE_FINANCE_TARGET, readOnly=True, file='input.json',
                 publisher='ops/native-finance-ownership.py', origin='root-native-finance-ownership')
+    if placement == 'rootful':
+        # Historical rootful descriptor/custody remains byte-for-byte shaped;
+        # its producer has always required both native daemons in that store.
+        if any(services[name].get('placement', 'rootful') != 'rootful' for name in ('keycloak', 'postgres')):
+            raise ValueError('Mixed native finance authority stores cannot be reclassified')
+        return descriptor
+    # Not an enum relaxation: all native authorities must be in the exact
+    # canonical platform actor's selected manager/store, with the finance leaf
+    # still belonging to its separate canonical actor. No caller identity flag.
+    path = Path(__file__).with_name('native-selection.py')
+    namespace = {'__name__': '_finance_canonical_roles', '__file__': str(path)}
+    exec(compile(path.read_bytes(), str(path), 'exec'), namespace)
+    identities = namespace['IDENTITIES']
+    if not isinstance(domains, dict) or not isinstance(domains.get('domains'), list):
+        raise ValueError('Selected native finance actor metadata required')
+    for domain, names in (('platform', ('keycloak-configure', 'keycloak', 'postgres')),
+                          ('finance', ('firefly-identity-check',))):
+        uid, user = identities[domain]
+        rows = [row for row in domains['domains'] if row.get('name') == domain]
+        if (len(rows) != 1 or type(rows[0].get('uid')) is not int or rows[0]['uid'] != uid
+                or rows[0].get('user') != user):
+            raise ValueError('Canonical native finance actor differs')
+        volume = str(canonical_path(rows[0]['volumeRoot']))
+        for name in names:
+            service = services[name]
+            module = {'keycloak-configure': 'keycloak-auth-gateway', 'keycloak': 'keycloak',
+                      'postgres': 'postgres', 'firefly-identity-check': 'firefly-iii'}[name]
+            lifecycle = 'oneshot' if name in ('keycloak-configure', 'firefly-identity-check') else 'daemon'
+            if (service.get('placement') != 'rootless' or service.get('rootlessDomain') != domain
+                    or service.get('rootlessUser') != user or service.get('rootlessVolumeRoot') != volume
+                    or service.get('module') != module or service.get('lifecycle') != lifecycle):
+                raise ValueError('Exact rootless native finance authority cohort required')
+    configure = services['keycloak-configure']
+    if configure.get('user') != '1000:0' or 'userns' in configure:
+        raise ValueError('Exact native configure image USER/default rootless namespace required')
+    checker = services['firefly-identity-check']
+    if checker.get('user') != '33:33' or checker.get('userns') != 'keep-id:uid=33,gid=33':
+        raise ValueError('Exact separate native finance checker namespace required')
+    descriptor['actor'] = dict(domain='platform', uid=identities['platform'][0], user=identities['platform'][1])
+    descriptor['consumer'] = dict(user='1000:0', uid=1000, gid=0, namespace='canonical-rootless-default')
+    descriptor['transport'] = 'root-owned-platform-group-readonly-v1'
+    return descriptor
 
 
 def standalone_boundaries(ir, domains, scope):
@@ -193,7 +236,7 @@ def standalone_boundaries(ir, domains, scope):
                 raise ValueError('Standalone volume escapes selected storage scope')
     # Classification is lexical source proof only. Actual Root publisher/CAS,
     # inode/ACL/mount custody is observed after arm before original consumption.
-    native_finance_reference(ir)
+    native_finance_reference(ir, domains)
     protected = {}
     for name in ('caddy_certs', 'caddy_ca', 'mail_tls'):
         if name in volumes:

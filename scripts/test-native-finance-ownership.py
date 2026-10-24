@@ -232,6 +232,7 @@ class NativeExportProjection(unittest.TestCase):
             self.calls.append(args); return types.SimpleNamespace(stdout=self.response)
         self.b.selection=types.SimpleNamespace(left=lambda:120,run=run)
         self.b.commands={'rootful':(['systemctl'],['podman','--root','/fixture/EXACT-store'])}
+        self.b.units={'postgres':types.SimpleNamespace(scope='rootful')}
         self.props=dict(ActiveState='active',Result='success',InvocationID='2'*32)
         self.live=dict(id='9'*64,image='sha256:'+'d'*64,source=SOURCE_PIN['postgres'],conmon={'cgroup':'fixture'})
     def export(self):
@@ -264,7 +265,7 @@ class DynamicReadonlySlot(unittest.TestCase):
         self.input=dict(schemaVersion=1,kind='root-native-finance-input',root='/fixture/root',release='/fixture/root/releases/one',
                         intentSha256='f'*64,sourceSha256=m.FINANCE_SOURCE_SHA256,issuer=ISSUER,status='fresh',nativeFinanceOwnership=None)
     def publish(self):
-        with patch.object(m,'SLOT',self.path),patch.object(m,'slot_directory',side_effect=lambda:os.open(self.path,os.O_DIRECTORY)),\
+        with patch.object(m,'SLOT',self.path),patch.object(m,'slot_directory',side_effect=lambda descriptor=None:os.open(self.path,os.O_DIRECTORY)),\
              patch.object(m.os,'fchown') as ownership,patch.object(m.n,'read_file',side_effect=lambda p:p.read_bytes()):
             m.publish_input(self.input)
             ownership.assert_called_once(); self.assertEqual(ownership.call_args.args[1:],(0,0))

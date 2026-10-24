@@ -34,12 +34,12 @@ class ExactDescriptor(unittest.TestCase):
         text=(OPS/'verify-agent-vm-bundle.py').read_text()
         start=text.index("NATIVE_FINANCE_SOURCE ="); end=text.index('def standalone_boundaries(',start)
         text=text[:start]+text[end:]
-        added='    # Classification is lexical source proof only. Actual Root publisher/CAS,\n    # inode/ACL/mount custody is observed after arm before original consumption.\n    native_finance_reference(ir)\n'
+        added='    # Classification is lexical source proof only. Actual Root publisher/CAS,\n    # inode/ACL/mount custody is observed after arm before original consumption.\n    native_finance_reference(ir, domains)\n'
         text=text.replace(added,'')
         self.assertEqual(n.r.sha(text.encode()),'1a1b73b12357086bd3d53d1d038804460d6e840e46d33ed4a084467fb12314fc')
     def test_existing_readiness_interfaces_byte_unchanged(self):
         text=(OPS/'native-readiness-owner.py').read_text()
-        a=text.index('def finance_reference_files():'); b=text.index('class Selection:',a); text=text[:a]+text[b:]
+        a=text.index('def finance_actor(descriptor):'); b=text.index('class Selection:',a); text=text[:a]+text[b:]
         a=text.index("        result = {'intentSha256': self.cas"); b=text.index('        return result',a)+len('        return result')
         old="""        return {'intentSha256': self.cas, 'release': str(self.release), 'inputs': pins,
                 'renderedInputs': rendered_pins, 'storageBinding': storage_pin, 'readiness': readiness,
@@ -51,6 +51,10 @@ class ExactDescriptor(unittest.TestCase):
         require(type(binding['nativeFinanceReferenceBindingSha256']) is str
                 and r.HEX.fullmatch(binding['nativeFinanceReferenceBindingSha256']),
                 'Selected finance reference has not been Root-published')
+        require(prior_intent.get('nativeFinanceOwnershipReceipt', {}).get('kind') == 'root-native-finance-ownership'
+                and prior_intent['nativeFinanceOwnershipReceipt'].get('status') == 'completed'
+                and prior_intent.get('nativeFinanceReference', {}).get('input', {}).get('content', {}).get('status') == 'retained',
+                'Original successful native finance frame absent; fresh transport is not readiness')
 """
         text=text.replace(added,'')
         self.assertEqual(n.r.sha(text.encode()),'16a22ef7f4fba4150e27d577f84007a03b0a5b835cae6c8a4145794aa07a84ac')

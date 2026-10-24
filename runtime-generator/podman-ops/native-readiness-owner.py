@@ -276,8 +276,69 @@ def pointer(root, release, *, directories=None, owners=(0,)):
     return True
 
 
-def finance_reference_files():
+def finance_actor(descriptor):
+    """Canonical finance reader, from selected source + exact NSS/sub-ID custody.
+
+    No account creation, supplemental-group grant, caller GID or permission flag.
+    Host Root remains the physical metadata owner; only this private primary
+    group can read the rootless transport. Historical rootful profiles are not
+    remapped or adopted.
+    """
+    if descriptor is None or descriptor.get('placement', 'rootful') == 'rootful': return None
+    require(descriptor.get('placement') == 'rootless', 'Unknown finance authority placement')
+    selected = load('_finance_actor_identities', 'native-selection.py')
+    uid, user = selected.IDENTITIES['platform']
+    require(descriptor.get('actor') == dict(domain='platform', uid=uid, user=user)
+            and descriptor.get('consumer') == dict(user='1000:0', uid=1000, gid=0, namespace='canonical-rootless-default')
+            and descriptor.get('transport') == 'root-owned-platform-group-readonly-v1', 'Exact selected finance reader required')
+    account, group = pwd.getpwnam(user), grp.getgrnam(user)
+    require((account.pw_uid, account.pw_name, account.pw_dir) == (uid, user, '/home/' + user)
+            and pwd.getpwuid(uid).pw_name == user and account.pw_gid == group.gr_gid > 0
+            and grp.getgrgid(group.gr_gid).gr_name == user and set(group.gr_mem) <= {user}
+            and all(other.pw_name == user for other in pwd.getpwall() if other.pw_gid == group.gr_gid),
+            'Canonical finance account/primary-group custody differs')
+    subordinate = storage.namespace_root_id(user)
+    text = Path('/proc/sys/kernel/overflowuid').read_text().strip()
+    require(text.isdigit() and 0 < int(text) < 2**32 - 1, 'Unknown kernel overflow UID')
+    return dict(uid=uid, gid=group.gr_gid, user=user, home=account.pw_dir,
+                subuidStart=subordinate, overflowUid=int(text))
+
+
+def finance_transport(descriptor):
+    actor = finance_actor(descriptor)
+    if actor is None: return None
+    return dict(kind='root-owned-platform-group-readonly-v1', actorUid=actor['uid'], actorGid=actor['gid'],
+                actorUser=actor['user'], consumerUid=1000, consumerGid=0, overflowUid=actor['overflowUid'])
+
+
+def finance_original_reference(native, intent, descriptor, release, issuer):
+    """Read-only current source/actor binding of the ORIGINAL native receipt."""
+    actor = finance_actor(descriptor)
+    require(actor is not None and type(native) is dict, 'Original rootless finance receipt required')
+    readiness = intent['readiness']; scope = 'rootless-platform'; source = {}
+    for name, key in (('keycloak-configure', 'configure'), ('keycloak', 'keycloak'), ('postgres', 'postgres')):
+        source[key] = dict(readiness['loadedInputs'][scope]['webservices-' + name + '.service'],
+                           image=readiness['images'][scope]['webservices-' + name + '.service']['configId'])
+    image_user = native.get('source', {}).get('imageUser')
+    require(image_user in ('1000', '1000:0'), 'Original pinned configure image USER missing')
+    source.update(authority=actor, imageUser=image_user,
+                  financeScriptSha256=r.sha(read_file(release / 'runtime/configs/keycloak/configure-finance.sh')),
+                  runtimeScriptSha256=r.sha(read_file(release / 'runtime/configs/keycloak/configure-runtime.sh')))
+    # Load only the source-pinned publisher's pure receipt validator. It cannot
+    # query/start/replay an engine or synthesize a missed original invocation.
+    owner = load('_finance_original_source_validator', 'native-finance-ownership.py')
+    owner.original_receipt(native, source, issuer)
+
+
+def finance_file_profile(descriptor=None):
+    actor = finance_actor(descriptor)
+    return (dict(gid=0, directoryMode=0o755, fileMode=0o444) if actor is None else
+            dict(gid=actor['gid'], directoryMode=0o750, fileMode=0o440))
+
+
+def finance_reference_files(descriptor=None):
     """Exact nonsecret dynamic directory/file FD custody, no prefix adoption."""
+    profile = finance_file_profile(descriptor)
     slot = Path('/var/lib/webservices-native-finance')
     fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     pins = []; path = Path('/')
@@ -289,13 +350,14 @@ def finance_reference_files():
             os.close(fd); fd = child; root_directory(os.fstat(fd))
             pins.append((path, identity(os.fstat(fd))))
         directory = os.fstat(fd)
-        require(directory.st_uid == 0 and directory.st_gid == 0 and stat.S_IMODE(directory.st_mode) == 0o755
+        require(directory.st_uid == 0 and directory.st_gid == profile['gid']
+                and stat.S_IMODE(directory.st_mode) == profile['directoryMode']
                 and not os.listxattr(fd) and set(os.listdir(fd)) == {'input.json'}, 'Unknown Root finance reference directory')
         leaf = os.open('input.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
         try:
             before = os.fstat(leaf)
-            require(stat.S_ISREG(before.st_mode) and before.st_uid == 0 and before.st_gid == 0
-                    and before.st_nlink == 1 and stat.S_IMODE(before.st_mode) == 0o444
+            require(stat.S_ISREG(before.st_mode) and before.st_uid == 0 and before.st_gid == profile['gid']
+                    and before.st_nlink == 1 and stat.S_IMODE(before.st_mode) == profile['fileMode']
                     and before.st_size <= 65536 and not os.listxattr(leaf), 'Unknown Root finance reference file')
             body = os.pread(leaf, 65537, 0)
             def mount_id(number):
@@ -324,7 +386,13 @@ def verify_native_finance_reference(root, release, intent):
     profile = load('_native_finance_reference_profile', 'verify-agent-vm-bundle.py')
     raw_ir = read_file(release / 'stack.ir.json')
     require(r.sha(raw_ir) == intent['inputs']['stack.ir.json'], 'Finance reference source IR differs')
-    descriptor = profile.native_finance_reference(r.strict(raw_ir))
+    ir = r.strict(raw_ir)
+    domains = None
+    if ir.get('services', {}).get('keycloak-configure', {}).get('placement') == 'rootless':
+        raw_domains = read_file(release / 'podman-domains.json')
+        require(r.sha(raw_domains) == intent['inputs']['podman-domains.json'], 'Finance actor source metadata differs')
+        domains = r.strict(raw_domains)
+    descriptor = profile.native_finance_reference(ir, domains)
     if descriptor is None:
         require('nativeFinanceReference' not in intent, 'Legacy source cannot adopt finance reference ownership')
         return None
@@ -350,7 +418,7 @@ def verify_native_finance_reference(root, release, intent):
             and publisher['path'] == descriptor['publisher'] and publisher['origin'] == descriptor['origin']
             and publisher['sha256'] == metadata.get('liveOps', {}).get(descriptor['publisher'])
             and r.sha(read_file(release / descriptor['publisher'])) == publisher['sha256'], 'Finance Root publisher source differs')
-    observed = finance_reference_files()
+    observed = finance_reference_files(descriptor)
     require(observed == {key: proof[key] for key in ('directory', 'input')}, 'Original Root finance reference inode/ACL/mount/bytes differ')
     content = observed['input']['content']
     require(content.get('kind') == 'root-native-finance-input' and content.get('root') == str(root)
@@ -360,15 +428,21 @@ def verify_native_finance_reference(root, release, intent):
     # Actual native original provenance is held in the protected paired Root
     # records; the dynamic file transports it, never grants source permission.
     native = intent.get('nativeFinanceOwnershipReceipt')
+    if descriptor['placement'] == 'rootless':
+        require(content.get('transport') == finance_transport(descriptor), 'Root-issued finance reader transport differs')
+    else:
+        require('transport' not in content, 'Historical finance transport cannot be reclassified')
     if content.get('status') == 'retained':
         require(type(native) is dict and native.get('kind') == 'root-native-finance-ownership'
                 and native.get('status') == 'completed' and native.get('original', {}).get('kind') ==
                 'original-live-systemd-cid-keycloak-native-link'
                 and content.get('nativeFinanceOwnership') == native.get('nativeFinanceOwnership'), 'Finance original native origin differs')
+        if descriptor['placement'] == 'rootless':
+            finance_original_reference(native, intent, descriptor, release, content.get('issuer'))
     else:
         require(content.get('status') == 'fresh' and content.get('nativeFinanceOwnership') is None
                 and type(intent.get('financeOwnershipCustody')) is dict, 'Finance fresh original arm missing')
-    require(finance_reference_files() == observed and read_file(root / '.install-intent.json', private=True) == raw
+    require(finance_reference_files(descriptor) == observed and read_file(root / '.install-intent.json', private=True) == raw
             and read_file(release / 'installation-receipt.json', private=True) == raw
             and directory_pin(root) == private_root, 'Finance reference current CAS raced')
     pointer(root, release)
@@ -734,6 +808,10 @@ def verify_active_transition(root, release, prior_intent):
         require(type(binding['nativeFinanceReferenceBindingSha256']) is str
                 and r.HEX.fullmatch(binding['nativeFinanceReferenceBindingSha256']),
                 'Selected finance reference has not been Root-published')
+        require(prior_intent.get('nativeFinanceOwnershipReceipt', {}).get('kind') == 'root-native-finance-ownership'
+                and prior_intent['nativeFinanceOwnershipReceipt'].get('status') == 'completed'
+                and prior_intent.get('nativeFinanceReference', {}).get('input', {}).get('content', {}).get('status') == 'retained',
+                'Original successful native finance frame absent; fresh transport is not readiness')
     require(isinstance(proof, dict) and set(proof) == {'schemaVersion', 'bootId', 'startMonotonicUSec',
             'renderedInputs', 'storageBinding', 'rootfulEnvironmentBindingSha256', 'runtimeUnitSourceSha256',
             'runtimeCopiesBindingSha256', 'images', 'loadedInputs', 'imageSupplyReviewed'}
