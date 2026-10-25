@@ -62,13 +62,39 @@ class Models(unittest.TestCase):
     self.assertEqual(len(hosts),1)
     host_path=Path(hosts[0][len('--volume='):].rsplit(':/etc/hosts:ro',1)[0])
     self.assertTrue(host_path.is_relative_to(f.release))
-    self.assertEqual(host_path.read_bytes(),b'127.0.0.1 localhost host.containers.internal\n::1 localhost\n')
+    native_name=next(arg[len('--name='):] for arg in creation if arg.startswith('--name='))
+    expected='127.0.0.1 localhost host.containers.internal'+(' '+native_name if name=='mariadb' else '')+'\n::1 localhost\n'
+    self.assertEqual(host_path.read_bytes(),expected.encode())
+    if name=='mariadb':self.assertIn('--hostname='+native_name,creation)
+    else:self.assertFalse(any(arg.startswith('--hostname=') for arg in creation))
     if name=='seafile':
      script=next(arg for arg in creation if arg.startswith('--volume=') and arg.endswith(':/runtime-entrypoint.sh:ro'))
      self.assertTrue(Path(script[len('--volume='):].rsplit(':/runtime-entrypoint.sh:ro',1)[0]).is_relative_to(f.release))
      self.assertEqual(creation[-1],'--bootstrap-owned-admin')
      self.assertTrue(any(':/run/seafile-admin:ro' in arg for arg in creation))
      self.assertFalse(any('authorization.json:/run' in arg for arg in creation))
+ def test_peer_hosts_cannot_replace_database_local_hostname_binding(self):
+  with tempfile.TemporaryDirectory() as temp:
+   f=self.fixture(temp);calls=[]
+   def command(arguments,**kw):
+    calls.append(arguments);return types.SimpleNamespace(returncode=1 if arguments[0]=='container' else 0,stdout=CID.encode())
+   f.command=command;f.create('mariadb')
+   db=f.release/'native-seafile/config-inputs/hosts/mariadb';before=db.read_bytes()
+   f.create('valkey',network='2'*64);f.create('seafile',network='2'*64)
+   self.assertEqual(db.read_bytes(),before)
+   self.assertNotEqual(db.read_bytes(),(db.parent/'valkey').read_bytes())
+   for creation in (row for row in calls if row[0]=='create' and '--network=container:'+'2'*64 in row):
+    self.assertFalse(any(arg.startswith('--hostname=') for arg in creation))
+ def test_database_probe_diagnostics_expose_only_fixed_error_classes(self):
+  sentinel=b' private-fixture-user-password-sql-must-not-appear'
+  for code,label in ((1045,'authentication-refused'),(1049,'service-database-absent'),
+                     (2002,'database-connectivity-unavailable'),(2003,'database-connectivity-unavailable'),
+                     (9999,'other-database-probe-refusal')):
+   with self.subTest(code=code):
+    result=types.SimpleNamespace(returncode=1,stdout=sentinel,stderr=b'ERROR '+str(code).encode()+b' (HY000):'+sentinel)
+    self.assertEqual(b.Fresh.database_probe_observation(result),label)
+  self.assertEqual(b.Fresh.database_probe_observation(types.SimpleNamespace(returncode=0,stdout=b'1\n')),'service-database-ready')
+  self.assertEqual(b.Fresh.database_probe_observation(types.SimpleNamespace(returncode=1,stdout=b'',stderr=b'private ERROR 1045 '+sentinel)),'other-database-probe-refusal')
  def test_declared_numeric_container_user_matches_eventual_service_user(self):
   for user in ('0:0','999:999','65536:65536'):
    with self.subTest(user=user),tempfile.TemporaryDirectory() as temp:

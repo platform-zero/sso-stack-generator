@@ -184,7 +184,8 @@ class Fresh:
                 observations.append(dict(cid=cid, observationUnavailable=True))
         body = self.p.encoded(dict(schemaVersion=1, module='seafile', status=status,
             preparationReceiptSha256=self.binding.receipt_sha, cids=list(self.cids),
-            plannedNames=list(self.cidfiles.values()), observedStates=observations, applicationAcceptance=False))
+            plannedNames=list(self.cidfiles.values()), observedStates=observations,
+            databaseProbe=getattr(self, 'database_observation', 'not-observed'), applicationAcceptance=False))
         temporary = directory / ('.temporary-' + secrets.token_hex(16))
         self.file(temporary, body)
         destination = 'failure-observations.json' if status == 'preparation-failed' else 'temporary.json'
@@ -239,11 +240,14 @@ class Fresh:
                          and all(int(value) <= 65536 for value in user.split(':')),
                          'Native container user must fit exact declared numeric UID/GID maps')
             arguments.append('--user=' + user)
-        # Native container-network peers reject --add-host and do NOT inherit
-        # its alias reliably. A fixed public readonly hosts file works in both
-        # separately mapped namespaces, without DNS/host networking or exposure.
-        hosts = self.release / 'native-seafile/config-inputs/hosts'
-        host_bytes = b'127.0.0.1 localhost host.containers.internal\n::1 localhost\n'
+        # The isolated database must resolve its OWN deterministic hostname
+        # locally, never through external DNS from network=none. Container-net
+        # peers reject --hostname/--add-host and do not inherit the hosts file.
+        own_hostname = ' ' + native_name if network is None else ''
+        if network is None:
+            arguments.append('--hostname=' + native_name)
+        hosts = self.release / 'native-seafile/config-inputs/hosts' / name
+        host_bytes = ('127.0.0.1 localhost host.containers.internal' + own_hostname + '\n::1 localhost\n').encode()
         if not hosts.exists():
             self.file(hosts, host_bytes, mode=0o444)
         self.require(not hosts.is_symlink() and hosts.read_bytes() == host_bytes,
@@ -346,6 +350,19 @@ class Fresh:
         self.require(ready and self.relay.stdout.readline() == b'SEAFILE_PRIVATE_LOOPBACK_READY\n',
                      'Native private loopback unavailable')
 
+    @staticmethod
+    def database_probe_observation(result):
+        if result.returncode == 0 and result.stdout.strip() == b'1':
+            return 'service-database-ready'
+        # Only fixed SQL client error classes; never emit child text/usernames,
+        # database names, exceptions, SQL, credentials or arbitrary error codes.
+        body = getattr(result, 'stderr', b'')[:4096]
+        match = re.search(rb'(?m)^ERROR (1045|1049|2002|2003)\b', body)
+        if match:
+            return {'1045': 'authentication-refused', '1049': 'service-database-absent',
+                    '2002': 'database-connectivity-unavailable', '2003': 'database-connectivity-unavailable'}[match[1].decode()]
+        return 'other-database-probe-refusal'
+
     def wait_database(self, cid):
         env = self.environments['seafile']
         for attempt in range(60):
@@ -355,7 +372,8 @@ class Fresh:
                 '--database=' + env['SEAFILE_MYSQL_DB_SEAHUB_DB_NAME'], '--batch', '--skip-column-names',
                 '--execute=SELECT 1'], timeout=10, environment={'MYSQL_PWD': env['SEAFILE_MYSQL_DB_PASSWORD']},
                 allow_failure=True)
-            if result.returncode == 0 and result.stdout.strip() == b'1':
+            self.database_observation = self.database_probe_observation(result)
+            if self.database_observation == 'service-database-ready':
                 return
             self.require(self.state(cid).get('Running') is True, 'Native database stopped before readiness')
             time.sleep(1)

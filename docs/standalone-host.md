@@ -174,8 +174,13 @@ exact declared maps, just as the eventual service does. In particular the pinned
 MariaDB mysql identity must not silently become namespace-root during preparation.
 On failure, a private `native-seafile/failure-observations.json` retains only own
 CID, running boolean, bounded exit code and OOM boolean (or observation unavailable).
-Stop cleanup does not overwrite that failure record. No exception text, environment,
-service source, child log, or secret is a diagnostic field.
+Stop cleanup does not overwrite that failure record. A database probe can expose
+only predefined readiness/authentication/missing-database/connectivity/other classes,
+never raw client diagnostics or arbitrary SQL error codes. No exception text,
+environment, service source, child log, or secret is a diagnostic field. The database's
+isolated network gets a deterministic source-derived hostname with a local readonly
+hosts binding, so bootstrap never needs external DNS for its own hostname. Namespace
+peers have separate hosts files and do not request forbidden Podman hostname flags.
 
 ## Native stopped backup and restore
 
