@@ -133,12 +133,14 @@ class Models(unittest.TestCase):
    f=self.fixture(temp);f.cids=[CID];f.database_cid=CID
    f.command=mock.Mock(return_value=types.SimpleNamespace(returncode=143,stdout=b'private-fixture-secret'))
    self.assertEqual(f.observe_database_self_signal(),'own-helper-self-signal-permitted')
-   self.assertEqual(f.command.call_args.args[0],['exec',CID,'/bin/sh','-c','test "$$" -gt 1 || exit 41; kill -TERM "$$"; exit 42'])
+   self.assertEqual(f.command.call_args.args[0],['exec',CID,'/bin/sh','-c','test "$$" -gt 1 || exit 41; kill -TERM "$$" || exit 43; exit 42'])
    f.command.return_value.returncode=42
-   self.assertEqual(f.observe_database_self_signal(),'own-helper-self-signal-not-established')
+   self.assertEqual(f.observe_database_self_signal(),'own-helper-self-signal-ignored')
+   f.command.return_value.returncode=43
+   self.assertEqual(f.observe_database_self_signal(),'own-helper-self-signal-refused')
    f.cids=[]
    self.assertEqual(f.observe_database_self_signal(),'own-helper-self-signal-unavailable')
-   self.assertEqual(f.command.call_count,2)
+   self.assertEqual(f.command.call_count,3)
  def cgroup_fixture(self,temp,membership=None,contents=b'12001\n'):
   root=Path(temp);f=self.fixture(temp);f.cids=[CID];f.database_cid=CID
   f.state=mock.Mock(return_value=dict(Running=True,Pid=12001))
@@ -151,6 +153,8 @@ class Models(unittest.TestCase):
   (proc/'12001/stat').write_text('12001 (mariadbd) D '+' '.join(['0']*18+['123']+['0']*3)+'\n')
   (proc/'12001/wchan').write_text('io_schedule\n')
   (proc/'12001/syscall').write_bytes(b'202 0xdeadbeef private-fixture-secret\n')
+  (proc/'12001/status').write_bytes(b'SigIgn:\t0\nSigBlk:\t4000\nSigPnd:\t0\nShdPnd:\t0\nSeccomp_filters:\t2\n')
+  (proc/'12001/attr').mkdir();(proc/'12001/attr/current').write_bytes(b'containers-default-model (enforce)\n')
   (root/'model-pidfd').touch()
   return f,proc,group,root/'model-pidfd'
  def test_process_observation_is_exact_own_nonempty_cgroup_and_fixed_roles_only(self):
@@ -164,7 +168,9 @@ class Models(unittest.TestCase):
     result=f.observe_database_processes()
    self.assertEqual(result,dict(status='exact-own-cgroup-observed',processCount=1,threadCount=1,bounded=False,
       taskBudgets=[dict(taskCount=4,taskLimit=256,taskLimitEvents=0)]*2,
-      threads=[dict(role='database-server',state='disk-wait',wait='io-wait',syscall='futex')]))
+      threads=[dict(role='database-server',state='disk-wait',wait='io-wait',syscall='futex',
+         terminationIgnored=False,terminationBlocked=True,terminationPending=False,seccompFilters=2,
+         macClass='default-container-enforced')]))
    self.assertNotIn('12001',str(result));self.assertNotIn(CID,str(result))
    self.assertNotIn('0xdeadbeef',str(result));self.assertNotIn('private-fixture-secret',str(result))
  def test_exact_own_container_leaf_is_allowed_without_parent_or_global_fallback(self):

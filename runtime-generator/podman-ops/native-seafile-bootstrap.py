@@ -479,9 +479,11 @@ class Fresh:
             # Dedicated exec helper signals ONLY itself, never the server or
             # another container/host PID. Not a service stop or clean-stop proof.
             result = self.command(['exec', cid, '/bin/sh', '-c',
-                'test "$$" -gt 1 || exit 41; kill -TERM "$$"; exit 42'], timeout=10, allow_failure=True)
-            return ('own-helper-self-signal-permitted' if result.returncode in (143, -15)
-                    else 'own-helper-self-signal-not-established')
+                'test "$$" -gt 1 || exit 41; kill -TERM "$$" || exit 43; exit 42'], timeout=10, allow_failure=True)
+            return {143: 'own-helper-self-signal-permitted', -15: 'own-helper-self-signal-permitted',
+                    43: 'own-helper-self-signal-refused', 42: 'own-helper-self-signal-ignored',
+                    159: 'own-helper-system-call-signal', -31: 'own-helper-system-call-signal'}.get(
+                    result.returncode, 'own-helper-self-signal-not-established')
         except BaseException:
             return 'own-helper-self-signal-unavailable'
 
@@ -577,8 +579,22 @@ class Fresh:
                         syscall = syscall_classes.get(int(number), 'other') if number.isdigit() else 'not-in-syscall'
                     except OSError:
                         pass
+                status = dict(line.split(b':', 1) for line in read(fd, 'status').splitlines() if b':' in line)
+                sigterm = 1 << (signal.SIGTERM - 1)
+                ignored = int(status[b'SigIgn'].strip(), 16)
+                blocked = int(status[b'SigBlk'].strip(), 16)
+                pending = int(status[b'SigPnd'].strip(), 16) | int(status[b'ShdPnd'].strip(), 16)
+                filters = int(status[b'Seccomp_filters'].strip())
+                self.require(0 <= filters <= 32, 'Own thread filter count bound refused')
+                attribute = directory(PROC / str(selected) / 'attr')
+                label = read(attribute, 'current', 512).strip()
+                label_class = ('unconfined' if label == b'unconfined' else
+                    'default-container-enforced' if label.startswith((b'containers-default', b'docker-default'))
+                    and label.endswith(b' (enforce)') else 'other-or-unavailable')
                 rows.append(dict(role=role, state=states.get(fields[0], 'other'),
-                                 wait=waits.get(read(fd, 'wchan').strip(), 'other'), syscall=syscall))
+                    wait=waits.get(read(fd, 'wchan').strip(), 'other'), syscall=syscall,
+                    terminationIgnored=bool(ignored & sigterm), terminationBlocked=bool(blocked & sigterm),
+                    terminationPending=bool(pending & sigterm), seccompFilters=filters, macClass=label_class))
                 after = read(fd, 'stat').rpartition(b')')[2].split()
                 self.require(len(after) >= 20 and after[19] == fields[19]
                              and read(fd, 'cgroup').decode('ascii') == membership,

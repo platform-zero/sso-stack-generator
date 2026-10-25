@@ -202,7 +202,10 @@ probe may classify only whether installer verbosity is enabled; no option values
 are emitted or retained. A dedicated exec helper in the exact own CID may also
 signal only itself (never the database or another host/container PID) to classify
 whether self-termination is permitted. Its deliberate exit is not a service stop
-or a clean-stop proof. These are observations only, not permission
+or a clean-stop proof. Its outcome distinguishes refusal from an ignored signal.
+Own-thread observations may classify SIGTERM ignored/blocked/pending bits, bounded
+seccomp filter counts and only predefined MAC classes, never raw labels or masks.
+These are observations only, not permission
 to raise a limit, change host policy, or weaken readiness/stop gates. No exception text,
 environment, service source, child log, or secret is a diagnostic field. The database's
 isolated network gets a deterministic source-derived hostname with a local readonly
