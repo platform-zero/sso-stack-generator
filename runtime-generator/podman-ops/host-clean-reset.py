@@ -957,6 +957,26 @@ def _mount_access_denied_observation():
     raise Refusal('Original process/kernel namespace/root proof unavailable') from None
 
 
+def _mount_invalid_kernel_reference_observation():
+    raise Refusal('Original process/kernel namespace/root proof unavailable') from None
+
+
+def _mount_bad_descriptor_observation():
+    raise Refusal('Original process/kernel namespace/root proof unavailable') from None
+
+
+def _mount_wrong_kernel_object_type_observation():
+    raise Refusal('Original process/kernel namespace/root proof unavailable') from None
+
+
+def _mount_unsupported_kernel_operation_observation():
+    raise Refusal('Original process/kernel namespace/root proof unavailable') from None
+
+
+def _mount_interrupted_kernel_operation_observation():
+    raise Refusal('Original process/kernel namespace/root proof unavailable') from None
+
+
 @contextlib.contextmanager
 def _mount_process(proc, name):
     own = name == 'self'; pid = os.getpid() if own else int(name)
@@ -1005,6 +1025,16 @@ def _mount_process(proc, name):
             _mount_descriptor_capacity_observation()
         if error.errno in (errno.EACCES, errno.EPERM):
             _mount_access_denied_observation()
+        if error.errno in (errno.EIO, errno.EINVAL, errno.ESTALE):
+            _mount_invalid_kernel_reference_observation()
+        if error.errno == errno.EBADF:
+            _mount_bad_descriptor_observation()
+        if error.errno in (errno.ENOTDIR, errno.ELOOP, errno.ENOTTY):
+            _mount_wrong_kernel_object_type_observation()
+        if error.errno in (errno.ENOSYS, errno.EOPNOTSUPP):
+            _mount_unsupported_kernel_operation_observation()
+        if error.errno in (errno.EINTR, errno.EAGAIN):
+            _mount_interrupted_kernel_operation_observation()
         raise Refusal('Original process/kernel namespace/root proof unavailable') from None
     finally:
         if root is not None: os.close(root)

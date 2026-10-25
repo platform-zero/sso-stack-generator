@@ -2658,7 +2658,12 @@ class MountViews(unittest.TestCase):
     def test_namespace_os_failures_remain_refusals_with_only_fixed_observation_frames(self):
         for code, helper in ((m.errno.ENOENT, '_mount_missing_kernel_object_observation'),
                              (m.errno.EMFILE, '_mount_descriptor_capacity_observation'),
-                             (m.errno.EACCES, '_mount_access_denied_observation')):
+                             (m.errno.EACCES, '_mount_access_denied_observation'),
+                             (m.errno.EIO, '_mount_invalid_kernel_reference_observation'),
+                             (m.errno.EBADF, '_mount_bad_descriptor_observation'),
+                             (m.errno.ELOOP, '_mount_wrong_kernel_object_type_observation'),
+                             (m.errno.EOPNOTSUPP, '_mount_unsupported_kernel_operation_observation'),
+                             (m.errno.EINTR, '_mount_interrupted_kernel_operation_observation')):
             with self.subTest(code=code), self.kernel_model(), patch.object(m, helper, wraps=getattr(m, helper)) as observed:
                 proc = m.os.open('/proc', os.O_RDONLY | os.O_DIRECTORY)
                 try:
