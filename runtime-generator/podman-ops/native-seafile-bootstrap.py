@@ -488,6 +488,18 @@ class Fresh:
             pids = sorted({int(value) for value in read(group, 'cgroup.procs').split()})
             self.require(pid in pids and 0 < len(pids) <= 256 and all(value > 1 for value in pids),
                          'Nonempty own database cgroup membership absent')
+            phase = 'own-task-budget'
+            scope = directory(CGROUP / Path(*own_scope).relative_to('/'))
+            budgets = []
+            for selected_group in (scope, group):
+                count = int(read(selected_group, 'pids.current', 256).strip())
+                maximum = read(selected_group, 'pids.max', 256).strip()
+                limit = None if maximum == b'max' else int(maximum)
+                events = dict(line.split() for line in read(selected_group, 'pids.events', 256).splitlines())
+                hits = int(events[b'max'])
+                self.require(0 < count <= 100000 and (limit is None or 0 < limit <= 1000000)
+                             and 0 <= hits <= 1000000000, 'Own task budget observation bound refused')
+                budgets.append(dict(taskCount=count, taskLimit=limit, taskLimitEvents=hits))
             roles = {b'mariadbd': 'database-server', b'bash': 'shell', b'sh': 'shell',
                      b'cat': 'pipe-reader', b'sleep': 'sleeper', b'chown': 'ownership-worker', b'find': 'file-walker'}
             states = {b'D': 'disk-wait', b'R': 'running', b'S': 'sleeping', b'Z': 'zombie', b'T': 'stopped'}
@@ -512,7 +524,8 @@ class Fresh:
             self.require(read(original, 'cgroup').decode('ascii') == membership
                          and self.state(cid, cleanup=True).get('Pid') == pid
                          and not select.select([process], [], [], 0)[0], 'Own database cgroup anchor changed')
-            return dict(status='exact-own-cgroup-observed', processCount=len(pids), bounded=len(pids) > 16, processes=rows)
+            return dict(status='exact-own-cgroup-observed', processCount=len(pids), bounded=len(pids) > 16,
+                        taskBudgets=budgets, processes=rows)
         except BaseException:
             return {'status': 'own-cgroup-observation-unavailable', 'phase': phase}
         finally:

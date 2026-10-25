@@ -193,7 +193,10 @@ classify a bounded set of process roles, scheduler states and kernel wait classe
 from the exact nonempty own-CID cgroup. A held PID descriptor, unchanged main PID,
 process start identity and cgroup membership are rechecked. No PID, arbitrary
 process name, argv/environment, kernel symbol or raw `/proc` content is emitted.
-Empty/foreign/global/unavailable cgroups have no global process fallback. No exception text,
+Empty/foreign/global/unavailable cgroups have no global process fallback. The exact
+own scope/container cgroups can additionally expose bounded task counts, declared
+task limits and limit-event counters. These are observations only, not permission
+to raise a limit, change host policy, or weaken readiness/stop gates. No exception text,
 environment, service source, child log, or secret is a diagnostic field. The database's
 isolated network gets a deterministic source-derived hostname with a local readonly
 hosts binding, so bootstrap never needs external DNS for its own hostname. Namespace

@@ -110,6 +110,7 @@ class Models(unittest.TestCase):
   proc=root/'model-proc';group=root/'model-cgroups';(proc/'12001').mkdir(parents=True)
   relative='machine.slice/libpod-'+CID+'.scope';leaf=group/relative;leaf.mkdir(parents=True)
   (leaf/'cgroup.procs').write_bytes(contents)
+  for name,body in (('pids.current',b'4\n'),('pids.max',b'256\n'),('pids.events',b'max 0\n')):(leaf/name).write_bytes(body)
   (proc/'12001/cgroup').write_text(membership or '0::/'+relative+'\n')
   (proc/'12001/stat').write_text('12001 (mariadbd) D '+' '.join(['0']*18+['123']+['0']*3)+'\n')
   (proc/'12001/wchan').write_text('io_schedule\n')
@@ -124,6 +125,7 @@ class Models(unittest.TestCase):
         mock.patch.object(b.os,'listdir',side_effect=AssertionError('global process enumeration forbidden')):
     result=f.observe_database_processes()
    self.assertEqual(result,dict(status='exact-own-cgroup-observed',processCount=1,bounded=False,
+      taskBudgets=[dict(taskCount=4,taskLimit=256,taskLimitEvents=0)]*2,
       processes=[dict(role='database-server',state='disk-wait',wait='io-wait')]))
    self.assertNotIn('12001',str(result));self.assertNotIn(CID,str(result))
  def test_exact_own_container_leaf_is_allowed_without_parent_or_global_fallback(self):
@@ -131,6 +133,7 @@ class Models(unittest.TestCase):
    f,proc,group,pidfile=self.cgroup_fixture(temp)
    parent=group/'machine.slice'/('libpod-'+CID+'.scope');leaf=parent/'container';leaf.mkdir()
    (parent/'cgroup.procs').rename(leaf/'cgroup.procs')
+   for name in ('pids.current','pids.max','pids.events'):(leaf/name).write_bytes((parent/name).read_bytes())
    (proc/'12001/cgroup').write_text('0::/machine.slice/libpod-'+CID+'.scope/container\n')
    with mock.patch.object(b,'PROC',proc),mock.patch.object(b,'CGROUP',group),\
         mock.patch.object(b.os,'pidfd_open',side_effect=lambda pid:os.open(pidfile,os.O_RDONLY)),\
