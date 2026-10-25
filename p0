@@ -1,0 +1,5 @@
+#!/bin/sh
+# Source-tree entry point; Python dependencies are standard-library only.
+set -eu
+base=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+PYTHONPATH="$base${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m p0core.cli "$@"

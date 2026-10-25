@@ -1,5 +1,18 @@
 # AGENTS.md
 
+## Rewrite branch contract
+
+On `rewrite/v2`, the Python `p0` core replaces the historical Kotlin/Gradle
+assembly and old multi-account runtime. The new CLI and strict service graph are
+authorized public interfaces; legacy command descriptions below apply only to
+legacy source. Preserve legacy source/history while building and qualifying the
+replacement. Catalog definitions and custom application source stay outside this
+repository. Runtime ownership is one rootless account plus narrowly privileged
+rootful services; no per-service host users. Quadlet/systemd remains the runtime
+executor. Never turn fixtures or generated artifacts into installed proof.
+Preserve all source/secrets/privacy and relevant safety/testing instructions below.
+
+
 ## Scope
 
 This repo owns the generic authenticated webservices platform stack.
