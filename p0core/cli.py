@@ -42,18 +42,22 @@ def parser():
     child.add_argument("--bundle", type=Path, required=True)
     child = sub.add_parser("status", help="read-only operation-journal observation")
     child.add_argument("--state-dir", type=Path, required=True)
-    for command in ("install", "start", "stop", "recover", "image-build", "runtime-status", "secret-generate"):
+    for command in ("install", "upgrade", "start", "stop", "recover", "image-build", "runtime-status", "secret-generate"):
         child = sub.add_parser(command, help="owned rootless runtime only")
         child.add_argument("--state-dir", type=Path, required=True)
         child.add_argument("--quadlet-dir", type=Path, required=True)
         if command == 'image-build':
             child.add_argument('--context', type=Path, required=True)
             child.add_argument('--expected-sha256', required=True)
-        elif command == "install":
+        elif command in ("install", "upgrade"):
             child.add_argument("--bundle", type=Path, required=True)
             child.add_argument("--expected-sha256", required=True)
             child.add_argument("--pull", action="store_true")
-            child.add_argument("--resume-stopped", action="store_true", help="same owned release only; no unit overwrite")
+            if command == 'upgrade':
+                child.add_argument('--expected-current-sha256', required=True)
+                child.add_argument('--resume', action='store_true', help='exact recorded interrupted publication only')
+            else:
+                child.add_argument("--resume-stopped", action="store_true", help="same owned release only; no unit overwrite")
         elif command == "secret-generate":
             child.add_argument("--name", required=True)
         elif command == "recover":
@@ -68,7 +72,7 @@ def parser():
 def main(argv=None):
     args = parser().parse_args(argv)
     try:
-        if args.command in ("install", "start", "stop", "recover", "image-build", "runtime-status", "secret-generate"):
+        if args.command in ("install", "upgrade", "start", "stop", "recover", "image-build", "runtime-status", "secret-generate"):
             runtime = Lifecycle(args.state_dir, args.quadlet_dir)
             if args.command == 'image-build':
                 from .imagebuild import build as build_image
@@ -76,6 +80,10 @@ def main(argv=None):
             elif args.command == "install":
                 output = runtime.install(args.bundle, args.expected_sha256, pull=args.pull,
                                          resume_stopped=args.resume_stopped)
+            elif args.command == 'upgrade':
+                from .upgrade import upgrade
+                output = upgrade(runtime, args.bundle, args.expected_sha256, args.expected_current_sha256,
+                                 resume=args.resume, pull=args.pull)
             elif args.command == "recover":
                 output = runtime.recover_empty_engine()
             elif args.command == "secret-generate":

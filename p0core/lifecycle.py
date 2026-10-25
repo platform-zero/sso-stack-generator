@@ -119,6 +119,11 @@ def atomic_json(path: Path, value):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -374,6 +379,8 @@ class Lifecycle:
             if action == 'start' and journal.connection.execute(
                     "SELECT 1 FROM operations bad WHERE bad.state IN ('prepared','running','indeterminate') AND bad.kind!='build' "
                     "AND NOT (bad.kind='stop' AND EXISTS (SELECT 1 FROM operations done WHERE done.kind='stop' "
+                    "AND done.state='succeeded' AND done.input_sha256=bad.input_sha256 AND done.created>bad.updated)) "
+                    "AND NOT (bad.kind='upgrade' AND EXISTS (SELECT 1 FROM operations done WHERE done.kind='upgrade' "
                     "AND done.state='succeeded' AND done.input_sha256=bad.input_sha256 AND done.created>bad.updated)) "
                     "AND NOT (bad.kind IN ('start','stop') AND EXISTS (SELECT 1 FROM operations done WHERE done.kind='recover' "
                     "AND done.state='succeeded' AND done.input_sha256=bad.input_sha256 AND done.created>bad.updated)) LIMIT 1").fetchone():
