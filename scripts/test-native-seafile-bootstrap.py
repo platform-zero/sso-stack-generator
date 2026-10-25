@@ -49,6 +49,9 @@ class Models(unittest.TestCase):
   f.mac_body=b.PREPARATION_MAC_TEMPLATE.replace('@PROFILE@',f.mac_name).encode()
   f.mac_pin=None;f.mac_custody=dict(modelOnly=True)
   f.install_mac_policy=mock.Mock();f.verify_mac_policy=mock.Mock()
+  f.engine_command=mock.Mock(return_value=['/usr/bin/podman'])
+  f.engine_graph_root=mock.Mock(return_value='/var/lib/containers/storage')
+  f.admit_engine_runtime=mock.Mock()
   return f
  def test_scoped_mac_retains_default_restrictions_and_only_scoped_peer_signalling(self):
   template=b.PREPARATION_MAC_TEMPLATE

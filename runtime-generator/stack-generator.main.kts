@@ -512,7 +512,16 @@ fun readPodmanPolicy(manifestPath: Path): PodmanPolicy {
         }
     }
     if (unitPrefix == "webservices") {
-        if (rootfulGraphRoot != null || rootfulRunRoot != null || portMap.isNotEmpty()) fail("legacy Podman authorities cannot be redirected alone")
+        if (portMap.isNotEmpty()) fail("native/legacy published ports cannot be redirected alone")
+        if (standaloneHost(manifest) && (rootfulGraphRoot != null || rootfulRunRoot != null)) {
+            if (!rootfulStateRoot.matches(Regex("/var/lib/stack-[a-z0-9-]{1,48}")) ||
+                rootfulGraphRoot != "$rootfulStateRoot/rootful-store/graph" ||
+                rootfulRunRoot != "/run/${Path(rootfulStateRoot).fileName}-podman") {
+                fail("native Root engine requires exact private metadata graph and dedicated run roots")
+            }
+        } else if (rootfulGraphRoot != null || rootfulRunRoot != null) {
+            fail("legacy Podman authorities cannot be redirected alone")
+        }
     } else if (rootfulGraphRoot == null || rootfulRunRoot != "/run/$unitPrefix-podman" ||
         !rootfulGraphRoot.matches(Regex("/mnt/stack/p0-existing-host-venue-[a-z0-9-]{1,24}/rootful-graph"))) {
         fail("isolated rootful graph and run roots must be explicit and dedicated")
@@ -1734,8 +1743,23 @@ val rootfulDomain: PodmanDomain
         rootlessUser = null,
         envFilePrefix = "/run/${activePodmanPolicy.unitPrefix}",
         targetInstall = "multi-user.target",
-        releaseRoot = "${activePodmanPolicy.rootfulStateRoot}/current"
+        releaseRoot = "${activePodmanPolicy.rootfulStateRoot}/current",
+        graphRoot = if (activePodmanPolicy.standalone) activePodmanPolicy.rootfulGraphRoot else null
     )
+
+fun rootfulEngineConfigRoot(): String = activePodmanPolicy.rootfulStateRoot +
+    if (activePodmanPolicy.standalone && activePodmanPolicy.rootfulGraphRoot != null) "/rootful-store" else ""
+
+fun nativeRootfulEngineServiceLines(domain: PodmanDomain): List<String> =
+    if (domain.name == "rootful" && activePodmanPolicy.standalone && activePodmanPolicy.rootfulGraphRoot != null)
+        listOf("Environment=TMPDIR=${activePodmanPolicy.rootfulGraphRoot}",
+            "Environment=HOME=${rootfulEngineConfigRoot()}",
+            "Environment=XDG_CONFIG_HOME=${rootfulEngineConfigRoot()}/xdg",
+            "Environment=XDG_RUNTIME_DIR=${activePodmanPolicy.rootfulRunRoot}",
+            "Environment=REGISTRY_AUTH_FILE=${rootfulEngineConfigRoot()}/empty-auth.json",
+            "UnsetEnvironment=CONTAINERS_CONF_OVERRIDE CONTAINERS_CONF_MODULES STORAGE_DRIVER STORAGE_OPTS CONTAINERS_STORAGE_OPTS CONTAINER_HOST CONTAINER_CONNECTION DOCKER_HOST",
+            "ExecStartPre=/usr/bin/python3 -B ${domain.releaseRoot}/ops/install-pinned-images.py --bundle ${domain.releaseRoot} --validate-rootful-store --require-runtime")
+    else emptyList()
 
 val rootlessDomains: List<PodmanDomain>
     get() = activePodmanPolicy.domains.map {
@@ -2375,9 +2399,10 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
     lines += "LogDriver=journald"
     lines += ""
     lines += "[Service]"
-    if (domain.name == "rootful" && unitPrefix != "webservices") {
-        lines += "Environment=CONTAINERS_STORAGE_CONF=${domain.stateRoot}/containers-storage.conf"
-        lines += "Environment=CONTAINERS_CONF=${domain.stateRoot}/containers.conf"
+    if (domain.name == "rootful" && (unitPrefix != "webservices" || domain.graphRoot != null)) {
+        lines += "Environment=CONTAINERS_STORAGE_CONF=${rootfulEngineConfigRoot()}/containers-storage.conf"
+        lines += "Environment=CONTAINERS_CONF=${rootfulEngineConfigRoot()}/containers.conf"
+        lines += nativeRootfulEngineServiceLines(domain)
         // Podman5.4 transient health timers forward PATH only and would open the
         // original/default root store. The scoped native adapter owns this cadence.
         lines += "Environment=DISABLE_HC_SYSTEMD=true"
@@ -2439,9 +2464,10 @@ fun renderQuadletService(name: String, service: ObjectNode, ir: ObjectNode, outp
             val buildScratch = domain.graphRoot ?: activePodmanPolicy.rootfulGraphRoot
                 ?: if (activePodmanPolicy.standalone) "${domain.releaseRoot}/build" else fail("venue build lacks a selected scratch graph")
             buildLines += "Environment=TMPDIR=$buildScratch"
-            if (domain.name == "rootful" && !activePodmanPolicy.standalone) {
-                buildLines += "Environment=CONTAINERS_STORAGE_CONF=${domain.stateRoot}/containers-storage.conf"
-                buildLines += "Environment=CONTAINERS_CONF=${domain.stateRoot}/containers.conf"
+            if (domain.name == "rootful" && (!activePodmanPolicy.standalone || domain.graphRoot != null)) {
+                buildLines += "Environment=CONTAINERS_STORAGE_CONF=${rootfulEngineConfigRoot()}/containers-storage.conf"
+                buildLines += "Environment=CONTAINERS_CONF=${rootfulEngineConfigRoot()}/containers.conf"
+                buildLines += nativeRootfulEngineServiceLines(domain).filterNot { it.startsWith("Environment=TMPDIR=") }
             }
         }
         output.resolve("${domain.quadletDir}/$unitPrefix-$name.build").writeText(buildLines.joinToString("\n", postfix = "\n"))
@@ -2465,10 +2491,11 @@ fun renderPodman(ir: ObjectNode, output: Path) {
         ir.path("networks").fieldsMap().filter { it.first in usedNetworks }.forEach { (name, value) ->
             val lines = mutableListOf("[Network]", "NetworkName=${podmanNetworkName(domain, name)}", "Driver=${value.path("driver").asText("bridge")}")
             if (value.path("internal").asBoolean(false)) lines += "Internal=true"
-            if (domain.name == "rootful" && unitPrefix != "webservices") {
+            if (domain.name == "rootful" && (unitPrefix != "webservices" || domain.graphRoot != null)) {
                 lines += "[Service]"
-                lines += "Environment=CONTAINERS_STORAGE_CONF=${domain.stateRoot}/containers-storage.conf"
-                lines += "Environment=CONTAINERS_CONF=${domain.stateRoot}/containers.conf"
+                lines += "Environment=CONTAINERS_STORAGE_CONF=${rootfulEngineConfigRoot()}/containers-storage.conf"
+                lines += "Environment=CONTAINERS_CONF=${rootfulEngineConfigRoot()}/containers.conf"
+                lines += nativeRootfulEngineServiceLines(domain)
             }
             output.resolve("${domain.quadletDir}/$unitPrefix-$name.network").apply { parent.createDirectories(); writeText(lines.joinToString("\n", postfix = "\n")) }
         }
@@ -2619,7 +2646,18 @@ fun writeDomainMetadata(ir: ObjectNode, modules: List<ModuleCheckout>, manifestP
         domainMetadata.put("deploymentMode", "standalone")
         domainMetadata.put("installerStateRoot", activePodmanPolicy.rootfulStateRoot)
         domainMetadata.put("caddyLogRoot", standaloneCaddyLogRoot())
-        domainMetadata.set<JsonNode>("storageScope", readTree(manifestPath).path("storageScope").deepCopy<JsonNode>())
+        val manifest = readTree(manifestPath)
+        domainMetadata.set<JsonNode>("storageScope", manifest.path("storageScope").deepCopy<JsonNode>())
+        if (activePodmanPolicy.rootfulGraphRoot != null) {
+            val state = activePodmanPolicy.rootfulStateRoot + "/rootful-store"
+            domainMetadata.set<ObjectNode>("rootfulStore", obj().put("schemaVersion", 1)
+                .put("kind", "standalone-owned-rootful-store")
+                .put("scopeRoot", manifest.path("storageScope").path("root").asText())
+                .put("scopeMarkerSha256", standaloneStorageMarkerSha(manifest))
+                .put("stateRoot", state).put("dataRoot", "$state/graph")
+                .put("graphRoot", activePodmanPolicy.rootfulGraphRoot).put("runRoot", activePodmanPolicy.rootfulRunRoot)
+                .put("networkRoot", "$state/networks"))
+        }
     }
     writeJson(output.resolve("podman-domains.json"), domainMetadata)
 

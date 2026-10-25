@@ -385,9 +385,43 @@ def validate_standalone(bundle, inputs):
     return result
 
 
+def native_store_owner():
+    spec = importlib.util.spec_from_file_location('_pinned_native_root_store',
+            Path(__file__).with_name('native-rootful-store.py'))
+    module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def record_native_root_image(bundle, image, kind, proof_sha):
+    if 'rootfulStore' not in read_json(bundle / 'podman-domains.json'):
+        return
+    owner = native_store_owner().Store(bundle)
+    try:
+        owner.record_image_source(image, kind, proof_sha)
+    finally:
+        owner.close()
+
+
+def reserve_native_rootful_store(bundle):
+    if 'rootfulStore' not in read_json(bundle / 'podman-domains.json'):
+        return
+    owner = native_store_owner().Store(bundle)
+    try:
+        owner.verify(); owner.reserve()
+    finally:
+        owner.close()
+
+
 def rootful_command(bundle):
-    """Never import/pull a venue's rootful image through the shared store."""
+    """Never import/pull an isolated native/venue image through the shared store."""
     metadata = read_json(bundle / 'podman-domains.json')
+    if 'rootfulStore' in metadata:
+        owner = native_store_owner().Store(bundle)
+        try:
+            return owner.command()
+        finally:
+            owner.close()
     venue = metadata.get('venue')
     if venue is None:
         return ['podman']
@@ -541,6 +575,9 @@ def install(rows, bundle=None):
     for image, archive, authorities in rows:
         for user in authorities:
             if user == 'root':
+                if bundle is not None:
+                    record_native_root_image(bundle, image, 'qualified-local-archive',
+                        rows.captures[archive][0][1] if validated else None)
                 command = root_command
             else:
                 account = pwd.getpwnam(user)
@@ -561,6 +598,8 @@ def install(rows, bundle=None):
                                         capture_output=True, text=True, timeout=30)
                 return result.returncode == 0 and result.stdout.strip().removeprefix('sha256:') == image[7:]
             if not inspect():
+                if user == 'root' and bundle is not None:
+                    reserve_native_rootful_store(bundle)
                 fd = open_regular(archive)
                 with os.fdopen(fd, 'rb') as source:
                     dispatch(command + ['load'], stdin=source, capture_output=True, check=True,
@@ -638,12 +677,20 @@ def prepare_registry(bundle, *, runner=subprocess.run):
                        f'XDG_RUNTIME_DIR=/run/user/{account.pw_uid}',
                        f'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{account.pw_uid}/bus', 'podman']
         for image in sorted(images):
+            key = user + '|' + image
+            if user == 'root' and 'rootfulStore' in metadata:
+                if key not in expected_ids:
+                    raise ValueError('Native owned registry store requires frozen configuration identity before import')
+                proof = hashlib.sha256((image + '\n' + expected_ids[key] + '\n').encode()).hexdigest()
+                record_native_root_image(bundle, expected_ids[key], 'frozen-registry-reference', proof)
             result = runner(command + ['image', 'exists', image], capture_output=True, text=True, timeout=30)
             if result.returncode not in (0, 1):
                 raise ValueError('Selected image inventory failed')
             if result.returncode == 1:
                 if image.startswith('sha256:'):
                     raise ValueError('Offline selected image missing; no registry fallback')
+                if user == 'root':
+                    reserve_native_rootful_store(bundle)
                 runner(command + ['pull', image], capture_output=True, text=True, check=True, timeout=1800)
                 result = runner(command + ['image', 'exists', image], capture_output=True, text=True, timeout=30)
                 if result.returncode:
@@ -680,10 +727,26 @@ def main():
     parser.add_argument('--inputs', type=Path)
     parser.add_argument('--validate-only', action='store_true')
     parser.add_argument('--prepare-registry', action='store_true')
+    parser.add_argument('--validate-rootful-store', action='store_true')
+    parser.add_argument('--require-runtime', action='store_true')
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error('Root required for protected release image inputs')
     try:
+        if args.validate_rootful_store:
+            if args.inputs is not None or args.prepare_registry or args.validate_only:
+                raise ValueError('Native engine validation is a separate bounded operation')
+            owner = native_store_owner().Store(args.bundle)
+            try:
+                if args.require_runtime:
+                    owner.runtime_selected()
+                else:
+                    owner.verify()
+            finally:
+                owner.close()
+            return
+        if args.require_runtime:
+            raise ValueError('Runtime requirement needs native engine validation')
         if args.inputs is None and not args.prepare_registry:
             raise ValueError('Protected release image inputs required')
         rows = validate(args.bundle, args.inputs) if args.inputs else []

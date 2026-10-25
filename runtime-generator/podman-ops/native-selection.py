@@ -23,6 +23,7 @@ No lock, account creation, subprocess, environment override or allow flag.
 """
 import argparse
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -259,6 +260,12 @@ def inventory(bundle, *, previous=False):
             and isinstance(domains, dict) and type(domains.get('schemaVersion')) is int
             and domains['schemaVersion'] == 1 and domains.get('deploymentMode') == 'standalone'
             and 'venue' not in domains, 'unsupported native source authority')
+    root_store = None
+    if 'rootfulStore' in domains:
+        spec = importlib.util.spec_from_file_location('_native_selection_engine_definition',
+                Path(__file__).with_name('native-rootful-store.py'))
+        engine = importlib.util.module_from_spec(spec); spec.loader.exec_module(engine)
+        root_store = engine.definition(domains)  # Pure source validation, no store/host admission.
     services = ir.get('services'); rows = domains.get('domains')
     require(isinstance(services, dict) and services and isinstance(rows, list) and rows,
             'empty selected source graph')
@@ -343,6 +350,17 @@ def inventory(bundle, *, previous=False):
             body = read_file(path); count += 1; total += len(body)
             require(count <= MAX_FILES and total <= MAX_TOTAL, 'oversized selected source graph')
             config = sections(body)
+            if scope == 'rootful' and root_store is not None and kind in ('services', 'builds', 'networks'):
+                environments = config.get(('Service', 'Environment'), [])
+                for key, value in (
+                    ('CONTAINERS_STORAGE_CONF', root_store['stateRoot'] + '/containers-storage.conf'),
+                    ('CONTAINERS_CONF', root_store['stateRoot'] + '/containers.conf'),
+                    ('TMPDIR', root_store['graphRoot'])):
+                    require([line for line in environments if line.startswith(key + '=')] == [key + '=' + value],
+                            'Root source engine context environment differs')
+                current = domains['installerStateRoot'] + '/current'
+                gate = '/usr/bin/python3 -B ' + current + '/ops/install-pinned-images.py --bundle ' + current + ' --validate-rootful-store --require-runtime'
+                require(gate in config.get(('Service', 'ExecStartPre'), []), 'Root source engine context startup guard absent')
             configs[path.relative_to(bundle).as_posix()] = config
             unit = path.stem + SUFFIX[path.suffix][1]
             entry[kind].append(unit); entry['units'].append(unit)

@@ -345,6 +345,22 @@ def prepare_ci_ssh(bundle):
     finally: os.close(state)
 
 
+def native_engine_scope(bundle, *, create):
+    metadata = json.loads((bundle / 'podman-domains.json').read_bytes())
+    if 'rootfulStore' not in metadata:
+        return
+    spec = importlib.util.spec_from_file_location('_native_engine_scope_owner',
+            Path(__file__).with_name('native-rootful-store.py'))
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    module.definition(metadata)  # Pure source preflight; no mount/store/policy mutation.
+    if create:
+        owner = module.Store(bundle)
+        try:
+            owner.prepare(module.load_storage())
+        finally:
+            owner.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--domain'); parser.add_argument('--user')
@@ -358,14 +374,17 @@ def main():
     try:
         if args.prepare_scope or args.validate_scope or args.prepare_ci_ssh:
             if not args.bundle or args.domain or args.user or args.volume_root: raise ValueError('Invalid preparation mode')
-            if args.prepare_scope or args.validate_scope: prepare_scope(args.bundle, dry_run=args.validate_scope)
+            if args.prepare_scope or args.validate_scope:
+                prepare_scope(args.bundle, dry_run=args.validate_scope)
+                native_engine_scope(args.bundle, create=args.prepare_scope)
             else: prepare_ci_ssh(args.bundle)
         else:
             if not all((args.domain, args.user, args.volume_root)): raise ValueError('Incomplete domain request')
             if args.bundle: grant_standalone(args.bundle, args.domain, args.user, args.volume_root)
             else: grant(args.domain, args.user, args.volume_root)
         print('selected storage authority/traversal verified; no broad parent chmod or account takeover')
-    except (ValueError, OSError, subprocess.SubprocessError, KeyError, StopIteration):
+    except (ValueError, OSError, subprocess.SubprocessError, KeyError, StopIteration,
+            TypeError, AttributeError, IndexError, UnicodeError):
         parser.exit(1, 'selected storage authority/traversal refused\n')
 
 

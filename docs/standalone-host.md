@@ -56,6 +56,8 @@ production upgrade. Ordinary selected-failure quarantine remains separate.
 
 The storage marker is not a backup, a production-data recovery approval or an
 application/recovery acceptance result. Those lifecycle gates remain separate.
+For the optional private Root engine context, its authority and proof boundaries,
+see [native Root engine context ownership](native-rootful-store-context.md).
 
 The existing journal `--complete-clean-reset --expected CURRENT_INTENT_SHA`
 operation (under the canonical inherited FD9 lock) can freshly review an already

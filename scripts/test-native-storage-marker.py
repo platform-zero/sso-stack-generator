@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Real owning Kotlin/Python marker serialization agreement; no host mutation."""
-import hashlib,json,subprocess,tempfile,unittest
+import argparse,hashlib,json,subprocess,sys,tempfile,unittest
 from pathlib import Path
+parser=argparse.ArgumentParser(add_help=False);parser.add_argument('--module-source',required=True)
+args,remaining=parser.parse_known_args();sys.argv=[sys.argv[0],*remaining]
+MODULE=Path(args.module_source).resolve(strict=True)
 R=Path(__file__).resolve().parents[1];CP=R/'runtime-generator/build/generator-classpath.txt'
 @unittest.skipUnless(CP.is_file(),'requires delivery generator compiler classpath')
 class StorageMarker(unittest.TestCase):
@@ -9,7 +12,7 @@ class StorageMarker(unittest.TestCase):
   manifest={'site':'fixture','deploymentMode':'standalone','storageScope':{'root':'/fixture-scope','dataClass':'synthetic'}}
   rows=[{'name':n,'user':'fixture-'+n,'uid':uid,'stateRoot':'/fixture-scope/state/'+n,'graphRoot':'/fixture-scope/graphs/'+n,'volumeRoot':'/fixture-scope/volumes/'+n}for n,uid in [('platform',1801),('finance',1802)]]
   expected={'schemaVersion':1,'kind':'standalone-stack-storage','site':'fixture','scope':manifest['storageScope'],'domains':sorted(rows,key=lambda r:r['name']),'roots':sorted(r[k]for r in rows for k in ('stateRoot','graphRoot','volumeRoot'))};digest=hashlib.sha256((json.dumps(expected,sort_keys=True)+'\n').encode()).hexdigest()
-  body=(R/'runtime-generator/stack-generator.main.kts').read_text();functions='fun storageMarkerPythonJson'+body.split('fun storageMarkerPythonJson',1)[1].split('fun applyStandaloneHostProfile',1)[0]
+  body=(R/'runtime-generator/stack-generator.main.kts').read_text();functions='fun storageMarkerPythonJson'+body.split('fun storageMarkerPythonJson',1)[1].split('fun standaloneResultsMount',1)[0]
   script='''import java.nio.file.Path
 import java.security.MessageDigest
 import com.fasterxml.jackson.databind.*
@@ -29,5 +32,5 @@ data class Policy(val domains:List<Domain>)
    self.assertEqual(r.returncode,0,r.stderr);self.assertEqual(r.stdout.strip(),digest)
  def test_owning_readonly_contract_and_exact_unit_scope(self):
   body=(R/'runtime-generator/stack-generator.main.kts').read_text();self.assertIn('"$scopeRoot/.stack-installation.json:/scope-marker.json:ro"',body);self.assertIn('"storageProvisioningOwner", "native-installer"',body);self.assertIn('"STACK_LOG_UNIT_REGEX", alternatives.joinToString',body)
-  module=(R.parent/'module-delivery/stack-foundation/stack.runtime.yaml').read_text();self.assertIn('x-standalone-storage-check:',module);self.assertIn('sha256sum -c -',module)
+  module=MODULE.read_text();self.assertIn('x-standalone-storage-check:',module);self.assertIn('sha256sum -c -',module)
 if __name__=='__main__':unittest.main()

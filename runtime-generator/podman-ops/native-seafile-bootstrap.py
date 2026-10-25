@@ -241,6 +241,35 @@ class Fresh:
             for session in reversed(sessions):
                 session.close()
 
+    def engine_owner(self):
+        return self.o.load('_native_preparation_image_owner', 'install-pinned-images.py')
+
+    def engine_command(self):
+        command = self.engine_owner().rootful_command(self.release)
+        return ['/usr/bin/podman'] if command == ['podman'] else command
+
+    def engine_graph_root(self):
+        image_owner = self.engine_owner()
+        metadata = image_owner.read_json(self.release / 'podman-domains.json')
+        if 'rootfulStore' not in metadata:
+            return '/var/lib/containers/storage'
+        owner = image_owner.native_store_owner().Store(self.release)
+        try:
+            owner.verify()
+            return owner.value['graphRoot']
+        finally:
+            owner.close()
+
+    def admit_engine_runtime(self):
+        image_owner = self.engine_owner()
+        if 'rootfulStore' not in image_owner.read_json(self.release / 'podman-domains.json'):
+            return
+        owner = image_owner.native_store_owner().Store(self.release)
+        try:
+            owner.admit_runtime()
+        finally:
+            owner.close()
+
     def command(self, arguments, timeout=120, environment=None, allow_failure=False, cleanup=False, diagnostic_stderr=False):
         self.require(type(diagnostic_stderr) is bool and (not diagnostic_stderr or
                      (len(arguments) >= 4 and arguments[0] == 'exec' and arguments[2] in self.cids
@@ -254,7 +283,7 @@ class Fresh:
         if environment:
             clean.update(environment)
         # Private native output stays in memory; never echo child text/argv.
-        result = subprocess.run(['/usr/bin/podman', *arguments], env=clean,
+        result = subprocess.run([*self.engine_command(), *arguments], env=clean,
                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE if diagnostic_stderr else subprocess.DEVNULL,
                     timeout=timeout, close_fds=True, umask=0o077)
@@ -483,7 +512,7 @@ class Fresh:
                      REGISTRY_AUTH_FILE=str(self.capsule / 'empty-auth.json'))
         # No log driver, raw file or inherited console. The drain retains only
         # fixed codes; --sig-proxy=false isolates helper cleanup from the service.
-        self.database_start = subprocess.Popen(['/usr/bin/podman', 'start', '--attach', '--sig-proxy=false', cid],
+        self.database_start = subprocess.Popen([*self.engine_command(), 'start', '--attach', '--sig-proxy=false', cid],
             env=clean, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             close_fds=True, umask=0o077)
         self.database_reader = threading.Thread(target=self.database_console.consume,
@@ -684,7 +713,7 @@ class Fresh:
             result = self.command(['inspect', '--format={{json .OCIConfigPath}}', cid],
                                   cleanup=True, allow_failure=True, timeout=10)
             self.require(result.returncode == 0, 'Own runtime policy source unavailable')
-            path = Path('/var/lib/containers/storage/overlay-containers') / cid / 'userdata/config.json'
+            path = Path(self.engine_graph_root()) / 'overlay-containers' / cid / 'userdata/config.json'
             self.require(json.loads(result.stdout) == str(path), 'Own runtime policy source differs')
             fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW); opened.append(fd)
             for part in path.parts[1:-1]:
@@ -1026,6 +1055,7 @@ class Fresh:
         try:
             self.file(self.capsule / 'empty-auth.json', b'{"auths":{}}\n')
             self.install_mac_policy()
+            self.admit_engine_runtime()
             for name in ('mariadb', 'valkey', 'seafile'):
                 self.command(['pull', '--quiet', self.images[name]], timeout=900)
             # Exact selected public upstream bytes qualify BEFORE any data init.
