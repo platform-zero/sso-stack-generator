@@ -83,10 +83,20 @@ class MappedReadonlyCache(unittest.TestCase):
         rows=[dict(name=name,user='model-'+name) for name in ('apps','platform')]
         registry={('model-'+value['rootlessDomain'])+'|'+value['image']:'sha256:'+self.image for value in services.values()}
         self.body=m.canonical(registry);self.pin={'fixture':'source-stat'}
+        self.quadlets={};selection={}
+        for name,service in services.items():
+            scope='rootless-'+service['rootlessDomain'];relative='quadlet/'+scope+'/webservices-'+name+'.container'
+            body=('[Container]\nImage='+service['image']+'\n').encode();self.quadlets[Path('/model/release')/relative]=body
+            selection.setdefault(scope,dict(files={}))['files'][relative]=dict(sha256=m.sha(body))
+            # IR spellings need not equal renderer-canonical registry references.
+            service['image']='unqualified/'+name
         self.selection=dict(release=Path('/model/release'),ir=dict(services=services),rows=rows,
             actors={name:dict(uid=uid,gid=uid,start=start) for name,uid,start in (('apps',780,2000000),('platform',781,2100000))},
-            pin=dict(sourceInputs={'site/global.settings/registry-image-ids.json':dict(sha256=m.sha(self.body),stat=self.pin)}))
-        patcher=patch.object(m,'read_file',side_effect=lambda *a,**kw:(self.body,self.pin));patcher.start();self.addCleanup(patcher.stop)
+            pin=dict(selection=selection,sourceInputs={'site/global.settings/registry-image-ids.json':dict(sha256=m.sha(self.body),stat=self.pin)}))
+        patcher=patch.object(m,'read_file',side_effect=self.read);patcher.start();self.addCleanup(patcher.stop)
+    def read(self,path,**kwargs):
+        if path in self.quadlets:return self.quadlets[path],{'fixture':'quadlet-stat'}
+        return self.body,self.pin
     def classify(self):return m.mapped_readonly_layers(self.selection,[self.base,self.layer],self.images)
     def test_exact_scoped_image_clone_is_only_retained_not_cold_or_execution_proof(self):
         result=self.classify();self.assertEqual(result[self.clone]['uid'],780)
@@ -107,6 +117,11 @@ class MappedReadonlyCache(unittest.TestCase):
             with self.subTest(key=key),self.assertRaises(m.Refusal):self.classify()
     def test_registry_source_drift_or_missing_actor_refused(self):
         self.selection['pin']['sourceInputs']['site/global.settings/registry-image-ids.json']['sha256']='0'*64
+        with self.assertRaises(m.Refusal):self.classify()
+    def test_changed_or_unselected_quadlet_has_no_cache_authority(self):
+        path=next(iter(self.quadlets));self.quadlets[path]+=b'Image=registry.invalid/foreign\n'
+        with self.assertRaises(m.Refusal):self.classify()
+        self.selection['pin']['selection']={}
         with self.assertRaises(m.Refusal):self.classify()
     def test_indexed_clone_requires_exact_layer_and_unique_declared_map(self):
         self.images[0]['mapped-layers']=['0'*64]

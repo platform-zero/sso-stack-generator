@@ -2105,7 +2105,14 @@ def mapped_readonly_layers(selection, rows, image_rows):
         domain = service.get('rootlessDomain')
         row = next((row for row in selection['rows'] if row['name'] == domain), None)
         require(row is not None and domain in ('apps', 'platform'), 'Native prep image domain differs')
-        image = registry.get(row['user'] + '|' + service['image'])
+        relative = 'quadlet/rootless-' + domain + '/webservices-' + service_name + '.container'
+        selected = selection['pin']['selection'].get('rootless-' + domain, {}).get('files', {}).get(relative)
+        require(isinstance(selected, dict), 'Mapped cache image needs exact selected Quadlet source')
+        quadlet, _ = read_file(selection['release'] / relative)
+        require(sha(quadlet) == selected.get('sha256'), 'Mapped cache selected Quadlet source CAS changed')
+        references = [line[6:] for line in quadlet.decode('utf-8').splitlines() if line.startswith('Image=')]
+        require(len(references) == 1, 'Mapped cache selected image reference ambiguous')
+        image = registry.get(row['user'] + '|' + references[0])
         require(isinstance(image, str) and image.startswith('sha256:') and HEX.fullmatch(image[7:]),
                 'Native prep immutable image identity missing')
         selected_ids.add(image[7:])
