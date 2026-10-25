@@ -21,6 +21,8 @@ class FakeRunner:
             return b'/mnt/stack/p0-v2/rootless/engine\n'
         if arguments[0].endswith('systemctl'):
             if 'show' in arguments:
+                if '--property=MainPID,ControlGroup,Job' in arguments:
+                    return b'MainPID=0\nControlGroup=\nJob=\n'
                 name = next(value for value in arguments if value.endswith('.service'))
                 active = self.active.get(name, False)
                 return (f'LoadState=loaded\nActiveState={"active" if active else "inactive"}\n'
@@ -111,6 +113,18 @@ class LifecycleTests(unittest.TestCase):
                 runtime.install(bundle, identity)
             self.assertEqual(path.read_text(), 'protected')
             self.assertEqual(runner.calls, [])
+
+    def test_failed_unit_with_no_process_cgroup_or_job_is_stopped_not_healthy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime, runner, bundle, identity = self.prepare(Path(directory))
+            state = {'LoadState': 'loaded', 'ActiveState': 'failed', 'SubState': 'failed', 'Result': 'exit-code'}
+            self.assertTrue(runtime.stopped('app', state))
+            with patch.object(runtime, 'observe', return_value=state):
+                self.assertEqual(runtime._wait_unit('app', started=False, lifecycle='daemon'), state)
+                with self.assertRaises(OperationError):
+                    runtime._wait_unit('app', started=True, lifecycle='daemon')
+            runtime.run = lambda *_args, **_kwargs: b'MainPID=1\nControlGroup=\nJob=\n'
+            self.assertFalse(runtime.stopped('app', state))
 
     def test_stopped_resume_same_owned_release_without_overwrite(self):
         with tempfile.TemporaryDirectory() as directory:

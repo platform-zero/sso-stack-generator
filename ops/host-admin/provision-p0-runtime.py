@@ -186,9 +186,12 @@ def main(argv=None):
                         raise Refused('storage configuration replacement requires exact old input')
                     observation = subprocess.run(['/usr/sbin/runuser', '-u', ACCOUNT, '--', '/usr/bin/env', '-i',
                         'HOME=' + str(HOME), f'XDG_RUNTIME_DIR=/run/user/{entry.pw_uid}', 'PATH=/usr/bin:/bin',
-                        '/usr/bin/systemctl', '--user', 'is-active', 'p0-postgres.service'],
+                        '/usr/bin/systemctl', '--user', 'show', 'p0-postgres.service',
+                        '--property=ActiveState,MainPID,ControlGroup,Job', '--no-pager'],
                         capture_output=True, timeout=10)
-                    if observation.stdout.strip() != b'inactive':
+                    values = dict(line.split('=', 1) for line in observation.stdout.decode().splitlines() if '=' in line)
+                    if (observation.returncode or values.get('ActiveState') not in ('inactive', 'failed')
+                            or values.get('MainPID') != '0' or values.get('ControlGroup') != '' or values.get('Job') != ''):
                         raise Refused('old experimental PostgreSQL must be stopped before store replacement')
                     temporary = destination.with_name('storage.conf.new')
                     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)

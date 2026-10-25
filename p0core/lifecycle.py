@@ -141,8 +141,8 @@ class Lifecycle:
                     self.verify_owned(previous)
                     if previous['releaseSha256'] != expected_sha256:
                         raise ContractError('stopped resume cannot change release inputs')
-                    if any(self.observe(name)['ActiveState'] != 'inactive' for name in previous['services']):
-                        raise ContractError('stopped resume requires all owned services inactive')
+                    if any(not self.stopped(name, self.observe(name)) for name in previous['services']):
+                        raise ContractError('stopped resume requires all owned services stopped')
                 elif resume_stopped:
                     raise ContractError('stopped resume requires an owned prior selection')
                 publications = {}
@@ -228,18 +228,39 @@ class Lifecycle:
                 'services': {name: self.observe(name) for name in sorted(registry['services'])},
                 'installationCertified': False}
 
+    def stopped(self, name, state):
+        if state['ActiveState'] not in ('inactive', 'failed'):
+            return False
+        raw = self.run(['/usr/bin/systemctl', '--user', 'show', 'p0-' + name + '.service',
+                        '--property=MainPID,ControlGroup,Job', '--no-pager'], timeout=5)
+        values = dict(line.split('=', 1) for line in raw.decode().splitlines() if '=' in line)
+        if values.get('MainPID') != '0' or values.get('Job') != '':
+            return False
+        group = values.get('ControlGroup')
+        if group == '':
+            return True  # No empty-cgroup lookup or global process fallback.
+        if not group or not group.startswith('/') or not group.endswith('/p0-' + name + '.service'):
+            raise OperationError('unexpected owned cgroup identity')
+        path = Path('/sys/fs/cgroup') / group.lstrip('/')
+        if '..' in path.parts or not path.resolve().is_relative_to('/sys/fs/cgroup'):
+            raise OperationError('owned cgroup escaped hierarchy')
+        if not path.exists():
+            return True
+        events = dict(line.split() for line in (path / 'cgroup.events').read_text().splitlines())
+        return events.get('populated') == '0'
+
     def _wait_unit(self, name, *, started, lifecycle, timeout=300):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             state = self.observe(name)
             if state['LoadState'] != 'loaded':
                 raise OperationError('owned unit is not loaded')
-            if state['ActiveState'] == 'failed':
+            if state['ActiveState'] == 'failed' and started:
                 raise OperationError('owned unit failed')
             if started:
                 if state['ActiveState'] == 'active' and (lifecycle != 'oneshot' or state['SubState'] == 'exited'):
                     return state
-            elif state['ActiveState'] == 'inactive':
+            elif self.stopped(name, state):
                 return state
             time.sleep(0.1)
         raise OperationError('unit transition deadline exceeded; reconcile current effects')
@@ -262,7 +283,9 @@ class Lifecycle:
         with operation_lock(self.state):
             journal = Journal(self.state / 'operations.sqlite3')
             if action == 'start' and journal.connection.execute(
-                    "SELECT 1 FROM operations WHERE state IN ('prepared','running','indeterminate') LIMIT 1").fetchone():
+                    "SELECT 1 FROM operations bad WHERE bad.state IN ('prepared','running','indeterminate') "
+                    "AND NOT (bad.kind='stop' AND EXISTS (SELECT 1 FROM operations done WHERE done.kind='stop' "
+                    "AND done.state='succeeded' AND done.input_sha256=bad.input_sha256 AND done.created>bad.updated)) LIMIT 1").fetchone():
                 journal.close()
                 raise ContractError('unreconciled effects prevent another start')
             operation = journal.create(action, registry['inputSha256'])
@@ -275,6 +298,15 @@ class Lifecycle:
                            [name for name in reversed(plan['services']) if name in set(targets)])
                 for name in ordered:
                     effects = True
+                    if action == 'start':
+                        current = self.observe(name)
+                        if current['ActiveState'] == 'failed':
+                            if not self.stopped(name, current):
+                                raise OperationError('failed unit still owns active effects')
+                            # Original failure stays in journal/native evidence.
+                            # Clear only this stopped unit's retry latch after an
+                            # explicit new start request, never on status/attach.
+                            self.run(['/usr/bin/systemctl', '--user', 'reset-failed', 'p0-' + name + '.service'])
                     self.run(['/usr/bin/systemctl', '--user', action, '--no-block', 'p0-' + name + '.service'])
                     spec = registry['services'][name]
                     self._wait_unit(name, started=action == 'start', lifecycle=spec.get('lifecycle', 'daemon'))
