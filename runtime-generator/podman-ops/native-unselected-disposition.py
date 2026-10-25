@@ -363,6 +363,12 @@ class Disposition(m.Session):
                 finally: os.close(check)
             self.removed.append(text); self.progress.update(removed=list(self.removed), pending=None); self.persist()
         self.progress['status'] = 'completed'; self.persist(); self.verify(quiescent=True)
+        # The host manager may still cache generated fragments whose Quadlet
+        # source was just removed. Reload only after exact stopped/trigger gates;
+        # never start an actor manager or revive a predecessor.
+        result = subprocess.run(['systemctl', 'daemon-reload'], capture_output=True, text=True, timeout=60)
+        require(result.returncode == 0, 'Root generated-unit unpublication incomplete')
+        self.verify(quiescent=True)
         return report(self.expected_sha, self.plan_sha, self.proof, self.env_proof)
 
 

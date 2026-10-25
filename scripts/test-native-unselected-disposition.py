@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 BASE = Path(__file__).absolute().parents[1]
 import importlib.util
@@ -29,6 +30,14 @@ class Disposition(f.Rootful):
     def setUp(self):
         super().setUp()
         patch.object(d, 'reserves', return_value=None).start()
+        self.reloads = []
+        boundary = d.subprocess.run
+        def transport(args, **kwargs):
+            if args == ['systemctl', 'daemon-reload']:
+                self.reloads.append(args)
+                return SimpleNamespace(returncode=0, stdout='')
+            return boundary(args, **kwargs)
+        patch.object(d.subprocess, 'run', side_effect=transport).start()
         patch.object(d.m, 'HOST', self.host).start()
         patch.object(d.m, 'stopped', m.stopped).start()
         patch.object(m.v, 'FAILED_ROOT', self.install).start()
@@ -62,6 +71,7 @@ class Disposition(f.Rootful):
         self.assertEqual((self.release / 'never-selected-original-failure.json').read_bytes(), self.before)
         self.assertEqual(self.data.read_bytes(), b'data-must-survive')
         self.assertTrue(self.quarantines)
+        self.assertEqual(self.reloads, [['systemctl', 'daemon-reload']])
         self.assertTrue(all(not Path(name).exists() for name in self.units['files']))
         self.assertEqual(list(self.store.iterdir()), [])
         self.assertEqual(d.completed_report(self.install, self.release, self.failed, self.expected), result)
