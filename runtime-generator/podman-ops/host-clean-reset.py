@@ -945,6 +945,18 @@ def _mount_proc_start(process, pid):
     return int(fields[19])
 
 
+def _mount_missing_kernel_object_observation():
+    raise Refusal('Original process/kernel namespace/root proof unavailable') from None
+
+
+def _mount_descriptor_capacity_observation():
+    raise Refusal('Original process/kernel namespace/root proof unavailable') from None
+
+
+def _mount_access_denied_observation():
+    raise Refusal('Original process/kernel namespace/root proof unavailable') from None
+
+
 @contextlib.contextmanager
 def _mount_process(proc, name):
     own = name == 'self'; pid = os.getpid() if own else int(name)
@@ -984,7 +996,15 @@ def _mount_process(proc, name):
         check()
         yield process, namespace_pin, root_pin, check
         check()
-    except OSError:
+    except OSError as error:
+        # Predefined trusted ops frames only; no errno values, process names,
+        # paths, exception text or locals become diagnostics. All cases refuse.
+        if error.errno in (errno.ENOENT, errno.ESRCH):
+            _mount_missing_kernel_object_observation()
+        if error.errno in (errno.EMFILE, errno.ENFILE):
+            _mount_descriptor_capacity_observation()
+        if error.errno in (errno.EACCES, errno.EPERM):
+            _mount_access_denied_observation()
         raise Refusal('Original process/kernel namespace/root proof unavailable') from None
     finally:
         if root is not None: os.close(root)

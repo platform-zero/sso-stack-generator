@@ -2655,6 +2655,21 @@ class MountViews(unittest.TestCase):
                 self.hook = None; action()
         self.hook = hook
 
+    def test_namespace_os_failures_remain_refusals_with_only_fixed_observation_frames(self):
+        for code, helper in ((m.errno.ENOENT, '_mount_missing_kernel_object_observation'),
+                             (m.errno.EMFILE, '_mount_descriptor_capacity_observation'),
+                             (m.errno.EACCES, '_mount_access_denied_observation')):
+            with self.subTest(code=code), self.kernel_model(), patch.object(m, helper, wraps=getattr(m, helper)) as observed:
+                proc = m.os.open('/proc', os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    with self.assertRaises(m.Refusal) as caught:
+                        with m._mount_process(proc, 'self'):
+                            raise OSError(code, 'private-model-error-path-must-not-appear')
+                    self.assertNotIn('private-model', str(caught.exception))
+                    observed.assert_called_once()
+                finally:
+                    m.os.close(proc)
+
     def test_same_held_namespace_empty_chroot_uses_complete_stable_self_view(self):
         @contextlib.contextmanager
         def directory(path, policies=None):
