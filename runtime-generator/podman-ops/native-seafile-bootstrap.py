@@ -565,12 +565,32 @@ class Fresh:
                 os.close(child)
         try:
             self.require(re.fullmatch(r'webservices_native_[0-9a-f]{32}', self.mac_name), 'Native MAC name differs')
-            fd = directory(Path('/sys/kernel/security/apparmor/.policy/profiles'))
+            root = directory(Path('/sys/kernel/security/apparmor'))
             libc = ctypes.CDLL(None, use_errno=True); function = libc.fstatfs
             function.argtypes = (ctypes.c_int, ctypes.c_void_p); function.restype = ctypes.c_int
-            filesystem = ctypes.create_string_buffer(256)
-            self.require(function(fd, filesystem) == 0 and ctypes.c_long.from_buffer(filesystem).value == 0x73636673,
-                         'Native MAC control filesystem differs')
+            def filesystem(fd, expected):
+                value = ctypes.create_string_buffer(256)
+                self.require(function(fd, value) == 0 and ctypes.c_long.from_buffer(value).value == expected,
+                             'Native MAC control filesystem differs')
+            filesystem(root, 0x73636673)  # SECURITYFS_MAGIC
+            # The ONLY followed link is the kernel's documented policy-view
+            # magic link, not an ordinary source/data symlink or fallback.
+            def link_identity(info):
+                return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+                        info.st_nlink, info.st_mtime_ns, info.st_ctime_ns)
+            link = os.stat('policy', dir_fd=root, follow_symlinks=False)
+            target = os.readlink('policy', dir_fd=root)
+            self.require(stat.S_ISLNK(link.st_mode) and link.st_uid == 0
+                         and re.fullmatch(r'apparmorfs:\[[0-9]+\]', target), 'Native MAC kernel view link differs')
+            view = os.open('policy', os.O_RDONLY | os.O_DIRECTORY, dir_fd=root); opened.append(view)
+            filesystem(view, 0x5a3c69f0)  # AAFS_MAGIC, the private kernel policy tree
+            view_info = os.fstat(view)
+            self.require(view_info.st_uid == 0 and not view_info.st_mode & 0o022,
+                         'Native MAC kernel view owner differs')
+            self.require(link_identity(os.stat('policy', dir_fd=root, follow_symlinks=False)) == link_identity(link)
+                         and os.readlink('policy', dir_fd=root) == target, 'Native MAC kernel view changed')
+            fd = os.open('profiles', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=view); opened.append(fd)
+            filesystem(fd, 0x5a3c69f0)
             entries = os.listdir(fd)
             self.require(len(entries) <= 100000, 'Native MAC kernel inventory bound refused')
             entries = [name for name in entries if re.fullmatch(re.escape(self.mac_name) + r'\.[0-9]+', name)]
@@ -583,7 +603,10 @@ class Fresh:
                          'Native MAC kernel policy name/mode differs')
             digest = read(child, 'sha256')
             self.require(re.fullmatch(rb'[0-9a-f]{64}', digest), 'Native MAC kernel policy hash unavailable')
-            return dict(name=self.mac_name, kernelSha256=digest.decode(), device=info.st_dev, inode=info.st_ino)
+            self.require(link_identity(os.stat('policy', dir_fd=root, follow_symlinks=False)) == link_identity(link)
+                         and os.readlink('policy', dir_fd=root) == target, 'Native MAC kernel view CAS changed')
+            return dict(name=self.mac_name, kernelSha256=digest.decode(), device=info.st_dev, inode=info.st_ino,
+                        viewDevice=view_info.st_dev, viewInode=view_info.st_ino)
         finally:
             for fd in reversed(opened):
                 os.close(fd)

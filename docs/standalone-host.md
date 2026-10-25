@@ -173,7 +173,11 @@ and source hash before loading. The canonical owner exclusively creates private
 source/expanded/parser controls under the release, preprocesses with caches disabled,
 checks that only the one expected profile is defined, refuses any existing kernel
 identity, and uses add (never replace). An enforcing kernel policy/hash/inode is
-recorded and rechecked before mapped execution/publication. Private parser output
+recorded and rechecked before mapped execution/publication. Kernel introspection
+opens no-follow ancestors on securityfs, then only its attested `apparmorfs:[id]`
+policy-view magic link, requiring the separate apparmorfs filesystem magic and
+view identity. Ordinary links, arbitrary paths and filesystem/view drift refuse;
+the kernel's internal unexported `.policy` path is not a substitute. Private parser output
 is bounded and never exposed. Source tests are not installed policy proof.
 
 Policy controls/custody and the immutable kernel policy are retained with failed

@@ -86,6 +86,34 @@ class Models(unittest.TestCase):
    with mock.patch.object(b.subprocess,'run') as run,self.assertRaises(p.Refused):
     b.Fresh.install_mac_policy(f)
    run.assert_not_called()
+ def test_kernel_policy_reader_follows_only_attested_securityfs_to_apparmorfs_magic_view(self):
+  with tempfile.TemporaryDirectory() as temp:
+   f=self.fixture(temp)
+   link=types.SimpleNamespace(st_dev=1,st_ino=99,st_mode=stat.S_IFLNK|0o444,st_uid=0,st_gid=0,
+                             st_nlink=1,st_mtime_ns=1,st_ctime_ns=1)
+   def filesystem(fd,buffer):
+    b.ctypes.c_long.from_buffer(buffer).value=0x73636673 if fd==14 else 0x5a3c69f0
+    return 0
+   library=types.SimpleNamespace(fstatfs=mock.Mock(side_effect=filesystem))
+   with mock.patch.object(b.os,'open',side_effect=range(10,17)) as opened,\
+        mock.patch.object(b.os,'fstat',return_value=types.SimpleNamespace(st_uid=0,st_mode=stat.S_IFDIR|0o555,st_dev=1,st_ino=2)),\
+        mock.patch.object(b.os,'stat',return_value=link),\
+        mock.patch.object(b.os,'readlink',return_value='apparmorfs:[147]'),\
+        mock.patch.object(b.os,'listdir',return_value=[]),\
+        mock.patch.object(b.ctypes,'CDLL',return_value=library),mock.patch.object(b.os,'close'):
+    self.assertIsNone(f.kernel_mac_policy())
+   self.assertEqual(opened.call_args_list[-2].args,('policy',os.O_RDONLY|os.O_DIRECTORY))
+   self.assertEqual(opened.call_args_list[-1].args,('profiles',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW))
+   with mock.patch.object(b.os,'open',side_effect=range(10,17)) as opened,\
+        mock.patch.object(b.os,'fstat',return_value=types.SimpleNamespace(st_uid=0,st_mode=stat.S_IFDIR|0o555)),\
+        mock.patch.object(b.os,'stat',return_value=link),\
+        mock.patch.object(b.os,'readlink',return_value='/ordinary-untrusted-link'),\
+        mock.patch.object(b.ctypes,'CDLL',return_value=library),mock.patch.object(b.os,'close'),self.assertRaises(p.Refused):
+    f.kernel_mac_policy()
+   self.assertFalse(any(call.args[0]=='policy' for call in opened.call_args_list))
+   f.mac_name='../foreign-policy'
+   with mock.patch.object(b.os,'open') as opened,self.assertRaises(p.Refused):f.kernel_mac_policy()
+   opened.assert_not_called()
  def test_mac_kernel_custody_drift_refuses_without_repair_or_replacement(self):
   with tempfile.TemporaryDirectory() as temp:
    f=self.fixture(temp);f.mac_pin=dict(kernelSha256='a'*64)
