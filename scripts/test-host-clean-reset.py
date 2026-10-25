@@ -2045,23 +2045,28 @@ class Clean(unittest.TestCase):
     def test_rootful_default_cache_is_not_deletion_scope_retains_evidence_and_data(self):
         self.engine['images'] = ['a' * 64];self.engine['layers'] = ['b' * 64]
         with self.assertRaises(m.Refusal): self.run_reset()
-        result = self.failed_result(); self.assertFalse(result['rootfulStoreColdAcceptance']); self.assertFalse(result['completeCleanReset'])
+        self.assertEqual(list((self.root / '.host-clean-reset').glob('*-intent.json')), [])
+        self.assertEqual(list((self.root / '.host-clean-reset').glob('*-result.json')), [])
+        self.assertFalse(any(mutate for _, _, mutate in self.cold_calls))
         self.assertTrue((Path(self.rows[0]['graphRoot']) / 'overlay/layer/data').exists())
         self.assertEqual((self.root / '.install-intent.json').read_bytes(), self.original_intent)
 
     def test_rootful_remaining_orphan_layers_never_get_external_prune(self):
         self.engine['layers'] = ['b' * 64]
-        with self.assertRaisesRegex(m.Refusal, 'layer metadata remains'): self.run_reset()
-        self.assertFalse(self.failed_result()['rootfulStoreColdAcceptance'])
+        with self.assertRaisesRegex(m.Refusal, 'Non-cold shared default store'): self.run_reset()
+        self.assertEqual(list((self.root / '.host-clean-reset').glob('*-intent.json')), [])
+        self.assertEqual(list((self.root / '.host-clean-reset').glob('*-result.json')), [])
+        self.assertTrue((Path(self.rows[0]['graphRoot']) / 'overlay/layer/data').exists())
         self.assertFalse(any('--external' in args or 'system' in args for _, args, _ in self.cold_calls))
 
     def test_rootful_orphan_disk_layer_not_hidden_by_empty_engine_metadata(self):
         for field in ('orphanLayers', 'orphanImageDirs'):
             with self.subTest(field=field):
                 self.engine[field] = ['e' * 64]
-                with self.assertRaisesRegex(m.Refusal, 'orphan image/layer directories'): self.run_reset()
-                self.assertFalse(self.failed_result()['rootImageCold'])
-                self.assertFalse(self.failed_result()['rootfulStoreColdAcceptance'])
+                with self.assertRaisesRegex(m.Refusal, 'Non-cold shared default store'): self.run_reset()
+                self.assertEqual(list((self.root / '.host-clean-reset').glob('*-intent.json')), [])
+                self.assertEqual(list((self.root / '.host-clean-reset').glob('*-result.json')), [])
+                self.assertTrue((Path(self.rows[0]['graphRoot']) / 'overlay/layer/data').exists())
                 self.assertEqual(self.engine[field], ['e' * 64]); self.engine[field] = []
         self.assertFalse(any('--external' in args for _, args, _ in self.cold_calls))
 

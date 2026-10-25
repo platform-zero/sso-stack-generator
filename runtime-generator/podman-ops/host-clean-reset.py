@@ -2611,6 +2611,12 @@ def plan_locked(root, expected, root_fd, lock_pin, data_only=False):
     network_mappings = prior_network_mappings(root_fd, selection, network_sources)
     rootful = rootful_inventory(selection, network_sources, network_mappings)
     require(rootful_inventory(selection, network_sources, network_mappings) == rootful, 'Rootful review inventory CAS changed')
+    # No default-store image/cache deletion authority exists. Refuse an
+    # impossible complete-clean result BEFORE scope scanning, plan publication,
+    # lease issuance or any owned-data erasure. Engineering data-only mode is
+    # explicitly separate and still provides zero complete/cold/count credit.
+    require(data_only or root_images_cold(rootful),
+            'Non-cold shared default store cannot qualify complete reset; isolated selected-store engineering required before mutation')
     present_external = [Path(tree['path']) for tree in external['trees'] if tree['pin'] is not None]
     unmounted([SCOPE, *present_external], selection['externalPolicies'])
     retained = set(selection['policies']) - {SHARED, SCOPE} - set(selection['roots'])

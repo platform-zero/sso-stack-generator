@@ -44,5 +44,10 @@ the original `completeCleanReset` history unchanged; that history is not a claim
 that the current default store is cold. Application acceptance remains false.
 
 This mode cannot resolve a complete-clean requirement blocked by non-cold shared
-Root images and grants no deletion authority over those images. Do not count it
+Root images and grants no deletion authority over those images. Complete-clean
+review now refuses a non-cold shared default store before publishing a destructive
+plan, issuing its stopped lease or erasing owned data: an impossible cold result
+must not cause a partial cleanup first. An isolated selected-store source/lifecycle
+is required to resolve that dependency; changing an assertion or retroactively
+crediting this engineering operation is not a solution. Do not count this mode
 as the reset between the two required complete identical-input acceptance runs.
