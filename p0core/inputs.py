@@ -113,6 +113,25 @@ def pack_configurations(catalog, targets, document, destination):
             'privateInput': True, 'installationCertified': False}
 
 
+def ensure_materialized(runtime, specifications):
+    selected = bindings(specifications)
+    if not selected:
+        return
+    names = set(runtime.run(['/usr/bin/podman', 'secret', 'ls', '--format', '{{.Name}}']).decode().splitlines())
+    for checksum in sorted(set(selected.values())):
+        name = 'p0-config-' + checksum
+        if name in names:
+            labels = runtime.run(['/usr/bin/podman', 'secret', 'inspect', '--format',
+                                  '{{index .Spec.Labels "io.platform-zero.kind"}}|{{index .Spec.Labels "io.platform-zero.config-sha256"}}', name]).decode().strip()
+            if labels != 'config|' + checksum:
+                raise ContractError('existing configuration blob is not an owned supply')
+        else:
+            # No --showsecret, plaintext output, secret-bearing argv, mutable
+            # site pathname, or host-Root ownership repair inside containers.
+            runtime.run(['/usr/bin/podman', 'secret', 'create', '--label', 'io.platform-zero.kind=config',
+                         '--label', 'io.platform-zero.config-sha256=' + checksum, name, str(CONFIG_ROOT / checksum)])
+
+
 def verify_installed(specifications):
     selected = bindings(specifications)
     if not selected:

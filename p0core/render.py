@@ -111,7 +111,7 @@ def render(catalog: Catalog, targets: list[str]) -> tuple[dict, dict[str, str]]:
             raise ContractError("mounts must be an array")
         destinations = set()
         for mount in mounts:
-            fields(mount, {"kind", "source", "target"}, {"readOnly", "sha256"})
+            fields(mount, {"kind", "source", "target"}, {"readOnly", "sha256", "uid", "gid"})
             source = identifier(mount["source"])
             target = _absolute(mount["target"])
             if target in destinations:
@@ -120,6 +120,8 @@ def render(catalog: Catalog, targets: list[str]) -> tuple[dict, dict[str, str]]:
             readonly = mount.get("readOnly", mount["kind"] != "volume")
             if type(readonly) is not bool:
                 raise ContractError("readOnly must be boolean")
+            if ('uid' in mount or 'gid' in mount) and mount['kind'] != 'secret':
+                raise ContractError('service UID custody only applies to credential mounts')
             if 'sha256' in mount and mount['kind'] != 'config':
                 raise ContractError('byte binding only applies to configuration mounts')
             if mount["kind"] == "volume":
@@ -129,12 +131,22 @@ def render(catalog: Catalog, targets: list[str]) -> tuple[dict, dict[str, str]]:
                     f"VolumeName={volume}\nLabel=io.platform-zero.managed=v2\n")
                 lines.append("Volume=" + volume + '.volume:' + target + (':ro' if readonly else ''))
             elif mount["kind"] == "secret" and readonly:
-                lines.append("Secret=p0-" + source + ',type=mount,target=' + target)
+                custody = ''
+                if 'uid' in mount or 'gid' in mount:
+                    uid, gid = mount.get('uid'), mount.get('gid', 0)
+                    if any(type(value) is not int or not 0 <= value <= 65535 for value in (uid, gid)):
+                        raise ContractError('secret custody requires mapped numeric UID/GID')
+                    custody = f',uid={uid},gid={gid},mode=0400'
+                lines.append("Secret=p0-" + source + ',type=mount,target=' + target + custody)
             elif mount["kind"] == "config" and readonly:
                 checksum = mount.get('sha256')
                 if not isinstance(checksum, str) or not re.fullmatch('[a-f0-9]{64}', checksum):
                     raise ContractError('configuration mount needs explicit byte identity')
-                lines.append("Volume=/etc/p0-v2/config/" + checksum + ':' + target + ':ro')
+                # Native immutable blob injection supplies namespace UID 0,
+                # unlike a host-Root bind that maps to UID 65534 rootlessly.
+                # Configs are noncredentials; their authoritative source stays
+                # Root-owned/hash-checked outside the runtime's mutable store.
+                lines.append('Secret=p0-config-' + checksum + ',type=mount,target=' + target + ',uid=0,gid=0,mode=0444')
             else:
                 raise ContractError("unsupported mount type or writable configuration")
         endpoints = declaration.get("endpoints", [])

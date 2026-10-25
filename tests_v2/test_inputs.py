@@ -27,7 +27,8 @@ class InputTests(unittest.TestCase):
             selected = resolve(catalog, ['app'], inputs)
             plan, files = render(selected, ['app'])
             checksum = inputs['configs']['settings']['sha256']
-            self.assertIn('/etc/p0-v2/config/' + checksum, files['quadlet/rootless/p0-app.container'])
+            self.assertIn('Secret=p0-config-' + checksum, files['quadlet/rootless/p0-app.container'])
+            self.assertIn('uid=0,gid=0,mode=0444', files['quadlet/rootless/p0-app.container'])
             lock = build(selected, ['app'], Path(directory) / 'release')
             self.assertNotIn(b'synthetic-private-input-canary', canonical(lock))
             self.assertNotIn(b'synthetic-private-input-canary', b''.join(path.read_bytes() for path in (Path(directory) / 'release').rglob('*') if path.is_file()))
@@ -67,6 +68,34 @@ class InputTests(unittest.TestCase):
             with patch('p0core.inputs.CONFIG_ROOT', Path(directory)):
                 with self.assertRaises(ContractError):
                     verify_installed([spec])
+
+    def test_native_config_supply_never_reads_credential_values(self):
+        from p0core.inputs import ensure_materialized
+        from types import SimpleNamespace
+        checksum = 'a' * 64
+        spec = service('app', mounts=[{'kind': 'config', 'source': 'settings', 'target': '/settings', 'sha256': checksum}])
+        calls = []
+        def missing(arguments):
+            calls.append(arguments)
+            return b''
+        ensure_materialized(SimpleNamespace(run=missing), [spec])
+        self.assertEqual(calls[-1][-1], '/etc/p0-v2/config/' + checksum)
+        self.assertIn('create', calls[-1])
+        def foreign(arguments):
+            calls.append(arguments)
+            return ('p0-config-' + checksum).encode() if 'ls' in arguments else b'foreign|owner'
+        with self.assertRaises(ContractError):
+            ensure_materialized(SimpleNamespace(run=foreign), [spec])
+        self.assertFalse(any('--showsecret' in arguments for arguments in calls))
+
+    def test_exact_service_secret_uid_is_namespace_custody_not_new_host_account(self):
+        mount = {'kind': 'secret', 'source': 'password', 'target': '/run/secrets/password', 'uid': 1000, 'gid': 0}
+        _, files = render(Catalog([module(service('app', mounts=[mount]))]), ['app'])
+        self.assertIn('uid=1000,gid=0,mode=0400', files['quadlet/rootless/p0-app.container'])
+        for invalid in (True, -1, 65536, '1000'):
+            mount['uid'] = invalid
+            with self.assertRaises(ContractError):
+                render(Catalog([module(service('app', mounts=[mount]))]), ['app'])
 
     def test_image_binding_changes_same_graph_without_mutating_source(self):
         catalog = Catalog([module(service('app'))])

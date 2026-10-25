@@ -218,6 +218,8 @@ class Lifecycle:
                 store = self.run(['/usr/bin/podman', 'info', '--format', '{{.Store.GraphRoot}}'], timeout=30)
                 if store.decode().strip() != STORE_ROOT:
                     raise ContractError('unexpected rootless image store; refusing engine mutation')
+                from .inputs import ensure_materialized
+                ensure_materialized(self, specs.values())
                 for image in sorted(set(lock['images'].values())):
                     command = ['/usr/bin/podman', 'pull', '--quiet', image] if pull else ['/usr/bin/podman', 'image', 'exists', image]
                     self.run(command, timeout=300)
@@ -352,13 +354,13 @@ class Lifecycle:
             raise ContractError('unsupported lifecycle action')
         registry = self._registry()
         self.verify_owned(registry)
-        if action == 'start':
-            from .inputs import verify_installed
-            verify_installed(registry['services'].values())
         if resources and (action != 'stop' or set(targets) != set(registry['services'])):
             raise ContractError('resource stop requires explicit complete owned service selection')
         catalog = Catalog([{'schemaVersion': 1, 'id': 'selected', 'services': list(registry['services'].values())}])
         plan = catalog.plan(targets)
+        if action == 'start':
+            from .inputs import verify_installed
+            verify_installed(registry['services'][name] for name in plan['services'])
         if action == 'stop':
             # A selected dependency may not be stopped beneath a retained
             # dependent. Caller must include the dependent explicitly.
@@ -383,6 +385,8 @@ class Lifecycle:
             try:
                 if action == 'start':
                     verify_reserves()
+                    from .inputs import ensure_materialized
+                    ensure_materialized(self, (registry['services'][name] for name in plan['services']))
                 ordered = (plan['services'] if action == 'start' else
                            [name for name in reversed(plan['services']) if name in set(targets)])
                 for name in ordered:
