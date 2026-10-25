@@ -463,6 +463,8 @@ def pinned_document(path, expected):
 
 
 def supply_rows(path, expected, binding, selected):
+    if os.path.lexists(Path(path).parent / 'PENDING'):
+        raise ValueError('supply is pending; interrupted output is not a release input')
     document, proof = pinned_document(path, expected)
     if (set(document) != {'schemaVersion', 'purpose', 'binding', 'imageAuthorities', 'images'}
             or type(document.get('schemaVersion')) is not int or document['schemaVersion'] != 1
@@ -538,7 +540,8 @@ def cache_source(store, runroot, receipt, expected, binding, selected):
 
 
 def package(bundle, store, runroot, output, seconds, *, source_receipt=None,
-            source_receipt_sha256=None, supply_inputs=None, supply_sha256=None):
+            source_receipt_sha256=None, supply_inputs=None, supply_sha256=None,
+            qualified_artifacts=None):
     if os.geteuid() != 0:
         raise ValueError('root packaging operator required')
     if not 1 <= seconds <= 3600:
@@ -550,7 +553,16 @@ def package(bundle, store, runroot, output, seconds, *, source_receipt=None,
     owned_directory(output.parent)
     if os.path.lexists(output):
         raise ValueError('fresh output directory required; pending outputs cannot be replayed')
-    if supply_inputs is not None:
+    if qualified_artifacts is not None:
+        if any(value is not None for value in (store, runroot, source_receipt, source_receipt_sha256,
+                                               supply_inputs, supply_sha256)):
+            raise ValueError('qualified artifact packaging cannot combine input authorities')
+        qualified_artifacts.verify(binding, selected)
+        source_proof = qualified_artifacts.proof
+        source_roots = qualified_artifacts.roots
+        input_sha = qualified_artifacts.report_sha256
+        mode = 'qualified-artifact-rebind'
+    elif supply_inputs is not None:
         if any(value is not None for value in (store, runroot, source_receipt, source_receipt_sha256)):
             raise ValueError('offline supply cannot combine with a cache authority')
         supplied, source_proof = supply_rows(supply_inputs, supply_sha256, binding, selected)
@@ -582,12 +594,16 @@ def package(bundle, store, runroot, output, seconds, *, source_receipt=None,
     def guard():
         if time.monotonic() >= deadline:
             raise ValueError('overall packaging deadline exceeded')
+        if qualified_artifacts is not None:
+            qualified_artifacts.guard()
         check_reserves(output)
     rows = []; oci_proofs = {}
     for image in selected:
         guard(); assert_unchanged(proof)
         partial = output / (image[7:] + '.oci.partial')
-        if supply_inputs is not None:
+        if qualified_artifacts is not None:
+            qualified_artifacts.copy(image, partial, guard)
+        elif supply_inputs is not None:
             fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, 'wb') as target, supplied[image].open('rb') as source:
                 copied = 0
@@ -622,6 +638,13 @@ def package(bundle, store, runroot, output, seconds, *, source_receipt=None,
                      'archiveSha256': before[-1], 'archiveBytes': before[2]})
         sync_directory(output)
     guard(); assert_unchanged(proof)
+    if qualified_artifacts is not None:
+        qualified_artifacts.verify(binding, selected)
+        qualification = output / 'source-qualification.json'
+        write_json(qualification, qualified_artifacts.report)
+        proof[qualification] = snapshot(qualification)
+        if proof[qualification][-1] != input_sha:
+            raise ValueError('qualified artifact source report changed')
     path = output / 'image-inputs.json.partial'
     write_json(path, {'schemaVersion': 1, 'images': rows})
     proof[path] = snapshot(path)
@@ -634,6 +657,8 @@ def package(bundle, store, runroot, output, seconds, *, source_receipt=None,
     write_json(proof_path, frozen)
     proof[proof_path] = snapshot(proof_path)
     guard(); assert_unchanged(proof)
+    if qualified_artifacts is not None:
+        qualified_artifacts.verify(binding, selected)
     # Publish the installer-facing filename last. PENDING is conservative after
     # a crash between publication and unlink; integration must require it absent.
     path.rename(output / 'image-inputs.json')

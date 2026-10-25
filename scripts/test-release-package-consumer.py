@@ -144,6 +144,45 @@ class Consumer(unittest.TestCase):
     def save_proof(self):
         self.write(self.proofpath, self.proof)
 
+    def qualified_artifact_report(self):
+        owner = SOURCE.with_name('qualified-image-supply.py')
+        (self.bundle / 'ops/qualified-image-supply.py').write_bytes(owner.read_bytes())
+        report = {'schemaVersion': 1, 'qualifierSha256': self.digest(owner),
+                  'binding': self.proof['binding'], 'ociProofs': self.proof['ociProofs'],
+                  'producerCopyClosures': {'producer': {}, 'ondemand': {}},
+                  'activationAuthorized': False, 'acceptedIntegratedInstalls': 0}
+        path = self.output / 'source-qualification.json'
+        self.write(path, report)
+        self.proof['inputMode'] = 'qualified-artifact-rebind'
+        self.proof['inputSha256'] = self.digest(path)
+        self.save_proof()
+        return path, report
+
+    def test_qualified_artifact_report_and_trusted_owner_required(self):
+        path, report = self.qualified_artifact_report()
+        rows = M.validate_standalone(self.bundle, self.inputs)
+        self.assertEqual(len(rows), 1)
+        self.native.assert_not_called()
+        (self.bundle / 'ops/qualified-image-supply.py').write_text('changed owner')
+        with self.assertRaises(ValueError): M.validate_standalone(self.bundle, self.inputs)
+
+    def test_qualified_artifact_report_cannot_drop_ondemand_or_change_binding(self):
+        path, report = self.qualified_artifact_report()
+        for changes in ({'producerCopyClosures': {'producer': {}}}, {'binding': {}},
+                        {'schemaVersion': True}, {'acceptedIntegratedInstalls': True},
+                        {'activationAuthorized': True}, {'ociProofs': {}}):
+            self.write(path, {**report, **changes})
+            self.proof['inputSha256'] = self.digest(path); self.save_proof()
+            with self.assertRaises(ValueError): M.validate_standalone(self.bundle, self.inputs)
+        self.native.assert_not_called()
+
+    def test_qualified_artifact_report_missing_or_nonroot_refused(self):
+        path, _ = self.qualified_artifact_report()
+        self.owners[path] = 1000
+        with self.assertRaises(ValueError): M.validate_standalone(self.bundle, self.inputs)
+        del self.owners[path]; path.unlink()
+        with self.assertRaises(OSError): M.validate_standalone(self.bundle, self.inputs)
+
     def rebind_inputs(self):
         self.data['images'][0]['archiveSha256'] = self.digest(self.archive)
         self.data['images'][0]['archiveBytes'] = self.archive.stat().st_size

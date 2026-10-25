@@ -282,12 +282,29 @@ def validate_standalone(bundle, inputs):
     if (not selected or set(proof) != keys or type(proof.get('schemaVersion')) is not int or proof['schemaVersion'] != 1 or
             proof['purpose'] != 'source-bound-release-images' or proof['binding'] != binding or
             proof['imageAuthorities'] != selected or proof['imageInputsSha256'] != captures[inputs][0][1] or
-            proof['packagerSha256'] != packager_sha or proof['inputMode'] not in ('offline-supply', 'dedicated-cache-export') or
+            proof['packagerSha256'] != packager_sha or proof['inputMode'] not in ('offline-supply', 'dedicated-cache-export', 'qualified-artifact-rebind') or
             not isinstance(proof['inputSha256'], str) or not re.fullmatch(r'[0-9a-f]{64}', proof['inputSha256']) or
             proof['activationAuthorized'] is not False or type(proof['acceptedIntegratedInstalls']) is not int or
             proof['acceptedIntegratedInstalls'] != 0 or not isinstance(proof['ociProofs'], dict) or
             set(proof['ociProofs']) != set(selected)):
         raise ValueError('Protected release proof does not bind exact selected source/images')
+    if proof['inputMode'] == 'qualified-artifact-rebind':
+        qualification_path = inputs.parent / 'source-qualification.json'
+        qualification = document(qualification_path, True)
+        owner = bundle / 'ops/qualified-image-supply.py'
+        owner_sha = remember(owner)
+        if (owner_sha != remember(Path(__file__).absolute().with_name('qualified-image-supply.py'))
+                or captures[qualification_path][0][1] != proof['inputSha256']
+                or type(qualification.get('schemaVersion')) is not int or qualification['schemaVersion'] != 1
+                or qualification.get('qualifierSha256') != owner_sha
+                or qualification.get('binding') != binding
+                or qualification.get('ociProofs') != proof['ociProofs']
+                or not isinstance(qualification.get('producerCopyClosures'), dict)
+                or set(qualification['producerCopyClosures']) != set(producers)
+                or qualification.get('activationAuthorized') is not False
+                or type(qualification.get('acceptedIntegratedInstalls')) is not int
+                or qualification['acceptedIntegratedInstalls'] != 0):
+            raise ValueError('Qualified artifact report/owner/source binding differs')
     if (set(data) != {'schemaVersion', 'images'} or type(data.get('schemaVersion')) is not int or
             data['schemaVersion'] != 1 or not isinstance(data.get('images'), list)):
         raise ValueError('Invalid standalone image input manifest')

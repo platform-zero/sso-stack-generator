@@ -69,6 +69,78 @@ all traversed ancestors must be root-owned directories, not symlinks or writable
 by other users. Input files must be root-owned regular, single-link files, not
 writable by other users. Path traversal, linked ancestors and hardlinks fail closed.
 
+## Rebind previously qualified immutable producer artifacts
+
+The existing `export-selected-images.py` producer also supports an **artifact-only**
+mode. It does not start a builder or manager, access any image store, export an
+actor graph, manufacture an operation permit, or prove availability in a target
+actor's store. The original artifacts and producer inputs remain read-only.
+Use it only with an independently reviewed, protected record of an actual complete
+producer run—not fixtures, a partial build, a tag, or a self-authored approval.
+
+```sh
+python3 export-selected-images.py --bundle /root-owned/new-bundle \
+  --rebind-qualified-artifacts \
+  --source-bundle /root-owned/original-producer-bundle \
+  --public-build /root-owned/original-public-build \
+  --producer-record /root-owned/producer/producer-results.json \
+  --producer-sha256 <independently-reviewed-record-sha256> \
+  --image-inputs /root-owned/original-package/image-inputs.json \
+  --image-inputs-sha256 <independently-reviewed-input-sha256> \
+  --output /root-private/artifacts/new-child
+```
+
+The owner checks the original complete public-tree hash and file count, the
+producer's original IR binding, exact selected producer coverage, every recipe
+hash, build context/options, and all effective COPY sources across build stages.
+Current and original COPY bytes and canonical execute bits must match. Unreferenced
+configuration changes can differ; there is no path/name exception list. New COPY
+syntax, dynamic/escaping sources, ADD, ONBUILD, RUN mounts, Dockerignore files,
+external-stage copies and unrecorded build arguments fail closed for owning review.
+Copied dependency manifests and immutable recipes remain byte-identical; this mode
+never resolves mutable build dependencies again or claims reproducible rebuilding.
+
+It independently checks the selected archive bytes and OCI config/ordered DiffIDs
+against the protected producer outputs, preserves exact non-producer immutable
+consumer identities, and derives the new transport authority map from the new clean
+bundle. The old package/source binding is not accepted as the new binding. All source
+CAS is repeated, COPY trees are re-enumerated, archives are copied without hardlinks,
+and input/output authorities must be disjoint. Reserve and time gates apply; a
+prospective archive copy must leave 50 GiB on its actual staging filesystem, in
+addition to the host reserve floors. An interrupted child remains PENDING and is
+not reusable. The packager refuses even a dangling PENDING marker in offline supply.
+
+Normally successful output contains `supply.json` and bounded
+`source-qualification.json`. To avoid a second full-size archive copy, the same
+producer accepts `--package-output`: after qualification it calls the existing
+packager internally, producing the normal `image-inputs.json`,
+`release-image-proof.json` and `source-qualification.json` directly. The new proof
+mode is `qualified-artifact-rebind`; the consumer additionally verifies the
+protected qualification report's hash, exact selected producer set (including
+on-demand recipes), OCI proofs, new binding and trusted bundled qualifier SHA.
+
+An optional `--archive-source /exact/original-package` supplies **opaque data
+only** when an archive filesystem has operator-owned ancestors. All executable
+code, candidate/producer controls, original public build tree and reviewed input
+manifest must first be hash-verified and staged beneath fully protected Root-owned
+ancestors. Preserve the manifest basename (`image-inputs.json`) in that control
+staging; its bytes must match the original archive directory's manifest. The data
+reader opens every ancestor and leaf without following symlinks, retains kernel
+FDs, refuses linked/nonregular/oversized files or PENDING sources, and rechecks
+held/named inode/stat identity. Protected expected archive hashes and actual OCI
+closure authenticate the bytes; mutable ancestors never authenticate Root code,
+operation authority or an actor store. Source archives are never written, adopted
+as a cache, executed, or made trusted by changing original permissions. Final
+package files still require the normal fully protected Root ancestry. Existing
+offline-supply/cache and native custody gates are not relaxed.
+
+These are source/artifact transport evidence with zero integrated-install credit,
+not journal approval, selected-store availability or deployed behavior. Review the
+new supply SHA-256 and use the existing offline packaging command below. Canonical
+installation, per-actor import/verification, native custody, and actual acceptance
+are still mandatory. Do not relocate runtime roots or modify old source/supply to
+make space; choose an explicitly owned, adequately sized artifact destination.
+
 ## Preferred path: offline hash-pinned supply
 
 No image runtime is needed for this mode. The authorized supply owner provides one

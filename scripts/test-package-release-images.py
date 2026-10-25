@@ -432,6 +432,18 @@ class FreezeWorkflow(unittest.TestCase):
         self.assertEqual((self.output / inputs['images'][0]['archiveFilename']).stat().st_nlink, 1)
         with self.assertRaisesRegex(ValueError, 'fresh output'): self.run_package()
 
+    def test_pending_supply_even_dangling_marker_refused_before_staging(self):
+        marker = self.supply / 'PENDING'
+        for dangling in (False, True):
+            if dangling:
+                marker.symlink_to(self.supply / 'absent-marker')
+            else:
+                marker.write_text('interrupted source')
+            with self.assertRaisesRegex(ValueError, 'pending'):
+                self.run_package()
+            self.assertFalse(self.output.exists())
+            marker.unlink()
+
     def test_wrong_authority_or_source_hash_or_missing_image_refused_before_staging(self):
         for changed in ({'imageAuthorities': {self.image: ['release-apps']}},
                         {'binding': {**self.binding, 'sourceProvenanceSha256': '0' * 64}},

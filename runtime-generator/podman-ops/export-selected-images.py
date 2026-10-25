@@ -40,7 +40,9 @@ implement these methods; all verification methods return None or raise:
 
 No adapter is loaded from a user path, token or CLI flag. No subprocess is run
 here; Main owns the actual trusted executor and installed-tool compatibility
-proof. CLI only describes frozen selection. Synthetic tests are NOT namespace
+proof. CLI can describe frozen selection or rebind already-produced immutable
+artifacts after complete recipe/COPY/OCI checks. That artifact-only mode never
+accesses stores, exports an actor graph or substitutes for the lease. Synthetic tests are NOT namespace
 compatibility, actual export or installation acceptance (complete acceptance 0/2).
 Only new output/workspace children are written; source stores are never chowned,
 pruned, copied or repaired. Failed output stays PENDING; no replay/promotion API.
@@ -54,6 +56,7 @@ from pathlib import Path
 import re
 import stat
 import struct
+import sys
 import time
 
 GIB = 1024**3
@@ -728,14 +731,50 @@ def export_selected(bundle, source_receipt, reviewed_sha256, output, *, lease, s
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bundle', required=True)
-    parser.add_argument('--describe-selection', required=True, action='store_true',
-                        help='read-only; export requires existing in-process installer lease')
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--describe-selection', action='store_true',
+                      help='read-only; store export requires existing in-process installer lease')
+    mode.add_argument('--rebind-qualified-artifacts', action='store_true',
+                      help='artifact-only source/COPY/OCI rebind; never accesses stores or admits operations')
+    for name in ('source-bundle', 'public-build', 'producer-record', 'producer-sha256',
+                 'image-inputs', 'image-inputs-sha256', 'output'):
+        parser.add_argument('--' + name)
+    parser.add_argument('--archive-source', help='opaque archive DATA only; code/controls must remain Root-protected')
+    parser.add_argument('--package-output', action='store_true', help='use existing packager in one copy, not intermediate supply')
     args = parser.parse_args()
-    binding, selected, _ = package.bundle_selection(canonical(args.bundle))
-    print(json.dumps({'binding': binding, 'imageAuthorities': selected,
-                      'execution': 'existing-installer-lease-required', 'acceptedIntegratedInstalls': 0}, indent=2))
+    values = [getattr(args, name) for name in ('source_bundle', 'public_build', 'producer_record',
+              'producer_sha256', 'image_inputs', 'image_inputs_sha256', 'output')]
+    if args.rebind_qualified_artifacts:
+        if any(value is None for value in values):
+            parser.error('artifact rebind requires every explicit source/hash/output argument')
+        owner = load('_qualified_image_supply', 'qualified-image-supply.py')
+        result = owner.rebind(canonical(args.bundle), *values,
+                              archive_source=args.archive_source, package_output=args.package_output)
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        if any(value is not None for value in values) or args.archive_source is not None or args.package_output:
+            parser.error('selection description does not accept artifact arguments')
+        binding, selected, _ = package.bundle_selection(canonical(args.bundle))
+        print(json.dumps({'binding': binding, 'imageAuthorities': selected,
+                          'execution': 'existing-installer-lease-required', 'acceptedIntegratedInstalls': 0}, indent=2))
     return 0
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        print('selected image artifact operation interrupted; incomplete output retained', file=sys.stderr)
+        raise SystemExit(130) from None
+    except Exception as error:
+        frames = []; trace = error.__traceback__
+        allowed = {'export-selected-images.py', 'qualified-image-supply.py', 'package-release-images.py'}
+        while trace:
+            code = trace.tb_frame.f_code
+            if Path(code.co_filename).name in allowed:
+                frames.append(Path(code.co_filename).name + ':' + str(trace.tb_lineno) + ':' + code.co_name)
+            trace = trace.tb_next
+        if frames:
+            print('guard: ' + ' > '.join(frames[-12:]), file=sys.stderr)
+        print('selected image artifact operation refused; verify exact source/hash/custody arguments', file=sys.stderr)
+        raise SystemExit(1) from None
