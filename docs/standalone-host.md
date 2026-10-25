@@ -205,6 +205,11 @@ environment, service source, child log, or secret is a diagnostic field. The dat
 isolated network gets a deterministic source-derived hostname with a local readonly
 hosts binding, so bootstrap never needs external DNS for its own hostname. Namespace
 peers have separate hosts files and do not request forbidden Podman hostname flags.
+The private controller's `077` umask does not override declared new-input modes:
+the exclusive-create writer finalizes the declared mode on its held new inode
+after assigning its declared owner. Readonly config/hosts and executable scripts
+must remain readable/executable by the declared container user. Existing paths
+still refuse; there is no tree chmod, permission repair, or DAC-based trust gate.
 
 ## Native stopped backup and restore
 

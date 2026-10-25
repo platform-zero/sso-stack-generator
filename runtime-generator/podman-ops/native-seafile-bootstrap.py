@@ -230,6 +230,12 @@ class Fresh:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
         try:
             os.fchown(fd, uid, gid)
+            # Finalize the DECLARED mode on this exclusively created inode.
+            # The controller's private 077 umask must not silently turn public
+            # read-only config/hosts or executable scripts into owner-only
+            # inputs unreadable by the source-declared mysql UID. Never repair
+            # an existing path, traverse/chmod a tree, or establish trust by DAC.
+            os.fchmod(fd, mode)
             with os.fdopen(os.dup(fd), 'wb') as stream:
                 stream.write(body); stream.flush(); os.fsync(stream.fileno())
         finally:

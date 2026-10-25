@@ -46,6 +46,21 @@ class Models(unittest.TestCase):
   f.start_database=lambda cid:f.command(['start',cid])
   f.finish_database_observer=mock.Mock(return_value=True)
   return f
+ def test_real_writer_finalizes_declared_new_inode_modes_under_private_umask_only(self):
+  with tempfile.TemporaryDirectory() as temp:
+   f=self.fixture(temp);previous=os.umask(0o077)
+   try:
+    for mode in (0o444,0o555,0o600):
+     target=Path(temp)/('declared-mode-'+str(mode))
+     with mock.patch.object(b.os,'fchmod',wraps=os.fchmod) as declared:
+      b.Fresh.file(f,target,b'public-or-private-model-input',os.getuid(),os.getgid(),mode)
+      self.assertEqual(stat.S_IMODE(target.stat().st_mode),mode)
+      self.assertEqual(target.read_bytes(),b'public-or-private-model-input')
+      with self.assertRaises(FileExistsError):
+       b.Fresh.file(f,target,b'must-not-repair-existing',os.getuid(),os.getgid(),0o600)
+      self.assertEqual(target.read_bytes(),b'public-or-private-model-input')
+      declared.assert_called_once();self.assertEqual(declared.call_args.args[1],mode)
+   finally:os.umask(previous)
  def test_finite_commands_keep_secrets_off_argv_and_no_host_network_ports(self):
   for name in ('mariadb','valkey','seafile'):
    with self.subTest(name=name),tempfile.TemporaryDirectory() as temp:
