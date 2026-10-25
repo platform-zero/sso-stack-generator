@@ -190,7 +190,9 @@ class Fresh:
         body = self.p.encoded(dict(schemaVersion=1, module='seafile', status=status,
             preparationReceiptSha256=self.binding.receipt_sha, cids=list(self.cids),
             plannedNames=list(self.cidfiles.values()), observedStates=observations,
-            databaseProbe=getattr(self, 'database_observation', 'not-observed'), applicationAcceptance=False))
+            databaseProbe=getattr(self, 'database_observation', 'not-observed'),
+            databaseInitializationProbe=getattr(self, 'database_initialization_observation', 'not-observed'),
+            applicationAcceptance=False))
         temporary = directory / ('.temporary-' + secrets.token_hex(16))
         self.file(temporary, body)
         destination = 'failure-observations.json' if status == 'preparation-failed' else 'temporary.json'
@@ -374,7 +376,10 @@ class Fresh:
 
     def wait_database(self, cid):
         env = self.environments['seafile']
-        for attempt in range(60):
+        deadline = time.monotonic() + 180
+        for attempt in range(180):
+            if time.monotonic() >= deadline:
+                break
             result = self.command(['exec', '--env=MYSQL_PWD', cid, 'mariadb',
                 '--protocol=tcp', '--host=127.0.0.1', '--port=3306',
                 '--user=' + env['SEAFILE_MYSQL_DB_USER'],
@@ -386,6 +391,20 @@ class Fresh:
                 return
             self.require(self.state(cid).get('Running') is True, 'Native database stopped before readiness')
             time.sleep(1)
+        # A single private, exact-own-CID socket observation distinguishes a
+        # temporary initialization server from the required TCP service account.
+        # This is diagnostic only and never substitutes for service readiness.
+        try:
+            root_password = self.environments['mariadb']['MYSQL_ROOT_PASSWORD']
+            result = self.command(['exec', '--env=MYSQL_PWD', cid, 'mariadb',
+                '--protocol=socket', '--user=root', '--batch', '--skip-column-names',
+                '--execute=SELECT 1'], timeout=10, environment={'MYSQL_PWD': root_password},
+                allow_failure=True, diagnostic_stderr=True)
+            observation = self.database_probe_observation(result)
+            self.database_initialization_observation = ('initialization-socket-ready'
+                if observation == 'service-database-ready' else observation)
+        except BaseException:
+            self.database_initialization_observation = 'initialization-observation-unavailable'
         raise self.p.Refused('Native database initialization deadline exceeded')
 
     def wait_cache(self, cid):

@@ -101,6 +101,31 @@ class Models(unittest.TestCase):
    self.assertEqual(b.Fresh.database_probe_observation(types.SimpleNamespace(returncode=code,stdout=sentinel,stderr=sentinel)),label)
   self.assertEqual(b.Fresh.database_probe_observation(types.SimpleNamespace(returncode=0,stdout=b'1\n')),'service-database-ready')
   self.assertEqual(b.Fresh.database_probe_observation(types.SimpleNamespace(returncode=1,stdout=b'',stderr=b'private ERROR 1045 '+sentinel)),'other-database-probe-refusal')
+ def database_fixture(self,temp):
+  f=self.fixture(temp);f.cids=[CID]
+  f.environments={'seafile':dict(SEAFILE_MYSQL_DB_USER='fixture-service',SEAFILE_MYSQL_DB_PASSWORD='fixture-service-password',
+     SEAFILE_MYSQL_DB_SEAHUB_DB_NAME='fixture_db'),'mariadb':dict(MYSQL_ROOT_PASSWORD='fixture-root-password')}
+  f.state=mock.Mock(return_value=dict(Running=True));return f
+ def test_database_can_finish_after_start_period_without_bypassing_service_gate(self):
+  with tempfile.TemporaryDirectory() as temp:
+   f=self.database_fixture(temp);calls=[]
+   def command(arguments,**kwargs):
+    calls.append((arguments,kwargs));ready=len(calls)==66
+    self.assertNotIn('fixture-service-password',' '.join(arguments))
+    return types.SimpleNamespace(returncode=0 if ready else 1,stdout=b'1\n' if ready else b'',stderr=b'ERROR 2002 (HY000): fixture')
+   f.command=command
+   with mock.patch.object(b.time,'sleep'),mock.patch.object(b.time,'monotonic',return_value=0):f.wait_database(CID)
+   self.assertEqual(len(calls),66);self.assertEqual(f.database_observation,'service-database-ready')
+   self.assertFalse(any('--protocol=socket' in args for args,kwargs in calls))
+ def test_initialization_socket_ready_is_diagnostic_not_service_readiness(self):
+  with tempfile.TemporaryDirectory() as temp:
+   f=self.database_fixture(temp);f.command=mock.Mock(return_value=types.SimpleNamespace(returncode=0,stdout=b'1\n',stderr=b''))
+   with mock.patch.object(b.time,'monotonic',side_effect=[0,181]),self.assertRaises(p.Refused):f.wait_database(CID)
+   self.assertEqual(f.database_initialization_observation,'initialization-socket-ready')
+   args=f.command.call_args.args[0];kwargs=f.command.call_args.kwargs
+   self.assertIn('--protocol=socket',args);self.assertNotIn('fixture-root-password',' '.join(args))
+   self.assertEqual(kwargs['environment'],{'MYSQL_PWD':'fixture-root-password'})
+   self.assertIs(kwargs['diagnostic_stderr'],True)
  def test_only_own_database_probe_can_capture_stderr_privately(self):
   with tempfile.TemporaryDirectory() as temp:
    f=self.fixture(temp);f.cids=[CID];f.reserve=mock.Mock()
