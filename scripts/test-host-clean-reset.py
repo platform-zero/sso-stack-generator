@@ -156,7 +156,7 @@ class Clean(unittest.TestCase):
         self.patch(m, 'process_statuses', side_effect=AssertionError('Host process query forbidden'))
         self.patch(m, 'fd9_lock', side_effect=AssertionError('Host fdinfo query forbidden'))
         self.native_calls = 0; self.stop_failure = False
-        self.engine = {'images': ['a' * 64], 'layers': ['b' * 64], 'orphanLayers': [], 'orphanImageDirs': [], 'containers': [], 'volumes': [],
+        self.engine = {'images': [], 'layers': [], 'orphanLayers': [], 'orphanImageDirs': [], 'containers': [], 'volumes': [],
                        'buildah': [], 'networks': {}, 'pruneFails': False, 'leaveLayers': False,
                        'leaveBridge': False, 'rmFails': False}
         self.cold_calls = []
@@ -286,11 +286,6 @@ class Clean(unittest.TestCase):
         value = None
         if mutate:
             self.assertEqual(tool, 'podman')
-            if args == ['image', 'prune', '--all', '--build-cache', '--force']:
-                if self.engine['pruneFails']: return 125, ''
-                self.engine['images'] = []
-                if not self.engine['leaveLayers']: self.engine['layers'] = []
-                return 0, ''
             self.assertEqual(args[:2], ['network', 'rm']); self.assertEqual(len(args), 3)
             if self.engine['rmFails']: return 125, ''
             network = self.engine['networks'][args[2]]
@@ -1941,7 +1936,7 @@ class Clean(unittest.TestCase):
         self.assertTrue(result['rootImageCold']); self.assertTrue(result['selectedNetworkClosure'])
         self.assertTrue(result['rootfulStoreColdAcceptance']); self.assertFalse(result['applicationAcceptance'])
         self.assertFalse(network['present']); self.assertIsNone(network['kernel'])
-        self.assertEqual(observed, [['image', 'prune', '--all', '--build-cache', '--force'], ['network', 'rm', 'webservices_safe']])
+        self.assertEqual(observed, [['network', 'rm', 'webservices_safe']])
 
     def test_rootful_unselected_network_and_kernel_definition_preserved(self):
         network = self.add_root_network(); foreign = copy.deepcopy(network)
@@ -1994,15 +1989,15 @@ class Clean(unittest.TestCase):
     def failed_result(self):
         return json.loads(next((self.root / '.host-clean-reset').glob('*-result.json')).read_text())
 
-    def test_rootful_failed_prune_retains_failed_evidence_and_data(self):
-        self.engine['pruneFails'] = True
+    def test_rootful_default_cache_is_not_deletion_scope_retains_evidence_and_data(self):
+        self.engine['images'] = ['a' * 64];self.engine['layers'] = ['b' * 64]
         with self.assertRaises(m.Refusal): self.run_reset()
         result = self.failed_result(); self.assertFalse(result['rootfulStoreColdAcceptance']); self.assertFalse(result['completeCleanReset'])
         self.assertTrue((Path(self.rows[0]['graphRoot']) / 'overlay/layer/data').exists())
         self.assertEqual((self.root / '.install-intent.json').read_bytes(), self.original_intent)
 
     def test_rootful_remaining_orphan_layers_never_get_external_prune(self):
-        self.engine['leaveLayers'] = True
+        self.engine['layers'] = ['b' * 64]
         with self.assertRaisesRegex(m.Refusal, 'layer metadata remains'): self.run_reset()
         self.assertFalse(self.failed_result()['rootfulStoreColdAcceptance'])
         self.assertFalse(any('--external' in args or 'system' in args for _, args, _ in self.cold_calls))
@@ -2093,14 +2088,21 @@ class Clean(unittest.TestCase):
 
     def test_rootful_dispatch_sanitizes_context_and_suppresses_mutator_output(self):
         def child(command, **kwargs):
-            self.assertEqual(command, ['/usr/bin/podman', 'image', 'prune', '--all', '--build-cache', '--force'])
+            self.assertEqual(command, ['/usr/bin/podman', 'network', 'rm', 'webservices_safe'])
             self.assertEqual(kwargs['env'], m.ROOT_ENV)
             self.assertNotIn('CONTAINERS_STORAGE_CONF', kwargs['env'])
             self.assertEqual(kwargs['stderr'], m.subprocess.DEVNULL)
             self.assertEqual(kwargs['stdout'], m.subprocess.DEVNULL)
             return types.SimpleNamespace(returncode=0, stdout='synthetic output must never escape')
         with patch.object(m.subprocess, 'run', side_effect=child):
-            self.assertEqual(REAL_COLD_CALL('podman', ['image', 'prune', '--all', '--build-cache', '--force'], True), (0, ''))
+            self.assertEqual(REAL_COLD_CALL('podman', ['network', 'rm', 'webservices_safe'], True), (0, ''))
+
+    def test_default_store_prune_image_deletion_and_global_mutators_rejected_before_dispatch(self):
+        with patch.object(m.subprocess,'run',side_effect=AssertionError('forbidden mutator dispatched')):
+            for tool,args in [('podman',['image','prune','--all','--build-cache','--force']),
+                              ('podman',['rmi','a'*64]),('podman',['system','reset','--force']),
+                              ('buildah',['rmi','--all']),('ip',['link','delete','podman1'])]:
+                with self.subTest(tool=tool,args=args),self.assertRaises(m.Refusal):REAL_COLD_CALL(tool,args,True)
 
     def mapped_cold_path(self, path, contents=False):
         path = self.virtual / str(path).lstrip('/')

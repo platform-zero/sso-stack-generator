@@ -17,10 +17,11 @@ Root metadata must ALREADY be 0700; no chmod/chown/account/ACL repair occurs.
 All scope contents except its exact marker are removed, including whole graph
 stores and Podman-managed volumes. Exact selected private roots are left ABSENT,
 including legacy 2700/ACL leaves; only shared ancestors remain infrastructure.
-The default ROOTFUL store additionally permits only unused image/build-cache
-prune and unforced removal of exact source-selected unused bridge networks.
-No container/volume deletion, global graph walk/removal, external/system/network
-prune, Docker/package operation, backup, restart, stop or migration is allowed.
+The default ROOTFUL store permits only unforced removal of exact source-selected
+unused bridge networks. Images/build caches there are NOT deletion scope; a
+non-cold default store refuses rather than pruning or adopting shared caches.
+No container/volume/image/cache deletion, global graph walk/removal, prune,
+Docker/package operation, backup, restart, stop or migration is allowed.
 
 External selected runtime trees require root-receipted cleanResetCustody tree
 fingerprints; deterministic installed unit/config files require exact source
@@ -1865,6 +1866,9 @@ ROOT_ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': '/root', 'USER': 'r
 
 def cold_call(tool, args, mutate=False):
     require(tool in ('podman', 'buildah', 'ip'), 'Unknown rootful cold tool')
+    require(not mutate or (tool == 'podman' and len(args) == 3 and args[:2] == ['network', 'rm']
+                           and isinstance(args[2], str) and re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}', args[2])),
+            'Only exact unforced selected network removal is a default-store mutator; no cache authority')
     path = '/usr/sbin/ip' if tool == 'ip' else '/usr/bin/' + tool
     # No shell, inherited environment, application output or raw engine errors.
     try:
@@ -2461,18 +2465,30 @@ def prior_network_mappings(root_fd, selection, sources):
     try: fd = os.open('.host-clean-reset', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
     except FileNotFoundError: return {}
     result = {}
+    historical = None
     try:
         root_directory(fd, True)
+        if selection.get('receipt', {}).get('phase') == 'retired-clean':
+            authenticated = prior_completed_reset(selection['root'], selection['receipt'])
+            require(authenticated == selection['pin'].get('priorCompletedReset'), 'Prior network provenance CAS changed')
+            historical = selection['receipt']['completeCleanReset']
         names = os.listdir(fd); require(len(names) <= MAX_NODES, 'Reset evidence bound exceeded')
         for name in sorted(names):
             if not re.fullmatch(r'[a-f0-9]{64}-[a-f0-9]{32}-intent\.json', name): continue
             body, _ = read_at(fd, name, private=True, gid=0, limit=512 * 1024 * 1024)
             document = strict(body); plan = document.get('plan')
-            if not isinstance(plan, dict) or document.get('intentSha256') != selection['pin']['intentSha256']: continue
+            current = document.get('intentSha256') == selection['pin']['intentSha256']
+            prior = historical is not None and name == Path(historical['resultPath']).name.removesuffix('-result.json') + '-intent.json'
+            if not isinstance(plan, dict) or not (current or prior): continue
+            if prior:
+                require(document.get('intentSha256') == historical['intentSha256']
+                        and document.get('planSha256') == historical['planSha256'], 'Authenticated prior network intent differs')
             require(document.get('planSha256') == name[:64] == sha(canonical(plan)), 'Reset intent plan evidence CAS differs')
             if plan.get('rootfulNetworkSources') != sources: continue
             require(plan.get('root') == str(selection['root']) and plan.get('scope') == str(SCOPE), 'Reset network evidence scope differs')
-            for network, value in plan.get('rootfulDefault', {}).get('networks', {}).items():
+            observed = list(plan.get('rootfulDefault', {}).get('networks', {}).items())
+            observed += list(plan.get('rootfulNetworkInspectionProvenance', {}).items())
+            for network, value in observed:
                 if value.get('inspect') is None or not value.get('absenceAttested'): continue
                 require(network == value['inspect'].get('name') and value.get('bridge') == value['inspect'].get('network_interface'),
                         'Reset inspect evidence identity differs')
@@ -2485,7 +2501,7 @@ def prior_network_mappings(root_fd, selection, sources):
 
 
 def rootful_cleanup(selection, sources, reviewed, verify, checkpoint):
-    """Only two owning mutators. Never delete an engine container/volume/layer."""
+    """Exact unforced network removal only. No default-store image/cache authority."""
     expected = reviewed
     def source_guard():
         verify()
@@ -2496,15 +2512,9 @@ def rootful_cleanup(selection, sources, reviewed, verify, checkpoint):
             {name: row for name, row in expected['networks'].items() if row['absenceAttested']})
         require(current == expected, 'Rootful store/object/kernel CAS changed')
     guard()
-    code, _ = cold_call('podman', ['image', 'prune', '--all', '--build-cache', '--force'], mutate=True)
-    require(code == 0, 'Owning unused rootful image/build-cache prune failed')
-    source_guard()
-    after = rootful_inventory(selection, sources, expected['networks'])
-    require(after['context'] == expected['context'] and after['namespaces'] == expected['namespaces']
-            and after['store'] == expected['store'] and after['buildahStore'] == expected['buildahStore']
-            and after['networks'] == expected['networks']
-            and after['unselectedNetworks'] == expected['unselectedNetworks'], 'Image prune changed non-image authority')
-    expected = after
+    # Root's default store is not an isolated actor graph or deletion scope.
+    # Even matching image config IDs confer no ownership of shared cache bytes.
+    after = expected
     # A missing definition without prior owning inspect data does not establish
     # its old kernel bridge's absence. Retain an exact actionable dependency.
     image_cold = root_images_cold(after)
@@ -2547,7 +2557,10 @@ def plan_locked(root, expected, root_fd, lock_pin):
     plan = {'schemaVersion': 1, 'kind': 'complete-owned-synthetic-clean-reset', 'root': str(root), 'scope': str(SCOPE),
             'authority': selection['pin'], 'lock': lock_pin, 'nodes': data, 'external': external,
             'rootfulNetworkSources': network_sources, 'rootfulDefault': rootful,
-            'disposableImagesAuthorization': 'all-existing-engine-images-and-build-cache-no-data-deletion',
+            'rootfulNetworkInspectionProvenance': dict(network_mappings,
+                **{name: row for name, row in rootful['networks'].items() if row['inspect'] is not None and row['absenceAttested']}),
+            'defaultStoreImageDeletionAuthorized': False,
+            'sharedImageCachesPreserved': True,
             'evidenceGeneration': evidence_generation(root_fd),
             'retainedInfrastructure': sorted(str(path) for path in retained | {SCOPE}),
             'privateRootsLeftAbsent': sorted(str(path) for path in selection['roots']),

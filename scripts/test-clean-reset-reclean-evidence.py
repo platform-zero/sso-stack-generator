@@ -162,4 +162,46 @@ class EmptyLogNamespaces(unittest.TestCase):
         self.caddy['volumes']=[str(m.SCOPE/'volumes/_logs/caddy')+':/var/log/caddy']*2
         self.assertEqual(m.empty_rootful_log_namespaces(self.selection),{})
 
+class PriorNetworkProvenance(unittest.TestCase):
+    def setUp(self):
+        self.root=Path('/model/root');self.sources={'webservices_safe':{'model':'source'}}
+        self.mapping=dict(inspect={'name':'webservices_safe','network_interface':'podman9','id':'e'*64},
+            bridge='podman9',absenceAttested=True,kernel=None,kernelIdentity=None)
+        self.plan=dict(root=str(self.root),scope=str(m.SCOPE),rootfulNetworkSources=self.sources,
+            rootfulDefault={'networks':{'webservices_safe':self.mapping}})
+        self.plan_sha=m.sha(m.canonical(self.plan));self.attempt=self.plan_sha+'-'+'1'*32
+        self.operation=dict(intentSha256='a'*64,planSha256=self.plan_sha,plan=self.plan)
+        self.authenticated={'fixture':'authenticated-original-completion'}
+        self.selection=dict(root=self.root,receipt=dict(phase='retired-clean',completeCleanReset=dict(
+            resultPath=str(self.root/'.host-clean-reset'/(self.attempt+'-result.json')),intentSha256='a'*64,planSha256=self.plan_sha)),
+            pin=dict(intentSha256='b'*64,priorCompletedReset=self.authenticated))
+        patches=[patch.object(m.os,'open',return_value=100),patch.object(m.os,'close'),patch.object(m,'root_directory'),
+            patch.object(m.os,'listdir',return_value=[self.attempt+'-intent.json']),
+            patch.object(m,'read_at',side_effect=lambda *a,**kw:(m.canonical(self.operation),{'model':'pin'})),
+            patch.object(m,'prior_completed_reset',return_value=self.authenticated)]
+        for item in patches:item.start();self.addCleanup(item.stop)
+    def recover(self):return m.prior_network_mappings(99,self.selection,self.sources)
+    def test_verified_history_recovers_inspect_identity_only_not_old_clean_state(self):
+        result=self.recover();self.assertEqual(result,{'webservices_safe':self.mapping})
+        self.assertNotIn('lease',result);self.assertNotIn('plan',result)
+    def test_unverified_history_wrong_source_or_hash_has_no_mapping(self):
+        self.selection['pin']['priorCompletedReset']={'foreign':'pin'}
+        with self.assertRaises(m.Refusal):self.recover()
+        self.selection['pin']['priorCompletedReset']=self.authenticated
+        self.assertEqual(m.prior_network_mappings(99,self.selection,{'foreign':'source'}),{})
+        self.operation['plan']['scope']='/foreign'
+        with self.assertRaises(m.Refusal):self.recover()
+    def test_inspect_provenance_survives_a_new_successful_reset_without_replaying_it(self):
+        self.plan['rootfulDefault']['networks']={'webservices_safe':dict(self.mapping,inspect=None)}
+        self.plan['rootfulNetworkInspectionProvenance']={'webservices_safe':self.mapping}
+        digest=m.sha(m.canonical(self.plan));attempt=digest+'-'+'2'*32
+        self.operation['planSha256']=digest
+        self.selection['receipt']['completeCleanReset'].update(planSha256=digest,
+            resultPath=str(self.root/'.host-clean-reset'/(attempt+'-result.json')))
+        with patch.object(m.os,'listdir',return_value=[attempt+'-intent.json']):
+            self.assertEqual(self.recover(),{'webservices_safe':self.mapping})
+    def test_nonhistorical_wrong_intent_is_not_accepted(self):
+        self.selection['receipt']['phase']='retired-failed'
+        self.assertEqual(self.recover(),{})
+
 if __name__=='__main__':unittest.main()

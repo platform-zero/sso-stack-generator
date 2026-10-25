@@ -80,7 +80,17 @@ Unindexed, writable, changed-payload or foreign-namespace directories still
 refuse. These retained immutable-cache observations grant no execution authority,
 application acceptance or cold-store credit; the normal zero-container/volume/
 Buildah and all other custody checks remain mandatory. No layer contents are
-opened or walked by this classification.
+opened or walked by this classification. A non-cold default Root store refuses
+complete reset: matching an image config ID is **not** ownership/deletion
+authority over shared cache bytes. The default-store dispatcher permits only
+exact unforced source-selected network removal, never image deletion or prune.
+
+Authenticated prior completion evidence may supply the original inspected
+network-to-bridge identity when its definition was already removed. That
+provenance is retained across new reset reports, bound to unchanged source,
+release and protected result/intent hashes. Current kernel link/address/route
+absence must still be freshly observed; no prior clean label, inventory or
+lease is replayed and no manual kernel cleanup is authorized.
 
 For a retired-clean selection, the exact source-declared rootful Caddy
 `volumes/_logs/caddy:/var/log/caddy` mount also identifies its three **empty**
