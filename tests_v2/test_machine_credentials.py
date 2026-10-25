@@ -66,6 +66,8 @@ class MachineCredentialTests(unittest.TestCase):
         patch.object(m, 'directory', side_effect=lambda path, owners=(0,), mode=None:
                      self.real_directory(path, tuple(set((*owners, os.getuid()))), mode)).start()
         patch.object(m, 'reserves').start()
+        self.real_pinned_namespace = m.pinned_namespace
+        patch.object(m, 'pinned_namespace').start()
         patch.object(m, 'read_exact', side_effect=lambda path, uid, mode=None, max_bytes=m.LIMIT:
                      self.real_read(path, os.getuid() if uid == 0 else uid, mode, max_bytes)).start()
         self.intent = {'version': 1, 'classification': 'ordinary-service',
@@ -248,7 +250,7 @@ class MachineCredentialTests(unittest.TestCase):
         with self.assertRaisesRegex(m.Refused, '^record-integrity$'):
             m.validate_record(changed, self.intent, self.digest)
         changed = copy.deepcopy(record)
-        changed['version'] = 2
+        changed['version'] = 3
         changed['integrity'] = m.record_integrity(changed)
         with self.assertRaisesRegex(m.Refused, '^record-binding$'):
             m.validate_record(changed, self.intent, self.digest)
@@ -344,7 +346,9 @@ class MachineCredentialTests(unittest.TestCase):
         def call(actor, args, payload=None):
             calls.append(args)
             return 0, b'{"store":{"graphRoot":"/default","runRoot":"/default","graphDriverName":"overlay"}}'
-        with patch.object(m, 'directory'), patch.object(m, 'trusted_binary'), patch.object(native, 'call', side_effect=call):
+        with patch.object(m, 'directory'), patch.object(m, 'trusted_binary'), \
+             patch.object(m.Path, 'lstat', return_value=types.SimpleNamespace(st_gid=0)), \
+             patch.object(native, 'call', side_effect=call):
             with self.assertRaisesRegex(m.Refused, '^native-store-mismatch$'):
                 native.preflight(['rootful'])
         self.assertEqual(calls, [['info', '--format', 'json']])
@@ -358,7 +362,7 @@ class MachineCredentialTests(unittest.TestCase):
                 native.preflight(['rootful'])
             call.assert_not_called()
         with patch.object(m, 'trusted_binary'), patch.object(m, 'directory'), \
-             patch.object(m.Path, 'lstat', return_value=types.SimpleNamespace(st_uid=1234)), \
+             patch.object(m.Path, 'lstat', return_value=types.SimpleNamespace(st_uid=1234, st_gid=1234)), \
              patch.object(m, 'read_exact', return_value=(b'foreign storage configuration', None)), \
              patch.object(native, 'call') as call:
             with self.assertRaisesRegex(m.Refused, '^actor-storage-config$'):
@@ -498,6 +502,179 @@ class MachineCredentialTests(unittest.TestCase):
         self.assertTrue(stdin.saved == payload, 'stdin bytes changed')
         self.assertNotIn(payload.decode(), repr(popen.call_args))
         self.assertEqual(popen.call_args.kwargs['stdin'], m.subprocess.PIPE)
+
+    def test_both_strong_formats_are_exact_canonical_base64_and_shared(self):
+        import base64
+        self.intent['resources'] = [
+            {'name': 'format-small', 'actors': ['rootless', 'rootful'],
+             'policy': {'encoding': 'base64url', 'entropyBytes': 32}},
+            {'name': 'format-large', 'actors': ['rootless', 'rootful'],
+             'policy': {'encoding': 'base64url', 'entropyBytes': 48}}]
+        self.digest = hashlib.sha256(json.dumps(self.intent).encode()).hexdigest()
+        result = self.run_supply()
+        record = self.c.load()
+        for index, size in enumerate((32, 48)):
+            a, b = self.native.inputs[index * 2][1], self.native.inputs[index * 2 + 1][1]
+            self.assertTrue(a == b, 'actor encoding differs')
+            self.assertTrue(len(base64.b64decode(a, altchars=b'-_', validate=True)) == size, 'wrong entropy length')
+            self.assertTrue(base64.urlsafe_b64encode(base64.b64decode(a, altchars=b'-_', validate=True)) == a,
+                            'noncanonical URL-safe encoding')
+            self.assertTrue(len(a) == (44 if size == 32 else 64), 'wrong encoded length')
+            self.assertTrue((a.endswith(b'=') if size == 32 else not a.endswith(b'=')), 'wrong padding')
+            self.assertTrue(not any(ch in a for ch in (b'+', b'/')), 'unsafe encoding alphabet')
+            self.assertNotIn(a.decode(), json.dumps(result))
+            self.assertNotIn(hashlib.sha256(a).hexdigest(), json.dumps(result))
+        m.validate_record(record, self.intent, self.digest)
+        for item in record['resources'].values():
+            self.assertEqual(item['policy']['encoding'], 'base64url')
+        changed = copy.deepcopy(self.intent)
+        changed['resources'][0]['policy']['entropyBytes'] = 48
+        with self.assertRaisesRegex(m.Refused, '^record-policy$'):
+            m.validate_record(record, changed, self.digest)
+
+    def test_urlsafe_encoding_is_canonical_and_standard_alphabet_record_refuses(self):
+        import base64
+        self.intent['resources'][0]['policy'] = {'encoding': 'base64url', 'entropyBytes': 32}
+        self.c.open(True)
+        with patch.object(m.secrets, 'token_bytes', side_effect=lambda size: b'\xfb' * size):
+            record = m.prepared(self.intent, self.digest)
+        self.c.save(record)
+        m.validate_record(record, self.intent, self.digest)
+        value = record['resources']['boot-shared']['value']
+        self.assertTrue('-' in value or '_' in value, 'fixture did not exercise URL-safe alphabet')
+        self.assertTrue(value.endswith('=') and len(value) == 44, 'incorrect canonical padding')
+        changed = copy.deepcopy(record)
+        changed['resources']['boot-shared']['value'] = base64.b64encode(b'\xfb' * 32).decode('ascii')
+        changed['integrity'] = m.record_integrity(changed)
+        with self.assertRaisesRegex(m.Refused, '^record-value-encoding$'):
+            m.validate_record(changed, self.intent, self.digest)
+
+    def test_32_byte_format_survives_metadata_bound_resume_without_regeneration(self):
+        self.intent['resources'][0]['policy'] = {'encoding': 'base64url', 'entropyBytes': 32}
+        self.digest = hashlib.sha256(json.dumps(self.intent).encode()).hexdigest()
+        self.native.crash = True
+        with self.assertRaises(Crash):
+            self.run_supply()
+        self.reopen()
+        token_bytes = m.secrets.token_bytes
+        def metadata_only(size):
+            # token_hex(16) still generates opaque atomic-publication filenames;
+            # neither credential policy size may be generated on resume.
+            self.assertNotIn(size, (32, 48), 'resume regenerated credential material')
+            return token_bytes(size)
+        with patch.object(m.secrets, 'token_bytes', side_effect=metadata_only):
+            result = self.run_supply('resume')
+        self.assertTrue(self.native.inputs[0][1] == self.native.inputs[1][1], 'resume bytes changed')
+        self.assertEqual(len(self.native.inputs[0][1]), 44)
+        self.assertNotIn(self.native.inputs[0][1].decode(), json.dumps(result))
+
+    def test_policy_rejects_weak_unknown_or_malformed_formats(self):
+        for policy in ({'encoding': 'base64url', 'entropyBytes': 16},
+                       {'encoding': 'base64', 'entropyBytes': 48},
+                       {'encoding': 'hex', 'entropyBytes': 48},
+                       {'encoding': 'base64url', 'entropyBytes': True},
+                       {'encoding': 'base64url', 'entropyBytes': 32, 'extra': 1}, None):
+            value = copy.deepcopy(self.intent)
+            value['resources'][0]['policy'] = policy
+            with self.assertRaises(m.Refused):
+                m.intent(json.dumps(value).encode())
+
+    def intent_custody(self, digest):
+        other = m.IntentCustody(Path(self.temp.name) / 'authority', digest)
+        self.addCleanup(other.close)
+        return other
+
+    def test_incremental_independent_intents_preserve_values_and_old_records(self):
+        first = self.intent_custody(self.digest)
+        first.open(True)
+        m.supply(self.intent, self.digest, first, self.native, 'apply')
+        original = (first.base / 'active.json').read_bytes()
+        original_id = first.base.stat().st_ino
+        first.close()
+        second_spec = {'version': 1, 'classification': 'ordinary-service', 'resources': [
+            {'name': 'later-app', 'actors': ['rootless'], 'policy': {'encoding': 'base64url', 'entropyBytes': 32}}]}
+        second_digest = hashlib.sha256(json.dumps(second_spec).encode()).hexdigest()
+        second = self.intent_custody(second_digest)
+        second.open(True)
+        m.supply(second_spec, second_digest, second, self.native, 'apply')
+        self.assertTrue(original == (first.base / 'active.json').read_bytes(), 'prior intent changed')
+        self.assertEqual(first.base.stat().st_ino, original_id)
+        self.assertNotEqual(first.base, second.base)
+        self.assertEqual(len(self.native.inputs), 3)
+        second.close()
+        inspect = self.intent_custody(self.digest)
+        inspect.open(False)
+        before = len(self.native.calls)
+        m.supply(self.intent, self.digest, inspect, self.native, 'status')
+        self.assertEqual(len(self.native.calls), before)
+
+    def test_cross_intent_claim_collision_rejected_even_before_native_effect(self):
+        first = self.intent_custody(self.digest)
+        first.open(True)
+        # A prepared record already owns the name, even if no native actor exists.
+        first.save(m.prepared(self.intent, self.digest))
+        first.close()
+        changed = copy.deepcopy(self.intent)
+        changed['resources'][0]['policy'] = {'encoding': 'base64url', 'entropyBytes': 32}
+        digest = hashlib.sha256(json.dumps(changed).encode()).hexdigest()
+        second = self.intent_custody(digest)
+        second.open(True)
+        with self.assertRaisesRegex(m.Refused, '^cross-intent-name-collision$'):
+            m.supply(changed, digest, second, self.native, 'apply')
+        self.assertFalse((second.base / 'active.json').exists())
+        self.assertFalse(self.native.calls)
+
+    def test_global_authority_lock_serializes_cross_intent_claims(self):
+        first = self.intent_custody(self.digest)
+        first.open(True)
+        second = self.intent_custody('e' * 64)
+        with self.assertRaises(BlockingIOError):
+            second.open(True)
+
+    def test_aggregate_resource_and_intent_count_bounds(self):
+        for group in range(8):
+            digest = f'{group:064x}'
+            spec = {'version': 1, 'classification': 'ordinary-service', 'resources': [
+                {'name': f'group-{group}-resource-{i}', 'actors': ['rootless']} for i in range(64)]}
+            existing = self.intent_custody(digest)
+            existing.open(True)
+            existing.save(m.prepared(spec, digest))
+            existing.close()
+        prospective = self.intent_custody(self.digest)
+        prospective.open(True)
+        with self.assertRaisesRegex(m.Refused, '^aggregate-resource-bound$'):
+            m.supply(self.intent, self.digest, prospective, self.native, 'apply')
+        self.assertFalse(self.native.calls)
+        self.assertFalse((prospective.base / 'active.json').exists())
+        prospective.close()
+        intents = prospective.authority / 'intents'
+        # Include the prospective directory plus 63 distinct fixed hash dirs.
+        for index in range(63):
+            (intents / f'{index:064x}').mkdir(mode=0o700, exist_ok=True)
+        full = self.intent_custody('f' * 64)
+        with self.assertRaisesRegex(m.Refused, '^intent-catalog-full$'):
+            full.open(True)
+        self.assertFalse(full.base.exists())
+
+    def test_legacy_root_record_is_never_auto_migrated(self):
+        authority = Path(self.temp.name) / 'authority'
+        authority.mkdir(mode=0o700)
+        path = authority / 'active.json'
+        path.write_text('{"version":1}')
+        path.chmod(0o400)
+        c = self.intent_custody(self.digest)
+        with self.assertRaisesRegex(m.Refused, '^unknown-credential-authority-entry$'):
+            c.open(True)
+        self.assertTrue(path.exists())
+        self.assertFalse((authority / 'intents').exists())
+
+    def test_intent_catalog_status_and_dry_run_never_create_authority(self):
+        for mode in ('status', 'dry-run'):
+            c = self.intent_custody(self.digest)
+            c.open(False)
+            m.supply(self.intent, self.digest, c, self.native, mode)
+            self.assertFalse(c.authority.exists())
+        self.assertFalse(self.native.calls)
 
     def test_helper_imports_only_stdlib_no_user_source_hooks(self):
         tree = ast.parse(SOURCE.read_text())

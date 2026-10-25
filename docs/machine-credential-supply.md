@@ -28,8 +28,11 @@ The parent lifecycle owns deployment and must:
    be the explicitly supplied non-system UID (>=1000). Every ancestor must be a
    directory owned by Root or that UID, without symlinks or group/other writes.
    A home directory is acceptable; `/tmp` is not. Do not include credentials.
-6. Provision the runtime account, dedicated engine stores, run directories and
-   rootful network directory beforehand. This helper never provisions them.
+6. Provision the runtime account, then use the separately reviewed namespace
+   helper and its current-boot pinned marker as described in
+   [runtime-namespace.md](runtime-namespace.md). Provision dedicated engine stores,
+   run directories and network configuration before supply. This credential
+   helper never mounts or provisions actor directories.
 
 CLI (documentation only; no deployment is performed by the source tests):
 
@@ -65,7 +68,8 @@ Modes:
   "classification": "ordinary-service",
   "resources": [
     {"name": "boot-shared", "actors": ["rootless", "rootful"]},
-    {"name": "app-bootstrap", "actors": ["rootless"]}
+    {"name": "app-bootstrap", "actors": ["rootless"],
+     "policy": {"encoding": "base64url", "entropyBytes": 32}}
   ]
 }
 ```
@@ -76,16 +80,28 @@ Modes:
 * `resources` has 1–64 entries with unique names. A name is at most 48 characters,
   matching `[a-z][a-z0-9]*(?:-[a-z0-9]+)*`. It is a resource identifier, not a path.
 * `actors` has 1–2 unique entries, only `rootless` and/or `rootful`.
+* `policy` is optional. If present, its exact closed shape is
+  `{"encoding":"base64url","entropyBytes":32}` or the same with `48`.
+  Omission normalizes to `base64url` with 48 entropy bytes. No standard `+/`
+  base64, hex, unpadded32-byte format, 16-byte policy, boolean size or extra field
+  is accepted. This is a generic size/encoding policy, not an application map.
+  32 random bytes encode into **44 URL-safe ASCII characters with one `=`**;
+  48 bytes encode into **64 URL-safe ASCII characters without padding**. This
+  supports a 32-byte-decoded cookie and safe 64-character ordinary credentials.
 * Names containing `vault`, `keykeeper`, `bao` or `owner` refuse. `postgres-admin`
   is explicitly protected: **preexisting `p0-postgres-admin` is never inspected or
   touched**. The caller must deliberately exclude it. This is a reserved-name
   defense in addition to, not a substitute for, reviewed ordinary-service intent.
 * Native names are exactly `p0-<name>`. Do not put the native prefix in an intent
   unless the extra prefix is actually intended.
-* Binding is to the exact intent bytes. Reordering, whitespace, actor-set changes,
-  added resources or version changes require a different intent, which the active
-  record refuses. This bounded helper supports one fixed active intent, not
-  incremental adoption or a general multi-tenant credential registry.
+* Binding is to the exact intent bytes. Reordering, whitespace, actor-set or policy
+  changes produce a different intent identity. Each digest has independent
+  custody, but a new intent must contain **NEW resource names only**, across all
+  actors. Earlier resources remain in their original intent and applications
+  reuse those native references without resupplying or adopting them here.
+  Changed policy for an already claimed name refuses; no value/version rotates.
+  The authority is bounded to 64 intent directories and 512 aggregate resources
+  (including prepared or uncertain claims), with 64 resources per intent.
 
 ## Fixed actors and native interface
 
@@ -99,8 +115,20 @@ primary group named `p0-runtime`. Supplemental group membership refuses.
 | rootful | `/mnt/stack/p0-v2/rootful/engine` | `/run/p0-v2-rootful/engine` | `/var/lib/p0-v2-rootful/networks` |
 
 All required directories must already exist and have owned, non-writable,
-non-symlink ancestors. Rootless leaf directories must belong to the resolved
-account. Rootful directories and ancestors must belong to Root. Rootless
+non-symlink ancestors, with exactly one independently verified exception:
+`/mnt/stack` is preserved as UID1000:GID1000 mode2775. It is accepted only for
+paths at/below the exact Root0:0 mode0711 **kernel-pinned** `/mnt/stack/p0-v2`
+boundary, with a strict Root-private namespace marker matching current boot,
+host mount namespace, filesystem ID, device/inode and self-bind mount metadata.
+No caller path outside that boundary gets an ancestor exemption. Missing,
+claimed, corrupt, stale, renamed, foreign, shared, stacked or unpinned mounts and
+any descendant mount refuse **before any native call**, including `info`.
+The marker verifier is standalone code in this helper; Root does not import the
+namespace helper or service/core/user modules. Namespace marker details and
+maintenance ordering are in [runtime-namespace.md](runtime-namespace.md).
+Rootless home/namespace-child/engine/runroot directories must have the resolved
+UID/GID and mode0700. Rootful child/engine/runroot/network directories must be
+Root-owned, GID0 and mode0700. Other ancestors retain the strict ownership rule. Rootless
 `~/.config/containers/storage.conf` must be a single-link **0600** account-owned
 file with exactly the storage text emitted by `provision-p0-runtime.py`:
 
@@ -141,25 +169,42 @@ for the exact child. No global process observation or termination is used.
 
 ## Active Root custody and explicit recovery
 
-The only production custody root is `/var/lib/p0-v2-machine-credentials`, **0700**,
-Root-owned, with safe Root-owned ancestors. `apply` may exclusively create this
-new directory; it never normalizes an existing directory. The directory itself
-is locked using nonblocking `flock` (exclusive for mutating modes; shared for
-inspection). Only `active.json` may already exist. Unknown entries, including an
-interrupted `.publish-*`, cause refusal and are preserved for explicit parent
-review; there is no automatic cleanup or retry.
+The production authority is `/var/lib/p0-v2-machine-credentials`, **0700**,
+Root-owned, with safe Root-owned ancestors. Each intent has independent custody:
+
+```text
+/var/lib/p0-v2-machine-credentials/intents/<exact-intent-sha256>/active.json
+```
+
+`intents` and each digest directory are also Root0700. `apply` may exclusively
+create these new directories; it never normalizes old directories. The authority
+and selected intent directory are locked using nonblocking `flock` (exclusive for
+mutating modes; shared for inspection). The global authority lock serializes
+cross-intent name claims: all prior records are strictly validated and scanned
+before generation or native effects, and a name collision refuses even when a
+prior actor is merely prepared and no native secret exists yet. Native foreign
+names still refuse independently. No old intent/value is updated when adding a
+new one. Existing resources are reused externally by their original references.
+
+Only `intents` may exist at the authority root; only bounded lowercase digest
+directories beneath it; only `active.json` inside a digest directory. Unknown
+entries or interrupted `.publish-*` files cause refusal and are preserved.
+A legacy root `active.json` or record version1 is **never auto-migrated**. Empty
+new intent directories can remain after a refused create; there is no cleanup,
+rotation, legacy-label repair or force/replay API.
 
 `active.json` is single-link, Root-owned **0400** strict JSON:
 
 ```text
 {
-  version: 1,
+  version: 2,
   intentSha256: <exact-intent-digest>,
   owner: <opaque-random-128-bit-hex>,
   resources: {
     <resource>: {
       version: <opaque-random-128-bit-hex>,
-      value: <64-character-base64-of-48-locally-random-bytes>,
+      policy: { encoding: base64url, entropyBytes: 32|48 },
+      value: <canonical-padded-URL-safe-base64-of-exactly-policy-entropy-bytes>,
       actors: { <actor>: { state: prepared|claimed|uncertain|complete, id: null|<native-id> } }
     }
   },
@@ -169,8 +214,12 @@ review; there is no automatic cleanup or retry.
 
 This is **active authoritative credential custody**, not an experiment backup,
 archive or snapshot. A value is generated exactly once per new resource using
-`secrets.token_bytes(48)`, encoded into 64 ASCII bytes, and the **same bytes** are
-piped to each listed actor. Values never appear in reports, argv, environment,
+`secrets.token_bytes(policy.entropyBytes)` and canonical URL-safe base64 (44 or64
+ASCII bytes); the **same encoded bytes** are piped to every listed actor. The
+normalized policy is bound to the exact intent, record and its opaque resource
+version. Load validates the policy against the intent, exact decoded length,
+URL-safe alphabet and canonical padding by an encode/decode round trip. A policy
+change never silently replaces or rotates any existing resource. Values never appear in reports, argv, environment,
 world-readable temporary files or native diagnostics. Native output is never
 forwarded. Ownership/version IDs are independently random, not credential-value
 fingerprints. The internal full-record integrity check never leaves Root custody;
@@ -244,8 +293,10 @@ python3 -I -m unittest discover -s tests_v2 -p test_machine_credentials.py -v
 
 Tests import only this standalone source into an unprivileged test interpreter.
 They use private temporary fixture directories, test-local ownership mapping and
-fake native runners/processes. They prove equal generated bytes across actors
-without displaying them, durable claims before effects, crash/metadata resume,
+fake native runners/processes. They prove both exact 32/48-byte URL-safe formats and equal generated bytes
+across actors without displaying them, independent incremental intents,
+cross-intent claim collision/locking, namespace-boundary refusals, durable claims
+before effects, crash/metadata resume,
 foreign-name rejection, changed IDs, uncertainty/no replay, schema/hash/integrity
 refusals, CAS/lock/link/mode/ancestor custody, fixed identity/store flags, output
 bounds/deadlines, sanitized errors, resource gates and read-only status/dry-run.

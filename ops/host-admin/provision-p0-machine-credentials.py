@@ -31,6 +31,10 @@ ROOTLESS = Path('/mnt/stack/p0-v2/rootless/engine')
 ROOTFUL = Path('/mnt/stack/p0-v2/rootful/engine')
 RUNFUL = Path('/run/p0-v2-rootful/engine')
 NETWORK = Path('/var/lib/p0-v2-rootful/networks')
+TARGET = Path('/mnt/stack/p0-v2')
+SHARED = Path('/mnt/stack')
+NAMESPACE_MARKER = Path('/var/lib/p0-v2-namespace')
+UUID = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}')
 ACTORS = ('rootless', 'rootful')
 LIMIT = 262144
 HEX = re.compile(r'[0-9a-f]{64}')
@@ -62,7 +66,12 @@ def directory(path, owners=(0,), mode=None):
     """Every component must be a non-writable, non-symlink owned directory."""
     path = Path(path)
     require(path.is_absolute() and '..' not in path.parts, 'unsafe-directory')
+    at_boundary = path == TARGET or TARGET in path.parents
+    if at_boundary:
+        pinned_namespace()
     for part in (Path('/'), *reversed(path.parents[:-1]), path):
+        if at_boundary and part == SHARED:
+            continue  # Sole exception: independently verified kernel-pinned child.
         s = part.lstat()
         require(stat.S_ISDIR(s.st_mode) and s.st_uid in owners
                 and not s.st_mode & 0o022, 'unsafe-directory')
@@ -93,6 +102,104 @@ def read_exact(path, uid, mode=None, max_bytes=LIMIT):
         os.close(fd)
 
 
+def bounded_read(path, limit):
+    with open(path, 'rb') as stream:
+        raw = stream.read(limit + 1)
+    require(len(raw) <= limit, 'observation-limit')
+    return raw
+
+
+def mountinfo(raw):
+    result = []
+    for line in raw.decode('ascii').splitlines():
+        left, right = line.split(' - ')
+        fields, tail = left.split(), right.split()
+        require(len(fields) >= 6 and len(tail) == 3, 'mountinfo-schema')
+        def unescape(s):
+            s = re.sub(r'\\(040|011|012|134)', lambda m: chr(int(m[1], 8)), s)
+            require('\\' not in s, 'mountinfo-escape')
+            return s
+        result.append({'id': int(fields[0]), 'parent': int(fields[1]), 'device': fields[2],
+                       'root': unescape(fields[3]), 'target': unescape(fields[4]),
+                       'options': fields[5].split(','), 'optional': fields[6:],
+                       'fsType': tail[0], 'source': unescape(tail[1])})
+    require(len({m['id'] for m in result}) == len(result), 'mountinfo-duplicate')
+    return result
+
+
+def kernel():
+    boot = bounded_read('/proc/sys/kernel/random/boot_id', 128).decode('ascii').strip()
+    require(UUID.fullmatch(boot), 'boot-id')
+    current = {'device': os.stat('/proc/self/ns/mnt').st_dev, 'inode': os.stat('/proc/self/ns/mnt').st_ino}
+    host = {'device': os.stat('/proc/1/ns/mnt').st_dev, 'inode': os.stat('/proc/1/ns/mnt').st_ino}
+    require(current == host, 'not-host-mount-namespace')
+    return {'bootId': boot, 'mountNamespace': current,
+            'mounts': mountinfo(bounded_read('/proc/self/mountinfo', 4 * 1024**2))}
+
+
+def validate_namespace_marker(record, observation, expected):
+    # Deliberately self-contained. NEVER import the namespace helper as Root.
+    require(isinstance(record, dict) and set(record) == {'version', 'state', 'owner', 'evidenceSha256',
+            'namespace', 'bootId', 'mountNamespace', 'mount', 'integrity'}, 'marker-schema')
+    fields = {k: v for k, v in record.items() if k != 'integrity'}
+    digest = hashlib.sha256(json.dumps(fields, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    require(record['integrity'] == digest and type(record['version']) is int and record['version'] == 1
+            and record['state'] == 'pinned' and isinstance(record['owner'], str)
+            and re.fullmatch(r'[0-9a-f]{32}', record['owner'])
+            and isinstance(record['evidenceSha256'], str) and HEX.fullmatch(record['evidenceSha256'])
+            and isinstance(record['namespace'], dict) and set(record['namespace']) == {'device', 'inode', 'filesystemId'}
+            and all(type(v) is int and v > 0 for v in record['namespace'].values())
+            and record['namespace'] == expected, 'marker-binding')
+    require(record['bootId'] == observation['bootId'] and record['mountNamespace'] == observation['mountNamespace'],
+            'marker-stale-boot-or-namespace')
+    mounts = observation['mounts']
+    parents = [m for m in mounts if m['target'] == str(SHARED)]
+    require(len(parents) == 1, 'shared-parent-not-exact-mount')
+    parent = parents[0]
+    device = f"{os.major(expected['device'])}:{os.minor(expected['device'])}"
+    require(parent['device'] == device, 'namespace-filesystem')
+    require(not any(m['target'].startswith(str(TARGET) + '/') for m in mounts), 'namespace-submount')
+    own = [m for m in mounts if m['target'] == str(TARGET)]
+    require(len(own) == 1, 'namespace-unpinned-or-stacked')
+    own = own[0]
+    require(own['parent'] == parent['id'] and own['device'] == device
+            and own['root'] == parent['root'].rstrip('/') + '/p0-v2'
+            and own['fsType'] == parent['fsType'] and own['source'] == parent['source']
+            and 'rw' in own['options'], 'foreign-namespace-mount')
+    require(not any(s.startswith(('shared:', 'master:', 'propagate_from:')) or s == 'unbindable'
+                    for s in own['optional']), 'namespace-mount-not-private')
+    require(record['mount'] == own, 'marker-mount-changed')
+    return own
+
+
+def pinned_namespace():
+    directory('/mnt')
+    shared = SHARED.lstat()
+    require(stat.S_ISDIR(shared.st_mode) and shared.st_uid == 1000 and shared.st_gid == 1000
+            and stat.S_IMODE(shared.st_mode) == 0o2775, 'shared-parent-identity')
+    directory(NAMESPACE_MARKER, mode=0o700)
+    raw, _ = read_exact(NAMESPACE_MARKER / 'active.json', 0, 0o400)
+    record = strict_json(raw)
+    fd = os.open(TARGET, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        s = os.fstat(fd)
+        require(s.st_uid == 0 and s.st_gid == 0 and stat.S_IMODE(s.st_mode) == 0o711, 'namespace-identity')
+        expected = {'device': s.st_dev, 'inode': s.st_ino, 'filesystemId': os.fstatvfs(fd).f_fsid}
+        validate_namespace_marker(record, kernel(), expected)
+        current = TARGET.lstat()
+        require((current.st_dev, current.st_ino) == (s.st_dev, s.st_ino), 'namespace-renamed')
+    finally:
+        os.close(fd)
+
+
+def policy(entry):
+    result = entry.get('policy', {'encoding': 'base64url', 'entropyBytes': 48})
+    require(isinstance(result, dict) and set(result) == {'encoding', 'entropyBytes'}
+            and result['encoding'] == 'base64url' and type(result['entropyBytes']) is int
+            and result['entropyBytes'] in (32, 48), 'resource-policy')
+    return dict(result)
+
+
 def intent(raw):
     value = strict_json(raw)
     require(isinstance(value, dict) and set(value) == {'version', 'classification', 'resources'}
@@ -102,7 +209,8 @@ def intent(raw):
     require(isinstance(resources, list) and 1 <= len(resources) <= 64, 'intent-resources')
     names = set()
     for entry in resources:
-        require(isinstance(entry, dict) and set(entry) == {'name', 'actors'}, 'resource-schema')
+        require(isinstance(entry, dict) and set(entry) in ({'name', 'actors'}, {'name', 'actors', 'policy'}), 'resource-schema')
+        policy(entry)
         name = entry['name']
         require(isinstance(name, str) and re.fullmatch(r'[a-z][a-z0-9]*(?:-[a-z0-9]+)*', name)
                 and len(name) <= 48 and name not in names, 'resource-name')
@@ -171,7 +279,7 @@ class Native:
         output = bytearray()
         try:
             if payload:
-                # Generated 64-byte ASCII payload fits in one small pipe write.
+                # Generated 44/64-byte ASCII payload fits in one small pipe write.
                 p.stdin.write(payload)
                 p.stdin.close()
             with selectors.DefaultSelector() as selector:
@@ -198,13 +306,14 @@ class Native:
                 p.stdin.close()
 
     def preflight(self, actors):
+        pinned_namespace()  # Before ANY native info/secret call or writable-ancestor exception.
         e = self.entry
         trusted_binary('/usr/bin/podman')
         if 'rootless' in actors:
             trusted_binary('/usr/bin/setpriv')
-            for path in (HOME, ROOTLESS, Path(f'/run/user/{e.pw_uid}/containers')):
-                directory(path, (0, e.pw_uid))
-                require(path.lstat().st_uid == e.pw_uid, 'actor-directory-owner')
+            for path in (HOME, ROOTLESS.parent, ROOTLESS, Path(f'/run/user/{e.pw_uid}/containers')):
+                directory(path, (0, e.pw_uid), mode=0o700)
+                require(path.lstat().st_uid == e.pw_uid and path.lstat().st_gid == e.pw_gid, 'actor-directory-owner')
             config = HOME / '.config/containers/storage.conf'
             directory(config.parent, (0, e.pw_uid))
             raw, _ = read_exact(config, e.pw_uid, 0o600)
@@ -213,8 +322,9 @@ class Native:
                         f'graphroot = "{ROOTLESS}"\n').encode()
             require(raw == expected, 'actor-storage-config')
         if 'rootful' in actors:
-            for path in (ROOTFUL, RUNFUL, NETWORK):
-                directory(path)
+            for path in (ROOTFUL.parent, ROOTFUL, RUNFUL.parent, RUNFUL, NETWORK.parent, NETWORK):
+                directory(path, mode=0o700)
+                require(path.lstat().st_gid == 0, 'actor-directory-owner')
         for actor in actors:
             rc, raw = self.call(actor, ['info', '--format', 'json'])
             require(rc == 0, 'native-info')
@@ -256,9 +366,9 @@ def labels(record, item):
 
 
 def prepared(spec, digest):
-    return {'version': 1, 'intentSha256': digest, 'owner': secrets.token_hex(16),
-            'resources': {entry['name']: {'version': secrets.token_hex(16),
-                'value': base64.b64encode(secrets.token_bytes(48)).decode('ascii'),
+    return {'version': 2, 'intentSha256': digest, 'owner': secrets.token_hex(16),
+            'resources': {entry['name']: {'version': secrets.token_hex(16), 'policy': policy(entry),
+                'value': base64.urlsafe_b64encode(secrets.token_bytes(policy(entry)['entropyBytes'])).decode('ascii'),
                 'actors': {actor: {'state': 'prepared', 'id': None} for actor in entry['actors']}}
                 for entry in spec['resources']}}
 
@@ -273,17 +383,21 @@ def record_integrity(record):
 def validate_record(record, spec, digest):
     require(isinstance(record, dict) and record.get('integrity') == record_integrity(record), 'record-integrity')
     require(set(record) == {'version', 'intentSha256', 'owner', 'resources', 'integrity'}
-            and type(record['version']) is int and record['version'] == 1
+            and type(record['version']) is int and record['version'] == 2
             and record['intentSha256'] == digest and isinstance(record['owner'], str)
             and OPAQUE.fullmatch(record['owner']), 'record-binding')
-    entries = {e['name']: e['actors'] for e in spec['resources']}
+    entries = {e['name']: e for e in spec['resources']}
     require(isinstance(record['resources'], dict) and set(record['resources']) == set(entries), 'record-resources')
     for name, item in record['resources'].items():
-        require(isinstance(item, dict) and set(item) == {'version', 'value', 'actors'}
+        require(isinstance(item, dict) and set(item) == {'version', 'value', 'actors', 'policy'}
                 and isinstance(item['version'], str) and OPAQUE.fullmatch(item['version'])
-                and isinstance(item['value'], str) and len(item['value']) == 64, 'record-schema')
-        require(len(base64.b64decode(item['value'], validate=True)) == 48, 'record-value-encoding')
-        require(isinstance(item['actors'], dict) and set(item['actors']) == set(entries[name]), 'record-actors')
+                and isinstance(item['value'], str), 'record-schema')
+        require(item['policy'] == policy(entries[name]), 'record-policy')
+        encoding = policy({'policy': item['policy']})
+        decoded = base64.b64decode(item['value'], altchars=b'-_', validate=True)
+        require(len(decoded) == encoding['entropyBytes']
+                and base64.urlsafe_b64encode(decoded).decode('ascii') == item['value'], 'record-value-encoding')
+        require(isinstance(item['actors'], dict) and set(item['actors']) == set(entries[name]['actors']), 'record-actors')
         for state in item['actors'].values():
             require(isinstance(state, dict) and set(state) == {'state', 'id'}
                     and state['state'] in ('prepared', 'claimed', 'uncertain', 'complete'), 'record-state')
@@ -345,16 +459,103 @@ class Custody:
         os.fsync(self.fd)
         self.previous = self.current()
 
+    def catalog(self, spec):
+        # Base record custody used by isolated source tests. Production uses the
+        # bounded cross-intent authority below, never a legacy root active.json.
+        pass
+
     def close(self):
         if self.fd is not None:
             os.close(self.fd)
             self.fd = None
 
 
+class IntentCustody(Custody):
+    """Independent intent records, serialized name claims under one Root authority."""
+    def __init__(self, authority, digest):
+        require(isinstance(digest, str) and HEX.fullmatch(digest), 'intent-directory')
+        self.authority = Path(authority)
+        self.digest = digest
+        self.rootfd = None
+        super().__init__(self.authority / 'intents' / digest)
+
+    def open(self, apply, *, create=None):
+        if create is None:
+            create = apply
+        directory(self.authority.parent)
+        if not os.path.lexists(self.authority):
+            if not create:
+                return False
+            self.authority.mkdir(mode=0o700)
+        directory(self.authority, mode=0o700)
+        self.rootfd = os.open(self.authority, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        fcntl.flock(self.rootfd, (fcntl.LOCK_EX if apply else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+        self.authority_id = os.fstat(self.rootfd)
+        # A legacy global active.json is never adopted, repaired or auto-migrated.
+        require(set(os.listdir(self.rootfd)) <= {'intents'}, 'unknown-credential-authority-entry')
+        intents = self.authority / 'intents'
+        if not os.path.lexists(intents):
+            if not create:
+                return False
+            intents.mkdir(mode=0o700)
+        directory(intents, mode=0o700)
+        names = os.listdir(intents)
+        require(len(names) <= 64 and all(HEX.fullmatch(n) for n in names), 'intent-catalog-bound')
+        require(self.digest in names or len(names) < 64, 'intent-catalog-full')
+        return super().open(apply, create=create)
+
+    def catalog(self, spec):
+        if self.rootfd is None:
+            return
+        directory(self.authority, mode=0o700)
+        s = self.authority.lstat()
+        require((s.st_dev, s.st_ino) == (self.authority_id.st_dev, self.authority_id.st_ino), 'credential-authority-changed')
+        intents = self.authority / 'intents'
+        if not os.path.lexists(intents):
+            return
+        directory(intents, mode=0o700)
+        names = os.listdir(intents)
+        require(len(names) <= 64 and all(HEX.fullmatch(n) for n in names), 'intent-catalog-bound')
+        owners, count = {}, 0
+        for digest in names:
+            path = intents / digest
+            directory(path, mode=0o700)
+            entries = os.listdir(path)
+            require(set(entries) <= {'active.json'}, 'unexpected-custody-entry')
+            if not entries:
+                continue
+            raw, _ = read_exact(path / 'active.json', 0, 0o400)
+            record = strict_json(raw)
+            require(isinstance(record, dict) and isinstance(record.get('resources'), dict), 'catalog-record')
+            resources = []
+            for name, item in record['resources'].items():
+                require(isinstance(item, dict) and isinstance(item.get('actors'), dict), 'catalog-record')
+                resources.append({'name': name, 'actors': list(item['actors']), 'policy': item.get('policy')})
+            other_spec = intent(json.dumps({'version': 1, 'classification': 'ordinary-service', 'resources': resources}).encode())
+            validate_record(record, other_spec, digest)
+            for name in record['resources']:
+                require(name not in owners, 'cross-intent-name-collision')
+                owners[name] = digest
+                count += 1
+        for entry in spec['resources']:
+            name = entry['name']
+            require(name not in owners or owners[name] == self.digest, 'cross-intent-name-collision')
+            if name not in owners:
+                count += 1
+        require(count <= 512, 'aggregate-resource-bound')
+
+    def close(self):
+        super().close()
+        if self.rootfd is not None:
+            os.close(self.rootfd)
+            self.rootfd = None
+
+
 def supply(spec, digest, custody, native, mode):
     record = custody.load() if custody.fd is not None else None
     if record is not None:
         validate_record(record, spec, digest)
+    custody.catalog(spec)
     if mode in ('status', 'dry-run'):
         return report(record, spec, mode)
     require(mode != 'resume' or record is not None, 'resume-record-required')
@@ -451,7 +652,7 @@ def main(argv=None):
     if mutating:
         # Refuse unexpected stores before even creating a custody directory.
         native.preflight(sorted({a for e in spec['resources'] for a in e['actors']}))
-    custody = Custody()
+    custody = IntentCustody(BASE, args.intent_sha256)
     try:
         custody.open(mutating, create=args.mode == 'apply')
         result = supply(spec, args.intent_sha256, custody, native, args.mode)

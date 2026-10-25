@@ -1,0 +1,667 @@
+#!/usr/bin/python3 -I
+"""Pin only the reviewed new P0 v2 namespace. No teardown or service activation."""
+import sys
+if __name__ == '__main__' and not sys.flags.isolated:
+    sys.stdout.write('{"version":1,"refused":true,"reason":"isolated-python-required"}\n')
+    raise SystemExit(2)
+
+import argparse
+import fcntl
+import grp
+import hashlib
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import resource
+import secrets
+import selectors
+import stat
+import subprocess
+import time
+
+TARGET = Path('/mnt/stack/p0-v2')
+SHARED = Path('/mnt/stack')
+AUTHORITY = Path('/var/lib/p0-v2-namespace')
+HOME = Path('/var/lib/p0-runtime')
+ROOTLESS = TARGET / 'rootless/engine'
+ROOTFUL = TARGET / 'rootful/engine'
+RUNFUL = Path('/run/p0-v2-rootful/engine')
+NETWORK = Path('/var/lib/p0-v2-rootful/networks')
+LIMIT = 262144
+HEX = re.compile(r'[0-9a-f]{64}')
+UNIT = re.compile(r'p0-[a-z][a-z0-9]*(?:-[a-z0-9]+)*\.service')
+UUID = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}')
+
+
+class Refused(Exception):
+    pass
+
+
+def require(ok, code):
+    if not ok:
+        raise Refused(code)
+
+
+def strict_json(raw):
+    def pairs(items):
+        result = {}
+        for k, v in items:
+            require(k not in result, 'duplicate-json-key')
+            result[k] = v
+        return result
+    return json.loads(raw, object_pairs_hook=pairs,
+                      parse_constant=lambda _: (_ for _ in ()).throw(Refused('invalid-json')))
+
+
+def identity(s):
+    return {'device': s.st_dev, 'inode': s.st_ino}
+
+
+def snapshot(s):
+    return (s.st_dev, s.st_ino, s.st_mode, s.st_uid, s.st_gid, s.st_nlink,
+            s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+
+
+def strict_directory(path, owners=(0,), mode=None):
+    path = Path(path)
+    require(path.is_absolute() and '..' not in path.parts, 'directory-path')
+    for part in (Path('/'), *reversed(path.parents[:-1]), path):
+        s = part.lstat()
+        require(stat.S_ISDIR(s.st_mode) and s.st_uid in owners and not s.st_mode & 0o022, 'directory-custody')
+    if mode is not None:
+        require(stat.S_IMODE(path.lstat().st_mode) == mode, 'directory-mode')
+
+
+def read_exact(path, uid=0, mode=None, limit=LIMIT):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        s = os.fstat(fd)
+        require(stat.S_ISREG(s.st_mode) and s.st_uid == uid and s.st_nlink == 1
+                and not s.st_mode & 0o022 and s.st_size <= limit, 'file-custody')
+        if mode is not None:
+            require(stat.S_IMODE(s.st_mode) == mode, 'file-mode')
+        raw = os.read(fd, limit + 1)
+        require(len(raw) == s.st_size and snapshot(os.fstat(fd)) == snapshot(s), 'file-changed')
+        return raw, snapshot(s)
+    finally:
+        os.close(fd)
+
+
+def bounded_read(path, limit):
+    with open(path, 'rb') as stream:
+        raw = stream.read(limit + 1)
+    require(len(raw) <= limit, 'observation-limit')
+    return raw
+
+
+def mountinfo(raw):
+    """Parse only public kernel mount metadata, with duplicate/escape defenses."""
+    result = []
+    for line in raw.decode('ascii').splitlines():
+        left, right = line.split(' - ')
+        fields, tail = left.split(), right.split()
+        require(len(fields) >= 6 and len(tail) == 3, 'mountinfo-schema')
+        def unescape(s):
+            s = re.sub(r'\\(040|011|012|134)', lambda m: chr(int(m[1], 8)), s)
+            require('\\' not in s, 'mountinfo-escape')
+            return s
+        result.append({'id': int(fields[0]), 'parent': int(fields[1]), 'device': fields[2],
+                       'root': unescape(fields[3]), 'target': unescape(fields[4]),
+                       'options': fields[5].split(','), 'optional': fields[6:],
+                       'fsType': tail[0], 'source': unescape(tail[1])})
+    require(len({m['id'] for m in result}) == len(result), 'mountinfo-duplicate')
+    return result
+
+
+def kernel():
+    boot = bounded_read('/proc/sys/kernel/random/boot_id', 128).decode('ascii').strip()
+    require(UUID.fullmatch(boot), 'boot-id')
+    current = identity(os.stat('/proc/self/ns/mnt'))
+    require(current == identity(os.stat('/proc/1/ns/mnt')), 'not-host-mount-namespace')
+    return {'bootId': boot, 'mountNamespace': current,
+            'mounts': mountinfo(bounded_read('/proc/self/mountinfo', 4 * 1024**2))}
+
+
+def namespace(expected):
+    """Anchor the existing inode; never follow an operator-replaced link."""
+    strict_directory('/mnt')
+    shared = SHARED.lstat()
+    require(stat.S_ISDIR(shared.st_mode) and shared.st_uid == 1000 and shared.st_gid == 1000
+            and stat.S_IMODE(shared.st_mode) == 0o2775, 'shared-parent-identity')
+    parent = os.open(SHARED, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        require(identity(os.fstat(parent)) == identity(shared), 'shared-parent-changed')
+        fd = os.open('p0-v2', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+    finally:
+        os.close(parent)
+    try:
+        s = os.fstat(fd)
+        actual = dict(identity(s), filesystemId=os.fstatvfs(fd).f_fsid)
+        require(actual == expected and s.st_uid == 0 and s.st_gid == 0
+                and stat.S_IMODE(s.st_mode) == 0o711, 'namespace-identity')
+        require(identity(TARGET.lstat()) == {k: expected[k] for k in ('device', 'inode')}, 'namespace-renamed')
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def observed_mount(observation, expected, *, pinned):
+    mounts = observation['mounts']
+    parents = [m for m in mounts if m['target'] == str(SHARED)]
+    require(len(parents) == 1, 'shared-parent-not-exact-mount')
+    parent = parents[0]
+    device = f"{os.major(expected['device'])}:{os.minor(expected['device'])}"
+    require(parent['device'] == device, 'namespace-filesystem')
+    require(not any(m['target'].startswith(str(TARGET) + '/') for m in mounts), 'namespace-submount')
+    own = [m for m in mounts if m['target'] == str(TARGET)]
+    require(len(own) <= 1, 'stacked-namespace-mount')
+    if not pinned:
+        require(not own, 'foreign-existing-mount')
+        return None
+    require(len(own) == 1, 'namespace-unpinned')
+    own = own[0]
+    root = parent['root'].rstrip('/') + '/p0-v2'
+    require(own['parent'] == parent['id'] and own['device'] == device and own['root'] == root
+            and own['fsType'] == parent['fsType'] and own['source'] == parent['source']
+            and 'rw' in own['options'], 'foreign-namespace-mount')
+    return own
+
+
+def private_mount(own):
+    require(not any(s.startswith(('shared:', 'master:', 'propagate_from:')) or s == 'unbindable'
+                    for s in own['optional']), 'namespace-mount-not-private')
+
+
+def verify_marker(record, observation, expected):
+    require(isinstance(record, dict) and set(record) == {'version', 'state', 'owner', 'evidenceSha256',
+            'namespace', 'bootId', 'mountNamespace', 'mount', 'integrity'}, 'marker-schema')
+    require(isinstance(record['namespace'], dict) and set(record['namespace']) == {'device', 'inode', 'filesystemId'}
+            and all(type(v) is int and v > 0 for v in record['namespace'].values()), 'marker-binding')
+    fields = {k: v for k, v in record.items() if k != 'integrity'}
+    digest = hashlib.sha256(json.dumps(fields, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    require(record['integrity'] == digest and type(record['version']) is int and record['version'] == 1
+            and record['state'] == 'pinned' and isinstance(record['owner'], str)
+            and re.fullmatch(r'[0-9a-f]{32}', record['owner'])
+            and isinstance(record['evidenceSha256'], str) and HEX.fullmatch(record['evidenceSha256'])
+            and record['namespace'] == expected, 'marker-binding')
+    require(record['bootId'] == observation['bootId'] and record['mountNamespace'] == observation['mountNamespace'],
+            'marker-stale-boot-or-namespace')
+    own = observed_mount(observation, expected, pinned=True)
+    private_mount(own)
+    require(record['mount'] == own, 'marker-mount-changed')
+    return own
+
+
+def account():
+    e = pwd.getpwnam('p0-runtime')
+    require(e.pw_uid >= 1000 and e.pw_gid >= 1000 and e.pw_dir == str(HOME)
+            and e.pw_shell == '/usr/sbin/nologin', 'actor-identity')
+    g = grp.getgrgid(e.pw_gid)
+    require(g.gr_name == 'p0-runtime' and not g.gr_mem
+            and not any('p0-runtime' in x.gr_mem for x in grp.getgrall()), 'actor-groups')
+    return e
+
+
+def reserves():
+    available = 0
+    with open('/proc/meminfo', encoding='ascii') as stream:
+        for line in stream:
+            if line.startswith('MemAvailable:'):
+                available = int(line.split()[1]) * 1024
+    require(available >= 16 * 1024**3, 'ram-reserve')
+    for path, floor in (('/', 50), ('/mnt/stack', 100), ('/var/lib', 1)):
+        v = os.statvfs(path)
+        require(v.f_bavail * v.f_frsize >= floor * 1024**3, 'disk-reserve')
+
+
+def evidence(raw):
+    value = strict_json(raw)
+    require(isinstance(value, dict) and set(value) == {'version', 'namespace', 'units'}
+            and type(value['version']) is int and value['version'] == 1, 'evidence-schema')
+    expected = value['namespace']
+    require(isinstance(expected, dict) and set(expected) == {'device', 'inode', 'filesystemId'}
+            and all(type(v) is int and v > 0 for v in expected.values()), 'evidence-identity')
+    require(isinstance(value['units'], dict) and set(value['units']) == {'rootless', 'rootful'}, 'evidence-actors')
+    for units in value['units'].values():
+        require(isinstance(units, list) and len(units) <= 64, 'evidence-units')
+        seen = set()
+        for entry in units:
+            require(isinstance(entry, dict) and set(entry) == {'name', 'sourceSha256'}
+                    and isinstance(entry['name'], str) and UNIT.fullmatch(entry['name'])
+                    and len(entry['name']) <= 96 and entry['name'] not in seen
+                    and isinstance(entry['sourceSha256'], str) and HEX.fullmatch(entry['sourceSha256']), 'evidence-unit')
+            seen.add(entry['name'])
+    return value
+
+
+class Native:
+    def __init__(self, entry):
+        self.entry = entry
+
+    def call(self, args, actor='rootful', pass_fds=()):
+        env = {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', 'HOME': '/root'}
+        executable = args[0]
+        if actor == 'rootless':
+            args = ['/usr/bin/setpriv', '--reuid', str(self.entry.pw_uid), '--regid', str(self.entry.pw_gid),
+                    '--clear-groups', '--inh-caps=-all', '--ambient-caps=-all'] + args
+            env.update(HOME=str(HOME), XDG_RUNTIME_DIR=f'/run/user/{self.entry.pw_uid}')
+        # Validate only fixed native binaries; no caller-supplied executable paths.
+        for executable in ({executable, '/usr/bin/setpriv'} if actor == 'rootless' else {executable}):
+            require(executable in ('/usr/bin/setpriv', '/usr/bin/podman', '/usr/bin/systemctl', '/usr/bin/mount'), 'native-executable')
+            strict_directory(Path(executable).parent)
+            read_exact(executable, limit=128 * 1024**2)
+            require(os.stat(executable).st_mode & 0o111, 'native-executable')
+        p = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             env=env, cwd='/', pass_fds=pass_fds, start_new_session=True)
+        data = bytearray()
+        try:
+            deadline = time.monotonic() + 30
+            with selectors.DefaultSelector() as selector:
+                selector.register(p.stdout, selectors.EVENT_READ)
+                while selector.get_map():
+                    remaining = deadline - time.monotonic()
+                    require(remaining > 0, 'native-timeout')
+                    for key, _ in selector.select(min(remaining, 1)):
+                        block = os.read(key.fileobj.fileno(), 8192)
+                        if not block:
+                            selector.unregister(key.fileobj)
+                        else:
+                            data.extend(block)
+                            require(len(data) <= LIMIT, 'native-output-limit')
+            require(p.wait(timeout=max(0.01, deadline - time.monotonic())) == 0, 'native-operation-uncertain')
+            return bytes(data)
+        finally:
+            if p.poll() is None:
+                p.kill()
+                p.wait(timeout=5)
+            p.stdout.close()
+
+    def engine(self, actor, fd):
+        # The shared ancestor is not trusted UNTIL pinned. Native observation
+        # uses the reviewed open inode, never that replaceable pathname.
+        graph = f'/proc/self/fd/{fd}/{actor}/engine'
+        if actor == 'rootless':
+            return ['/usr/bin/podman', '--root', graph, '--runroot',
+                    f'/run/user/{self.entry.pw_uid}/containers', '--storage-driver', 'overlay']
+        return ['/usr/bin/podman', '--root', graph, '--runroot', str(RUNFUL),
+                '--storage-driver', 'overlay', '--network-config-dir', str(NETWORK)]
+
+    def stopped(self, proof, fd):
+        for actor, units in proof['units'].items():
+            prefix = ['/usr/bin/systemctl'] + (['--user'] if actor == 'rootless' else [])
+            expected = {entry['name'] for entry in units}
+            for command in (['list-units', '--all', '--plain', '--no-legend', 'p0-*.service'],
+                            ['list-unit-files', '--no-legend', 'p0-*.service']):
+                raw = self.call(prefix + command, actor)
+                names = set()
+                for line in raw.decode('ascii').splitlines():
+                    name = line.split()[0]
+                    require(UNIT.fullmatch(name), 'unit-inventory-schema')
+                    names.add(name)
+                require(names <= expected, 'unreviewed-runtime-unit')
+            triggers = ['p0-*.timer', 'p0-*.socket', 'p0-*.path']
+            for command in (['list-units', '--all', '--plain', '--no-legend'] + triggers,
+                            ['list-unit-files', '--no-legend'] + triggers):
+                require(not self.call(prefix + command, actor).strip(), 'runtime-triggers-remain')
+            for entry in units:
+                name = entry['name']
+                source = (HOME / '.config/containers/systemd' if actor == 'rootless'
+                          else Path('/etc/containers/systemd')) / (name[:-8] + '.container')
+                strict_directory(source.parent, (0, self.entry.pw_uid) if actor == 'rootless' else (0,))
+                raw, _ = read_exact(source, self.entry.pw_uid if actor == 'rootless' else 0)
+                require(hashlib.sha256(raw).hexdigest() == entry['sourceSha256'], 'unit-source-binding')
+                raw = self.call(prefix + ['show', name, '--no-pager',
+                     '--property=LoadState,ActiveState,MainPID,ControlGroup,Job,SourcePath,TriggeredBy'], actor)
+                props = {}
+                for line in raw.decode('utf-8').splitlines():
+                    key, value = line.split('=', 1)
+                    require(key not in props, 'unit-properties-schema')
+                    props[key] = value
+                require(set(props) == {'LoadState', 'ActiveState', 'MainPID', 'ControlGroup', 'Job', 'SourcePath', 'TriggeredBy'}
+                        and props['LoadState'] == 'loaded' and props['ActiveState'] in ('inactive', 'failed')
+                        and props['MainPID'] == '0' and props['ControlGroup'] == '' and props['Job'] == ''
+                        and props['SourcePath'] == str(source) and props['TriggeredBy'] == '', 'runtime-unit-not-stopped')
+            present = anchored_engine(fd, actor, self.entry)
+            if not present:
+                require(actor == 'rootful', 'rootless-engine-missing')
+                continue  # Proven missing fixed child; no default native store is initialized.
+            check_actor_directories(self.entry, actor)
+            prefix = self.engine(actor, fd)
+            store = strict_json(self.call(prefix + ['info', '--format', 'json'], actor, pass_fds=(fd,))).get('store', {})
+            run = f'/run/user/{self.entry.pw_uid}/containers' if actor == 'rootless' else str(RUNFUL)
+            require(store.get('graphRoot') == prefix[2] and store.get('runRoot') == run
+                    and store.get('graphDriverName') == 'overlay', 'native-store-mismatch')
+            containers = strict_json(self.call(prefix + ['ps', '--all', '--external', '--format', 'json'], actor, pass_fds=(fd,)))
+            require(isinstance(containers, list) and not containers, 'engine-containers-remain')
+
+    def bind(self, fd):
+        ref = f'/proc/self/fd/{fd}'
+        self.call(['/usr/bin/mount', '--no-canonicalize', '--bind', ref, ref], pass_fds=(fd,))
+
+    def make_private(self, fd):
+        self.call(['/usr/bin/mount', '--no-canonicalize', '--make-private', f'/proc/self/fd/{fd}'], pass_fds=(fd,))
+
+
+def anchored_engine(fd, actor, entry):
+    parent = os.dup(fd)
+    try:
+        for name in (actor, 'engine'):
+            try:
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            except FileNotFoundError:
+                return False
+            os.close(parent)
+            parent = child
+            s = os.fstat(parent)
+            uid, gid = (entry.pw_uid, entry.pw_gid) if actor == 'rootless' else (0, 0)
+            require(s.st_uid == uid and s.st_gid == gid and stat.S_IMODE(s.st_mode) == 0o700, 'anchored-engine-custody')
+        return True
+    finally:
+        os.close(parent)
+
+
+def owned_descendant(path, entry, uid=None, mode=None):
+    """Only this helper's fixed namespace has the reviewed shared-ancestor exception."""
+    path = Path(path)
+    if path == TARGET or TARGET in path.parents:
+        parts = (TARGET, *list(reversed(path.parents[:list(path.parents).index(TARGET)])), path) if path != TARGET else (TARGET,)
+        for part in parts:
+            s = part.lstat()
+            require(stat.S_ISDIR(s.st_mode) and s.st_uid in (0, entry.pw_uid) and not s.st_mode & 0o022, 'actor-directory')
+    else:
+        strict_directory(path, (0,) if uid == 0 else (0, entry.pw_uid))
+    s = path.lstat()
+    if uid is not None:
+        require(s.st_uid == uid and s.st_gid == (entry.pw_gid if uid == entry.pw_uid else 0), 'actor-directory-owner')
+    if mode is not None:
+        require(stat.S_IMODE(s.st_mode) == mode, 'actor-directory-mode')
+
+
+def check_actor_directories(entry, actor):
+    if actor == 'rootless':
+        for path in (HOME, TARGET / 'rootless', ROOTLESS, Path(f'/run/user/{entry.pw_uid}/containers')):
+            owned_descendant(path, entry, entry.pw_uid, 0o700)
+        config = HOME / '.config/containers/storage.conf'
+        strict_directory(config.parent, (0, entry.pw_uid))
+        raw, _ = read_exact(config, entry.pw_uid, 0o600)
+        expected = ('[storage]\ndriver = "overlay"\n'
+                    f'runroot = "/run/user/{entry.pw_uid}/containers"\n'
+                    f'graphroot = "{ROOTLESS}"\n').encode()
+        require(raw == expected, 'actor-storage-config')
+    else:
+        for path in (TARGET / 'rootful', ROOTFUL, RUNFUL.parent, RUNFUL, NETWORK.parent, NETWORK):
+            owned_descendant(path, entry, 0, 0o700)
+
+
+def preflight_children(entry):
+    check_actor_directories(entry, 'rootless')
+    for path in (TARGET / 'rootful', ROOTFUL, RUNFUL.parent, RUNFUL, NETWORK.parent, NETWORK):
+        if os.path.lexists(path):
+            owned_descendant(path, entry, 0, 0o700)
+        elif path.parent not in (TARGET / 'rootful', RUNFUL.parent, NETWORK.parent):
+            if TARGET in path.parents:
+                owned_descendant(path.parent, entry)
+            else:
+                strict_directory(path.parent)
+
+
+def create_children(entry):
+    # Parent already provisioned rootless identity/home/store; never repair them.
+    check_actor_directories(entry, 'rootless')
+    for path in (TARGET / 'rootful', ROOTFUL, RUNFUL.parent, RUNFUL, NETWORK.parent, NETWORK):
+        if os.path.lexists(path):
+            owned_descendant(path, entry, 0, 0o700)
+            continue
+        # Rootful paths are created only AFTER the target is verified kernel-pinned.
+        reserves()
+        if TARGET not in path.parents:
+            strict_directory(path.parent)
+        else:
+            owned_descendant(path.parent, entry)
+        parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.mkdir(path.name, 0o700, dir_fd=parent)
+            fd = os.open(path.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            try:
+                os.fchown(fd, 0, 0)
+                os.fchmod(fd, 0o700)
+                # Only the fresh inode, never the shared parent or existing data.
+                if 'system.posix_acl_default' in os.listxattr(fd):
+                    os.removexattr(fd, 'system.posix_acl_default')
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+
+
+class Marker:
+    def __init__(self, base=AUTHORITY):
+        self.base, self.fd, self.previous = Path(base), None, None
+
+    def open(self, mutating, *, create=None):
+        if create is None:
+            create = mutating
+        strict_directory(self.base.parent)
+        if not os.path.lexists(self.base):
+            if not create:
+                return False
+            self.base.mkdir(mode=0o700)
+        strict_directory(self.base, mode=0o700)
+        self.fd = os.open(self.base, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        fcntl.flock(self.fd, (fcntl.LOCK_EX if mutating else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+        self.directory_id = identity(os.fstat(self.fd))
+        require(set(os.listdir(self.fd)) <= {'active.json'}, 'unknown-marker-entry')
+        self.previous = self.current()
+        return True
+
+    def current(self):
+        strict_directory(self.base, mode=0o700)
+        require(identity(self.base.lstat()) == self.directory_id, 'marker-directory-changed')
+        if not os.path.lexists(self.base / 'active.json'):
+            return None
+        return read_exact(self.base / 'active.json', 0, 0o400)
+
+    def load(self):
+        if self.previous is None:
+            return None
+        record = strict_json(self.previous[0])
+        require(isinstance(record, dict), 'marker-schema')
+        fields = {k: v for k, v in record.items() if k != 'integrity'}
+        require(record.get('integrity') == hashlib.sha256(json.dumps(fields, sort_keys=True, separators=(',', ':')).encode()).hexdigest(),
+                'marker-integrity')
+        return record
+
+    def save(self, record):
+        require(self.current() == self.previous, 'marker-cas')
+        fields = {k: v for k, v in record.items() if k != 'integrity'}
+        record['integrity'] = hashlib.sha256(json.dumps(fields, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        raw = json.dumps(record, sort_keys=True, separators=(',', ':')).encode()
+        require(len(raw) <= LIMIT, 'marker-size')
+        name = '.publish-' + secrets.token_hex(16)
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400, dir_fd=self.fd)
+        try:
+            os.fchmod(fd, 0o400)
+            require(os.write(fd, raw) == len(raw), 'marker-short-write')
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        require(self.current() == self.previous, 'marker-cas')
+        os.replace(name, 'active.json', src_dir_fd=self.fd, dst_dir_fd=self.fd)
+        os.fsync(self.fd)
+        self.previous = self.current()
+
+    def close(self):
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+
+def pin(proof, digest, marker, native, entry, mode):
+    expected = proof['namespace']
+    fd = namespace(expected)
+    try:
+        observation = kernel()
+        record = marker.load()
+        if mode in ('status', 'check'):
+            require(record is not None, 'marker-missing')
+            require(record.get('evidenceSha256') == digest, 'namespace-evidence-changed')
+            verify_marker(record, observation, expected)
+            check_actor_directories(entry, 'rootless')
+            check_actor_directories(entry, 'rootful')
+            return report(record, mode)
+        require(mode in ('apply', 'resume', 'recheck'), 'namespace-mode')
+        reserves()
+        if record is None:
+            require(mode == 'apply', 'marker-required')
+            observed_mount(observation, expected, pinned=False)
+        else:
+            require(set(record) == {'version', 'state', 'owner', 'evidenceSha256', 'namespace', 'bootId',
+                                   'mountNamespace', 'mount', 'integrity'}
+                    and type(record['version']) is int and record['version'] == 1
+                    and record['namespace'] == expected
+                    and isinstance(record['evidenceSha256'], str) and HEX.fullmatch(record['evidenceSha256'])
+                    and isinstance(record['owner'], str) and re.fullmatch(r'[0-9a-f]{32}', record['owner'])
+                    and record['state'] in ('claimed', 'pinned')
+                    and isinstance(record['bootId'], str) and UUID.fullmatch(record['bootId'])
+                    and isinstance(record['mountNamespace'], dict) and set(record['mountNamespace']) == {'device', 'inode'}
+                    and all(type(v) is int and v > 0 for v in record['mountNamespace'].values())
+                    and (record['mount'] is None or isinstance(record['mount'], dict)), 'marker-binding')
+            same_boot = record['bootId'] == observation['bootId'] and record['mountNamespace'] == observation['mountNamespace']
+            require(record['evidenceSha256'] == digest or (mode == 'recheck' and not same_boot), 'namespace-evidence-changed')
+            if same_boot and record['state'] == 'pinned':
+                verify_marker(record, observation, expected)
+                # No effect or child repair from ordinary apply of a complete marker.
+                require(mode != 'resume', 'no-partial-namespace')
+                check_actor_directories(entry, 'rootless')
+                check_actor_directories(entry, 'rootful')
+                return report(record, mode)
+            require(mode == ('resume' if same_boot else 'recheck'), 'explicit-namespace-recheck-required')
+            if not same_boot:
+                # A prior boot's mount ID is not authority for a new mount.
+                observed_mount(observation, expected, pinned=False)
+            elif record['mount'] is not None:
+                own = observed_mount(observation, expected, pinned=True)
+                saved = record['mount']
+                # A crash after the claimed make-private effect may have removed
+                # propagation tags. Reconcile only that exact same mount ID.
+                reconciled = (set(saved) == set(own) and isinstance(saved.get('optional'), list)
+                    and all(isinstance(v, str) and re.fullmatch(r'(shared|master|propagate_from):[1-9][0-9]*', v)
+                            for v in saved['optional']) and own['optional'] == []
+                    and {k: v for k, v in own.items() if k != 'optional'}
+                        == {k: v for k, v in saved.items() if k != 'optional'})
+                require(own == saved or reconciled, 'marker-mount-changed')
+            else:
+                exists = any(m['target'] == str(TARGET) for m in observation['mounts'])
+                observed_mount(observation, expected, pinned=exists)
+        # No mount, marker claim, directory creation or ACL operation before these gates.
+        preflight_children(entry)
+        native.stopped(proof, fd)
+        current = kernel()
+        expected_inode = {k: expected[k] for k in ('device', 'inode')}
+        require(current == observation and identity(TARGET.lstat()) == expected_inode
+                and identity(os.fstat(fd)) == expected_inode
+                and os.fstatvfs(fd).f_fsid == expected['filesystemId'], 'namespace-observation-changed')
+        reserves()
+        if marker.fd is None:
+            marker.open(True)
+            require(marker.load() is None, 'marker-created-concurrently')
+        if record is None:
+            record = {'version': 1, 'state': 'claimed', 'owner': secrets.token_hex(16), 'evidenceSha256': digest,
+                      'namespace': expected, 'bootId': current['bootId'], 'mountNamespace': current['mountNamespace'], 'mount': None}
+        else:
+            record.update(state='claimed', bootId=current['bootId'], mountNamespace=current['mountNamespace'], evidenceSha256=digest)
+            if not same_boot:
+                record['mount'] = None
+        marker.save(record)  # Durable claim before the fixed mount effect.
+        own = [m for m in current['mounts'] if m['target'] == str(TARGET)]
+        if not own:
+            native.bind(fd)
+        current = kernel()
+        own = observed_mount(current, expected, pinned=True)
+        require(current['bootId'] == record['bootId'] and current['mountNamespace'] == record['mountNamespace']
+                and identity(TARGET.lstat()) == expected_inode, 'namespace-observation-changed')
+        record['mount'] = own
+        marker.save(record)
+        # Reopen through the newly pinned path: pre-bind FD still names the old
+        # covering mount, so it must NEVER be used for --make-private.
+        mounted_fd = namespace(expected)
+        try:
+            reserves()
+            native.make_private(mounted_fd)
+        finally:
+            os.close(mounted_fd)
+        current = kernel()
+        own = observed_mount(current, expected, pinned=True)
+        private_mount(own)
+        require(current['bootId'] == record['bootId'] and current['mountNamespace'] == record['mountNamespace'], 'namespace-observation-changed')
+        record['mount'] = own
+        # Still claimed until every fixed child custody check/provision succeeds.
+        marker.save(record)
+        create_children(entry)
+        record['state'] = 'pinned'
+        marker.save(record)
+        verify_marker(record, kernel(), expected)
+        return report(record, mode)
+    finally:
+        os.close(fd)
+
+
+def report(record, mode):
+    return {'version': 1, 'scope': 'p0-v2-namespace', 'mode': mode, 'state': record['state'],
+            'namespace': record['namespace'], 'bootId': record['bootId'],
+            'mountId': record['mount']['id'], 'owner': record['owner'], 'installationCertified': False}
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        raise Refused('cli-arguments')
+
+
+def main(argv=None):
+    p = Parser(description=__doc__)
+    p.add_argument('mode', choices=('apply', 'resume', 'recheck', 'status', 'check'))
+    p.add_argument('--helper-sha256', required=True)
+    p.add_argument('--evidence', required=True)
+    p.add_argument('--evidence-sha256', required=True)
+    p.add_argument('--evidence-uid', required=True, type=int)
+    a = p.parse_args(argv)
+    require(os.geteuid() == 0, 'root-required')
+    os.umask(0o077)
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    require(HEX.fullmatch(a.helper_sha256) and HEX.fullmatch(a.evidence_sha256) and a.evidence_uid >= 1000, 'argument-binding')
+    source = Path(__file__).absolute()
+    require(source.is_relative_to('/var/lib') and source.parent != Path('/var/lib'), 'helper-staging')
+    strict_directory(source.parent, mode=0o700)
+    raw, _ = read_exact(source, 0, 0o400)
+    require(hashlib.sha256(raw).hexdigest() == a.helper_sha256, 'helper-sha256')
+    path = Path(a.evidence)
+    strict_directory(path.parent, (0, a.evidence_uid))
+    raw, _ = read_exact(path, a.evidence_uid)
+    require(hashlib.sha256(raw).hexdigest() == a.evidence_sha256, 'evidence-sha256')
+    proof = evidence(raw)
+    entry = account()
+    mutating = a.mode in ('apply', 'resume', 'recheck')
+    if mutating:
+        reserves()
+    marker = Marker()
+    try:
+        marker.open(mutating, create=False)
+        result = pin(proof, a.evidence_sha256, marker, Native(entry), entry, a.mode)
+    finally:
+        marker.close()
+    print(json.dumps(result, sort_keys=True))
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as error:
+        print(json.dumps({'version': 1, 'scope': 'p0-v2-namespace', 'refused': True,
+                          'reason': str(error) if isinstance(error, Refused) else 'operation-unavailable',
+                          'installationCertified': False}))
+        raise SystemExit(2)
