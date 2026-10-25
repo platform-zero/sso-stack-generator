@@ -462,22 +462,29 @@ class Fresh:
                 return body
             finally:
                 os.close(child)
+        phase = 'own-cid'
         try:
             cid = getattr(self, 'database_cid', None)
             self.require(cid in self.cids, 'Own database cgroup CID absent')
             state = self.state(cid, cleanup=True); pid = state.get('Pid')
             self.require(state.get('Running') is True and type(pid) is int and pid > 1,
                          'Own database cgroup process absent')
+            phase = 'process-anchor'
             original = directory(PROC / str(pid))
             process = os.pidfd_open(pid); opened.append(process)
+            phase = 'cgroup-membership'
             membership = read(original, 'cgroup').decode('ascii')
             lines = membership.splitlines()
             self.require(len(lines) == 1 and lines[0].startswith('0::/machine.slice/'),
                          'Exact own database cgroup hierarchy absent')
             relative = Path(lines[0][3:])
-            self.require(relative.parts == ('/', 'machine.slice', 'libpod-' + cid + '.scope'),
+            phase = 'cgroup-layout'
+            own_scope = ('/', 'machine.slice', 'libpod-' + cid + '.scope')
+            self.require(relative.parts in (own_scope, (*own_scope, 'container')),
                          'Exact own database cgroup identity absent')
+            phase = 'cgroup-open'
             group = directory(CGROUP / relative.relative_to('/'))
+            phase = 'cgroup-processes'
             pids = sorted({int(value) for value in read(group, 'cgroup.procs').split()})
             self.require(pid in pids and 0 < len(pids) <= 256 and all(value > 1 for value in pids),
                          'Nonempty own database cgroup membership absent')
@@ -487,6 +494,7 @@ class Fresh:
             waits = {b'io_schedule': 'io-wait', b'futex_wait_queue': 'futex-wait', b'do_wait': 'child-wait',
                      b'pipe_read': 'pipe-read', b'hrtimer_nanosleep': 'timer-wait', b'ep_poll': 'event-wait'}
             rows = []
+            phase = 'own-process-state'
             for selected in pids[:16]:
                 fd = directory(PROC / str(selected))
                 self.require(read(fd, 'cgroup').decode('ascii') == membership, 'Own database process moved cgroup')
@@ -500,12 +508,13 @@ class Fresh:
                 self.require(len(after) >= 20 and after[19] == fields[19]
                              and read(fd, 'cgroup').decode('ascii') == membership,
                              'Own database process identity changed')
+            phase = 'anchor-recheck'
             self.require(read(original, 'cgroup').decode('ascii') == membership
                          and self.state(cid, cleanup=True).get('Pid') == pid
                          and not select.select([process], [], [], 0)[0], 'Own database cgroup anchor changed')
             return dict(status='exact-own-cgroup-observed', processCount=len(pids), bounded=len(pids) > 16, processes=rows)
         except BaseException:
-            return {'status': 'own-cgroup-observation-unavailable'}
+            return {'status': 'own-cgroup-observation-unavailable', 'phase': phase}
         finally:
             for fd in reversed(opened):
                 os.close(fd)

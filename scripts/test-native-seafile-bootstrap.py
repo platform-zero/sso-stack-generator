@@ -126,6 +126,16 @@ class Models(unittest.TestCase):
    self.assertEqual(result,dict(status='exact-own-cgroup-observed',processCount=1,bounded=False,
       processes=[dict(role='database-server',state='disk-wait',wait='io-wait')]))
    self.assertNotIn('12001',str(result));self.assertNotIn(CID,str(result))
+ def test_exact_own_container_leaf_is_allowed_without_parent_or_global_fallback(self):
+  with tempfile.TemporaryDirectory() as temp:
+   f,proc,group,pidfile=self.cgroup_fixture(temp)
+   parent=group/'machine.slice'/('libpod-'+CID+'.scope');leaf=parent/'container';leaf.mkdir()
+   (parent/'cgroup.procs').rename(leaf/'cgroup.procs')
+   (proc/'12001/cgroup').write_text('0::/machine.slice/libpod-'+CID+'.scope/container\n')
+   with mock.patch.object(b,'PROC',proc),mock.patch.object(b,'CGROUP',group),\
+        mock.patch.object(b.os,'pidfd_open',side_effect=lambda pid:os.open(pidfile,os.O_RDONLY)),\
+        mock.patch.object(b.select,'select',return_value=([],[],[])):
+    self.assertEqual(f.observe_database_processes()['status'],'exact-own-cgroup-observed')
  def test_empty_or_global_cgroup_has_no_process_fallback(self):
   for membership,contents in (('0::/\n',b'12001\n'),(None,b'')):
    with self.subTest(membership=membership,contents=contents),tempfile.TemporaryDirectory() as temp:
@@ -133,7 +143,8 @@ class Models(unittest.TestCase):
     with mock.patch.object(b,'PROC',proc),mock.patch.object(b,'CGROUP',group),\
          mock.patch.object(b.os,'pidfd_open',side_effect=lambda pid:os.open(pidfile,os.O_RDONLY)),\
          mock.patch.object(b.os,'listdir',side_effect=AssertionError('global process enumeration forbidden')):
-     self.assertEqual(f.observe_database_processes(),{'status':'own-cgroup-observation-unavailable'})
+     self.assertEqual(f.observe_database_processes(),{'status':'own-cgroup-observation-unavailable',
+        'phase':'cgroup-membership' if membership else 'cgroup-processes'})
  def test_live_database_console_retains_only_predefined_codes(self):
   observer=b.DatabaseConsoleObservations()
   private=b'private-fixture-password-sql-source-must-not-appear'
