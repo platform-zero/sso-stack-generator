@@ -131,8 +131,27 @@ held/named inode/stat identity. Protected expected archive hashes and actual OCI
 closure authenticate the bytes; mutable ancestors never authenticate Root code,
 operation authority or an actor store. Source archives are never written, adopted
 as a cache, executed, or made trusted by changing original permissions. Final
-package files still require the normal fully protected Root ancestry. Existing
-offline-supply/cache and native custody gates are not relaxed.
+copied package files still require the normal fully protected Root ancestry.
+
+With both `--package-output` and an explicit `--archive-source`, the additional
+`--reference-qualified-archives` option publishes **only** the three small
+protected control files. Its `qualified-artifact-references` proof binds the
+qualification report's exact archive-filename-to-absolute-DATA-path map. The
+original archives are not copied, moved, hardlinked, symlinked or rewritten.
+Every source still passes actual byte/config/ordered DiffID qualification. This
+mode reserves metadata space rather than a duplicate archive's bytes; all host
+reserve floors remain mandatory.
+
+The canonical consumer requires protected Root controls and the exact bundled
+qualifier owner/new binding/producer coverage/zero-credit fields as before. Only
+in this explicit proof mode may payload archives have opaque operator-owned
+ancestry. It opens all ancestors/leaves without following links, requires exact
+hashes/sizes and real OCI closure, pins source directory and file identity, rejects
+PENDING (including dangling markers), and rechecks namespace/file CAS through
+import and each held stdin FD. The source paths confer no executable, store or
+operation authority. Any data-path/content change requires new qualification;
+never patch sealed control files or select an actor store as the data source.
+Existing offline-supply/cache and native custody gates are not relaxed.
 
 These are source/artifact transport evidence with zero integrated-install credit,
 not journal approval, selected-store availability or deployed behavior. Review the

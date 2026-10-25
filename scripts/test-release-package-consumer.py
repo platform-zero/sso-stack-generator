@@ -158,6 +158,57 @@ class Consumer(unittest.TestCase):
         self.save_proof()
         return path, report
 
+    def reference_package(self):
+        path,report=self.qualified_artifact_report()
+        opaque=self.root/'opaque-data';opaque.mkdir(mode=0o700)
+        moved=opaque/self.archive.name;self.archive.rename(moved);self.archive=moved
+        self.owners[opaque]=1000;self.owners[moved]=1000
+        report['archiveReferences']={self.data['images'][0]['archiveFilename']:str(moved)}
+        self.write(path,report);self.proof['inputMode']='qualified-artifact-references'
+        self.proof['inputSha256']=self.digest(path);self.save_proof()
+        return path,report
+
+    def test_protected_reference_controls_accept_hash_bound_opaque_data_not_store_authority(self):
+        self.reference_package();rows=M.validate_standalone(self.bundle,self.inputs)
+        self.assertEqual(rows[0][1],self.archive);self.assertTrue(rows.data_directories)
+        self.assertFalse((self.output/self.archive.name).exists());self.native.assert_not_called()
+        with self.archive.open('rb') as source:rows.check_fd(self.image,self.archive,source)
+    def test_reference_namespace_and_file_cas_remain_live_until_import(self):
+        self.reference_package();rows=M.validate_standalone(self.bundle,self.inputs)
+        (self.archive.parent/'new-unselected').write_bytes(b'namespace drift')
+        with self.assertRaises(ValueError):rows.recheck()
+    def test_reference_pending_even_dangling_source_marker_refuses(self):
+        self.reference_package();(self.archive.parent/'PENDING').symlink_to('missing')
+        with self.assertRaises(ValueError):M.validate_standalone(self.bundle,self.inputs)
+    def test_reference_link_hardlink_or_changed_payload_refuses(self):
+        self.reference_package()
+        alias=self.archive.parent/'alias';os.link(self.archive,alias)
+        with self.assertRaises(ValueError):M.validate_standalone(self.bundle,self.inputs)
+        alias.unlink();self.archive.write_bytes(b'not an OCI archive')
+        with self.assertRaises(ValueError):M.validate_standalone(self.bundle,self.inputs)
+    def test_reference_map_must_be_exact_canonical_unique_data_paths(self):
+        path,report=self.reference_package();original=report['archiveReferences']
+        for refs in ({},{'extra':str(self.archive)},
+                     {self.data['images'][0]['archiveFilename']:'relative.tar'},
+                     {self.data['images'][0]['archiveFilename']:str(self.archive.parent/'..'/'foreign.tar')}):
+            self.write(path,{**report,'archiveReferences':refs});self.proof['inputSha256']=self.digest(path);self.save_proof()
+            with self.subTest(refs=refs),self.assertRaises(ValueError):M.validate_standalone(self.bundle,self.inputs)
+    def test_reference_ancestor_symlink_is_not_followed(self):
+        self.reference_package();parent=self.archive.parent
+        moved=parent.with_name('moved-opaque');parent.rename(moved);parent.symlink_to(moved,target_is_directory=True)
+        with self.assertRaises((ValueError,OSError)):M.validate_standalone(self.bundle,self.inputs)
+    def test_runtime_store_reference_is_not_archive_data_authority(self):
+        path,report=self.reference_package()
+        for root in ('/var/lib/containers/storage','/run/containers/storage'):
+            report['archiveReferences']={self.data['images'][0]['archiveFilename']:root+'/selected.oci.tar'}
+            self.write(path,report);self.proof['inputSha256']=self.digest(path);self.save_proof()
+            with self.assertRaises(ValueError):M.validate_standalone(self.bundle,self.inputs)
+        self.native.assert_not_called()
+    def test_reference_controls_still_need_private_root_custody_and_cannot_mix_copy_mode(self):
+        path,report=self.reference_package();self.owners[path]=1000
+        with self.assertRaises(ValueError):M.validate_standalone(self.bundle,self.inputs)
+        self.owners[path]=0;self.proof['inputMode']='qualified-artifact-rebind';self.save_proof()
+        with self.assertRaises(ValueError):M.validate_standalone(self.bundle,self.inputs)
     def test_qualified_artifact_report_and_trusted_owner_required(self):
         path, report = self.qualified_artifact_report()
         rows = M.validate_standalone(self.bundle, self.inputs)

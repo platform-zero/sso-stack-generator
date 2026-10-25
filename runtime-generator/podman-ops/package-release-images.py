@@ -561,7 +561,8 @@ def package(bundle, store, runroot, output, seconds, *, source_receipt=None,
         source_proof = qualified_artifacts.proof
         source_roots = qualified_artifacts.roots
         input_sha = qualified_artifacts.report_sha256
-        mode = 'qualified-artifact-rebind'
+        mode = ('qualified-artifact-references' if qualified_artifacts.reference_archives
+                else 'qualified-artifact-rebind')
     elif supply_inputs is not None:
         if any(value is not None for value in (store, runroot, source_receipt, source_receipt_sha256)):
             raise ValueError('offline supply cannot combine with a cache authority')
@@ -600,6 +601,15 @@ def package(bundle, store, runroot, output, seconds, *, source_receipt=None,
     rows = []; oci_proofs = {}
     for image in selected:
         guard(); assert_unchanged(proof)
+        if qualified_artifacts is not None and qualified_artifacts.reference_archives:
+            qualified_artifacts.verify(binding, selected)
+            row, source = qualified_artifacts.rows[image]
+            if (source.stat().st_size != row['archiveBytes'] or digest_file(source) != row['archiveSha256']):
+                raise ValueError('Referenced archive hash/size differs')
+            oci_proofs[image] = verify_oci(source, image, guard)
+            rows.append(dict(row, archiveFilename=image[7:] + '.oci.tar'))
+            qualified_artifacts.verify(binding, selected)
+            continue
         partial = output / (image[7:] + '.oci.partial')
         if qualified_artifacts is not None:
             qualified_artifacts.copy(image, partial, guard)

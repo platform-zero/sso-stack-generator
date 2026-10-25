@@ -119,10 +119,11 @@ class ArchiveData:
 
 class QualifiedArtifacts:
     """Internal callback to the existing packager, never a CLI permit/token."""
-    def __init__(self, binding, selected, rows, report, proof, roots, data, deadline, trees):
+    def __init__(self, binding, selected, rows, report, proof, roots, data, deadline, trees, reference_archives=False):
         self.binding, self.selected, self.rows, self.report = binding, selected, rows, report
         self.proof, self.roots, self.data, self.deadline = proof, roots, data, deadline
         self.trees = trees
+        self.reference_archives = reference_archives
         self.report_sha256 = hashlib.sha256((json.dumps(report, indent=2) + '\n').encode()).hexdigest()
 
     def guard(self):
@@ -278,8 +279,9 @@ def recipe_paths(bundle, service):
 
 
 def rebind(bundle, source_bundle, public_build, producer_record, producer_sha,
-           image_inputs, inputs_sha, output, *, archive_source=None, package_output=False):
+           image_inputs, inputs_sha, output, *, archive_source=None, package_output=False, reference_archives=False):
     require(os.geteuid() == 0)
+    require(not reference_archives or (package_output and archive_source is not None))
     with contextlib.ExitStack() as stack:
         data = None
         if archive_source is not None:
@@ -287,11 +289,12 @@ def rebind(bundle, source_bundle, public_build, producer_record, producer_sha,
             data = ArchiveData(archive_source, Path(image_inputs).name, inputs_sha)
             stack.callback(data.close)
         return _rebind(bundle, source_bundle, public_build, producer_record, producer_sha,
-                       image_inputs, inputs_sha, output, data=data, package_output=package_output)
+                       image_inputs, inputs_sha, output, data=data, package_output=package_output,
+                       reference_archives=reference_archives)
 
 
 def _rebind(bundle, source_bundle, public_build, producer_record, producer_sha,
-            image_inputs, inputs_sha, output, *, data, package_output):
+            image_inputs, inputs_sha, output, *, data, package_output, reference_archives=False):
     require(os.geteuid() == 0)
     bundle, source_bundle, public_build, output = map(Path, (bundle, source_bundle, public_build, output))
     image_inputs, producer_record = Path(image_inputs), Path(producer_record)
@@ -373,7 +376,9 @@ def _rebind(bundle, source_bundle, public_build, producer_record, producer_sha,
     package.owned_directory(output.parent); package.check_reserves(output.parent)
     require(not os.path.lexists(output))
     filesystem = os.statvfs(output.parent)
-    require(filesystem.f_bavail * filesystem.f_frsize - sum(row['archiveBytes'] for row, _ in rows.values()) >= 50 * package.GIB)
+    metadata_reserve = 16 * 1024**2
+    require(filesystem.f_bavail * filesystem.f_frsize - metadata_reserve - (0 if reference_archives else
+            sum(row['archiveBytes'] for row, _ in rows.values())) >= 50 * package.GIB)
     package.assert_unchanged(proof)
     require(tree(public_build, {}) == old and tree(bundle / 'build', {}) == new)
     report = {'schemaVersion': 1, 'scope': 'immutable artifact/source rebind only; no store availability or operation authority',
@@ -383,11 +388,25 @@ def _rebind(bundle, source_bundle, public_build, producer_record, producer_sha,
               'changedBuildPaths': sorted(name for name in set(old) | set(new) if old.get(name) != new.get(name)),
               'producerCopyClosures': closures, 'ociProofs': oci, 'binding': binding,
               'activationAuthorized': False, 'acceptedIntegratedInstalls': 0}
+    if reference_archives:
+        require(package_output and data is not None)
+        report['archiveReferences'] = {image[7:] + '.oci.tar': str(data.root / row['archiveFilename'])
+                                       for image, (row, _) in rows.items()}
+        metadata = package.read_document(bundle / 'podman-domains.json')
+        forbidden = [Path('/var/lib/containers/storage'), Path('/run/containers/storage')]
+        scope = metadata.get('storageScope', {}).get('root')
+        if isinstance(scope, str) and Path(scope).is_absolute(): forbidden.append(Path(scope))
+        for domain in metadata.get('domains', []):
+            for key in ('graphRoot', 'runRoot', 'volumeRoot', 'stateRoot'):
+                root = domain.get(key)
+                if isinstance(root, str) and Path(root).is_absolute(): forbidden.append(Path(root))
+        require(all(not any(Path(value) == root or root in Path(value).parents for root in forbidden)
+                    for value in report['archiveReferences'].values()))
     if package_output:
         source_roots = set(roots[1:])
         source_roots = [path for path in source_roots if not any(other in path.parents for other in source_roots)]
         artifacts = QualifiedArtifacts(binding, selected, rows, report, proof, source_roots, data, deadline,
-                                       [(public_build, old), (bundle / 'build', new)])
+                                       [(public_build, old), (bundle / 'build', new)], reference_archives)
         with contextlib.redirect_stdout(sys.stderr):
             package.package(bundle, None, None, output, 600, qualified_artifacts=artifacts)
         return {'imageInputs': str(output / 'image-inputs.json'),

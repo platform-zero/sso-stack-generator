@@ -121,6 +121,30 @@ class ArtifactRebind(BASE.FreezeWorkflow):
         self.assertEqual(report['acceptedIntegratedInstalls'], 0)
         self.export.assert_not_called()
 
+    def test_reference_package_publishes_only_protected_controls_and_real_oci_proof(self):
+        with patch.object(M.QualifiedArtifacts,'copy',side_effect=AssertionError('reference mode copied archive')):
+            result=self.rebind(package_output=True,archive_source=self.supply,reference_archives=True)
+        self.assertEqual({p.name for p in self.rebound.iterdir()},
+            {'image-inputs.json','source-qualification.json','release-image-proof.json'})
+        proof=json.loads((self.rebound/'release-image-proof.json').read_bytes())
+        report=json.loads((self.rebound/'source-qualification.json').read_bytes())
+        self.assertEqual(proof['inputMode'],'qualified-artifact-references')
+        self.assertEqual(report['archiveReferences'],{self.image[7:]+'.oci.tar':str(self.supply/'image.tar')})
+        self.assertEqual(proof['ociProofs'][self.image],BASE.M.verify_oci(self.supply/'image.tar',self.image))
+        self.assertFalse(proof['activationAuthorized']);self.assertEqual(result['acceptedIntegratedInstalls'],0)
+    def test_reference_mode_requires_opaque_source_and_direct_package(self):
+        for changes in ({'reference_archives':True},{'reference_archives':True,'package_output':True},
+                        {'reference_archives':True,'archive_source':self.supply}):
+            with self.subTest(changes=changes),self.assertRaises(ValueError):self.rebind(**changes)
+        self.assertFalse(self.rebound.exists())
+    def test_reference_mode_keeps_metadata_reserve_without_copying_archive_bytes(self):
+        with patch.object(BASE.M.os,'statvfs',return_value=SimpleNamespace(f_bavail=50*BASE.M.GIB+16*1024**2,f_frsize=1)):
+            self.rebind(package_output=True,archive_source=self.supply,reference_archives=True)
+        self.assertFalse(any(p.name.endswith('.tar') for p in self.rebound.iterdir()))
+    def test_reference_mode_refuses_insufficient_actual_metadata_headroom(self):
+        with patch.object(BASE.M.os,'statvfs',return_value=SimpleNamespace(f_bavail=50*BASE.M.GIB,f_frsize=1)),self.assertRaises(ValueError):
+            self.rebind(package_output=True,archive_source=self.supply,reference_archives=True)
+        self.assertFalse(self.rebound.exists())
     def test_direct_packaging_uses_existing_packager_without_intermediate_copy(self):
         result = self.rebind(package_output=True, archive_source=self.supply)
         self.assertTrue(Path(result['imageInputs']).is_file())

@@ -160,11 +160,24 @@ def capture(path, private=False):
     return identity(before), digest.hexdigest()
 
 
+def data_directory(path):
+    """Opaque data namespace pin, never Root control/store authority."""
+    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in path.parts[1:]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd); fd = child
+        return identity(os.fstat(fd))
+    finally:
+        os.close(fd)
+
+
 class ValidatedRows(list):
     """Public list result retaining source/proof/archive CAS authority."""
-    def __init__(self, rows, bundle, inputs, captures):
+    def __init__(self, rows, bundle, inputs, captures, data_directories=None):
         super().__init__(rows)
         self.bundle, self.inputs, self.captures = bundle, inputs, captures
+        self.data_directories = data_directories or {}
         self.expected = [(image, archive, tuple(users)) for image, archive, users in rows]
 
     def recheck(self):
@@ -172,6 +185,9 @@ class ValidatedRows(list):
             raise ValueError('Validated image scope changed')
         if os.path.lexists(self.inputs.parent / 'PENDING'):
             raise ValueError('Release image package is pending')
+        for path, before in self.data_directories.items():
+            if os.path.lexists(path / 'PENDING') or data_directory(path) != before:
+                raise ValueError('Opaque archive data namespace changed or pending')
         for path, (before, private) in self.captures.items():
             if capture(path, private) != before:
                 raise ValueError('Release image/source CAS changed')
@@ -282,13 +298,14 @@ def validate_standalone(bundle, inputs):
     if (not selected or set(proof) != keys or type(proof.get('schemaVersion')) is not int or proof['schemaVersion'] != 1 or
             proof['purpose'] != 'source-bound-release-images' or proof['binding'] != binding or
             proof['imageAuthorities'] != selected or proof['imageInputsSha256'] != captures[inputs][0][1] or
-            proof['packagerSha256'] != packager_sha or proof['inputMode'] not in ('offline-supply', 'dedicated-cache-export', 'qualified-artifact-rebind') or
+            proof['packagerSha256'] != packager_sha or proof['inputMode'] not in ('offline-supply', 'dedicated-cache-export', 'qualified-artifact-rebind', 'qualified-artifact-references') or
             not isinstance(proof['inputSha256'], str) or not re.fullmatch(r'[0-9a-f]{64}', proof['inputSha256']) or
             proof['activationAuthorized'] is not False or type(proof['acceptedIntegratedInstalls']) is not int or
             proof['acceptedIntegratedInstalls'] != 0 or not isinstance(proof['ociProofs'], dict) or
             set(proof['ociProofs']) != set(selected)):
         raise ValueError('Protected release proof does not bind exact selected source/images')
-    if proof['inputMode'] == 'qualified-artifact-rebind':
+    references = None
+    if proof['inputMode'] in ('qualified-artifact-rebind', 'qualified-artifact-references'):
         qualification_path = inputs.parent / 'source-qualification.json'
         qualification = document(qualification_path, True)
         owner = bundle / 'ops/qualified-image-supply.py'
@@ -305,10 +322,17 @@ def validate_standalone(bundle, inputs):
                 or type(qualification.get('acceptedIntegratedInstalls')) is not int
                 or qualification['acceptedIntegratedInstalls'] != 0):
             raise ValueError('Qualified artifact report/owner/source binding differs')
+        references = qualification.get('archiveReferences')
+        if proof['inputMode'] == 'qualified-artifact-references':
+            if not isinstance(references, dict) or len(references) != len(selected):
+                raise ValueError('Exact qualified opaque archive references required')
+        elif references is not None:
+            raise ValueError('Copied package cannot combine external archive references')
     if (set(data) != {'schemaVersion', 'images'} or type(data.get('schemaVersion')) is not int or
             data['schemaVersion'] != 1 or not isinstance(data.get('images'), list)):
         raise ValueError('Invalid standalone image input manifest')
     rows, seen, filenames = [], set(), set()
+    data_directories = {}; reference_paths = set()
     verifier = package_verifier()
     for row in data['images']:
         if not isinstance(row, dict) or set(row) != {'image', 'archiveFilename', 'archiveSha256', 'archiveBytes'}:
@@ -319,10 +343,33 @@ def validate_standalone(bundle, inputs):
         if (not isinstance(filename, str) or Path(filename).name != filename or filename in ('', '.', '..') or
                 filename in filenames or filename in (inputs.name, 'release-image-proof.json', 'PENDING')):
             raise ValueError('Unique sibling archive filename required')
-        archive = inputs.parent / filename
+        if references is None:
+            archive = inputs.parent / filename
+        else:
+            value = references.get(filename)
+            if (not isinstance(value, str) or not Path(value).is_absolute() or '..' in Path(value).parts
+                    or str(Path(value)) != value or value in reference_paths
+                    or any(word in value.lower() for word in ('lane', 'stack_lab', 'software_lab', 'obelisks'))):
+                raise ValueError('Canonical unique opaque archive DATA reference required')
+            archive = Path(value); reference_paths.add(value)
+            runtime_roots = [Path('/var/lib/containers/storage'), Path('/run/containers/storage')]
+            scope = domains.get('storageScope', {}).get('root')
+            if isinstance(scope, str) and Path(scope).is_absolute(): runtime_roots.append(Path(scope))
+            for domain in domains['domains']:
+                for key in ('graphRoot', 'runRoot', 'volumeRoot', 'stateRoot'):
+                    root = domain.get(key)
+                    if isinstance(root, str) and Path(root).is_absolute(): runtime_roots.append(Path(root))
+            if any(archive == root or root in archive.parents for root in runtime_roots):
+                raise ValueError('Runtime/store paths cannot become opaque archive supply')
+            pin = data_directory(archive.parent)
+            if os.path.lexists(archive.parent / 'PENDING'):
+                raise ValueError('Referenced archive data is pending')
+            if archive.parent in data_directories and data_directories[archive.parent] != pin:
+                raise ValueError('Referenced archive namespace changed')
+            data_directories[archive.parent] = pin
         if archive.lstat().st_size > verifier.MAX_ARCHIVE:
             raise ValueError('Oversized release archive')
-        archive_sha = remember(archive, True)
+        archive_sha = remember(archive, references is None)
         if (archive_sha != row['archiveSha256'] or type(row['archiveBytes']) is not int or
                 row['archiveBytes'] != captures[archive][0][0][2]):
             raise ValueError('Release archive hash/size differs')
@@ -331,9 +378,9 @@ def validate_standalone(bundle, inputs):
             raise ValueError('Actual OCI config/ordered DiffIDs differ from protected proof')
         rows.append((image, archive, selected[image]))
         seen.add(image); filenames.add(filename)
-    if seen != set(selected):
+    if seen != set(selected) or (references is not None and set(references) != filenames):
         raise ValueError('Release inputs do not cover exact selected image scope')
-    result = ValidatedRows(rows, bundle, inputs, captures)
+    result = ValidatedRows(rows, bundle, inputs, captures, data_directories)
     result.recheck()
     return result
 

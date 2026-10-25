@@ -741,6 +741,8 @@ def main():
         parser.add_argument('--' + name)
     parser.add_argument('--archive-source', help='opaque archive DATA only; code/controls must remain Root-protected')
     parser.add_argument('--package-output', action='store_true', help='use existing packager in one copy, not intermediate supply')
+    parser.add_argument('--reference-qualified-archives', action='store_true',
+                        help='protected controls reference verified opaque archive data without copying; requires qualified package output')
     args = parser.parse_args()
     values = [getattr(args, name) for name in ('source_bundle', 'public_build', 'producer_record',
               'producer_sha256', 'image_inputs', 'image_inputs_sha256', 'output')]
@@ -749,10 +751,12 @@ def main():
             parser.error('artifact rebind requires every explicit source/hash/output argument')
         owner = load('_qualified_image_supply', 'qualified-image-supply.py')
         result = owner.rebind(canonical(args.bundle), *values,
-                              archive_source=args.archive_source, package_output=args.package_output)
+                              archive_source=args.archive_source, package_output=args.package_output,
+                              reference_archives=args.reference_qualified_archives)
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
-        if any(value is not None for value in values) or args.archive_source is not None or args.package_output:
+        if (any(value is not None for value in values) or args.archive_source is not None
+                or args.package_output or args.reference_qualified_archives):
             parser.error('selection description does not accept artifact arguments')
         binding, selected, _ = package.bundle_selection(canonical(args.bundle))
         print(json.dumps({'binding': binding, 'imageAuthorities': selected,
