@@ -525,7 +525,7 @@ def complete_clean_reset(root, expected):
     lock_owner.lock_held(root)
     path = root / '.install-intent.json'
     old = read(path)
-    if not old or old['phase'] not in ('active', 'failed', 'retired-failed') or digest(path) != expected:
+    if not old or old['phase'] not in ('active', 'failed', 'retired-failed', 'retired-clean') or digest(path) != expected:
         raise ValueError('Complete-clean requires exact eligible terminal intent')
     release = Path(old['release'])
     receipt_path = release / 'installation-receipt.json'
@@ -535,6 +535,10 @@ def complete_clean_reset(root, expected):
                  Path(__file__).with_name('host-clean-reset.py'))
     backend = importlib.util.module_from_spec(reset_spec); sys.modules[reset_spec.name] = backend
     reset_spec.loader.exec_module(backend)
+    if old['phase'] == 'retired-clean':
+        # This is historical eligibility only. The normal fresh custody review,
+        # complete inventory/CAS and same-process stopped lease remain mandatory.
+        backend.prior_completed_reset(root, old)
     reviewed = backend.review_runtime_custody(root, expected)
     custody = reviewed['cleanResetCustody']
     if old.get('cleanResetCustody') != custody:

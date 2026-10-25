@@ -57,6 +57,19 @@ production upgrade. Ordinary selected-failure quarantine remains separate.
 The storage marker is not a backup, a production-data recovery approval or an
 application/recovery acceptance result. Those lifecycle gates remain separate.
 
+The existing journal `--complete-clean-reset --expected CURRENT_INTENT_SHA`
+operation (under the canonical inherited FD9 lock) can freshly review an already
+`retired-clean` selected synthetic installation after an unselected preparation
+has left new synthetic data. Eligibility additionally authenticates the exact
+prior private completion result and intent/plan bytes, their source/release/scope
+binding, hashes and zero-acceptance/no-restart flags. That history grants **no**
+new stopped lease or permission to replay its inventory. The backend still obtains
+new actual runtime custody, offline/trigger/job/account/mount checks, a full
+current inode/hash/CAS inventory and a new same-process stopped lease before any
+deletion. Missing/tampered history, changed source or new unsafe state refuses.
+Prior durable attempt evidence remains retained; neither a previous clean label
+nor a fixture counts as a clean host run.
+
 A standalone site:
 
 - uses the ordinary `webservices` unit namespace, not the isolated venue profile;

@@ -26,6 +26,7 @@ class CleanJournal(unittest.TestCase):
         self.plan={'kind':'model-owned-synthetic-plan'};self.plan_sha=sha(canonical(self.plan));self.lease=object()
         self.lock=ModuleType('lock_owner');self.lock.lock_held=lambda root:self.events.append('lock')
         self.backend=ModuleType('reset_owner')
+        self.backend.prior_completed_reset=self.prior_completed_reset
         self.backend.review_runtime_custody=lambda root,expected:{'cleanResetCustody':{'externalTrees':{}},'intentSha256':expected}
         self.backend.review=self.review;self.backend.issue_stopped_lease=self.issue
         self.backend.execute=self.execute;self.backend.read_file=self.evidence
@@ -42,6 +43,9 @@ class CleanJournal(unittest.TestCase):
         module=self.lock if path.name=='native-runtime-projection-owner.py' else self.backend
         return SimpleNamespace(name=name,module=module,loader=SimpleNamespace(exec_module=lambda module:None))
     def write(self,path,value): self.events.append('write');self.records[path]=value
+    def prior_completed_reset(self,root,receipt):
+        self.events.append('prior-history-only')
+        if receipt.get('completeCleanReset') != {'model':True}: raise ValueError('model prior evidence refused')
     def review(self,root,expected):
         self.events.append('review');self.assertEqual(j.digest(self.intent),expected)
         self.assertEqual(self.records[self.intent],self.records[self.receipt])
@@ -96,6 +100,19 @@ class CleanJournal(unittest.TestCase):
         self.records[self.intent]=self.records[self.receipt]=old
         with self.assertRaises(ValueError): j.complete_clean_reset(self.root,j.digest(self.intent))
         self.assertNotIn('execute',self.events)
+    def test_authenticated_retired_clean_still_gets_new_review_lease_and_execution(self):
+        old=dict(self.records[self.intent],phase='retired-clean',completeCleanReset={'model':True})
+        self.records[self.intent]=self.records[self.receipt]=old
+        proof=j.complete_clean_reset(self.root,j.digest(self.intent))
+        self.assertIn('prior-history-only',self.events)
+        self.assertEqual(self.events.count('review'),1);self.assertEqual(self.events.count('lease'),1)
+        self.assertEqual(self.events.count('execute'),1);self.assertEqual(self.events.count('evidence'),2)
+        self.assertFalse(proof['applicationAcceptance']);self.assertFalse(proof['dataCompatibilityProven'])
+    def test_prior_clean_does_not_bypass_new_stopped_or_data_failure(self):
+        old=dict(self.records[self.intent],phase='retired-clean',completeCleanReset={'model':True})
+        self.records[self.intent]=self.records[self.receipt]=old;self.fail_execute=True
+        with self.assertRaises(ValueError):j.complete_clean_reset(self.root,j.digest(self.intent))
+        self.assertIn('lease',self.events);self.assertIn('execute',self.events);self.assertNotIn('evidence',self.events)
     def test_missing_lock_refuses_before_record_read_or_backend(self):
         self.lock.lock_held=lambda root:(_ for _ in ()).throw(ValueError('missing inherited lock'))
         with self.assertRaises(ValueError): j.complete_clean_reset(self.root,self.expected)

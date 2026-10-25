@@ -617,13 +617,54 @@ def source_module(release, name):
     return module, pin
 
 
+def prior_completed_reset(root, receipt):
+    """Authenticate history only; never reuse its plan, inventory or stopped lease."""
+    proof = receipt.get('completeCleanReset')
+    flags = ('applicationAcceptance', 'rootfulStoreColdAcceptance', 'automaticRestart', 'dataCompatibilityProven')
+    require(receipt.get('phase') == 'retired-clean' and isinstance(proof, dict)
+            and set(proof) == {'intentSha256', 'planSha256', 'resultPath', 'resultSha256', *flags}
+            and all(proof.get(flag) is False for flag in flags)
+            and all(isinstance(proof.get(key), str) and HEX.fullmatch(proof[key])
+                    for key in ('intentSha256', 'planSha256', 'resultSha256')),
+            'Retired-clean requires exact prior canonical completion evidence')
+    result_path = absolute(proof['resultPath'])
+    match = re.fullmatch(re.escape(proof['planSha256']) + r'-[a-f0-9]{32}-result\.json', result_path.name)
+    require(result_path.parent == root / '.host-clean-reset' and match is not None,
+            'Prior completion evidence escaped exact source-owned namespace')
+    body, result_pin = read_file(result_path, private=True, gid=0)
+    require(sha(body) == proof['resultSha256'], 'Prior completion result hash differs')
+    result = strict(body)
+    prefix = '.clean-reset-' + result_path.name.removesuffix('-result.json') + '-'
+    require(type(result.get('schemaVersion')) is int and result['schemaVersion'] == 1
+            and result.get('kind') == 'complete-owned-synthetic-clean-reset'
+            and result.get('phase') == 'complete-owned-synthetic-clean'
+            and result.get('completeCleanReset') is True
+            and result.get('requiredJournalTransition') == 'journal-owner-exact-CAS-retired-clean-no-restart'
+            and result.get('intentSha256') == proof['intentSha256']
+            and result.get('planSha256') == proof['planSha256'] and result.get('claimPrefix') == prefix,
+            'Prior canonical completion result differs')
+    intent_path = result_path.with_name(result_path.name.removesuffix('-result.json') + '-intent.json')
+    intent_body, intent_pin = read_file(intent_path, private=True, gid=0)
+    operation = strict(intent_body); plan = operation.get('plan')
+    require(isinstance(plan, dict) and sha(canonical(plan)) == proof['planSha256']
+            and operation.get('intentSha256') == proof['intentSha256']
+            and operation.get('planSha256') == proof['planSha256'] and operation.get('claimPrefix') == prefix
+            and plan.get('kind') == 'complete-owned-synthetic-clean-reset'
+            and plan.get('root') == str(root) and plan.get('scope') == str(SCOPE)
+            and plan.get('authority', {}).get('release') == receipt.get('release')
+            and all(plan.get('authority', {}).get('sourceInputs', {}).get(name, {}).get('sha256') == receipt.get('inputs', {}).get(name)
+                    for name in CORE), 'Prior canonical source/scope/intent evidence differs')
+    return {'result': {'path': str(result_path), 'sha256': sha(body), 'stat': result_pin},
+            'intent': {'path': str(intent_path), 'sha256': sha(intent_body), 'stat': intent_pin}}
+
+
 def binding(root, expected):
     require(isinstance(expected, str) and HEX.fullmatch(expected), 'Exact intent CAS required')
     raw, journal_pin = read_file(root / '.install-intent.json', private=True, gid=0)
     require(sha(raw) == expected, 'Intent CAS changed')
     receipt = strict(raw); release = absolute(receipt.get('release'))
     require(type(receipt.get('schemaVersion')) is int and receipt['schemaVersion'] == 1
-            and receipt.get('phase') in ('failed', 'retired-failed', 'active')
+            and receipt.get('phase') in ('failed', 'retired-failed', 'active', 'retired-clean')
             and release.parent == root / 'releases', 'Unrecognized terminal journal authority')
     with directory(release) as fd: root_directory(fd, True)
     receipt_body, receipt_pin = read_file(release / 'installation-receipt.json', private=True, gid=0)
@@ -744,6 +785,8 @@ def binding(root, expected):
                     'markerSha256': sha(marker_raw), 'sourceInputs': source_pins, 'helpers': helpers,
                     'allocation': allocation, 'selection': selected, 'absentPrivateRoots': sorted(absent_roots),
                     'custody': {str(path): pin for path, pin in sorted(policies.items())}}}
+    if receipt['phase'] == 'retired-clean':
+        selection['pin']['priorCompletedReset'] = prior_completed_reset(root, receipt)
     selection['pin']['originalFixtureProfiles'] = original_fixture_profiles(selection)
     return selection
 
