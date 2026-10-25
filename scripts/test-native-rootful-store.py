@@ -145,6 +145,26 @@ class Models(unittest.TestCase):
                 read.assert_not_called()
             finally: os.close(fd)
 
+    def test_only_exact_latent_native_scope_marker_acl_is_supported(self):
+        import stat
+        import struct
+        entries = [(1, 6, 0xffffffff), (2, 7, 1000), (4, 7, 0xffffffff),
+                   (16, 0, 0xffffffff), (32, 0, 0xffffffff)]
+        body = struct.pack('<I', 2) + b''.join(struct.pack('<HHI', *r) for r in entries)
+        info = types.SimpleNamespace(st_uid=0, st_gid=1000, st_mode=stat.S_IFREG | 0o600)
+        with mock.patch.object(os, 'listxattr', return_value=['system.posix_acl_access']), \
+             mock.patch.object(os, 'getxattr', return_value=body):
+            self.assertTrue(s.control_xattrs(42, info, scope_marker=True))
+            self.assertFalse(s.control_xattrs(42, info))
+            for field, value in [('st_uid', 1000), ('st_gid', 780), ('st_mode', stat.S_IFREG | 0o640)]:
+                changed = types.SimpleNamespace(**{**vars(info), field: value})
+                self.assertFalse(s.control_xattrs(42, changed, scope_marker=True))
+            with mock.patch.object(os, 'getxattr', return_value=body[:-1] + b'X'):
+                self.assertFalse(s.control_xattrs(42, info, scope_marker=True))
+            with mock.patch.object(os, 'listxattr', return_value=['system.posix_acl_access', 'user.foreign']):
+                self.assertFalse(s.control_xattrs(42, info, scope_marker=True))
+        with self.assertRaises(ValueError): s.read_at(42, 'custody.json', scope_marker=True)
+
     def test_prepare_parent_marker_mismatch_refuses_before_any_new_inode(self):
         o = owner(); storage = mock.Mock()
         storage.authority.return_value = (Path(o.value['scopeRoot']), 1000, {'model': 'different-marker'})

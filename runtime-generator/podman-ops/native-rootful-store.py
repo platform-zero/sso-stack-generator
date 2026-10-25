@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import struct
 import subprocess
 import sys
 
@@ -133,13 +134,31 @@ def directory(value, *, private=False):
         raise
 
 
-def read_at(fd, name, limit=1024 * 1024):
-    require(name and '/' not in name and name not in ('.', '..'), 'Native engine control name differs')
+def control_xattrs(fd, info, *, scope_marker=False):
+    names = set(os.listxattr(fd))
+    if not names:
+        return True
+    if not scope_marker:
+        return False
+    # Same finite native marker profile admitted by native-metadata-owner:
+    # inherited operator ACL is latent (mask zero), never effective access.
+    entries = [(1, 6, 0xffffffff), (2, 7, 1000), (4, 7, 0xffffffff),
+               (16, 0, 0xffffffff), (32, 0, 0xffffffff)]
+    expected = struct.pack('<I', 2) + b''.join(struct.pack('<HHI', *row) for row in entries)
+    return (info.st_uid == 0 and info.st_gid in (0, 1000)
+            and stat.S_IMODE(info.st_mode) == 0o600
+            and names == {'system.posix_acl_access'}
+            and os.getxattr(fd, 'system.posix_acl_access') == expected)
+
+
+def read_at(fd, name, limit=1024 * 1024, *, scope_marker=False):
+    require(name and '/' not in name and name not in ('.', '..')
+            and (not scope_marker or name == '.stack-installation.json'), 'Native engine control name differs')
     child = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
     try:
         before = os.fstat(child)
         require(stat.S_ISREG(before.st_mode) and before.st_uid == 0 and before.st_nlink == 1
-                and not before.st_mode & 0o077 and not os.listxattr(child)
+                and not before.st_mode & 0o077 and control_xattrs(child, before, scope_marker=scope_marker)
                 and 0 <= before.st_size <= limit, 'Native engine private control differs')
         with os.fdopen(os.dup(child), 'rb') as stream:
             body = stream.read(limit + 1)
@@ -259,7 +278,7 @@ class Store:
         fds = []
         try:
             scope = directory(self.value['scopeRoot']); fds.append(scope)
-            require(digest(read_at(scope, '.stack-installation.json')) == self.value['scopeMarkerSha256'],
+            require(digest(read_at(scope, '.stack-installation.json', scope_marker=True)) == self.value['scopeMarkerSha256'],
                     'Native engine parent scope marker changed')
             state = directory(self.value['stateRoot'], private=True); fds.append(state)
             receipt = json.loads(read_at(state, 'custody.json'))
