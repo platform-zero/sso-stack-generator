@@ -21,6 +21,9 @@ import tempfile
 import time
 import threading
 
+PROC = Path('/proc')
+CGROUP = Path('/sys/fs/cgroup')
+
 
 def load_protocol():
     spec = importlib.util.spec_from_file_location('journal_seafile_protocol',
@@ -252,6 +255,7 @@ class Fresh:
             databaseProbe=getattr(self, 'database_observation', 'not-observed'),
             databaseInitializationProbe=getattr(self, 'database_initialization_observation', 'not-observed'),
             databaseConsole=(self.database_console.snapshot() if hasattr(self, 'database_console') else []),
+            databaseProcesses=getattr(self, 'database_process_observation', {'status': 'not-observed'}),
             applicationAcceptance=False))
         temporary = directory / ('.temporary-' + secrets.token_hex(16))
         self.file(temporary, body)
@@ -420,6 +424,7 @@ class Fresh:
     def start_database(self, cid):
         self.require(cid in self.cids, 'Foreign database start observation refused')
         self.reserve()
+        self.database_cid = cid
         self.database_console = DatabaseConsoleObservations()
         clean = dict(PATH='/usr/sbin:/usr/bin:/sbin:/bin', HOME='/root',
                      REGISTRY_AUTH_FILE=str(self.capsule / 'empty-auth.json'))
@@ -438,6 +443,72 @@ class Fresh:
             self.require(self.database_start.poll() is None, 'Native database attached start refused')
             time.sleep(0.05)
         raise self.p.Refused('Native database attached start deadline exceeded')
+
+    def observe_database_processes(self):
+        """Only an exact nonempty own CID cgroup; never enumerate/fall back globally."""
+        opened = []
+        def directory(path):
+            fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            opened.append(fd)
+            for part in path.parts[1:]:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                opened.append(child); fd = child
+            return fd
+        def read(fd, name, limit=8192):
+            child = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+            try:
+                body = os.read(child, limit + 1)
+                self.require(len(body) <= limit, 'Own cgroup observation bound refused')
+                return body
+            finally:
+                os.close(child)
+        try:
+            cid = getattr(self, 'database_cid', None)
+            self.require(cid in self.cids, 'Own database cgroup CID absent')
+            state = self.state(cid, cleanup=True); pid = state.get('Pid')
+            self.require(state.get('Running') is True and type(pid) is int and pid > 1,
+                         'Own database cgroup process absent')
+            original = directory(PROC / str(pid))
+            process = os.pidfd_open(pid); opened.append(process)
+            membership = read(original, 'cgroup').decode('ascii')
+            lines = membership.splitlines()
+            self.require(len(lines) == 1 and lines[0].startswith('0::/machine.slice/'),
+                         'Exact own database cgroup hierarchy absent')
+            relative = Path(lines[0][3:])
+            self.require(relative.parts == ('/', 'machine.slice', 'libpod-' + cid + '.scope'),
+                         'Exact own database cgroup identity absent')
+            group = directory(CGROUP / relative.relative_to('/'))
+            pids = sorted({int(value) for value in read(group, 'cgroup.procs').split()})
+            self.require(pid in pids and 0 < len(pids) <= 256 and all(value > 1 for value in pids),
+                         'Nonempty own database cgroup membership absent')
+            roles = {b'mariadbd': 'database-server', b'bash': 'shell', b'sh': 'shell',
+                     b'cat': 'pipe-reader', b'sleep': 'sleeper', b'chown': 'ownership-worker', b'find': 'file-walker'}
+            states = {b'D': 'disk-wait', b'R': 'running', b'S': 'sleeping', b'Z': 'zombie', b'T': 'stopped'}
+            waits = {b'io_schedule': 'io-wait', b'futex_wait_queue': 'futex-wait', b'do_wait': 'child-wait',
+                     b'pipe_read': 'pipe-read', b'hrtimer_nanosleep': 'timer-wait', b'ep_poll': 'event-wait'}
+            rows = []
+            for selected in pids[:16]:
+                fd = directory(PROC / str(selected))
+                self.require(read(fd, 'cgroup').decode('ascii') == membership, 'Own database process moved cgroup')
+                raw = read(fd, 'stat'); first, _, rest = raw.rpartition(b')')
+                name = first.partition(b'(')[2]; fields = rest.split()
+                self.require(len(fields) >= 20, 'Own database process stat absent')
+                role = 'database-initializer' if name.startswith(b'mariadb-install') else roles.get(name, 'other')
+                rows.append(dict(role=role, state=states.get(fields[0], 'other'),
+                                 wait=waits.get(read(fd, 'wchan').strip(), 'other')))
+                after = read(fd, 'stat').rpartition(b')')[2].split()
+                self.require(len(after) >= 20 and after[19] == fields[19]
+                             and read(fd, 'cgroup').decode('ascii') == membership,
+                             'Own database process identity changed')
+            self.require(read(original, 'cgroup').decode('ascii') == membership
+                         and self.state(cid, cleanup=True).get('Pid') == pid
+                         and not select.select([process], [], [], 0)[0], 'Own database cgroup anchor changed')
+            return dict(status='exact-own-cgroup-observed', processCount=len(pids), bounded=len(pids) > 16, processes=rows)
+        except BaseException:
+            return {'status': 'own-cgroup-observation-unavailable'}
+        finally:
+            for fd in reversed(opened):
+                os.close(fd)
 
     def finish_database_observer(self):
         process = getattr(self, 'database_start', None)
@@ -634,6 +705,7 @@ class Fresh:
             readback = self.p.native_proof(output, self.p.strict(normal_raw))
         except BaseException as error:
             try:
+                self.database_process_observation = self.observe_database_processes()
                 self.temporary_evidence('preparation-failed')
             except BaseException:
                 pass  # Diagnostics never replace the original guarded failure.

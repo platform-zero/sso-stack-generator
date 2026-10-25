@@ -188,7 +188,12 @@ MariaDB console in memory into a closed set of startup/permission/resource codes
 No raw console file, inherited output, line text, SQL, service source or secret is
 retained. The reader has bounded chunks/tail and an 8 MiB classification ceiling;
 helper signals do not proxy to the database. A helper that cannot finish cleanly
-cannot produce a successful temporary-stop proof. No exception text,
+cannot produce a successful temporary-stop proof. Failure observations may also
+classify a bounded set of process roles, scheduler states and kernel wait classes
+from the exact nonempty own-CID cgroup. A held PID descriptor, unchanged main PID,
+process start identity and cgroup membership are rechecked. No PID, arbitrary
+process name, argv/environment, kernel symbol or raw `/proc` content is emitted.
+Empty/foreign/global/unavailable cgroups have no global process fallback. No exception text,
 environment, service source, child log, or secret is a diagnostic field. The database's
 isolated network gets a deterministic source-derived hostname with a local readonly
 hosts binding, so bootstrap never needs external DNS for its own hostname. Namespace

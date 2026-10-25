@@ -104,6 +104,36 @@ class Models(unittest.TestCase):
    self.assertEqual(b.Fresh.database_probe_observation(types.SimpleNamespace(returncode=code,stdout=sentinel,stderr=sentinel)),label)
   self.assertEqual(b.Fresh.database_probe_observation(types.SimpleNamespace(returncode=0,stdout=b'1\n')),'service-database-ready')
   self.assertEqual(b.Fresh.database_probe_observation(types.SimpleNamespace(returncode=1,stdout=b'',stderr=b'private ERROR 1045 '+sentinel)),'other-database-probe-refusal')
+ def cgroup_fixture(self,temp,membership=None,contents=b'12001\n'):
+  root=Path(temp);f=self.fixture(temp);f.cids=[CID];f.database_cid=CID
+  f.state=mock.Mock(return_value=dict(Running=True,Pid=12001))
+  proc=root/'model-proc';group=root/'model-cgroups';(proc/'12001').mkdir(parents=True)
+  relative='machine.slice/libpod-'+CID+'.scope';leaf=group/relative;leaf.mkdir(parents=True)
+  (leaf/'cgroup.procs').write_bytes(contents)
+  (proc/'12001/cgroup').write_text(membership or '0::/'+relative+'\n')
+  (proc/'12001/stat').write_text('12001 (mariadbd) D '+' '.join(['0']*18+['123']+['0']*3)+'\n')
+  (proc/'12001/wchan').write_text('io_schedule\n')
+  (root/'model-pidfd').touch()
+  return f,proc,group,root/'model-pidfd'
+ def test_process_observation_is_exact_own_nonempty_cgroup_and_fixed_roles_only(self):
+  with tempfile.TemporaryDirectory() as temp:
+   f,proc,group,pidfile=self.cgroup_fixture(temp)
+   with mock.patch.object(b,'PROC',proc),mock.patch.object(b,'CGROUP',group),\
+        mock.patch.object(b.os,'pidfd_open',side_effect=lambda pid:os.open(pidfile,os.O_RDONLY)),\
+        mock.patch.object(b.select,'select',return_value=([],[],[])),\
+        mock.patch.object(b.os,'listdir',side_effect=AssertionError('global process enumeration forbidden')):
+    result=f.observe_database_processes()
+   self.assertEqual(result,dict(status='exact-own-cgroup-observed',processCount=1,bounded=False,
+      processes=[dict(role='database-server',state='disk-wait',wait='io-wait')]))
+   self.assertNotIn('12001',str(result));self.assertNotIn(CID,str(result))
+ def test_empty_or_global_cgroup_has_no_process_fallback(self):
+  for membership,contents in (('0::/\n',b'12001\n'),(None,b'')):
+   with self.subTest(membership=membership,contents=contents),tempfile.TemporaryDirectory() as temp:
+    f,proc,group,pidfile=self.cgroup_fixture(temp,membership,contents)
+    with mock.patch.object(b,'PROC',proc),mock.patch.object(b,'CGROUP',group),\
+         mock.patch.object(b.os,'pidfd_open',side_effect=lambda pid:os.open(pidfile,os.O_RDONLY)),\
+         mock.patch.object(b.os,'listdir',side_effect=AssertionError('global process enumeration forbidden')):
+     self.assertEqual(f.observe_database_processes(),{'status':'own-cgroup-observation-unavailable'})
  def test_live_database_console_retains_only_predefined_codes(self):
   observer=b.DatabaseConsoleObservations()
   private=b'private-fixture-password-sql-source-must-not-appear'
