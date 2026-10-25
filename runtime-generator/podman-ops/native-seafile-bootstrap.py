@@ -6,6 +6,7 @@ networkless shared namespace, never actor managers or host listeners. No data is
 removed on failure. This is not application acceptance or a recovery backend.
 """
 import importlib.util
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -568,6 +569,47 @@ class Fresh:
             for fd in reversed(opened):
                 os.close(fd)
 
+    def query_own_self_signal_policy(self, label):
+        """Read-only kernel permission query from ONE anchored own thread label.
+
+        .access is a transaction query interface, NOT .load/.replace/.remove.
+        Never retain or emit subject/peer names, query bytes or permission masks.
+        """
+        fd = None
+        try:
+            self.require(isinstance(label, bytes) and 0 < len(label) <= 512 and b'\x00' not in label,
+                         'Own signal policy label bound refused')
+            if not label.endswith(b' (enforce)') or b'//&' in label:
+                return 'own-mac-signal-query-unsupported-label'
+            subject = label[:-10]
+            peer = subject.rsplit(b'://', 1)[-1]
+            self.require(subject and peer and not any(c in subject for c in (b'\n', b'\r')),
+                         'Own signal policy subject differs')
+            query = b'labelall\x00' + subject + b'\x00' + bytes((10, 15)) + peer
+            fd = os.open('/sys/kernel/security/apparmor/.access', os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
+            info = os.fstat(fd)
+            self.require(stat.S_ISREG(info.st_mode) and info.st_uid == 0, 'Own signal query interface differs')
+            libc = ctypes.CDLL(None, use_errno=True)
+            function = libc.fstatfs
+            function.argtypes = (ctypes.c_int, ctypes.c_void_p); function.restype = ctypes.c_int
+            filesystem = ctypes.create_string_buffer(256)
+            self.require(function(fd, filesystem) == 0 and ctypes.c_long.from_buffer(filesystem).value == 0x73636673,
+                         'Own signal query interface is not securityfs')
+            self.require(os.write(fd, query) == len(query), 'Own signal query incomplete')
+            response = os.read(fd, 256)
+            match = re.fullmatch(rb'allow 0x([0-9a-f]{8})\ndeny 0x([0-9a-f]{8})\naudit 0x[0-9a-f]{8}\nquiet 0x[0-9a-f]{8}\n', response)
+            self.require(match is not None, 'Own signal query reply differs')
+            permitted = int(match[1], 16) & ~int(match[2], 16)
+            send, receive = bool(permitted & 2), bool(permitted & 4)
+            return ('own-mac-self-term-send-and-receive-allowed' if send and receive else
+                    'own-mac-self-term-receive-denied' if send else
+                    'own-mac-self-term-send-denied' if receive else 'own-mac-self-term-send-and-receive-denied')
+        except BaseException:
+            return 'own-mac-signal-query-unavailable'
+        finally:
+            if fd is not None:
+                os.close(fd)
+
     def observe_database_processes(self):
         """Only an exact nonempty own CID cgroup; never enumerate/fall back globally."""
         opened = []
@@ -642,7 +684,7 @@ class Fresh:
                 42: 'connect', 43: 'accept', 44: 'send', 45: 'receive', 47: 'receive',
                 61: 'child-wait', 128: 'signal-wait', 130: 'signal-wait', 202: 'futex',
                 232: 'event-wait', 270: 'select', 271: 'poll', 281: 'event-wait', 426: 'async-io'}
-            rows = []
+            rows = []; mac_query = 'own-anchor-thread-not-observed'
             phase = 'own-process-state'
             for selected in threads[:32]:
                 fd = directory(PROC / str(selected))
@@ -669,6 +711,8 @@ class Fresh:
                 self.require(0 <= filters <= 32, 'Own thread filter count bound refused')
                 attribute = directory(PROC / str(selected) / 'attr')
                 label = read(attribute, 'current', 512).strip(b'\x00 \t\r\n')
+                if selected == pid:
+                    mac_query = self.query_own_self_signal_policy(label)
                 label_class = ('unconfined' if label == b'unconfined' else
                     'default-container-enforced' if any(value in label for value in
                     (b'containers-default', b'docker-default', b'container-default', b'cri-containerd.apparmor.d')) else
@@ -687,7 +731,8 @@ class Fresh:
                          and self.state(cid, cleanup=True).get('Pid') == pid
                          and not select.select([process], [], [], 0)[0], 'Own database cgroup anchor changed')
             return dict(status='exact-own-cgroup-observed', processCount=len(pids), threadCount=len(threads),
-                        bounded=len(threads) > 32, taskBudgets=budgets, threads=rows)
+                        bounded=len(threads) > 32, taskBudgets=budgets, threads=rows,
+                        selfSignalMacQuery=mac_query)
         except BaseException:
             return {'status': 'own-cgroup-observation-unavailable', 'phase': phase}
         finally:

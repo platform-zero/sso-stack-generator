@@ -185,8 +185,39 @@ class Models(unittest.TestCase):
     self.assertEqual(f.observe_database_runtime_policy(),dict(status='own-runtime-policy-unavailable'))
     f.command.assert_called_once_with(['inspect','--format={{json .OCIConfigPath}}',CID],cleanup=True,allow_failure=True,timeout=10)
     opened.assert_not_called()
+ def test_own_mac_signal_query_is_securityfs_transaction_only_and_emits_closed_classes(self):
+  with tempfile.TemporaryDirectory() as temp:
+   f=self.fixture(temp);label=b':model-private-namespace://containers-default-model (enforce)'
+   def filesystem(fd,buffer):
+    b.ctypes.c_long.from_buffer(buffer).value=0x73636673
+    return 0
+   library=types.SimpleNamespace(fstatfs=mock.Mock(side_effect=filesystem))
+   reply=b'allow 0x00000006\ndeny 0x00000000\naudit 0x00000000\nquiet 0x00000000\n'
+   with mock.patch.object(b.os,'open',return_value=42) as opened,\
+        mock.patch.object(b.os,'fstat',return_value=types.SimpleNamespace(st_mode=stat.S_IFREG|0o600,st_uid=0)),\
+        mock.patch.object(b.ctypes,'CDLL',return_value=library),\
+        mock.patch.object(b.os,'write',side_effect=lambda fd,body:len(body)) as written,\
+        mock.patch.object(b.os,'read',return_value=reply) as read,\
+        mock.patch.object(b.os,'close') as closed:
+    self.assertEqual(f.query_own_self_signal_policy(label),'own-mac-self-term-send-and-receive-allowed')
+    opened.assert_called_once_with('/sys/kernel/security/apparmor/.access',os.O_RDWR|os.O_NOFOLLOW|os.O_CLOEXEC)
+    self.assertEqual(written.call_args.args,(42,b'labelall\x00:model-private-namespace://containers-default-model\x00\x0a\x0fcontainers-default-model'))
+    closed.assert_called_once_with(42)
+    read.return_value=reply.replace(b'00000006',b'00000002')
+    self.assertEqual(f.query_own_self_signal_policy(label),'own-mac-self-term-receive-denied')
+    read.return_value=b'malformed-private-fixture-label'
+    self.assertEqual(f.query_own_self_signal_policy(label),'own-mac-signal-query-unavailable')
+    library.fstatfs.side_effect=lambda fd,buffer:0
+    prior=written.call_count
+    self.assertEqual(f.query_own_self_signal_policy(label),'own-mac-signal-query-unavailable')
+    self.assertEqual(written.call_count,prior)
+   with mock.patch.object(b.os,'open') as opened:
+    self.assertEqual(f.query_own_self_signal_policy(b'outer//&inner (enforce)'),
+                     'own-mac-signal-query-unsupported-label')
+    opened.assert_not_called()
  def cgroup_fixture(self,temp,membership=None,contents=b'12001\n'):
   root=Path(temp);f=self.fixture(temp);f.cids=[CID];f.database_cid=CID
+  f.query_own_self_signal_policy=mock.Mock(return_value='own-mac-signal-query-unavailable')
   f.state=mock.Mock(return_value=dict(Running=True,Pid=12001))
   proc=root/'model-proc';group=root/'model-cgroups';(proc/'12001').mkdir(parents=True)
   relative='machine.slice/libpod-'+CID+'.scope';leaf=group/relative;leaf.mkdir(parents=True)
@@ -212,6 +243,7 @@ class Models(unittest.TestCase):
     result=f.observe_database_processes()
    self.assertEqual(result,dict(status='exact-own-cgroup-observed',processCount=1,threadCount=1,bounded=False,
       taskBudgets=[dict(taskCount=4,taskLimit=256,taskLimitEvents=0)]*2,
+      selfSignalMacQuery='own-mac-signal-query-unavailable',
       threads=[dict(role='database-server',state='disk-wait',wait='io-wait',syscall='futex',
          terminationIgnored=False,terminationBlocked=True,terminationPending=False,seccompFilters=2,
          macClass='default-container-enforced')]))
