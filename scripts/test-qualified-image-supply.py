@@ -121,6 +121,33 @@ class ArtifactRebind(BASE.FreezeWorkflow):
         self.assertEqual(report['acceptedIntegratedInstalls'], 0)
         self.export.assert_not_called()
 
+    def test_full_record_rebinds_only_exact_selected_closure(self):
+        self.record_doc['outputs']['unselected'] = {'notReadAsAuthority': True}
+        self.json(self.record, self.record_doc)
+        inputs = json.loads(self.inputs.read_bytes())
+        inputs['images'].append({'image': 'sha256:' + 'f' * 64,
+                                 'archiveFilename': 'unselected.tar',
+                                 'archiveSha256': 'a' * 64, 'archiveBytes': 42})
+        self.json(self.inputs, inputs)
+        result = self.rebind()
+        supply = json.loads(Path(result['supply']).read_bytes())
+        self.assertEqual(supply['images'], self.supply_doc['images'])
+        self.assertFalse((self.rebound / 'unselected.tar').exists())
+        self.export.assert_not_called()
+
+    def test_missing_selected_producer_in_full_record_refused(self):
+        self.record_doc['outputs'] = {'unselected': {}}
+        self.json(self.record, self.record_doc)
+        with self.assertRaises(ValueError): self.rebind()
+        self.assertFalse(self.rebound.exists())
+
+    def test_subset_still_refuses_selected_copy_change(self):
+        self.record_doc['outputs']['unselected'] = {}
+        self.json(self.record, self.record_doc)
+        (self.bundle / 'build/source.py').write_text('changed selected source\n')
+        with self.assertRaises(ValueError): self.rebind()
+        self.assertFalse(self.rebound.exists())
+
     def test_reference_package_publishes_only_protected_controls_and_real_oci_proof(self):
         with patch.object(M.QualifiedArtifacts,'copy',side_effect=AssertionError('reference mode copied archive')):
             result=self.rebind(package_output=True,archive_source=self.supply,reference_archives=True)
@@ -246,9 +273,8 @@ class ArtifactRebind(BASE.FreezeWorkflow):
             with self.assertRaises(ValueError): self.rebind()
         self.assertFalse(self.rebound.exists())
 
-    def test_missing_or_extra_producer_refused(self):
-        self.record_doc['outputs']['unselected'] = self.record_doc['outputs']['producer']
-        self.json(self.record, self.record_doc)
+    def test_missing_selected_archive_refused(self):
+        self.json(self.inputs, {'schemaVersion': 1, 'images': []})
         with self.assertRaises(ValueError): self.rebind()
         self.assertFalse(self.rebound.exists())
 

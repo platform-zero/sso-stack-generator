@@ -312,7 +312,7 @@ def _rebind(bundle, source_bundle, public_build, producer_record, producer_sha,
     ir = package.read_document(bundle / 'stack.ir.json')
     producers = {name: row for name, row in ir['services'].items() if 'build' in row}
     require(producer.get('allSelectedRecipesQualified') is True
-            and producers and set(producer['outputs']) == set(producers)
+            and producers and set(producers) <= set(producer['outputs'])
             and producer['sourceBundleIrSha256'] == proof[old_ir_path][-1])
     old = tree(public_build, proof); new = tree(bundle / 'build', proof)
     require(producer['publicBuildTreeSha256'] == tree_hash(old)
@@ -337,12 +337,19 @@ def _rebind(bundle, source_bundle, public_build, producer_record, producer_sha,
                           'copyClosureSha256': hashlib.sha256(encoded(before)).hexdigest()}
     require(set(inputs) == {'schemaVersion', 'images'} and type(inputs['schemaVersion']) is int
             and inputs['schemaVersion'] == 1 and isinstance(inputs['images'], list))
-    rows = {}; oci = {}
+    rows = {}; oci = {}; seen_images = set(); seen_files = set()
     for row in inputs['images']:
         require(isinstance(row, dict) and set(row) == {'image', 'archiveFilename', 'archiveSha256', 'archiveBytes'})
         image, filename = row['image'], row['archiveFilename']
-        require(image in selected and image not in rows and isinstance(filename, str)
+        require(isinstance(image, str) and image not in seen_images and isinstance(filename, str)
+                and filename not in seen_files
                 and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.tar', filename))
+        seen_images.add(image); seen_files.add(filename)
+        # A retained full qualification is immutable evidence, not a selection
+        # permit. Recheck every selected recipe/COPY/OCI closure against it;
+        # never import or publish unselected archives or rewrite the record.
+        if image not in selected:
+            continue
         if data is None:
             path = image_inputs.parent / filename
             proof[path] = package.snapshot(package.plain_file(path))
