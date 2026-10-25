@@ -138,7 +138,10 @@ class Fresh:
             for session in reversed(sessions):
                 session.close()
 
-    def command(self, arguments, timeout=120, environment=None, allow_failure=False, cleanup=False):
+    def command(self, arguments, timeout=120, environment=None, allow_failure=False, cleanup=False, diagnostic_stderr=False):
+        self.require(type(diagnostic_stderr) is bool and (not diagnostic_stderr or
+                     (len(arguments) >= 4 and arguments[0] == 'exec' and arguments[2] in self.cids
+                      and arguments[3] == 'mariadb')), 'Foreign diagnostic execution refused')
         if cleanup:
             self.require(arguments[0] in ('inspect', 'stop', 'rm')
                          and arguments[-1] in self.cids, 'Foreign cleanup command refused')
@@ -149,9 +152,11 @@ class Fresh:
             clean.update(environment)
         # Private native output stays in memory; never echo child text/argv.
         result = subprocess.run(['/usr/bin/podman', *arguments], env=clean,
-                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE if diagnostic_stderr else subprocess.DEVNULL,
                     timeout=timeout, close_fds=True, umask=0o077)
-        self.require(len(result.stdout) <= 8 * 1024 * 1024, 'Native preparation output bound refused')
+        self.require(len(result.stdout) + len(result.stderr or b'') <= 8 * 1024 * 1024,
+                     'Native preparation output bound refused')
         self.require(allow_failure or result.returncode == 0, 'Native preparation command refused')
         return result
 
@@ -354,6 +359,9 @@ class Fresh:
     def database_probe_observation(result):
         if result.returncode == 0 and result.stdout.strip() == b'1':
             return 'service-database-ready'
+        if result.returncode in (125, 126, 127):
+            return {125: 'native-exec-engine-refused', 126: 'native-exec-permission-refused',
+                    127: 'native-exec-command-unavailable'}[result.returncode]
         # Only fixed SQL client error classes; never emit child text/usernames,
         # database names, exceptions, SQL, credentials or arbitrary error codes.
         diagnostic = getattr(result, 'stderr', None)
@@ -372,7 +380,7 @@ class Fresh:
                 '--user=' + env['SEAFILE_MYSQL_DB_USER'],
                 '--database=' + env['SEAFILE_MYSQL_DB_SEAHUB_DB_NAME'], '--batch', '--skip-column-names',
                 '--execute=SELECT 1'], timeout=10, environment={'MYSQL_PWD': env['SEAFILE_MYSQL_DB_PASSWORD']},
-                allow_failure=True)
+                allow_failure=True, diagnostic_stderr=True)
             self.database_observation = self.database_probe_observation(result)
             if self.database_observation == 'service-database-ready':
                 return

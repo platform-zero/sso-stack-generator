@@ -93,12 +93,26 @@ class Models(unittest.TestCase):
    with self.subTest(code=code):
     result=types.SimpleNamespace(returncode=1,stdout=sentinel,stderr=b'ERROR '+str(code).encode()+b' (HY000):'+sentinel)
     self.assertEqual(b.Fresh.database_probe_observation(result),label)
-  # The real command runner merges stderr into stdout; CompletedProcess.stderr
-  # is None, not an absent attribute. Never let diagnostics replace the guard.
+  # A discarded or merged stderr stream is None, not an absent attribute.
+  # Never let diagnostic stream handling replace the original readiness guard.
   merged=types.SimpleNamespace(returncode=1,stdout=b'ERROR 2002 (HY000):'+sentinel,stderr=None)
   self.assertEqual(b.Fresh.database_probe_observation(merged),'database-connectivity-unavailable')
+  for code,label in ((125,'native-exec-engine-refused'),(126,'native-exec-permission-refused'),(127,'native-exec-command-unavailable')):
+   self.assertEqual(b.Fresh.database_probe_observation(types.SimpleNamespace(returncode=code,stdout=sentinel,stderr=sentinel)),label)
   self.assertEqual(b.Fresh.database_probe_observation(types.SimpleNamespace(returncode=0,stdout=b'1\n')),'service-database-ready')
   self.assertEqual(b.Fresh.database_probe_observation(types.SimpleNamespace(returncode=1,stdout=b'',stderr=b'private ERROR 1045 '+sentinel)),'other-database-probe-refusal')
+ def test_only_own_database_probe_can_capture_stderr_privately(self):
+  with tempfile.TemporaryDirectory() as temp:
+   f=self.fixture(temp);f.cids=[CID];f.reserve=mock.Mock()
+   result=types.SimpleNamespace(returncode=1,stdout=b'',stderr=b'ERROR 1045 (HY000): private-fixture-secret')
+   with mock.patch.object(b.subprocess,'run',return_value=result) as run:
+    value=b.Fresh.command(f,['exec','--env=MYSQL_PWD',CID,'mariadb','--execute=SELECT 1'],
+                         allow_failure=True,diagnostic_stderr=True)
+    self.assertEqual(run.call_args.kwargs['stderr'],subprocess.PIPE)
+    self.assertEqual(b.Fresh.database_probe_observation(value),'authentication-refused')
+    with self.assertRaises(p.Refused):b.Fresh.command(f,['exec','--env=MYSQL_PWD','2'*64,'mariadb'],diagnostic_stderr=True)
+    with self.assertRaises(p.Refused):b.Fresh.command(f,['exec','--env=MYSQL_PWD',CID,'other'],diagnostic_stderr=True)
+    self.assertEqual(run.call_count,1)
  def test_declared_numeric_container_user_matches_eventual_service_user(self):
   for user in ('0:0','999:999','65536:65536'):
    with self.subTest(user=user),tempfile.TemporaryDirectory() as temp:
@@ -241,7 +255,7 @@ class Models(unittest.TestCase):
     else:
      if operation=='stop':running[0]=False
      out=b''
-    return types.SimpleNamespace(returncode=0,stdout=out)
+    return types.SimpleNamespace(returncode=0,stdout=out,stderr=None)
    with mock.patch.object(b.subprocess,'run',side_effect=native) as native_run:
     self.assertTrue(f.stop_all());self.assertTrue(native_run.called)
    f.reserve.assert_not_called();self.assertEqual(f.cids,[])

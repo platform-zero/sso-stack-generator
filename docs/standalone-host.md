@@ -175,8 +175,10 @@ MariaDB mysql identity must not silently become namespace-root during preparatio
 On failure, a private `native-seafile/failure-observations.json` retains only own
 CID, running boolean, bounded exit code and OOM boolean (or observation unavailable).
 Stop cleanup does not overwrite that failure record. A database probe can expose
-only predefined readiness/authentication/missing-database/connectivity/other classes,
-never raw client diagnostics or arbitrary SQL error codes. No exception text,
+only predefined readiness/authentication/missing-database/connectivity/native-exec/other
+classes, never raw client diagnostics or arbitrary SQL error codes. Only exact own-CID
+MariaDB probes can capture stderr privately for classification; it is bounded with
+stdout, never printed or persisted, and all other commands still discard stderr. No exception text,
 environment, service source, child log, or secret is a diagnostic field. The database's
 isolated network gets a deterministic source-derived hostname with a local readonly
 hosts binding, so bootstrap never needs external DNS for its own hostname. Namespace
