@@ -265,11 +265,39 @@ class Lifecycle:
             time.sleep(0.1)
         raise OperationError('unit transition deadline exceeded; reconcile current effects')
 
-    def change(self, action, targets):
+    def recover_empty_engine(self):
+        registry = self._registry()
+        self.verify_owned(registry)
+        if any(spec.get('lifecycle', 'daemon') != 'daemon' for spec in registry['services'].values()):
+            raise ContractError('empty-engine recovery cannot reconcile provisioning/external operations')
+        with operation_lock(self.state):
+            for name in registry['services']:
+                if not self.stopped(name, self.observe(name)):
+                    raise ContractError('recovery requires stopped owned services')
+            store = self.run(['/usr/bin/podman', 'info', '--format', '{{.Store.GraphRoot}}'])
+            if store.decode().strip() != STORE_ROOT:
+                raise ContractError('unexpected recovery engine')
+            for arguments in (['container', 'ls', '--all', '--quiet'], ['volume', 'ls', '--quiet']):
+                if self.run(['/usr/bin/podman'] + arguments).strip():
+                    raise ContractError('empty-engine recovery requires no containers or data volumes')
+            journal = Journal(self.state / 'operations.sqlite3')
+            try:
+                operation = journal.create('recover', registry['inputSha256'])
+                journal.transition(operation, 0, 'running')
+                journal.transition(operation, 1, 'succeeded')
+                return {'schemaVersion': 1, 'operation': operation, 'state': 'empty-daemon-engine-reconciled',
+                        'externalEffectsCertified': False, 'requiresExplicitStart': True,
+                        'installationCertified': False}
+            finally:
+                journal.close()
+
+    def change(self, action, targets, *, resources=False):
         if action not in ('start', 'stop'):
             raise ContractError('unsupported lifecycle action')
         registry = self._registry()
         self.verify_owned(registry)
+        if resources and (action != 'stop' or set(targets) != set(registry['services'])):
+            raise ContractError('resource stop requires explicit complete owned service selection')
         catalog = Catalog([{'schemaVersion': 1, 'id': 'selected', 'services': list(registry['services'].values())}])
         plan = catalog.plan(targets)
         if action == 'stop':
@@ -285,6 +313,8 @@ class Lifecycle:
             if action == 'start' and journal.connection.execute(
                     "SELECT 1 FROM operations bad WHERE bad.state IN ('prepared','running','indeterminate') "
                     "AND NOT (bad.kind='stop' AND EXISTS (SELECT 1 FROM operations done WHERE done.kind='stop' "
+                    "AND done.state='succeeded' AND done.input_sha256=bad.input_sha256 AND done.created>bad.updated)) "
+                    "AND NOT (bad.kind IN ('start','stop') AND EXISTS (SELECT 1 FROM operations done WHERE done.kind='recover' "
                     "AND done.state='succeeded' AND done.input_sha256=bad.input_sha256 AND done.created>bad.updated)) LIMIT 1").fetchone():
                 journal.close()
                 raise ContractError('unreconciled effects prevent another start')
@@ -312,6 +342,13 @@ class Lifecycle:
                     self._wait_unit(name, started=action == 'start', lifecycle=spec.get('lifecycle', 'daemon'))
                     if action == 'start' and spec.get('probes'):
                         wait(spec['probes'], budget=300)
+                if resources:
+                    for filename in sorted(registry['units']):
+                        suffix = '-network' if filename.endswith('.network') else '-volume' if filename.endswith('.volume') else None
+                        if suffix:
+                            name = filename.rsplit('.', 1)[0] + suffix
+                            self.run(['/usr/bin/systemctl', '--user', 'stop', '--no-block', name + '.service'])
+                            self._wait_unit(name.removeprefix('p0-'), started=False, lifecycle='oneshot')
                 journal.transition(operation, 1, 'succeeded')
                 return {'schemaVersion': 1, 'operation': operation, 'state': action + '-observed',
                         'services': ordered, 'installationCertified': False}

@@ -201,6 +201,45 @@ class LifecycleTests(unittest.TestCase):
             with self.assertRaises(ContractError):
                 runtime.change('start', ['app'])
 
+    def test_empty_engine_recovery_keeps_failed_attempt_and_needs_explicit_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime, runner, bundle, identity = self.prepare(Path(directory))
+            runtime.install(bundle, identity)
+            with patch.object(runtime, '_wait_unit', side_effect=OperationError('failed')):
+                with self.assertRaises(OperationError):
+                    runtime.change('start', ['app'])
+            runner.active['p0-app.service'] = False
+            result = runtime.recover_empty_engine()
+            self.assertTrue(result['requiresExplicitStart'])
+            self.assertFalse(result['externalEffectsCertified'])
+            from p0core.journal import Journal
+            self.assertIn('indeterminate', [row['state'] for row in Journal.status(runtime.state / 'operations.sqlite3')['operations']])
+            runtime.change('start', ['app'])
+
+    def test_empty_engine_recovery_refuses_data_or_provisioning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime, runner, bundle, identity = self.prepare(Path(directory), [service('app', lifecycle='oneshot')])
+            runtime.install(bundle, identity)
+            with self.assertRaises(ContractError):
+                runtime.recover_empty_engine()
+        with tempfile.TemporaryDirectory() as directory:
+            runtime, runner, bundle, identity = self.prepare(Path(directory))
+            runtime.install(bundle, identity)
+            def with_data(arguments, **kwargs):
+                if arguments[:3] == ['/usr/bin/podman', 'volume', 'ls']:
+                    return b'protected-volume'
+                return runner(arguments, **kwargs)
+            runtime.run = with_data
+            with self.assertRaises(ContractError):
+                runtime.recover_empty_engine()
+
+    def test_resource_stop_requires_complete_explicit_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime, runner, bundle, identity = self.prepare(Path(directory), [service('db'), service('app', [('db', 'order')])])
+            runtime.install(bundle, identity)
+            with self.assertRaises(ContractError):
+                runtime.change('stop', ['app'], resources=True)
+
     def test_actual_quadlet_generator_accepts_resources_and_oneshot(self):
         generator = Path('/usr/lib/systemd/system-generators/podman-system-generator')
         if not generator.exists():
