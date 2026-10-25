@@ -153,6 +153,27 @@ def main(argv=None):
         private_directory(STACK, 0, 0, create=args.apply, mode=0o711)
         if args.apply:
             private_directory(STORAGE, entry.pw_uid, entry.pw_gid, create=True)
+            for directory in (HOME / '.config', HOME / '.config/containers'):
+                private_directory(directory, entry.pw_uid, entry.pw_gid, create=True)
+            configuration = ('[storage]\ndriver = "overlay"\n'
+                             f'runroot = "/run/user/{entry.pw_uid}/containers"\n'
+                             f'graphroot = "{STORAGE}/storage"\n').encode()
+            destination = HOME / '.config/containers/storage.conf'
+            if destination.exists() or destination.is_symlink():
+                observed = destination.lstat()
+                if (not stat.S_ISREG(observed.st_mode) or observed.st_uid != entry.pw_uid
+                        or observed.st_nlink != 1 or stat.S_IMODE(observed.st_mode) != 0o600
+                        or destination.read_bytes() != configuration):
+                    raise Refused('runtime storage configuration identity mismatch')
+            else:
+                fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                try:
+                    os.fchown(fd, entry.pw_uid, entry.pw_gid)
+                    os.fchmod(fd, 0o600)
+                    os.write(fd, configuration)
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
             command(['/usr/bin/loginctl', 'enable-linger', ACCOUNT])
     print(json.dumps({'schemaVersion': 1, 'scope': 'runtime-account-only',
                       'account': ACCOUNT, 'exists': entry is not None, 'created': created,

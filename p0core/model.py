@@ -84,7 +84,9 @@ class Catalog:
     def __init__(self, manifests: list[dict]):
         self.services: dict[str, Service] = {}
         self.modules: dict[str, dict] = {}
-        for manifest in manifests:
+        for original in manifests:
+            # Snapshot inputs so callers cannot mutate an already validated graph.
+            manifest = json.loads(canonical(original))
             fields(manifest, {"schemaVersion", "id", "services"}, {"description"})
             if type(manifest["schemaVersion"]) is not int or manifest["schemaVersion"] != 1:
                 raise ContractError("unsupported manifest version")
@@ -97,7 +99,8 @@ class Catalog:
             self.modules[module] = manifest
             for item in declarations:
                 fields(item, {"id", "runtime"}, {"image", "requires", "mounts", "endpoints",
-                       "probes", "resources", "command", "description"})
+                       "probes", "resources", "command", "description", "environment",
+                       "networks", "lifecycle", "entrypoint"})
                 name = identifier(item["id"])
                 if name in self.services:
                     raise ContractError("duplicate service owner")
@@ -180,7 +183,8 @@ class Catalog:
         for name in targets:
             select(identifier(name))
         ordered = self._order(selected)
-        inputs = [self.services[name].declaration for name in ordered]
+        inputs = [{"module": self.services[name].module,
+                   "declaration": self.services[name].declaration} for name in ordered]
         modules = sorted({self.services[name].module for name in ordered})
         # Unrelated module edits do not invalidate a target's input identity.
         return {"schemaVersion": 1, "targets": sorted(set(targets)), "services": ordered,

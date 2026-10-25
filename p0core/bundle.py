@@ -34,6 +34,7 @@ def build(catalog: Catalog, targets: list[str], destination: Path) -> dict:
             files[name] = hashlib.sha256(encoded).hexdigest()
         lock = {"schemaVersion": 1, "kind": "p0-quadlet-bundle", "plan": plan,
                 "images": {name: catalog.services[name].image for name in plan["services"]},
+                "serviceSpecs": {name: catalog.services[name].declaration for name in plan["services"]},
                 "files": files, "installationCertified": False}
         with (temporary / "bundle.json").open("xb") as output:
             output.write(canonical(lock) + b"\n")
@@ -74,7 +75,7 @@ def verify(directory: Path) -> dict:
         raise ContractError("bundle contains unsupported filesystem object")
     lock = load_json(root / "bundle.json")
     from .model import fields
-    fields(lock, {"schemaVersion", "kind", "plan", "images", "files", "installationCertified"})
+    fields(lock, {"schemaVersion", "kind", "plan", "images", "serviceSpecs", "files", "installationCertified"})
     if (type(lock["schemaVersion"]) is not int or lock["schemaVersion"] != 1
             or lock["kind"] != "p0-quadlet-bundle" or lock["installationCertified"] is not False
             or not isinstance(lock["files"], dict)):
