@@ -1472,11 +1472,11 @@ class Clean(unittest.TestCase):
         self.assertTrue(private.exists()); self.assertFalse(self.cold_calls)
 
     @contextlib.contextmanager
-    def overlay_whiteout_fixture(self, domain='apps'):
+    def overlay_whiteout_fixture(self, domain='apps', graph_mode=0o2700, layer_mode=0o700, diff_mode=0o555):
         # Explicit MODELS of verified original public source/version/UID facts.
         # Real temp directories/control files/FDs/renames/unlinks; device type is
         # modeled over an EMPTY regular inode. NEVER mknod/open a device here.
-        row = next(row for row in self.rows if row['name'] == domain); graph = Path(row['graphRoot']); graph.chmod(0o2700)
+        row = next(row for row in self.rows if row['name'] == domain); graph = Path(row['graphRoot']); graph.chmod(graph_mode)
         selection = m.binding(self.root, self.intent)
         selection['pin'] = copy.deepcopy(selection['pin']); selection['receipt'] = copy.deepcopy(selection['receipt'])
         selection['pin']['helpers']['install-podman-bundle.sh']['sha256'] = '7d7f7b8758ab5320ea8d7614fe5be5493c717ff28e9d0f10a88afdf7078b3bf2'
@@ -1494,17 +1494,18 @@ class Clean(unittest.TestCase):
         metadata.parent.mkdir(mode=0o700)
         for path in [metadata.parent, graph / 'overlay', graph / 'overlay' / layer, diff]:
             path.chmod(0o700); self.own(path, actor['uid'], actor['gid'])
+        (graph / 'overlay' / layer).chmod(layer_mode)
         for path in [diff / 'etc', leaf.parent]: path.chmod(0o755); self.own(path, actor['uid'], actor['gid'])
         base = {'id': parent, 'created': '2026-01-01T00:00:00Z', 'compressed-diff-digest': 'sha256:' + 'c' * 64,
                 'compressed-size': 1, 'compression': 2, 'diff-digest': 'sha256:' + 'd' * 64, 'diff-size': 1, 'uidset': [0], 'gidset': [0]}
         rows = [base, dict(base, id=layer, parent=parent)]
         self.put(metadata, json.dumps(rows).encode(), 0o600); self.own(metadata, actor['uid'], actor['gid'])
         leaf.touch(mode=0); self.own(leaf, actor['uid'], actor['gid'])
-        key = self.key(leaf); diff_key = self.key(diff); state = {'mode': stat.S_IFCHR, 'rdev': 0}
+        key = self.key(leaf); diff_key = self.key(diff); state = {'mode': stat.S_IFCHR, 'rdev': 0, 'diff_mode': diff_mode}
         old_stat, old_fstat, old_open = m.os.stat, m.os.fstat, m.os.open
         def model(info):
             identity = (info.st_dev, info.st_ino)
-            if identity == diff_key: return ModelStat(info, info.st_uid, info.st_gid, stat.S_IFDIR | 0o555)
+            if identity == diff_key: return ModelStat(info, info.st_uid, info.st_gid, stat.S_IFDIR | state.get('diff_mode', 0o555))
             if identity != key: return info
             value = ModelStat(info, state.get('uid', info.st_uid), state.get('gid', info.st_gid), state['mode'])
             value.st_rdev = state['rdev']
@@ -1681,6 +1682,77 @@ class Clean(unittest.TestCase):
             with patch.object(m.os, 'unlink', side_effect=unlink), patch.object(m.OverlayWhiteoutCatalog, 'guard', new=guard), self.assertRaises(m.Refusal):
                 self.erase_overlay_fixture(selection, nodes)
             self.assertEqual(len(deleted), 1); self.assertEqual(changed, [True])
+
+    def test_overlay_whiteout_native_private_sgid_layer_and_diff_finite_profiles_erase(self):
+        with self.overlay_whiteout_fixture(layer_mode=0o2700, diff_mode=0o2755) as (selection, graph, _, leaf, _, state):
+            layer = leaf.parents[3]
+            for layer_mode, diff_mode in [(0o700, 0o555), (0o700, 0o755), (0o2700, 0o555), (0o2700, 0o755), (0o2700, 0o2555), (0o2700, 0o2755)]:
+                layer.chmod(layer_mode); state['diff_mode'] = diff_mode
+                with self.subTest(layer=oct(layer_mode), diff=oct(diff_mode)):
+                    nodes = self.scan_original_fixture(selection)
+                    node = next(n for n in nodes if n['kind'] == 'overlay-whiteout')
+                    proof = node['overlaySource']['ancestors']
+                    self.assertEqual(stat.S_IMODE(proof[str(layer)]['identity'][4]), layer_mode)
+                    self.assertEqual(stat.S_IMODE(proof[str(layer / 'diff')]['identity'][4]), diff_mode)
+            self.erase_overlay_fixture(selection, nodes)
+            self.assertFalse(graph.exists()); self.assertFalse(self.cold_calls)
+
+    def test_overlay_whiteout_native_sgid_needs_original_sgid_graph_and_immediate_private_layer(self):
+        with self.overlay_whiteout_fixture(graph_mode=0o700, layer_mode=0o2700, diff_mode=0o2755) as (selection, _, _, _, _, _):
+            with self.assertRaises(m.Refusal): self.scan_original_fixture(selection)
+
+    def test_overlay_whiteout_native_sgid_never_masks_other_mode_bits_or_wrong_ancestor(self):
+        with self.overlay_whiteout_fixture() as (selection, graph, metadata, leaf, _, state):
+            layer = leaf.parents[3]
+            for mode in (0o710, 0o750, 0o770, 0o1700, 0o4700, 0o6700, 0o2710, 0o2750, 0o2770):
+                layer.chmod(mode)
+                with self.subTest(layer=oct(mode)), self.assertRaises(m.Refusal): self.scan_original_fixture(selection)
+            layer.chmod(0o2700)
+            for mode in (0o550, 0o750, 0o775, 0o777, 0o1755, 0o4755, 0o6755, 0o2775):
+                state['diff_mode'] = mode
+                with self.subTest(diff=oct(mode)), self.assertRaises(m.Refusal): self.scan_original_fixture(selection)
+            layer.chmod(0o700)
+            for mode in (0o2555, 0o2755):
+                state['diff_mode'] = mode
+                with self.subTest(unbackedDiff=oct(mode)), self.assertRaises(m.Refusal): self.scan_original_fixture(selection)
+            state['diff_mode'] = 0o555
+            for ancestor in (graph / 'overlay', metadata.parent):
+                ancestor.chmod(0o2700)
+                with self.subTest(otherAncestor=str(ancestor)), self.assertRaises(m.Refusal): self.scan_original_fixture(selection)
+                ancestor.chmod(0o700)
+
+    def test_overlay_whiteout_native_sgid_preserves_acl_exact_owner_and_mode_cas(self):
+        with self.overlay_whiteout_fixture(layer_mode=0o2700, diff_mode=0o2755) as (selection, _, _, leaf, _, state):
+            layer = leaf.parents[3]; actor = selection['actors']['apps']
+            first = self.scan_original_fixture(selection)
+            for ancestor in (layer, layer / 'diff'):
+                self.own(ancestor, actor['start'] + 32)
+                with self.subTest(mappedOwner=str(ancestor)), self.assertRaises(m.Refusal): self.scan_original_fixture(selection)
+                self.own(ancestor, actor['uid'])
+                for access, default in (([[2, 7, actor['uid']]], []), ([], [[2, 7, actor['uid']]])):
+                    self.set_acl(ancestor, access, default)
+                    with self.subTest(acl=str(ancestor), access=access), self.assertRaises(m.Refusal): self.scan_original_fixture(selection)
+                    self.set_acl(ancestor, [], [])
+            # Even another allowed phenotype cannot rebase an already reviewed
+            # node/mode/ancestry: real directory mode/ctime change must refuse.
+            layer.chmod(0o700); state['diff_mode'] = 0o555
+            with self.assertRaises(m.Refusal): self.erase_overlay_fixture(selection, first)
+
+    def test_overlay_whiteout_native_sgid_kernel_mkdir_mechanics_not_original_provenance(self):
+        parent = self.base / 'native-sdk-mkdir-mechanics'; parent.mkdir(mode=0o700); parent.chmod(0o2700)
+        layer = parent / 'id'; layer.mkdir(mode=0o700)
+        diff = layer / 'diff'
+        # Only this isolated, single-process mkdir experiment uses022; restore
+        # the test runner's077 even on error. No actual/source-root repair.
+        prior_umask = os.umask(0o022)
+        try: diff.mkdir(mode=0o755)
+        finally: os.umask(prior_umask)
+        self.assertEqual(stat.S_IMODE(REAL_STAT(layer).st_mode), 0o2700)
+        self.assertEqual(stat.S_IMODE(REAL_STAT(diff).st_mode), 0o2755)
+        # Normalizing a parent later does not rewrite an already-created child.
+        parent.chmod(0o700)
+        self.assertEqual(stat.S_IMODE(REAL_STAT(layer).st_mode), 0o2700)
+        self.assertEqual(stat.S_IMODE(REAL_STAT(diff).st_mode), 0o2755)
 
     def test_overlay_whiteout_scope_capacity_is_finite_and_other_bounds_unchanged(self):
         self.assertEqual(m.MAX_SCOPE_NODES, 2000000); self.assertEqual(m.MAX_NODES, 250000)

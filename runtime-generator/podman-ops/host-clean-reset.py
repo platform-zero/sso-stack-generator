@@ -1271,6 +1271,7 @@ class OverlayWhiteoutCatalog:
                     'Incomplete/unknown layer provenance')
             current = value.get('parent', '')
         ancestors = {}
+        original_sgid = stat.S_IMODE(os.fstat(self.graph_fd).st_mode) == 0o2700
         chain_fds = [(Path('.'), None), (Path('overlay'), 0o700), (Path('overlay') / parts[1], 0o700),
                      (Path('overlay') / parts[1] / 'diff', 0o555)]
         chain_fds += [(Path(*parts[:index + 1]), None) for index in range(3, len(parts) - 1)]
@@ -1280,8 +1281,19 @@ class OverlayWhiteoutCatalog:
             info = os.fstat(fd)
             own = ((info.st_uid, info.st_gid) == (self.actor['uid'], self.actor['gid'])) if index < 4 else (
                 owns(info.st_uid, self.actor) and owns(info.st_gid, self.actor))
+            modes = {mode}
+            # Native overlay create(): private id directory0700, diff default
+            # 0555 or inherited/extracted root0755. mkdirAs/MkdirAllAndChownNew
+            # preserves kernel-inherited SGID when SafeChown already owns it.
+            # ONLY the registered layer below an ORIGINAL private SGID graph;
+            # SGID diff additionally needs its held private SGID layer parent.
+            if index == 2 and original_sgid: modes.add(0o2700)
+            if index == 3:
+                modes.add(0o755)
+                layer = ancestors[str(Path(self.graph) / 'overlay' / parts[1])]['identity']
+                if original_sgid and stat.S_IMODE(layer[4]) == 0o2700: modes.update((0o2555, 0o2755))
             require(info.st_dev == self.device and own
-                    and (mode is None or stat.S_IMODE(info.st_mode) == mode) and not acl(fd) and not acl(fd, True)
+                    and (mode is None or stat.S_IMODE(info.st_mode) in modes) and not acl(fd) and not acl(fd, True)
                     and fd_mount_id(fd) == self.mount, 'Original own overlay diff ancestry/mount differs')
             ancestors[str(selected)] = custody(fd)
         self.guard()
