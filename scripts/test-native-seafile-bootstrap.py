@@ -164,6 +164,11 @@ class Models(unittest.TestCase):
   observer=b.DatabaseConsoleObservations()
   observer.consume(io.BytesIO(b'x'*(8*1024*1024)+b'Permission denied private-fixture-secret'))
   self.assertEqual(observer.snapshot(),['database-console-output-bound-exceeded'])
+ def test_innodb_shutdown_console_remains_fixed_classifications_not_service_log_text(self):
+  observer=b.DatabaseConsoleObservations()
+  observer.consume(io.BytesIO(b'InnoDB: Starting shutdown private-fixture-secret\nInnoDB: Shutdown completed\n'))
+  self.assertEqual(observer.snapshot(),['innodb-log-observed','innodb-shutdown-completed','innodb-shutdown-starting'])
+  self.assertNotIn('private-fixture-secret',repr(observer.snapshot()))
  def test_forced_observer_helper_cleanup_is_not_clean_stop_proof(self):
   with tempfile.TemporaryDirectory() as temp:
    f=self.fixture(temp);f.database_console=b.DatabaseConsoleObservations()
