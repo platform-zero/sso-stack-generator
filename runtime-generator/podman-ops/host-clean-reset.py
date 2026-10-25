@@ -788,6 +788,7 @@ def binding(root, expected):
     if receipt['phase'] == 'retired-clean':
         selection['pin']['priorCompletedReset'] = prior_completed_reset(root, receipt)
     selection['pin']['originalFixtureProfiles'] = original_fixture_profiles(selection)
+    selection['pin']['emptyRootfulLogNamespaces'] = empty_rootful_log_namespaces(selection)
     return selection
 
 
@@ -1174,6 +1175,22 @@ def original_fixture_profiles(selection):
             str(media / 'seafile-media'): profile(0o755, other=5)}
 
 
+def empty_rootful_log_namespaces(selection):
+    """Closed empty Caddy host-parent role, not a fixture or data-adoption rule."""
+    if selection.get('receipt', {}).get('phase') != 'retired-clean': return {}
+    caddy = selection.get('ir', {}).get('services', {}).get('caddy', {})
+    root = SCOPE / 'volumes'; logs = root / '_logs'; leaf = logs / 'caddy'
+    if not (caddy.get('module') == 'caddy' and caddy.get('placement', 'rootful') == 'rootful'
+            and caddy.get('rootlessDomain') is None
+            and caddy.get('volumes', []).count(str(leaf) + ':/var/log/caddy') == 1): return {}
+    entries = sorted([[1, 7, UNDEFINED], [2, 7, 1000], [4, 7, UNDEFINED],
+                      [16, 7, UNDEFINED], [32, 0, UNDEFINED]])
+    def profile(children):
+        return {'uid': 0, 'gid': 1000, 'mode': 0o2770, 'acl': entries,
+                'defaultAcl': entries, 'children': children}
+    return {str(root): profile(['_logs']), str(logs): profile(['caddy']), str(leaf): profile([])}
+
+
 def original_overlay_graphs(selection):
     helpers = selection.get('pin', {}).get('helpers', {}); receipt = selection.get('receipt', {})
     installer = '7d7f7b8758ab5320ea8d7614fe5be5493c717ff28e9d0f10a88afdf7078b3bf2'
@@ -1370,6 +1387,9 @@ def _scan(fd, selection, base, retain, resources):
     retain = set(retain or ())
     nodes = []; links = {}; initial = fingerprint(os.fstat(fd)); device = initial[0]
     fixtures = original_fixture_profiles(selection) if base == SCOPE else {}
+    log_namespaces = empty_rootful_log_namespaces(selection) if base == SCOPE else {}
+    require(not set(fixtures) & set(log_namespaces), 'Conflicting source directory roles')
+    profiles = dict(fixtures, **log_namespaces)
     directories = {}; catalogs = {}
     def visit(parent, relative):
         for name in sorted(os.listdir(parent)):
@@ -1385,16 +1405,17 @@ def _scan(fd, selection, base, retain, resources):
             if base != SCOPE:
                 actor = selection.get('externalActor'); owner = actor['name'] if actor else None
             shared = selected in retain and selected in selection['policies']
-            fixture = fixtures.get(str(selected))
+            fixture = profiles.get(str(selected))
             if fixture is not None:
                 require(actor is None and not shared and not selected in retain and stat.S_ISDIR(info.st_mode)
                         and (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode))
-                            == (fixture['uid'], fixture['gid'], fixture['mode']), 'Original fixture directory identity/profile differs')
+                            == (fixture['uid'], fixture['gid'], fixture['mode']), 'Source-qualified directory identity/profile differs')
             require(shared or fixture is not None or (owns(info.st_uid, actor) and owns(info.st_gid, actor, True)),
                     'Foreign or cross-domain UID/GID in exact scope')
             require(shared or actor is not None or stat.S_ISLNK(info.st_mode) or not info.st_mode & 0o002,
                     'Public-writable temporary artifact outside a private domain')
             node = {'path': rel, 'stat': fingerprint(info), 'domain': owner, 'retain': selected in retain}
+            if str(selected) in log_namespaces: node['sourceEmptyRootfulLogNamespace'] = True
             nodes.append(node)
             if stat.S_ISDIR(info.st_mode):
                 node['kind'] = 'directory'
@@ -1407,7 +1428,7 @@ def _scan(fd, selection, base, retain, resources):
                         require(node['acl'] == fixture['acl'] and node['defaultAcl'] == fixture['defaultAcl']
                                 and sorted(os.listdir(child)) == fixture['children']
                                 and info.st_nlink == 2 + len(fixture['children']),
-                                'Original empty fixture ACL/membership differs; no adoption or repair')
+                                'Source-qualified empty directory ACL/membership differs; no adoption or repair')
                     elif shared or (selected in selection['roots'] and selected in selection['policies']):
                         require(custody(child) == selection['policies'][selected], 'Sealed scoped directory CAS changed')
                     else:

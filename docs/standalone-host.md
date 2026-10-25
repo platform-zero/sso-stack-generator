@@ -82,6 +82,15 @@ application acceptance or cold-store credit; the normal zero-container/volume/
 Buildah and all other custody checks remain mandatory. No layer contents are
 opened or walked by this classification.
 
+For a retired-clean selection, the exact source-declared rootful Caddy
+`volumes/_logs/caddy:/var/log/caddy` mount also identifies its three **empty**
+Root-owned/operator-group namespace parents. Their full mode, access/default
+ACL, child membership and link count must match the closed private profile.
+This is neither a fixture nor a rule for adopting populated log data: any new
+child, changed ACL/owner or different source mount refuses without repair.
+Operator build caches are not application scope; keep the session-isolated
+Gradle cache outside the native reset scope, never classify it as service data.
+
 A standalone site:
 
 - uses the ordinary `webservices` unit namespace, not the isolated venue profile;

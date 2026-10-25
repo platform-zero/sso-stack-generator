@@ -139,4 +139,27 @@ class MappedReadonlyCache(unittest.TestCase):
         self.images[0]['mapped-layers']=[self.clone,self.clone]
         with self.assertRaises(m.Refusal):self.classify()
 
+class EmptyLogNamespaces(unittest.TestCase):
+    def setUp(self):
+        self.caddy=dict(module='caddy',placement='rootful',rootlessDomain=None,
+            volumes=[str(m.SCOPE/'volumes/_logs/caddy')+':/var/log/caddy'])
+        self.selection=dict(receipt={'phase':'retired-clean'},ir=dict(services={'caddy':self.caddy}))
+    def test_only_three_exact_empty_source_parent_roles_not_fixture_or_data_authority(self):
+        profiles=m.empty_rootful_log_namespaces(self.selection)
+        self.assertEqual(len(profiles),3)
+        leaf=profiles[str(m.SCOPE/'volumes/_logs/caddy')]
+        self.assertEqual(leaf['children'],[]);self.assertEqual((leaf['uid'],leaf['gid'],leaf['mode']),(0,1000,0o2770))
+        self.assertEqual(leaf['acl'],leaf['defaultAcl'])
+    def test_source_namespace_phase_or_module_drift_has_no_role(self):
+        for key,value in (('module','foreign'),('placement','rootless'),('rootlessDomain','apps')):
+            old=self.caddy[key];self.caddy[key]=value
+            self.assertEqual(m.empty_rootful_log_namespaces(self.selection),{});self.caddy[key]=old
+        self.selection['receipt']['phase']='active'
+        self.assertEqual(m.empty_rootful_log_namespaces(self.selection),{})
+    def test_foreign_or_duplicate_mount_cannot_authorize_namespace(self):
+        self.caddy['volumes']=['/foreign:/var/log/caddy']
+        self.assertEqual(m.empty_rootful_log_namespaces(self.selection),{})
+        self.caddy['volumes']=[str(m.SCOPE/'volumes/_logs/caddy')+':/var/log/caddy']*2
+        self.assertEqual(m.empty_rootful_log_namespaces(self.selection),{})
+
 if __name__=='__main__':unittest.main()
