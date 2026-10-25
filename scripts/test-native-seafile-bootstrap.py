@@ -141,6 +141,17 @@ class Models(unittest.TestCase):
    f.cids=[]
    self.assertEqual(f.observe_database_self_signal(),'own-helper-self-signal-unavailable')
    self.assertEqual(f.command.call_count,3)
+ def test_mac_assignment_observation_never_emits_profile_labels_or_uses_foreign_cid(self):
+  with tempfile.TemporaryDirectory() as temp:
+   f=self.fixture(temp);f.cids=[CID];f.database_cid=CID
+   f.command=mock.Mock(return_value=types.SimpleNamespace(returncode=0,stdout=b'"private-fixture-label"'))
+   self.assertEqual(f.observe_database_mac_assignment(),'engine-other-assigned-profile')
+   self.assertEqual(f.command.call_args.args[0],['inspect','--format={{json .AppArmorProfile}}',CID])
+   f.command.return_value.stdout=b'""'
+   self.assertEqual(f.observe_database_mac_assignment(),'engine-unassigned')
+   f.cids=[]
+   self.assertEqual(f.observe_database_mac_assignment(),'own-mac-assignment-unavailable')
+   self.assertEqual(f.command.call_count,2)
  def cgroup_fixture(self,temp,membership=None,contents=b'12001\n'):
   root=Path(temp);f=self.fixture(temp);f.cids=[CID];f.database_cid=CID
   f.state=mock.Mock(return_value=dict(Running=True,Pid=12001))
@@ -154,7 +165,7 @@ class Models(unittest.TestCase):
   (proc/'12001/wchan').write_text('io_schedule\n')
   (proc/'12001/syscall').write_bytes(b'202 0xdeadbeef private-fixture-secret\n')
   (proc/'12001/status').write_bytes(b'SigIgn:\t0\nSigBlk:\t4000\nSigPnd:\t0\nShdPnd:\t0\nSeccomp_filters:\t2\n')
-  (proc/'12001/attr').mkdir();(proc/'12001/attr/current').write_bytes(b'containers-default-model (enforce)\n')
+  (proc/'12001/attr').mkdir();(proc/'12001/attr/current').write_bytes(b':model-namespace://containers-default-model (enforce)\x00\n')
   (root/'model-pidfd').touch()
   return f,proc,group,root/'model-pidfd'
  def test_process_observation_is_exact_own_nonempty_cgroup_and_fixed_roles_only(self):
@@ -173,6 +184,7 @@ class Models(unittest.TestCase):
          macClass='default-container-enforced')]))
    self.assertNotIn('12001',str(result));self.assertNotIn(CID,str(result))
    self.assertNotIn('0xdeadbeef',str(result));self.assertNotIn('private-fixture-secret',str(result))
+   self.assertNotIn('model-namespace',str(result))
  def test_exact_own_container_leaf_is_allowed_without_parent_or_global_fallback(self):
   with tempfile.TemporaryDirectory() as temp:
    f,proc,group,pidfile=self.cgroup_fixture(temp)

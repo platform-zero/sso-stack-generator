@@ -268,6 +268,7 @@ class Fresh:
             databaseProcesses=getattr(self, 'database_process_observation', {'status': 'not-observed'}),
             databaseInstallerDefaults=getattr(self, 'database_installer_observation', 'not-observed'),
             databaseSelfSignal=getattr(self, 'database_self_signal_observation', 'not-observed'),
+            databaseMacPolicy=getattr(self, 'database_mac_observation', 'not-observed'),
             applicationAcceptance=False))
         temporary = directory / ('.temporary-' + secrets.token_hex(16))
         self.file(temporary, body)
@@ -487,6 +488,22 @@ class Fresh:
         except BaseException:
             return 'own-helper-self-signal-unavailable'
 
+    def observe_database_mac_assignment(self):
+        try:
+            cid = getattr(self, 'database_cid', None)
+            self.require(cid in self.cids and isinstance(cid, str) and self.p.HEX.fullmatch(cid),
+                         'Foreign MAC assignment observation refused')
+            result = self.command(['inspect', '--format={{json .AppArmorProfile}}', cid],
+                                  cleanup=True, allow_failure=True, timeout=10)
+            self.require(result.returncode == 0, 'Own MAC assignment unavailable')
+            profile = json.loads(result.stdout)
+            self.require(isinstance(profile, str) and len(profile) <= 512, 'Own MAC assignment bound refused')
+            return ('engine-unassigned' if not profile else 'engine-default-container-profile'
+                    if profile.startswith(('containers-default', 'docker-default', 'container-default'))
+                    else 'engine-other-assigned-profile')
+        except BaseException:
+            return 'own-mac-assignment-unavailable'
+
     def observe_database_processes(self):
         """Only an exact nonempty own CID cgroup; never enumerate/fall back globally."""
         opened = []
@@ -587,10 +604,12 @@ class Fresh:
                 filters = int(status[b'Seccomp_filters'].strip())
                 self.require(0 <= filters <= 32, 'Own thread filter count bound refused')
                 attribute = directory(PROC / str(selected) / 'attr')
-                label = read(attribute, 'current', 512).strip()
+                label = read(attribute, 'current', 512).strip(b'\x00 \t\r\n')
                 label_class = ('unconfined' if label == b'unconfined' else
-                    'default-container-enforced' if label.startswith((b'containers-default', b'docker-default'))
-                    and label.endswith(b' (enforce)') else 'other-or-unavailable')
+                    'default-container-enforced' if any(value in label for value in
+                    (b'containers-default', b'docker-default', b'container-default', b'cri-containerd.apparmor.d')) else
+                    'user-namespace-enforced' if b'unprivileged_userns' in label else
+                    'outer-container-enforced' if b'lxc-' in label else 'other-or-unavailable')
                 rows.append(dict(role=role, state=states.get(fields[0], 'other'),
                     wait=waits.get(read(fd, 'wchan').strip(), 'other'), syscall=syscall,
                     terminationIgnored=bool(ignored & sigterm), terminationBlocked=bool(blocked & sigterm),
@@ -808,6 +827,7 @@ class Fresh:
             try:
                 self.database_installer_observation = self.observe_installer_defaults()
                 self.database_self_signal_observation = self.observe_database_self_signal()
+                self.database_mac_observation = self.observe_database_mac_assignment()
                 self.database_process_observation = self.observe_database_processes()
                 self.temporary_evidence('preparation-failed')
             except BaseException:

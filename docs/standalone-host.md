@@ -205,6 +205,8 @@ whether self-termination is permitted. Its deliberate exit is not a service stop
 or a clean-stop proof. Its outcome distinguishes refusal from an ignored signal.
 Own-thread observations may classify SIGTERM ignored/blocked/pending bits, bounded
 seccomp filter counts and only predefined MAC classes, never raw labels or masks.
+The exact own-CID engine MAC assignment is classified separately from the held
+kernel thread's namespace-qualified label, without emitting either name.
 These are observations only, not permission
 to raise a limit, change host policy, or weaken readiness/stop gates. No exception text,
 environment, service source, child log, or secret is a diagnostic field. The database's
