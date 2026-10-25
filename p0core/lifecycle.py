@@ -49,16 +49,17 @@ class Runner:
             raise OperationError('owned control input exceeds bound')
         deadline = time.monotonic() + timeout
         process = subprocess.Popen(arguments, stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
-                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
                                    cwd=Path.home(), env={'PATH': '/usr/bin:/bin', 'HOME': str(Path.home()),
                                         'XDG_RUNTIME_DIR': f'/run/user/{os.getuid()}', 'LC_ALL': 'C'})
         selector = selectors.DefaultSelector()
-        content = bytearray()
+        content, diagnostics = bytearray(), bytearray()
         try:
             if input_bytes is not None:
                 process.stdin.write(input_bytes)
                 process.stdin.close()
-            selector.register(process.stdout, selectors.EVENT_READ)
+            selector.register(process.stdout, selectors.EVENT_READ, 'stdout')
+            selector.register(process.stderr, selectors.EVENT_READ, 'stderr')
             while selector.get_map():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -68,12 +69,22 @@ class Runner:
                     if not chunk:
                         selector.unregister(key.fd)
                         continue
-                    if len(content) + len(chunk) > 1024 * 1024:
+                    if len(content) + len(diagnostics) + len(chunk) > 1024 * 1024:
                         raise OperationError('owned control response exceeds bound')
-                    content.extend(chunk)
+                    (content if key.data == 'stdout' else diagnostics).extend(chunk)
             process.wait(timeout=max(0.001, deadline - time.monotonic()))
             if process.returncode != 0:
-                raise OperationError('owned control command failed; no raw service output disclosed')
+                patterns = {b'go.mod requires go >=': 'go-toolchain-too-old',
+                            b'GOTOOLCHAIN=local': 'toolchain-auto-download-disabled',
+                            b'permission denied': 'permission-denied', b'no such file': 'missing-file',
+                            b'no space left': 'storage-full', b'TLS handshake timeout': 'network-tls-timeout',
+                            b'i/o timeout': 'network-timeout', b'network is unreachable': 'network-unreachable',
+                            b'checksum mismatch': 'checksum-mismatch', b'undefined:': 'compiler-undefined-symbol',
+                            b'not found': 'missing-reference', b'connection refused': 'connection-refused'}
+                observed = bytes(content) + bytes(diagnostics)
+                classes = sorted({label for text, label in patterns.items() if text in observed})
+                raise OperationError('owned control command failed (status ' + str(process.returncode)
+                                     + '; classes ' + ','.join(classes) + '); no raw output disclosed')
             return bytes(content)
         except BaseException as error:
             # The unreaped direct child's PID cannot be recycled here. Kill
@@ -95,6 +106,7 @@ class Runner:
         finally:
             selector.close()
             process.stdout.close()
+            process.stderr.close()
             if process.stdin is not None and not process.stdin.closed:
                 process.stdin.close()
 

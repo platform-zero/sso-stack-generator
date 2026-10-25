@@ -97,6 +97,13 @@ class RunnerBoundsTests(unittest.TestCase):
         with self.assertRaisesRegex(OperationError, 'response exceeds bound'):
             Runner()(['/usr/bin/python3', '-I', '-c', 'import sys; sys.stdout.buffer.write(b"x" * 2097152)'])
 
+    def test_failed_stderr_exposes_only_static_class_and_status(self):
+        with self.assertRaises(OperationError) as raised:
+            Runner()(['/usr/bin/python3', '-I', '-c', 'import sys; sys.stderr.write("permission denied SYNTHETIC_PRIVATE_CANARY"); sys.exit(3)'])
+        self.assertIn('permission-denied', str(raised.exception))
+        self.assertIn('status 3', str(raised.exception))
+        self.assertNotIn('SYNTHETIC_PRIVATE_CANARY', str(raised.exception))
+
     def test_deadline_and_input_bound(self):
         with self.assertRaisesRegex(OperationError, 'timed out'):
             Runner()(['/usr/bin/python3', '-I', '-c', 'import time; time.sleep(20)'], timeout=0.05)
