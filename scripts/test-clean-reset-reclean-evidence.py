@@ -118,6 +118,16 @@ class MappedReadonlyCache(unittest.TestCase):
     def test_registry_source_drift_or_missing_actor_refused(self):
         self.selection['pin']['sourceInputs']['site/global.settings/registry-image-ids.json']['sha256']='0'*64
         with self.assertRaises(m.Refusal):self.classify()
+    def test_closed_historical_selector_envelope_preserves_release_receipt_binding(self):
+        scopes=self.selection['pin']['selection'];self.selection['receipt']={'phase':'retired-clean'}
+        self.selection['pin']['intentSha256']='1'*64
+        wrapper=dict(bundle=str(self.selection['release']),inputs={},receipt={'phase':'retired-clean','sha256':'1'*64},scopes=scopes)
+        self.selection['pin']['selection']=wrapper
+        self.assertIn(self.clone,self.classify())
+        for key,value in (('bundle','/foreign'),('receipt',{'phase':'active','sha256':'1'*64})):
+            original=wrapper[key];wrapper[key]=value
+            with self.subTest(key=key),self.assertRaises(m.Refusal):self.classify()
+            wrapper[key]=original
     def test_changed_or_unselected_quadlet_has_no_cache_authority(self):
         path=next(iter(self.quadlets));self.quadlets[path]+=b'Image=registry.invalid/foreign\n'
         with self.assertRaises(m.Refusal):self.classify()

@@ -2099,6 +2099,16 @@ def mapped_readonly_layers(selection, rows, image_rows):
     registry = strict(body)
     require(isinstance(registry, dict), 'Mapped cache registry source malformed')
     selected_ids = set()
+    source_plan = selection['pin']['selection']
+    if 'scopes' in source_plan:
+        # Closed historical helper envelope: retain its bound release/receipt,
+        # not an arbitrary caller-supplied scope projection.
+        require(set(source_plan) == {'bundle', 'inputs', 'receipt', 'scopes'}
+                and source_plan['bundle'] == str(selection['release'])
+                and source_plan['receipt'] == {'phase': selection['receipt']['phase'],
+                                               'sha256': selection['pin']['intentSha256']}
+                and isinstance(source_plan['scopes'], dict), 'Historical selected-source envelope differs')
+        source_plan = source_plan['scopes']
     for service_name in ('seafile', 'mariadb', 'valkey'):
         service = selection['ir']['services'].get(service_name)
         require(isinstance(service, dict), 'Complete native prep image source required')
@@ -2106,7 +2116,7 @@ def mapped_readonly_layers(selection, rows, image_rows):
         row = next((row for row in selection['rows'] if row['name'] == domain), None)
         require(row is not None and domain in ('apps', 'platform'), 'Native prep image domain differs')
         relative = 'quadlet/rootless-' + domain + '/webservices-' + service_name + '.container'
-        selected = selection['pin']['selection'].get('rootless-' + domain, {}).get('files', {}).get(relative)
+        selected = source_plan.get('rootless-' + domain, {}).get('files', {}).get(relative)
         require(isinstance(selected, dict), 'Mapped cache image needs exact selected Quadlet source')
         quadlet, _ = read_file(selection['release'] / relative)
         require(sha(quadlet) == selected.get('sha256'), 'Mapped cache selected Quadlet source CAS changed')
