@@ -60,6 +60,7 @@ class DatabaseConsoleObservations:
         (b'128 rollback segments', 'innodb-rollback-initialized'),
         (b'Failed to initialize', 'server-initialization-refused'),
         (b'Aborting', 'server-aborting'),
+        (b'Signal handler thread did not exit in a timely manner', 'server-signal-thread-exit-stalled'),
     )
 
     def __init__(self):
@@ -266,6 +267,7 @@ class Fresh:
             databaseConsole=(self.database_console.snapshot() if hasattr(self, 'database_console') else []),
             databaseProcesses=getattr(self, 'database_process_observation', {'status': 'not-observed'}),
             databaseInstallerDefaults=getattr(self, 'database_installer_observation', 'not-observed'),
+            databaseSelfSignal=getattr(self, 'database_self_signal_observation', 'not-observed'),
             applicationAcceptance=False))
         temporary = directory / ('.temporary-' + secrets.token_hex(16))
         self.file(temporary, body)
@@ -468,6 +470,20 @@ class Fresh:
                     (b'--verbose', b'--verbose=1', b'--verbose=ON')) else 'installer-verbose-not-enabled')
         except BaseException:
             return 'installer-defaults-unavailable'
+
+    def observe_database_self_signal(self):
+        try:
+            cid = getattr(self, 'database_cid', None)
+            self.require(cid in self.cids and isinstance(cid, str) and self.p.HEX.fullmatch(cid),
+                         'Foreign self-signal observation refused')
+            # Dedicated exec helper signals ONLY itself, never the server or
+            # another container/host PID. Not a service stop or clean-stop proof.
+            result = self.command(['exec', cid, '/bin/sh', '-c',
+                'test "$$" -gt 1 || exit 41; kill -TERM "$$"; exit 42'], timeout=10, allow_failure=True)
+            return ('own-helper-self-signal-permitted' if result.returncode in (143, -15)
+                    else 'own-helper-self-signal-not-established')
+        except BaseException:
+            return 'own-helper-self-signal-unavailable'
 
     def observe_database_processes(self):
         """Only an exact nonempty own CID cgroup; never enumerate/fall back globally."""
@@ -775,6 +791,7 @@ class Fresh:
         except BaseException as error:
             try:
                 self.database_installer_observation = self.observe_installer_defaults()
+                self.database_self_signal_observation = self.observe_database_self_signal()
                 self.database_process_observation = self.observe_database_processes()
                 self.temporary_evidence('preparation-failed')
             except BaseException:

@@ -199,7 +199,10 @@ Empty/foreign/global/unavailable cgroups have no global process fallback. The ex
 own scope/container cgroups can additionally expose bounded task counts, declared
 task limits and limit-event counters. One exact own-CID `my_print_defaults`
 probe may classify only whether installer verbosity is enabled; no option values
-are emitted or retained. These are observations only, not permission
+are emitted or retained. A dedicated exec helper in the exact own CID may also
+signal only itself (never the database or another host/container PID) to classify
+whether self-termination is permitted. Its deliberate exit is not a service stop
+or a clean-stop proof. These are observations only, not permission
 to raise a limit, change host policy, or weaken readiness/stop gates. No exception text,
 environment, service source, child log, or secret is a diagnostic field. The database's
 isolated network gets a deterministic source-derived hostname with a local readonly

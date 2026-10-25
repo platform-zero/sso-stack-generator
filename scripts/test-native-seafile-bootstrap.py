@@ -128,6 +128,17 @@ class Models(unittest.TestCase):
    f.cids=[]
    self.assertEqual(f.observe_installer_defaults(),'installer-defaults-unavailable')
    self.assertEqual(f.command.call_count,1)
+ def test_dedicated_own_exec_helper_signals_only_itself_not_server_or_host_pid(self):
+  with tempfile.TemporaryDirectory() as temp:
+   f=self.fixture(temp);f.cids=[CID];f.database_cid=CID
+   f.command=mock.Mock(return_value=types.SimpleNamespace(returncode=143,stdout=b'private-fixture-secret'))
+   self.assertEqual(f.observe_database_self_signal(),'own-helper-self-signal-permitted')
+   self.assertEqual(f.command.call_args.args[0],['exec',CID,'/bin/sh','-c','test "$$" -gt 1 || exit 41; kill -TERM "$$"; exit 42'])
+   f.command.return_value.returncode=42
+   self.assertEqual(f.observe_database_self_signal(),'own-helper-self-signal-not-established')
+   f.cids=[]
+   self.assertEqual(f.observe_database_self_signal(),'own-helper-self-signal-unavailable')
+   self.assertEqual(f.command.call_count,2)
  def cgroup_fixture(self,temp,membership=None,contents=b'12001\n'):
   root=Path(temp);f=self.fixture(temp);f.cids=[CID];f.database_cid=CID
   f.state=mock.Mock(return_value=dict(Running=True,Pid=12001))
