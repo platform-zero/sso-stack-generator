@@ -47,6 +47,11 @@ class DatabaseConsoleObservations:
         (b'Resource temporarily unavailable', 'resource-temporarily-unavailable'),
         (b'No space left', 'filesystem-capacity-refused'),
         (b'io_uring_queue_init() failed', 'io-uring-unavailable'),
+        (b'falling back to libaio', 'native-aio-fallback-observed'),
+        (b'Initializing buffer pool', 'innodb-buffer-initializing'),
+        (b'Completed initialization of buffer pool', 'innodb-buffer-initialized'),
+        (b'Setting file', 'innodb-file-allocation-observed'),
+        (b'128 rollback segments', 'innodb-rollback-initialized'),
         (b'Failed to initialize', 'server-initialization-refused'),
         (b'Aborting', 'server-aborting'),
     )
