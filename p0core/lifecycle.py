@@ -43,7 +43,7 @@ class Runner:
         try:
             result = subprocess.run(arguments, input=input_bytes, stdout=subprocess.PIPE,
                                     stderr=subprocess.DEVNULL, timeout=timeout, check=False,
-                                    env={'PATH': '/usr/bin:/bin', 'HOME': str(Path.home()),
+                                    cwd=Path.home(), env={'PATH': '/usr/bin:/bin', 'HOME': str(Path.home()),
                                          'XDG_RUNTIME_DIR': f'/run/user/{os.getuid()}', 'LC_ALL': 'C'})
         except subprocess.TimeoutExpired as error:
             raise OperationError('owned control command timed out; effects require reconciliation') from error

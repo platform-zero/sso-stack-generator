@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from p0core.bundle import build
-from p0core.lifecycle import Lifecycle, OperationError
+from p0core.lifecycle import Lifecycle, OperationError, Runner
 from p0core.model import Catalog, ContractError
 from test_core import module, service, IMAGE
 
@@ -54,6 +54,13 @@ class LifecycleTests(unittest.TestCase):
             self.assertFalse(any('start' in arguments for arguments in runner.calls))
             self.assertFalse(output['installationCertified'])
             self.assertTrue((runtime.quadlet / 'p0-app.container').exists())
+
+    def test_control_runner_uses_runtime_home_not_callers_private_cwd(self):
+        with patch('p0core.lifecycle.subprocess.run', return_value=subprocess.CompletedProcess([], 0, b'')) as execute:
+            Runner()(['/usr/bin/podman', 'info'])
+            self.assertEqual(execute.call_args.kwargs['cwd'], Path.home())
+            self.assertEqual(execute.call_args.kwargs['env']['HOME'], str(Path.home()))
+            self.assertNotIn('CONTAINERS_CONF', execute.call_args.kwargs['env'])
 
     def test_capacity_failure_prevents_engine_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
