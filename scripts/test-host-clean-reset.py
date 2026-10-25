@@ -168,7 +168,7 @@ class Clean(unittest.TestCase):
             'volumePath': m.ROOT_GRAPH + '/volumes'}, 'host': {'security': {'rootless': False}, 'networkBackend': 'netavark'}}
         self.patch(m, 'default_context', new=lambda: copy.deepcopy(self.root_context))
         self.patch(m, 'root_runtime_identity', new=lambda: {'user': 'user:[model0]', 'net': 'net:[model0]'})
-        self.patch(m, 'layer_inventory', new=lambda: {'ids': list(self.engine['layers']),
+        self.patch(m, 'layer_inventory', new=lambda selection=None: {'ids': list(self.engine['layers']),
             'control': {'sha256': m.sha(m.canonical({'ids': self.engine['layers']}))},
             'disk': {'layers': sorted(set(self.engine['layers'] + self.engine['orphanLayers'])), 'lowerLinks': {}},
             'imageDirectories': {'ids': list(self.engine['orphanImageDirs'])}})

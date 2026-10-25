@@ -71,4 +71,47 @@ class PriorEvidence(unittest.TestCase):
         self.receipt['completeCleanReset']['planSha256']=m.sha(m.canonical(self.plan))
         with self.assertRaises(m.Refusal):self.validate()
 
+class MappedReadonlyCache(unittest.TestCase):
+    def setUp(self):
+        self.image='a'*64;self.original='b'*64;self.clone='c'*64
+        self.base=dict(id=self.original,parent='d'*64,created='model',**{'diff-digest':'sha256:'+'e'*64,
+            'diff-size':100,'compressed-diff-digest':'sha256:'+'f'*64,'compressed-size':50,'compression':1})
+        self.layer=dict(self.base,id=self.clone,uidmap=[dict(container_id=0,host_id=780,size=1),dict(container_id=1,host_id=2000000,size=65536)],
+            gidmap=[dict(container_id=0,host_id=780,size=1),dict(container_id=1,host_id=2000000,size=65536)])
+        self.images=[{'id':self.image,'layer':self.original,'mapped-layers':[self.clone]}]
+        services={name:dict(image='registry.invalid/'+name,rootlessDomain='apps' if name=='seafile' else 'platform') for name in ('seafile','mariadb','valkey')}
+        rows=[dict(name=name,user='model-'+name) for name in ('apps','platform')]
+        registry={('model-'+value['rootlessDomain'])+'|'+value['image']:'sha256:'+self.image for value in services.values()}
+        self.body=m.canonical(registry);self.pin={'fixture':'source-stat'}
+        self.selection=dict(release=Path('/model/release'),ir=dict(services=services),rows=rows,
+            actors={name:dict(uid=uid,gid=uid,start=start) for name,uid,start in (('apps',780,2000000),('platform',781,2100000))},
+            pin=dict(sourceInputs={'site/global.settings/registry-image-ids.json':dict(sha256=m.sha(self.body),stat=self.pin)}))
+        patcher=patch.object(m,'read_file',side_effect=lambda *a,**kw:(self.body,self.pin));patcher.start();self.addCleanup(patcher.stop)
+    def classify(self):return m.mapped_readonly_layers(self.selection,[self.base,self.layer],self.images)
+    def test_exact_scoped_image_clone_is_only_retained_not_cold_or_execution_proof(self):
+        result=self.classify();self.assertEqual(result[self.clone]['uid'],780)
+        self.assertTrue(result[self.clone]['retainedReadOnlyCache']);self.assertFalse(result[self.clone]['coldStoreAcceptance'])
+    def test_unknown_image_or_unindexed_clone_has_no_owner_exception(self):
+        self.images[0]['id']='0'*64;self.assertEqual(self.classify(),{})
+        self.images[0]['id']=self.image;self.images[0]['mapped-layers']=[];self.assertEqual(self.classify(),{})
+        self.assertEqual(m.mapped_readonly_layers(None,[self.base,self.layer],self.images),{})
+    def test_foreign_or_boolean_namespace_refused(self):
+        original=copy.deepcopy(self.layer)
+        for key,value in (('host_id',1000),('size',True),('container_id',True)):
+            self.layer=copy.deepcopy(original);self.layer['uidmap'][0][key]=value
+            with self.subTest(key=key),self.assertRaises(m.Refusal):self.classify()
+    def test_changed_payload_parent_or_writable_metadata_refused(self):
+        original=copy.deepcopy(self.layer)
+        for key,value in (('diff-digest','sha256:'+'0'*64),('parent','0'*64),('flags',{'writable':True}),('diff-size',True)):
+            self.layer=copy.deepcopy(original);self.layer[key]=value
+            with self.subTest(key=key),self.assertRaises(m.Refusal):self.classify()
+    def test_registry_source_drift_or_missing_actor_refused(self):
+        self.selection['pin']['sourceInputs']['site/global.settings/registry-image-ids.json']['sha256']='0'*64
+        with self.assertRaises(m.Refusal):self.classify()
+    def test_indexed_clone_requires_exact_layer_and_unique_declared_map(self):
+        self.images[0]['mapped-layers']=['0'*64]
+        with self.assertRaises(m.Refusal):self.classify()
+        self.images[0]['mapped-layers']=[self.clone,self.clone]
+        with self.assertRaises(m.Refusal):self.classify()
+
 if __name__=='__main__':unittest.main()

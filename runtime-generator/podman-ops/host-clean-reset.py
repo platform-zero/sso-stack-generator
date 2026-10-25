@@ -2083,7 +2083,80 @@ def kernel_absence(mapping):
             'Selected kernel interface/address/route remains; no manual kernel cleanup allowed')
 
 
-def layer_disk_inventory():
+def mapped_readonly_layers(selection, rows, image_rows):
+    """Retain only indexed immutable image clones for the exact two native prep maps.
+
+    No cache layer is opened, adopted, chowned or removed. This grants neither
+    execution authority nor cold-store credit. Unindexed/writable/foreign maps
+    retain the original refusal behavior.
+    """
+    if selection is None: return {}
+    name = 'site/global.settings/registry-image-ids.json'
+    source = selection['pin']['sourceInputs'].get(name)
+    require(isinstance(source, dict), 'Mapped image cache needs receipted registry identities')
+    body, pin = read_file(selection['release'] / name)
+    require(sha(body) == source['sha256'] and pin == source['stat'], 'Mapped cache registry source CAS changed')
+    registry = strict(body)
+    require(isinstance(registry, dict), 'Mapped cache registry source malformed')
+    selected_ids = set()
+    for service_name in ('seafile', 'mariadb', 'valkey'):
+        service = selection['ir']['services'].get(service_name)
+        require(isinstance(service, dict), 'Complete native prep image source required')
+        domain = service.get('rootlessDomain')
+        row = next((row for row in selection['rows'] if row['name'] == domain), None)
+        require(row is not None and domain in ('apps', 'platform'), 'Native prep image domain differs')
+        image = registry.get(row['user'] + '|' + service['image'])
+        require(isinstance(image, str) and image.startswith('sha256:') and HEX.fullmatch(image[7:]),
+                'Native prep immutable image identity missing')
+        selected_ids.add(image[7:])
+    indexed = {row['id']: row for row in rows}; result = {}
+    for image in image_rows:
+        require(isinstance(image, dict), 'Mapped image index malformed')
+        mapped = image.get('mapped-layers', [])
+        if not mapped: continue
+        if image.get('id') not in selected_ids: continue
+        require(isinstance(mapped, list) and len(mapped) <= 32 and len(set(mapped)) == len(mapped),
+                'Mapped image clone index ambiguous')
+        original = indexed.get(image.get('layer'))
+        require(isinstance(original, dict) and not original.get('uidmap') and not original.get('gidmap')
+                and isinstance(original.get('diff-digest'), str)
+                and re.fullmatch(r'sha256:[a-f0-9]{64}', original['diff-digest']), 'Mapped image original layer differs')
+        for layer_id in mapped:
+            require(isinstance(layer_id, str) and HEX.fullmatch(layer_id) and layer_id in indexed,
+                    'Mapped image clone absent from layer index')
+            layer = indexed[layer_id]
+            require(set(layer) <= {'id', 'parent', 'created', 'compressed-diff-digest', 'compressed-size',
+                                  'compression', 'diff-digest', 'diff-size', 'uidmap', 'gidmap', 'uidset', 'gidset'}
+                    and all(type(layer.get(key)) is int and layer[key] >= 0 for key in ('diff-size', 'compressed-size')),
+                    'Mapped image clone is not reviewed read-only metadata')
+            require(layer.get('parent') == original.get('parent')
+                    and all(layer.get(key) == original.get(key) for key in
+                        ('diff-digest', 'diff-size', 'compressed-diff-digest', 'compressed-size', 'compression')),
+                    'Mapped image clone is not the same immutable layer')
+            require(all(isinstance(layer.get(key), list) and len(layer[key]) == 2
+                        and all(isinstance(entry, dict) and set(entry) == {'container_id', 'host_id', 'size'}
+                                and all(type(value) is int and value >= 0 for value in entry.values())
+                                for entry in layer[key]) for key in ('uidmap', 'gidmap')),
+                    'Mapped image clone namespace shape differs')
+            matches = []
+            for domain in ('apps', 'platform'):
+                actor = selection['actors'][domain]
+                uidmap = [dict(container_id=0, host_id=actor['uid'], size=1),
+                          dict(container_id=1, host_id=actor['start'], size=65536)]
+                gidmap = [dict(container_id=0, host_id=actor['gid'], size=1),
+                          dict(container_id=1, host_id=actor['start'], size=65536)]
+                if layer.get('uidmap') == uidmap and layer.get('gidmap') == gidmap:
+                    matches.append((actor['uid'], actor['gid']))
+            require(len(matches) == 1, 'Mapped image clone namespace is foreign or ambiguous')
+            record = {'uid': matches[0][0], 'gid': matches[0][1], 'imageId': image['id'],
+                      'layerMetadataSha256': sha(canonical(layer)), 'registrySource': source,
+                      'retainedReadOnlyCache': True, 'coldStoreAcceptance': False}
+            require(layer_id not in result or result[layer_id] == record, 'Mapped image clone has conflicting owners')
+            result[layer_id] = record
+    return result
+
+
+def layer_disk_inventory(mapped=None):
     # Two fixed metadata-directory levels only. NEVER descend into a layer,
     # diff, merged, work, writable contents, volume or other engine directory.
     # Empty JSON alone cannot prove that orphaned disk layer/cache data is cold.
@@ -2095,7 +2168,13 @@ def layer_disk_inventory():
             entries = {}; layers = []; lower = {}
             for name in sorted(names):
                 info = os.stat(name, dir_fd=fd, follow_symlinks=False)
-                require(info.st_uid == info.st_gid == 0, 'Foreign rootful disk layer metadata custody')
+                mapped_owner = (mapped or {}).get(name)
+                if mapped_owner is None:
+                    require(info.st_uid == info.st_gid == 0, 'Foreign rootful disk layer metadata custody')
+                else:
+                    require(stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700
+                            and (info.st_uid, info.st_gid) == (mapped_owner['uid'], mapped_owner['gid']),
+                            'Exact mapped immutable cache directory custody differs')
                 entries[name] = fingerprint(info)
                 if HEX.fullmatch(name):
                     require(stat.S_ISDIR(info.st_mode), 'Rootful disk layer identity is not a directory')
@@ -2117,7 +2196,9 @@ def layer_disk_inventory():
                             and not stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode),
                             'Unknown rootful overlay metadata; owner classification needed')
             require(custody(fd) == before, 'Rootful disk layer enumeration CAS changed')
-            return {'control': before, 'entries': entries, 'layers': layers, 'lowerLinks': lower}
+            observed = {'control': before, 'entries': entries, 'layers': layers, 'lowerLinks': lower}
+            if mapped: observed['retainedMappedReadOnlyCache'] = mapped
+            return observed
     except FileNotFoundError:
         _, missing = cold_path(path)
         return {'control': missing, 'entries': {}, 'layers': [], 'lowerLinks': {}}
@@ -2149,18 +2230,29 @@ def image_disk_inventory():
         return {'control': missing, 'entries': {}, 'ids': []}
 
 
-def layer_inventory():
+def layer_inventory(selection=None):
     # Storage METADATA ONLY after containers/volumes/buildah are independently
     # zero. Do not inspect writable layer contents or walk the global graph.
     body, pin = cold_path(Path(ROOT_GRAPH) / 'overlay-layers/layers.json', contents=True)
-    disk = layer_disk_inventory(); images = image_disk_inventory()
-    if body is None: return {'ids': [], 'control': pin, 'disk': disk, 'imageDirectories': images}
+    images = image_disk_inventory()
+    if body is None:
+        disk = layer_disk_inventory()
+        return {'ids': [], 'control': pin, 'disk': disk, 'imageDirectories': images}
     try: rows = strict('{"value":' + body.decode('utf-8') + '}')['value']
     except (ValueError, UnicodeError): raise Refusal('Rootful layer metadata refused') from None
     require(isinstance(rows, list) and len(rows) <= MAX_NODES, 'Rootful layer inventory bound exceeded')
     ids = [row.get('id') for row in rows if isinstance(row, dict)]
     require(len(ids) == len(rows) and len(set(ids)) == len(ids)
             and all(isinstance(value, str) and HEX.fullmatch(value) for value in ids), 'Rootful layer identity ambiguous')
+    mapped = {}
+    if any(row.get('uidmap') or row.get('gidmap') for row in rows) and selection is not None:
+        image_body, image_pin = cold_path(Path(ROOT_GRAPH) / 'overlay-images/images.json', contents=True)
+        require(image_body is not None, 'Mapped layer image index missing')
+        image_rows = strict('{"value":' + image_body.decode('utf-8') + '}')['value']
+        require(isinstance(image_rows, list) and len(image_rows) <= MAX_NODES, 'Mapped image index bound exceeded')
+        mapped = mapped_readonly_layers(selection, rows, image_rows)
+        if mapped: mapped = {key: dict(value, imageIndex=image_pin, imageIndexSha256=sha(image_body)) for key, value in mapped.items()}
+    disk = layer_disk_inventory(mapped)
     return {'ids': sorted(ids), 'control': pin, 'disk': disk, 'imageDirectories': images}
 
 
@@ -2270,7 +2362,7 @@ def rootful_inventory(selection, sources, mappings=None):
             'Buildah containers remain or inventory shape unknown; no writable-data deletion')
     images = image_inventory('podman'); buildah = image_inventory('buildah')
     require(images == buildah, 'Default Podman/Buildah image stores disagree')
-    layers = layer_inventory()
+    layers = layer_inventory(selection)
     names = sorted({row['name'] for entry in sources.values() for row in entry['networks']})
     # Read-only definition inventory protects UNSELECTED definitions/bridge
     # aliases; it never derives deletion authority from a prefix or live list.

@@ -70,6 +70,18 @@ deletion. Missing/tampered history, changed source or new unsafe state refuses.
 Prior durable attempt evidence remains retained; neither a previous clean label
 nor a fixture counts as a clean host run.
 
+Native Seafile preparation can leave UID-mapped **read-only image-cache clones**
+in the default Root store. The reset inventory never chowns or prunes them. Its
+metadata-only classification requires a receipted registry config ID for the
+three native support images, an image-index `mapped-layers` reference, the same
+parent and compressed/uncompressed diff identity as the indexed original layer,
+and exact declared apps/platform UID/GID maps and private directory custody.
+Unindexed, writable, changed-payload or foreign-namespace directories still
+refuse. These retained immutable-cache observations grant no execution authority,
+application acceptance or cold-store credit; the normal zero-container/volume/
+Buildah and all other custody checks remain mandatory. No layer contents are
+opened or walked by this classification.
+
 A standalone site:
 
 - uses the ordinary `webservices` unit namespace, not the isolated venue profile;
