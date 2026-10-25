@@ -5,6 +5,7 @@ The owning module source is supplied explicitly, never discovered from cwd.
 """
 import argparse
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -42,6 +43,8 @@ class Models(unittest.TestCase):
   f.file=file;f.environment=lambda name,sha:dict(PRIVATE_FIXTURE='model-only-secret',SEAFILE_ADMIN_AUTHORIZATION_SHA256=sha)
   f.uidmaps=lambda domain:['--uidmap','0:1000:1','--gidmap','0:1000:1']
   f.temporary_evidence=mock.Mock()
+  f.start_database=lambda cid:f.command(['start',cid])
+  f.finish_database_observer=mock.Mock(return_value=True)
   return f
  def test_finite_commands_keep_secrets_off_argv_and_no_host_network_ports(self):
   for name in ('mariadb','valkey','seafile'):
@@ -101,6 +104,43 @@ class Models(unittest.TestCase):
    self.assertEqual(b.Fresh.database_probe_observation(types.SimpleNamespace(returncode=code,stdout=sentinel,stderr=sentinel)),label)
   self.assertEqual(b.Fresh.database_probe_observation(types.SimpleNamespace(returncode=0,stdout=b'1\n')),'service-database-ready')
   self.assertEqual(b.Fresh.database_probe_observation(types.SimpleNamespace(returncode=1,stdout=b'',stderr=b'private ERROR 1045 '+sentinel)),'other-database-probe-refusal')
+ def test_live_database_console_retains_only_predefined_codes(self):
+  observer=b.DatabaseConsoleObservations()
+  private=b'private-fixture-password-sql-source-must-not-appear'
+  observer.consume(io.BytesIO(b'Initializing database files\n'+private+b'\nPermission denied\n'))
+  self.assertEqual(observer.snapshot(),['database-files-initializing','filesystem-permission-refused'])
+  self.assertNotIn(private.decode(),str(observer.__dict__))
+ def test_database_console_patterns_survive_chunk_boundary_without_retaining_tail(self):
+  observer=b.DatabaseConsoleObservations()
+  observer.consume(io.BytesIO(b'x'*(4096-10)+b'Initializing database files\n'))
+  self.assertEqual(observer.snapshot(),['database-files-initializing'])
+ def test_console_classification_bound_does_not_retain_or_classify_late_payloads(self):
+  observer=b.DatabaseConsoleObservations()
+  observer.consume(io.BytesIO(b'x'*(8*1024*1024)+b'Permission denied private-fixture-secret'))
+  self.assertEqual(observer.snapshot(),['database-console-output-bound-exceeded'])
+ def test_forced_observer_helper_cleanup_is_not_clean_stop_proof(self):
+  with tempfile.TemporaryDirectory() as temp:
+   f=self.fixture(temp);f.database_console=b.DatabaseConsoleObservations()
+   f.database_start=types.SimpleNamespace(stdout=io.BytesIO(),wait=mock.Mock(side_effect=[subprocess.TimeoutExpired('model-helper',10),0]),
+       terminate=mock.Mock(),kill=mock.Mock())
+   f.database_reader=mock.Mock();f.database_reader.is_alive.return_value=False
+   self.assertFalse(b.Fresh.finish_database_observer(f))
+   f.database_start.terminate.assert_called_once();f.database_start.kill.assert_not_called()
+   self.assertIn('database-observer-helper-not-clean',f.database_console.snapshot())
+ def test_attached_database_start_uses_exact_own_cid_no_signal_proxy_or_raw_log(self):
+  with tempfile.TemporaryDirectory() as temp:
+   f=self.fixture(temp);f.cids=[CID];f.reserve=mock.Mock();f.state=mock.Mock(return_value=dict(Running=True))
+   process=types.SimpleNamespace(stdout=io.BytesIO(b'Initializing database files\nprivate-fixture-secret\n'),
+       poll=mock.Mock(return_value=None),wait=mock.Mock(return_value=0))
+   with mock.patch.object(b.subprocess,'Popen',return_value=process) as popen:
+    b.Fresh.start_database(f,CID)
+    self.assertEqual(popen.call_args.args[0],['/usr/bin/podman','start','--attach','--sig-proxy=false',CID])
+    self.assertEqual(popen.call_args.kwargs['stderr'],subprocess.STDOUT)
+    f.database_reader.join(timeout=1)
+    self.assertEqual(f.database_console.snapshot(),['database-files-initializing'])
+    self.assertTrue(b.Fresh.finish_database_observer(f))
+    with self.assertRaises(p.Refused):b.Fresh.start_database(f,'2'*64)
+    self.assertEqual(popen.call_count,1)
  def database_fixture(self,temp):
   f=self.fixture(temp);f.cids=[CID]
   f.environments={'seafile':dict(SEAFILE_MYSQL_DB_USER='fixture-service',SEAFILE_MYSQL_DB_PASSWORD='fixture-service-password',

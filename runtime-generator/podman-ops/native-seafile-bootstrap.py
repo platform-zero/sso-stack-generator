@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
 
 
 def load_protocol():
@@ -27,6 +28,59 @@ def load_protocol():
     module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+class DatabaseConsoleObservations:
+    """Drain a private live pipe; retain ONLY predefined observations, never logs."""
+    PATTERNS = (
+        (b'Initializing database files', 'database-files-initializing'),
+        (b'Database files initialized', 'database-files-initialized'),
+        (b'Starting temporary server', 'temporary-server-starting'),
+        (b'Temporary server started', 'temporary-server-started'),
+        (b'01-init-wrapper.sh', 'module-initializer-observed'),
+        (b'MariaDB Initialization Starting', 'module-initializer-starting'),
+        (b'MariaDB Initialization Complete!', 'module-initializer-completed'),
+        (b'MariaDB service initialization refused', 'module-initializer-sql-refused'),
+        (b'ready for connections', 'server-ready-message-observed'),
+        (b'Permission denied', 'filesystem-permission-refused'),
+        (b'Operation not permitted', 'operation-not-permitted'),
+        (b'Resource temporarily unavailable', 'resource-temporarily-unavailable'),
+        (b'No space left', 'filesystem-capacity-refused'),
+        (b'io_uring_queue_init() failed', 'io-uring-unavailable'),
+        (b'Failed to initialize', 'server-initialization-refused'),
+        (b'Aborting', 'server-aborting'),
+    )
+
+    def __init__(self):
+        self.codes = set(); self.lock = threading.Lock()
+
+    def add(self, code):
+        with self.lock:
+            self.codes.add(code)
+
+    def snapshot(self):
+        with self.lock:
+            return sorted(self.codes)
+
+    def consume(self, stream):
+        tail = b''; total = 0
+        try:
+            while True:
+                chunk = stream.read1(4096)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > 8 * 1024 * 1024:
+                    self.add('database-console-output-bound-exceeded')
+                    tail = b''
+                    continue  # Drain without retaining or classifying further bytes.
+                body = tail + chunk
+                for token, code in self.PATTERNS:
+                    if token in body:
+                        self.add(code)
+                tail = body[-1024:]
+        except BaseException:
+            self.add('database-console-observation-unavailable')
 
 
 class Fresh:
@@ -192,6 +246,7 @@ class Fresh:
             plannedNames=list(self.cidfiles.values()), observedStates=observations,
             databaseProbe=getattr(self, 'database_observation', 'not-observed'),
             databaseInitializationProbe=getattr(self, 'database_initialization_observation', 'not-observed'),
+            databaseConsole=(self.database_console.snapshot() if hasattr(self, 'database_console') else []),
             applicationAcceptance=False))
         temporary = directory / ('.temporary-' + secrets.token_hex(16))
         self.file(temporary, body)
@@ -357,6 +412,53 @@ class Fresh:
         self.require(ready and self.relay.stdout.readline() == b'SEAFILE_PRIVATE_LOOPBACK_READY\n',
                      'Native private loopback unavailable')
 
+    def start_database(self, cid):
+        self.require(cid in self.cids, 'Foreign database start observation refused')
+        self.reserve()
+        self.database_console = DatabaseConsoleObservations()
+        clean = dict(PATH='/usr/sbin:/usr/bin:/sbin:/bin', HOME='/root',
+                     REGISTRY_AUTH_FILE=str(self.capsule / 'empty-auth.json'))
+        # No log driver, raw file or inherited console. The drain retains only
+        # fixed codes; --sig-proxy=false isolates helper cleanup from the service.
+        self.database_start = subprocess.Popen(['/usr/bin/podman', 'start', '--attach', '--sig-proxy=false', cid],
+            env=clean, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            close_fds=True, umask=0o077)
+        self.database_reader = threading.Thread(target=self.database_console.consume,
+            args=(self.database_start.stdout,), daemon=True, name='native-database-observations')
+        self.database_reader.start()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if self.state(cid).get('Running') is True:
+                return
+            self.require(self.database_start.poll() is None, 'Native database attached start refused')
+            time.sleep(0.05)
+        raise self.p.Refused('Native database attached start deadline exceeded')
+
+    def finish_database_observer(self):
+        process = getattr(self, 'database_start', None)
+        if process is None:
+            return True
+        clean = True
+        try:
+            clean = process.wait(timeout=10) == 0
+        except BaseException:
+            clean = False
+            self.database_console.add('database-observer-helper-not-clean')
+            try:
+                process.terminate(); process.wait(timeout=5)
+            except BaseException:
+                try:
+                    process.kill(); process.wait(timeout=5)
+                except BaseException:
+                    pass
+        try:
+            self.database_reader.join(timeout=5)
+            clean = clean and not self.database_reader.is_alive()
+            process.stdout.close()
+        except BaseException:
+            clean = False
+        return clean
+
     @staticmethod
     def database_probe_observation(result):
         if result.returncode == 0 and result.stdout.strip() == b'1':
@@ -506,7 +608,7 @@ class Fresh:
             os.chown(auth_dir, account.pw_uid, account.pw_gid)
             self.file(auth_dir / 'authorization.json', self.fresh_raw, account.pw_uid, account.pw_gid)
             self.file(auth_dir / 'password', self.password, account.pw_uid, account.pw_gid)
-            db = self.create('mariadb'); self.command(['start', db]); self.wait_database(db)
+            db = self.create('mariadb'); self.start_database(db); self.wait_database(db)
             cache = self.create('valkey', network=db); self.command(['start', cache]); self.wait_cache(cache)
             self.start_relay(db)
             fresh = self.create('seafile', self.p.sha(self.fresh_raw), '--bootstrap-owned-admin', network=db)
@@ -534,6 +636,8 @@ class Fresh:
         finally:
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
             stopped = self.stop_all()
+            observer_clean = self.finish_database_observer()
+            stopped = stopped and observer_clean
             self.password = b''
             # Only this fresh Root-private credential capsule, never persistent data.
             try:

@@ -183,7 +183,12 @@ Database initialization has a finite 180-second startup budget (the service's
 60-second start period is not its entire startup budget). After its deadline,
 one exact-own-CID socket probe may emit a predefined initialization observation.
 An available initialization socket never substitutes for the required TCP service
-account/database readiness gate. No exception text,
+account/database readiness gate. An attached own-CID start can drain the private
+MariaDB console in memory into a closed set of startup/permission/resource codes.
+No raw console file, inherited output, line text, SQL, service source or secret is
+retained. The reader has bounded chunks/tail and an 8 MiB classification ceiling;
+helper signals do not proxy to the database. A helper that cannot finish cleanly
+cannot produce a successful temporary-stop proof. No exception text,
 environment, service source, child log, or secret is a diagnostic field. The database's
 isolated network gets a deterministic source-derived hostname with a local readonly
 hosts binding, so bootstrap never needs external DNS for its own hostname. Namespace
