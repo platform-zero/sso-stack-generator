@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# Native helper directories are exact hash-pinned namespaces. Imported helpers
+# must not write __pycache__ entries during preflight or activation.
+export PYTHONDONTWRITEBYTECODE=1
+
 BUNDLE=""
 ENV_DIR=""
 IMAGE_INPUTS=""
