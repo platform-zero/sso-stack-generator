@@ -189,8 +189,9 @@ No raw console file, inherited output, line text, SQL, service source or secret 
 retained. The reader has bounded chunks/tail and an 8 MiB classification ceiling;
 helper signals do not proxy to the database. A helper that cannot finish cleanly
 cannot produce a successful temporary-stop proof. Failure observations may also
-classify a bounded set of process roles, scheduler states and kernel wait classes
-from the exact nonempty own-CID cgroup. A held PID descriptor, unchanged main PID,
+classify a bounded set of process/thread roles, scheduler states and kernel wait
+classes from at most 32 explicitly listed threads in the exact nonempty own-CID
+cgroup (at most 256 members; no global process/task enumeration). A held PID descriptor, unchanged main PID,
 process start identity and cgroup membership are rechecked. No PID, arbitrary
 process name, argv/environment, kernel symbol or raw `/proc` content is emitted.
 Empty/foreign/global/unavailable cgroups have no global process fallback. The exact

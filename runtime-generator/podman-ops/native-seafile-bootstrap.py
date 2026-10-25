@@ -500,14 +500,21 @@ class Fresh:
                 self.require(0 < count <= 100000 and (limit is None or 0 < limit <= 1000000)
                              and 0 <= hits <= 1000000000, 'Own task budget observation bound refused')
                 budgets.append(dict(taskCount=count, taskLimit=limit, taskLimitEvents=hits))
+            phase = 'own-thread-membership'
+            threads = sorted({int(value) for value in read(group, 'cgroup.threads').split()})
+            self.require(pid in threads and 0 < len(threads) <= 256 and all(value > 1 for value in threads),
+                         'Nonempty own database thread membership absent')
             roles = {b'mariadbd': 'database-server', b'bash': 'shell', b'sh': 'shell',
                      b'cat': 'pipe-reader', b'sleep': 'sleeper', b'chown': 'ownership-worker', b'find': 'file-walker'}
             states = {b'D': 'disk-wait', b'R': 'running', b'S': 'sleeping', b'Z': 'zombie', b'T': 'stopped'}
             waits = {b'io_schedule': 'io-wait', b'futex_wait_queue': 'futex-wait', b'do_wait': 'child-wait',
+                     b'futex_wait_queue_me': 'futex-wait', b'folio_wait_bit_common': 'io-wait',
+                     b'wait_on_page_bit_common': 'io-wait', b'blk_mq_get_tag': 'io-wait',
+                     b'wait_for_completion': 'completion-wait', b'do_epoll_wait': 'event-wait',
                      b'pipe_read': 'pipe-read', b'hrtimer_nanosleep': 'timer-wait', b'ep_poll': 'event-wait'}
             rows = []
             phase = 'own-process-state'
-            for selected in pids[:16]:
+            for selected in threads[:32]:
                 fd = directory(PROC / str(selected))
                 self.require(read(fd, 'cgroup').decode('ascii') == membership, 'Own database process moved cgroup')
                 raw = read(fd, 'stat'); first, _, rest = raw.rpartition(b')')
@@ -524,8 +531,8 @@ class Fresh:
             self.require(read(original, 'cgroup').decode('ascii') == membership
                          and self.state(cid, cleanup=True).get('Pid') == pid
                          and not select.select([process], [], [], 0)[0], 'Own database cgroup anchor changed')
-            return dict(status='exact-own-cgroup-observed', processCount=len(pids), bounded=len(pids) > 16,
-                        taskBudgets=budgets, processes=rows)
+            return dict(status='exact-own-cgroup-observed', processCount=len(pids), threadCount=len(threads),
+                        bounded=len(threads) > 32, taskBudgets=budgets, threads=rows)
         except BaseException:
             return {'status': 'own-cgroup-observation-unavailable', 'phase': phase}
         finally:
