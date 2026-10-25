@@ -152,6 +152,39 @@ class Models(unittest.TestCase):
    f.cids=[]
    self.assertEqual(f.observe_database_mac_assignment(),'own-mac-assignment-unavailable')
    self.assertEqual(f.command.call_count,2)
+ def test_actual_oci_policy_classification_is_closed_and_distinguishes_conditions_and_denials(self):
+  with tempfile.TemporaryDirectory() as temp:
+   f=self.fixture(temp)
+   policy=dict(defaultAction='SCMP_ACT_ERRNO',architectures=['SCMP_ARCH_X86_64'],
+     syscalls=[dict(names=['kill','tgkill'],action='SCMP_ACT_ALLOW')])
+   document=dict(linux=dict(seccomp=policy),process=dict(env=['PRIVATE=model-secret']))
+   with mock.patch.object(b.os,'uname',return_value=types.SimpleNamespace(machine='x86_64')):
+    result=f.classify_runtime_policy(document)
+   self.assertEqual(result,dict(status='exact-own-oci-observed',seccomp='declared',
+     kill='unconditional-allow',tgkill='unconditional-allow',nativeArchitectureDeclared=True))
+   self.assertNotIn('model-secret',json.dumps(result))
+   policy['syscalls'][0]['args']=[dict(index=0,value=0,op='SCMP_CMP_EQ')]
+   self.assertEqual(f.classify_runtime_policy(document)['kill'],'conditional-or-conflicting')
+   policy['syscalls'].append(dict(names=['kill'],action='SCMP_ACT_ERRNO'))
+   self.assertEqual(f.classify_runtime_policy(document)['kill'],'conditional-or-conflicting')
+   policy['syscalls']=[]
+   self.assertEqual(f.classify_runtime_policy(document)['kill'],'not-allowed')
+   policy['defaultAction']='SCMP_ACT_ALLOW'
+   self.assertEqual(f.classify_runtime_policy(document)['kill'],'default-allow')
+   self.assertEqual(f.classify_runtime_policy({})['seccomp'],'not-declared')
+   policy['syscalls']=[{}]*4097
+   with self.assertRaises(p.Refused):f.classify_runtime_policy(document)
+ def test_runtime_policy_never_opens_foreign_cid_or_engine_selected_foreign_path(self):
+  with tempfile.TemporaryDirectory() as temp:
+   f=self.fixture(temp);f.database_cid=CID;f.state=mock.Mock(return_value=dict(Running=True,Pid=12001))
+   f.command=mock.Mock(return_value=types.SimpleNamespace(returncode=0,stdout=b'"/private-fixture-secret/config.json"'))
+   with mock.patch.object(b.os,'open') as opened:
+    self.assertEqual(f.observe_database_runtime_policy(),dict(status='own-runtime-policy-unavailable'))
+    f.command.assert_not_called();opened.assert_not_called()
+    f.cids=[CID]
+    self.assertEqual(f.observe_database_runtime_policy(),dict(status='own-runtime-policy-unavailable'))
+    f.command.assert_called_once_with(['inspect','--format={{json .OCIConfigPath}}',CID],cleanup=True,allow_failure=True,timeout=10)
+    opened.assert_not_called()
  def cgroup_fixture(self,temp,membership=None,contents=b'12001\n'):
   root=Path(temp);f=self.fixture(temp);f.cids=[CID];f.database_cid=CID
   f.state=mock.Mock(return_value=dict(Running=True,Pid=12001))

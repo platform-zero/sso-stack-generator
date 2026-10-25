@@ -269,6 +269,7 @@ class Fresh:
             databaseInstallerDefaults=getattr(self, 'database_installer_observation', 'not-observed'),
             databaseSelfSignal=getattr(self, 'database_self_signal_observation', 'not-observed'),
             databaseMacPolicy=getattr(self, 'database_mac_observation', 'not-observed'),
+            databaseRuntimePolicy=getattr(self, 'database_runtime_policy_observation', {'status': 'not-observed'}),
             applicationAcceptance=False))
         temporary = directory / ('.temporary-' + secrets.token_hex(16))
         self.file(temporary, body)
@@ -503,6 +504,69 @@ class Fresh:
                     else 'engine-other-assigned-profile')
         except BaseException:
             return 'own-mac-assignment-unavailable'
+
+    def classify_runtime_policy(self, document):
+        policy = document.get('linux', {}).get('seccomp')
+        if policy is None:
+            return dict(status='exact-own-oci-observed', seccomp='not-declared')
+        self.require(isinstance(policy, dict), 'Own runtime policy shape differs')
+        rules = policy.get('syscalls', [])
+        self.require(isinstance(rules, list) and len(rules) <= 4096, 'Own runtime policy rule bound refused')
+        observed = {}
+        for syscall in ('kill', 'tgkill'):
+            selected = [rule for rule in rules if syscall in rule.get('names', [])]
+            allow = sum(rule.get('action') == 'SCMP_ACT_ALLOW' and not rule.get('args') for rule in selected)
+            other = sum(rule.get('action') != 'SCMP_ACT_ALLOW' for rule in selected)
+            observed[syscall] = ('unconditional-allow' if allow and not other else
+                'conditional-or-conflicting' if selected else 'default-allow' if
+                policy.get('defaultAction') == 'SCMP_ACT_ALLOW' else 'not-allowed')
+        return dict(status='exact-own-oci-observed', seccomp='declared', **observed,
+            nativeArchitectureDeclared='SCMP_ARCH_X86_64' in policy.get('architectures', [])
+                if os.uname().machine == 'x86_64' else False)
+
+    def observe_database_runtime_policy(self):
+        """Classify ONLY this owned CID's actual OCI filter; never emit its env/config."""
+        opened = []
+        try:
+            cid = getattr(self, 'database_cid', None)
+            self.require(cid in self.cids and isinstance(cid, str) and self.p.HEX.fullmatch(cid),
+                         'Foreign runtime policy observation refused')
+            before = self.state(cid, cleanup=True)
+            self.require(before.get('Running') is True and type(before.get('Pid')) is int and before['Pid'] > 1,
+                         'Own runtime policy process absent')
+            result = self.command(['inspect', '--format={{json .OCIConfigPath}}', cid],
+                                  cleanup=True, allow_failure=True, timeout=10)
+            self.require(result.returncode == 0, 'Own runtime policy source unavailable')
+            path = Path('/var/lib/containers/storage/overlay-containers') / cid / 'userdata/config.json'
+            self.require(json.loads(result.stdout) == str(path), 'Own runtime policy source differs')
+            fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW); opened.append(fd)
+            for part in path.parts[1:-1]:
+                fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd); opened.append(fd)
+                info = os.fstat(fd)
+                self.require(info.st_uid == 0 and not info.st_mode & 0o022, 'Own runtime policy ancestry differs')
+            child = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd); opened.append(child)
+            original = os.fstat(child)
+            self.require(stat.S_ISREG(original.st_mode) and original.st_uid == 0 and original.st_nlink == 1
+                         and not original.st_mode & 0o022 and original.st_size <= 8 * 1024 * 1024,
+                         'Own runtime policy inode differs')
+            with os.fdopen(os.dup(child), 'rb') as stream:
+                raw = stream.read(8 * 1024 * 1024 + 1)
+            self.require(len(raw) == original.st_size, 'Own runtime policy bound changed')
+            document = json.loads(raw)
+            observation = self.classify_runtime_policy(document)
+            def pin(info):
+                return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns,
+                        info.st_mode, info.st_uid, info.st_gid, info.st_nlink)
+            self.require(pin(os.fstat(child)) == pin(original)
+                         and pin(os.stat(path.name, dir_fd=fd, follow_symlinks=False)) == pin(original)
+                         and self.state(cid, cleanup=True).get('Pid') == before['Pid'],
+                         'Own runtime policy identity changed')
+            return observation
+        except BaseException:
+            return {'status': 'own-runtime-policy-unavailable'}
+        finally:
+            for fd in reversed(opened):
+                os.close(fd)
 
     def observe_database_processes(self):
         """Only an exact nonempty own CID cgroup; never enumerate/fall back globally."""
@@ -828,6 +892,7 @@ class Fresh:
                 self.database_installer_observation = self.observe_installer_defaults()
                 self.database_self_signal_observation = self.observe_database_self_signal()
                 self.database_mac_observation = self.observe_database_mac_assignment()
+                self.database_runtime_policy_observation = self.observe_database_runtime_policy()
                 self.database_process_observation = self.observe_database_processes()
                 self.temporary_evidence('preparation-failed')
             except BaseException:
