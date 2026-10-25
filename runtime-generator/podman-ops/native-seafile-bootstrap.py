@@ -356,7 +356,8 @@ class Fresh:
             return 'service-database-ready'
         # Only fixed SQL client error classes; never emit child text/usernames,
         # database names, exceptions, SQL, credentials or arbitrary error codes.
-        body = getattr(result, 'stderr', b'')[:4096]
+        diagnostic = getattr(result, 'stderr', None)
+        body = (diagnostic if isinstance(diagnostic, bytes) else result.stdout)[:4096]
         match = re.search(rb'(?m)^ERROR (1045|1049|2002|2003)\b', body)
         if match:
             return {'1045': 'authentication-refused', '1049': 'service-database-absent',

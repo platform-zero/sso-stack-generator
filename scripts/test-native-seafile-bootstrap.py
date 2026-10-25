@@ -93,6 +93,10 @@ class Models(unittest.TestCase):
    with self.subTest(code=code):
     result=types.SimpleNamespace(returncode=1,stdout=sentinel,stderr=b'ERROR '+str(code).encode()+b' (HY000):'+sentinel)
     self.assertEqual(b.Fresh.database_probe_observation(result),label)
+  # The real command runner merges stderr into stdout; CompletedProcess.stderr
+  # is None, not an absent attribute. Never let diagnostics replace the guard.
+  merged=types.SimpleNamespace(returncode=1,stdout=b'ERROR 2002 (HY000):'+sentinel,stderr=None)
+  self.assertEqual(b.Fresh.database_probe_observation(merged),'database-connectivity-unavailable')
   self.assertEqual(b.Fresh.database_probe_observation(types.SimpleNamespace(returncode=0,stdout=b'1\n')),'service-database-ready')
   self.assertEqual(b.Fresh.database_probe_observation(types.SimpleNamespace(returncode=1,stdout=b'',stderr=b'private ERROR 1045 '+sentinel)),'other-database-probe-refusal')
  def test_declared_numeric_container_user_matches_eventual_service_user(self):
