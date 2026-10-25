@@ -215,7 +215,7 @@ def build(runtime, context, expected):
             journal.transition(operation, 0, 'running')
             # Build output is retained by the bounded Runner but never rendered
             # as unsanitized diagnostics. No host sockets or added privileges.
-            runtime.run(['/usr/bin/podman', 'build', '--pull=missing', '--timestamp=0',
+            runtime.run(['/usr/bin/podman', 'build', '--pull=missing', '--network=none', '--force-rm', '--timestamp=0',
                          '--label', 'io.platform-zero.build-input=' + expected, '--tag', tag,
                          '--file', str(context / 'Containerfile'), str(context)], timeout=600)
             digest = runtime.run(['/usr/bin/podman', 'image', 'inspect', '--format', '{{.Digest}}', tag]).decode().strip()

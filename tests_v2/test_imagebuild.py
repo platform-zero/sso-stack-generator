@@ -118,6 +118,9 @@ class BuilderJournalTests(unittest.TestCase):
             self.assertEqual(result['image'], 'localhost/p0-example@sha256:' + 'b' * 64)
             self.assertEqual(Journal.status(root / 'state/operations.sqlite3')['operations'][0]['state'], 'succeeded')
             self.assertEqual(sum(arguments[1:3] == ['image', 'inspect'] for arguments in calls), 2)
+            build_call = next(arguments for arguments in calls if arguments[1] == 'build')
+            self.assertIn('--network=none', build_call)
+            self.assertIn('--force-rm', build_call)
 
 
 class RunnerBoundsTests(unittest.TestCase):
