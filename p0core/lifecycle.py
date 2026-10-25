@@ -26,6 +26,18 @@ class OperationError(RuntimeError):
     pass
 
 
+def verify_reserves():
+    available = next((int(line.split()[1]) * 1024 for line in
+                      Path('/proc/meminfo').read_text().splitlines()
+                      if line.startswith('MemAvailable:')), 0)
+    if available < 16 * 1024 ** 3:
+        raise ContractError('available RAM below reserve')
+    for path, floor in (('/', 50), ('/mnt/stack', 100)):
+        observed = os.statvfs(path)
+        if observed.f_bavail * observed.f_frsize < floor * 1024 ** 3:
+            raise ContractError('free storage below reserve')
+
+
 class Runner:
     def __call__(self, arguments, timeout=30, input_bytes=None):
         try:
@@ -76,6 +88,10 @@ class Lifecycle:
         # credential or a Keykeeper-protected secret. Podman refuses duplicates.
         import secrets
         identifier(name)
+        verify_reserves()
+        store = self.run(['/usr/bin/podman', 'info', '--format', '{{.Store.GraphRoot}}'], timeout=30)
+        if store.decode().strip() != '/mnt/stack/p0-v2/rootless/storage':
+            raise ContractError('unexpected rootless image store; refusing secret mutation')
         value = secrets.token_urlsafe(48).encode()
         self.run(['/usr/bin/podman', 'secret', 'create', 'p0-' + name, '-'],
                  timeout=30, input_bytes=value)
@@ -126,6 +142,10 @@ class Lifecycle:
                         if destination.exists() or destination.is_symlink():
                             raise ContractError('refusing unowned matching Quadlet name')
                         publications[basename] = checksum
+                verify_reserves()
+                store = self.run(['/usr/bin/podman', 'info', '--format', '{{.Store.GraphRoot}}'], timeout=30)
+                if store.decode().strip() != '/mnt/stack/p0-v2/rootless/storage':
+                    raise ContractError('unexpected rootless image store; refusing engine mutation')
                 for image in sorted(set(lock['images'].values())):
                     command = ['/usr/bin/podman', 'pull', '--quiet', image] if pull else ['/usr/bin/podman', 'image', 'exists', image]
                     self.run(command, timeout=300)
@@ -231,6 +251,8 @@ class Lifecycle:
             journal.transition(operation, 0, 'running')
             effects = False
             try:
+                if action == 'start':
+                    verify_reserves()
                 ordered = (plan['services'] if action == 'start' else
                            [name for name in reversed(plan['services']) if name in set(targets)])
                 for name in ordered:

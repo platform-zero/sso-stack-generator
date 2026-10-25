@@ -17,6 +17,8 @@ class FakeRunner:
         self.active = {}
     def __call__(self, arguments, timeout=30, input_bytes=None):
         self.calls.append(arguments)
+        if arguments[0].endswith('podman') and 'info' in arguments:
+            return b'/mnt/stack/p0-v2/rootless/storage\n'
         if arguments[0].endswith('systemctl'):
             if 'show' in arguments:
                 name = next(value for value in arguments if value.endswith('.service'))
@@ -29,6 +31,11 @@ class FakeRunner:
 
 
 class LifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.capacity = patch('p0core.lifecycle.verify_reserves')
+        self.capacity.start()
+        self.addCleanup(self.capacity.stop)
+
     def prepare(self, root, declarations=None):
         catalog = Catalog([module(*(declarations or [service('app')]))])
         bundle = root / 'bundle'
@@ -47,6 +54,37 @@ class LifecycleTests(unittest.TestCase):
             self.assertFalse(any('start' in arguments for arguments in runner.calls))
             self.assertFalse(output['installationCertified'])
             self.assertTrue((runtime.quadlet / 'p0-app.container').exists())
+
+    def test_capacity_failure_prevents_engine_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime, runner, bundle, identity = self.prepare(Path(directory))
+            with patch('p0core.lifecycle.verify_reserves', side_effect=ContractError('reserve failure')):
+                with self.assertRaises(ContractError):
+                    runtime.install(bundle, identity, pull=True)
+            self.assertEqual(runner.calls, [])
+            self.assertEqual(list(runtime.quadlet.iterdir()), [])
+
+    def test_unexpected_store_prevents_pull(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime, runner, bundle, identity = self.prepare(Path(directory))
+            runtime.run = lambda *_args, **_kwargs: b'/shared/default/store'
+            with self.assertRaises(ContractError):
+                runtime.install(bundle, identity, pull=True)
+            self.assertEqual(list(runtime.quadlet.iterdir()), [])
+
+    def test_secret_generation_no_value_in_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime, runner, bundle, identity = self.prepare(Path(directory))
+            captured = []
+            def secret_runner(*args, **kwargs):
+                if 'info' in args[0]:
+                    return b'/mnt/stack/p0-v2/rootless/storage'
+                captured.append((args, kwargs))
+                return b''
+            runtime.run = secret_runner
+            output = runtime.generate_service_secret('database-password')
+            self.assertEqual(output['created'], 'p0-database-password')
+            self.assertNotIn(captured[0][1]['input_bytes'].decode(), str(output))
 
     def test_wrong_release_identity_no_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
