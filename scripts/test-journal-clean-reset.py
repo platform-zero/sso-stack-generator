@@ -23,6 +23,7 @@ class CleanJournal(unittest.TestCase):
         old=dict(schemaVersion=1,phase='retired-failed',release=str(self.release),steps=['preparing','failed','retired-failed'],previousRelease='/model/old')
         self.records={self.intent:old,self.receipt:old};self.events=[]
         self.fail_execute=self.bad_result=self.bad_evidence=self.drift=False
+        self.expected_mode=self.bad_cold_claim=self.bad_default_preservation=False
         self.plan={'kind':'model-owned-synthetic-plan'};self.plan_sha=sha(canonical(self.plan));self.lease=object()
         self.lock=ModuleType('lock_owner');self.lock.lock_held=lambda root:self.events.append('lock')
         self.backend=ModuleType('reset_owner')
@@ -46,18 +47,26 @@ class CleanJournal(unittest.TestCase):
     def prior_completed_reset(self,root,receipt):
         self.events.append('prior-history-only')
         if receipt.get('completeCleanReset') != {'model':True}: raise ValueError('model prior evidence refused')
-    def review(self,root,expected):
+    def review(self,root,expected,data_only=False):
+        self.assertIs(data_only,self.expected_mode)
+        self.plan=dict(self.plan,dataOnly=data_only);self.plan_sha=sha(canonical(self.plan))
         self.events.append('review');self.assertEqual(j.digest(self.intent),expected)
         self.assertEqual(self.records[self.intent],self.records[self.receipt])
         self.assertIn('cleanResetCustody',self.records[self.intent])
         return {'plan':self.plan,'planSha256':self.plan_sha}
-    def issue(self,root,expected,plan): self.events.append('lease');self.assertEqual(plan,self.plan_sha);return self.lease
-    def execute(self,root,expected,plan,lease):
+    def issue(self,root,expected,plan,data_only=False):
+        self.assertIs(data_only,self.expected_mode)
+        self.events.append('lease');self.assertEqual(plan,self.plan_sha);return self.lease
+    def execute(self,root,expected,plan,lease,data_only=False):
+        self.assertIs(data_only,self.expected_mode)
         self.events.append('execute');self.assertIs(lease,self.lease)
         if self.fail_execute: raise ValueError('model deletion refusal')
         self.result=dict(schemaVersion=1,intentSha256=expected,planSha256=plan,
-            phase='complete-owned-synthetic-clean',completeCleanReset=not self.bad_result,
-            requiredJournalTransition='journal-owner-exact-CAS-retired-clean-no-restart',
+            phase='complete-owned-synthetic-data-only' if data_only else 'complete-owned-synthetic-clean',
+            completeCleanReset=(data_only if self.bad_result else not data_only),
+            defaultStorePreserved=not self.bad_default_preservation,
+            rootfulStoreColdAcceptance=self.bad_cold_claim,
+            requiredJournalTransition='journal-owner-exact-CAS-data-only-no-restart' if data_only else 'journal-owner-exact-CAS-retired-clean-no-restart',
             claimPrefix='.clean-reset-'+plan+'-'+'1'*32+'-')
         self.operation=dict(self.result,plan=self.plan)
         if self.drift: self.records[self.intent]=dict(self.records[self.intent],unexpected=True)
@@ -113,6 +122,40 @@ class CleanJournal(unittest.TestCase):
         self.records[self.intent]=self.records[self.receipt]=old;self.fail_execute=True
         with self.assertRaises(ValueError):j.complete_clean_reset(self.root,j.digest(self.intent))
         self.assertIn('lease',self.events);self.assertIn('execute',self.events);self.assertNotIn('evidence',self.events)
+    def data_only_source(self):
+        old=dict(self.records[self.intent],phase='retired-clean',previousRelease=None,completeCleanReset={'model':True})
+        self.records[self.intent]=self.records[self.receipt]=old;self.expected_mode=True
+        return j.digest(self.intent)
+    def test_data_only_requires_new_lease_and_keeps_full_clean_history_unchanged(self):
+        expected=self.data_only_source()
+        proof=j.complete_clean_reset(self.root,expected,data_only=True)
+        current=self.records[self.intent]
+        self.assertEqual(current['completeCleanReset'],{'model':True})
+        self.assertEqual(current['syntheticDataOnlyReset'],proof)
+        self.assertEqual(current['phase'],'retired-clean')
+        self.assertEqual(self.events.count('lease'),1);self.assertEqual(self.events.count('execute'),1)
+        self.assertIn('prior-history-only',self.events)
+        self.assertFalse(proof['rootfulStoreColdAcceptance']);self.assertFalse(proof['applicationAcceptance'])
+        self.assertIs(self.result['completeCleanReset'],False)
+        self.assertIs(self.operation['plan']['dataOnly'],True)
+    def test_data_only_rejects_complete_clean_claim(self):
+        expected=self.data_only_source();self.bad_result=True
+        with self.assertRaises(ValueError):j.complete_clean_reset(self.root,expected,data_only=True)
+        self.assertNotIn('syntheticDataOnlyReset',self.records[self.intent])
+    def test_data_only_rejects_cold_store_credit(self):
+        expected=self.data_only_source();self.bad_cold_claim=True
+        with self.assertRaises(ValueError):j.complete_clean_reset(self.root,expected,data_only=True)
+        self.assertNotIn('syntheticDataOnlyReset',self.records[self.intent])
+    def test_data_only_requires_default_store_preservation(self):
+        expected=self.data_only_source();self.bad_default_preservation=True
+        with self.assertRaises(ValueError):j.complete_clean_reset(self.root,expected,data_only=True)
+    def test_data_only_rejects_other_terminal_phase(self):
+        with self.assertRaises(ValueError):j.complete_clean_reset(self.root,self.expected,data_only=True)
+        self.assertNotIn('review',self.events);self.assertNotIn('lease',self.events)
+    def test_data_only_rejects_non_boolean_mode(self):
+        expected=self.data_only_source()
+        with self.assertRaises(ValueError):j.complete_clean_reset(self.root,expected,data_only=1)
+        self.assertNotIn('review',self.events)
     def test_missing_lock_refuses_before_record_read_or_backend(self):
         self.lock.lock_held=lambda root:(_ for _ in ()).throw(ValueError('missing inherited lock'))
         with self.assertRaises(ValueError): j.complete_clean_reset(self.root,self.expected)

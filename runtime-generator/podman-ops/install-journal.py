@@ -508,7 +508,7 @@ def install_selected_files(root, release):
         if pending is not None: pending.close()
 
 
-def complete_clean_reset(root, expected):
+def complete_clean_reset(root, expected, data_only=False):
     """Consume a same-process stopped lease; only this owner retires records.
 
     No caller-supplied report or boolean is accepted. The explicit synthetic
@@ -527,6 +527,8 @@ def complete_clean_reset(root, expected):
     old = read(path)
     if not old or old['phase'] not in ('active', 'failed', 'retired-failed', 'retired-clean') or digest(path) != expected:
         raise ValueError('Complete-clean requires exact eligible terminal intent')
+    if type(data_only) is not bool or (data_only and old['phase'] != 'retired-clean'):
+        raise ValueError('Data-only engineering reset requires retained clean-current authority')
     release = Path(old['release'])
     receipt_path = release / 'installation-receipt.json'
     if release.parent != root / 'releases' or read(receipt_path) != old:
@@ -548,15 +550,20 @@ def complete_clean_reset(root, expected):
         write(receipt_path, old)
         write(path, old)
         expected = digest(path)
-    reviewed = backend.review(root, expected)
+    mode = {'data_only': True} if data_only else {}
+    reviewed = backend.review(root, expected, **mode)
     plan_sha = reviewed['planSha256']
-    lease = backend.issue_stopped_lease(root, expected, plan_sha)
-    result = backend.execute(root, expected, plan_sha, lease)
+    lease = backend.issue_stopped_lease(root, expected, plan_sha, **mode)
+    result = backend.execute(root, expected, plan_sha, lease, **mode)
+    phase = 'complete-owned-synthetic-data-only' if data_only else 'complete-owned-synthetic-clean'
+    transition = 'journal-owner-exact-CAS-data-only-no-restart' if data_only else 'journal-owner-exact-CAS-retired-clean-no-restart'
     if (digest(path) != expected or read(receipt_path) != old
-            or read(path) != old or result.get('completeCleanReset') is not True
+            or read(path) != old or result.get('completeCleanReset') is not (not data_only)
+            or (data_only and (result.get('defaultStorePreserved') is not True
+                               or result.get('rootfulStoreColdAcceptance') is not False))
             or result.get('intentSha256') != expected or result.get('planSha256') != plan_sha
-            or result.get('phase') != 'complete-owned-synthetic-clean'
-            or result.get('requiredJournalTransition') != 'journal-owner-exact-CAS-retired-clean-no-restart'):
+            or result.get('phase') != phase
+            or result.get('requiredJournalTransition') != transition):
         raise ValueError('Complete-clean result or unchanged root authority differs; inspect durable evidence')
     prefix = result.get('claimPrefix', '')
     match = re.fullmatch(r'\.clean-reset-(' + re.escape(plan_sha) + r'-[a-f0-9]{32})-', prefix)
@@ -576,15 +583,16 @@ def complete_clean_reset(root, expected):
     lock_owner.lock_held(root)
     if digest(path) != expected or read(receipt_path) != old:
         raise ValueError('Complete-clean final journal CAS changed')
+    key = 'syntheticDataOnlyReset' if data_only else 'completeCleanReset'
+    proof = dict(intentSha256=expected, planSha256=plan_sha,
+        resultPath=str(result_path), resultSha256=backend.sha(result_body),
+        applicationAcceptance=False, rootfulStoreColdAcceptance=False,
+        automaticRestart=False, dataCompatibilityProven=False)
     value = dict(old, phase='retired-clean', previousRelease=None,
-        steps=old['steps'] + ['retired-clean'],
-        completeCleanReset=dict(intentSha256=expected, planSha256=plan_sha,
-            resultPath=str(result_path), resultSha256=backend.sha(result_body),
-            applicationAcceptance=False, rootfulStoreColdAcceptance=False,
-            automaticRestart=False, dataCompatibilityProven=False))
+        steps=old['steps'] + (['synthetic-data-only-reset'] if data_only else ['retired-clean']), **{key: proof})
     write(receipt_path, value)
     write(path, value)
-    return value['completeCleanReset']
+    return value[key]
 
 
 def standalone_binding(release):
@@ -1285,6 +1293,8 @@ def main():
     parser.add_argument('--project-domain')
     parser.add_argument('--prepare-seafile', action='store_true')
     parser.add_argument('--complete-clean-reset', action='store_true')
+    parser.add_argument('--reset-owned-synthetic-data', action='store_true',
+                        help='engineering-only new scoped lease; preserve default store; never complete-clean or acceptance proof')
     parser.add_argument('--install-selected-files', action='store_true')
     parser.add_argument('--stop-selection', action='store_true')
     parser.add_argument('--project-rootful-environment', action='store_true')
@@ -1306,7 +1316,7 @@ def main():
     parser.add_argument('--expected', default='')
     args = parser.parse_args()
     if os.geteuid() != 0: parser.error('Root-owned installation journal required')
-    actions = (args.inspect, bool(args.project_domain), args.prepare_seafile, args.complete_clean_reset, args.install_selected_files, args.stop_selection,
+    actions = (args.inspect, bool(args.project_domain), args.prepare_seafile, args.complete_clean_reset, args.reset_owned_synthetic_data, args.install_selected_files, args.stop_selection,
                args.project_rootful_environment, args.install_runtime_environment_units, args.seal_runtime_environment_copies,
                args.native_finance_arm, args.native_finance_capture,
                bool(args.assert_domain_offline), bool(args.retire_failed), bool(args.retire_unselected), bool(args.retire_empty_preparation),
@@ -1368,10 +1378,11 @@ def main():
             if args.release is None or args.bundle is not None or args.expected or args.reviewed_data_state:
                 raise ValueError('One source-bound selected-file publication required')
             print(json.dumps(install_selected_files(args.root, args.release), sort_keys=True))
-        elif args.complete_clean_reset:
+        elif args.complete_clean_reset or args.reset_owned_synthetic_data:
             if args.phase is not None or args.inspect or args.project_domain or args.assert_domain_offline:
                 raise ValueError('One canonical complete-clean operation required')
-            print(json.dumps(complete_clean_reset(args.root, args.expected), sort_keys=True))
+            print(json.dumps(complete_clean_reset(args.root, args.expected,
+                             data_only=args.reset_owned_synthetic_data), sort_keys=True))
         elif args.assert_domain_offline:
             if args.bundle is None or args.phase is not None or args.project_domain:
                 raise ValueError('Offline actor preparation requires one source-bound operation')

@@ -363,6 +363,59 @@ class Clean(unittest.TestCase):
         with self.assertRaises((m.Refusal, OSError, ValueError)): self.review()
         self.assertTrue((Path(self.rows[0]['graphRoot']) / 'overlay/layer/data').exists())
 
+    def data_only_source(self):
+        # History/network authentication has its own real-file source suites;
+        # this model isolates fresh lease/mode separation and cache preservation.
+        self.patch(m, 'prior_completed_reset', return_value={'modelHistoryOnly': True})
+        self.patch(m, 'prior_network_mappings', return_value={})
+        self.receipt_extra['completeCleanReset'] = {'modelHistoryOnly': True}
+        self.seal(phase='retired-clean')
+        self.original_intent = (self.root / '.install-intent.json').read_bytes()
+        self.engine['images'] = ['e' * 64]; self.engine['layers'] = ['f' * 64]
+
+    def test_data_only_clears_declared_scope_and_preserves_nonempty_default_cache(self):
+        self.data_only_source(); before = copy.deepcopy(self.engine)
+        self.patch(m, 'rootful_cleanup', side_effect=AssertionError('Default-store mutation forbidden in data-only mode'))
+        reviewed = m.review(self.root, self.intent, data_only=True)
+        self.assertIs(reviewed['plan']['dataOnly'], True)
+        lease = m.issue_stopped_lease(self.root, self.intent, reviewed['planSha256'], data_only=True)
+        result = m.execute(self.root, self.intent, reviewed['planSha256'], lease, data_only=True)
+        self.assertIs(result['completeCleanReset'], False)
+        self.assertIs(result['rootfulStoreColdAcceptance'], False)
+        self.assertIs(result['defaultStorePreserved'], True)
+        self.assertEqual(result['phase'], 'complete-owned-synthetic-data-only')
+        self.assertEqual(self.engine, before)
+        self.assertFalse(any(row[2] for row in self.cold_calls))
+        self.assertFalse((Path(self.rows[0]['graphRoot']) / 'overlay/layer/data').exists())
+        self.assertEqual((self.root / '.install-intent.json').read_bytes(), self.original_intent)
+
+    def test_data_only_lease_cannot_be_replayed_as_complete_clean(self):
+        self.data_only_source()
+        reviewed = m.review(self.root, self.intent, data_only=True)
+        lease = m.issue_stopped_lease(self.root, self.intent, reviewed['planSha256'], data_only=True)
+        with self.assertRaises(m.Refusal):m.execute(self.root, self.intent, reviewed['planSha256'], lease)
+        self.assertTrue((Path(self.rows[0]['graphRoot']) / 'overlay/layer/data').exists())
+        self.assertFalse(any(row[2] for row in self.cold_calls))
+
+    def test_data_only_default_store_drift_invalidates_lease_before_scope_deletion(self):
+        self.data_only_source()
+        reviewed = m.review(self.root, self.intent, data_only=True)
+        lease = m.issue_stopped_lease(self.root, self.intent, reviewed['planSha256'], data_only=True)
+        self.engine['images'].append('d' * 64)
+        with self.assertRaises(m.Refusal):m.execute(self.root, self.intent, reviewed['planSha256'], lease, data_only=True)
+        self.assertTrue((Path(self.rows[0]['graphRoot']) / 'overlay/layer/data').exists())
+        self.assertFalse(any(row[2] for row in self.cold_calls))
+
+    def test_data_only_still_requires_new_exact_stopped_lease(self):
+        self.data_only_source()
+        reviewed = m.review(self.root, self.intent, data_only=True);self.stop_failure = True
+        with self.assertRaises(m.Refusal):m.issue_stopped_lease(self.root, self.intent, reviewed['planSha256'], data_only=True)
+        self.assertTrue((Path(self.rows[0]['graphRoot']) / 'overlay/layer/data').exists())
+
+    def test_data_only_requires_authenticated_retired_clean_source(self):
+        with self.assertRaises(m.Refusal):m.review(self.root, self.intent, data_only=True)
+        self.assertTrue((Path(self.rows[0]['graphRoot']) / 'overlay/layer/data').exists())
+
     def test_full_scope_clear_keeps_only_pinned_infrastructure(self):
         reviewed = self.review(); self.assertFalse((self.root / '.host-clean-reset').exists())
         result = self.run_reset(reviewed)

@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import re
 import select
 import shutil
 import signal
@@ -170,12 +171,24 @@ class Fresh:
         info = directory.lstat()
         self.require(stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o077,
                      'Native temporary evidence directory differs')
+        self.require(len(self.cids) <= 8, 'Native temporary observation count refused')
+        observations = []
+        for cid in self.cids:
+            try:
+                state = self.state(cid, cleanup=True)
+                running, exit_code, oom = state.get('Running'), state.get('ExitCode'), state.get('OOMKilled')
+                self.require(type(running) is bool and type(exit_code) is int and 0 <= exit_code <= 255
+                             and type(oom) is bool, 'Native temporary observation shape refused')
+                observations.append(dict(cid=cid, running=running, exitCode=exit_code, oomKilled=oom))
+            except BaseException:
+                observations.append(dict(cid=cid, observationUnavailable=True))
         body = self.p.encoded(dict(schemaVersion=1, module='seafile', status=status,
             preparationReceiptSha256=self.binding.receipt_sha, cids=list(self.cids),
-            plannedNames=list(self.cidfiles.values()), applicationAcceptance=False))
+            plannedNames=list(self.cidfiles.values()), observedStates=observations, applicationAcceptance=False))
         temporary = directory / ('.temporary-' + secrets.token_hex(16))
         self.file(temporary, body)
-        os.replace(temporary, directory / 'temporary.json')
+        destination = 'failure-observations.json' if status == 'preparation-failed' else 'temporary.json'
+        os.replace(temporary, directory / destination)
 
     def uidmaps(self, domain):
         account = self.accounts[domain]
@@ -220,6 +233,12 @@ class Fresh:
                      '--memory=2G', '--cpus=1.5', '--pids-limit=256',
                      '--network=' + ('container:' + network if network else 'none'),
                      '--env-file=' + str(env_path), *self.uidmaps(domain)]
+        user = self.source[name].get('user')
+        if user is not None:
+            self.require(isinstance(user, str) and re.fullmatch(r'(0|[1-9][0-9]{0,4}):(0|[1-9][0-9]{0,4})', user)
+                         and all(int(value) <= 65536 for value in user.split(':')),
+                         'Native container user must fit exact declared numeric UID/GID maps')
+            arguments.append('--user=' + user)
         # Native container-network peers reject --add-host and do NOT inherit
         # its alias reliably. A fixed public readonly hosts file works in both
         # separately mapped namespaces, without DNS/host networking or exposure.
@@ -461,6 +480,10 @@ class Fresh:
                          'Native Seafile readback exit refused')
             readback = self.p.native_proof(output, self.p.strict(normal_raw))
         except BaseException as error:
+            try:
+                self.temporary_evidence('preparation-failed')
+            except BaseException:
+                pass  # Diagnostics never replace the original guarded failure.
             raise self.p.Refused('Canonical native Seafile preparation failed').with_traceback(error.__traceback__) from None
         finally:
             signal.signal(signal.SIGTERM, signal.SIG_IGN)

@@ -69,6 +69,41 @@ class Models(unittest.TestCase):
      self.assertEqual(creation[-1],'--bootstrap-owned-admin')
      self.assertTrue(any(':/run/seafile-admin:ro' in arg for arg in creation))
      self.assertFalse(any('authorization.json:/run' in arg for arg in creation))
+ def test_declared_numeric_container_user_matches_eventual_service_user(self):
+  for user in ('0:0','999:999','65536:65536'):
+   with self.subTest(user=user),tempfile.TemporaryDirectory() as temp:
+    f=self.fixture(temp);f.source['mariadb']['user']=user;calls=[]
+    def command(arguments,**kw):
+     calls.append(arguments);return types.SimpleNamespace(returncode=1 if arguments[0]=='container' else 0,stdout=CID.encode())
+    f.command=command;f.create('mariadb')
+    self.assertIn('--user='+user,calls[-1])
+    self.assertTrue(any(value.endswith(':/var/lib/mysql:U') for value in calls[-1]))
+ def test_container_user_cannot_escape_exact_numeric_maps_or_expand_host_values(self):
+  for user in ('mysql','999','999:999\n','65537:0','0:65537','-1:0','${PRIVATE_FIXTURE}:0',999):
+   with self.subTest(user=user),tempfile.TemporaryDirectory() as temp:
+    f=self.fixture(temp);f.source['mariadb']['user']=user;calls=[]
+    def command(arguments,**kw):
+     calls.append(arguments);return types.SimpleNamespace(returncode=1,stdout=CID.encode())
+    f.command=command
+    with self.assertRaises(p.Refused):f.create('mariadb')
+    self.assertFalse(any(row[0]=='create' for row in calls))
+ def test_failure_observations_are_fixed_states_not_error_env_or_service_contents(self):
+  with tempfile.TemporaryDirectory() as temp:
+   f=self.fixture(temp);f.cids=[CID]
+   f.state=mock.Mock(return_value=dict(Running=False,ExitCode=137,OOMKilled=True,
+       Error='private-fixture-must-not-appear',env='private-fixture-must-not-appear'))
+   directory=f.release/'native-seafile';directory.mkdir(parents=True,mode=0o700)
+   original=Path.lstat
+   def metadata(path,*a,**kw):
+    if path==directory:return types.SimpleNamespace(st_mode=stat.S_IFDIR|0o700,st_uid=0,st_gid=0)
+    return original(path,*a,**kw)
+   with mock.patch.object(Path,'lstat',new=metadata):
+    b.Fresh.temporary_evidence(f,'preparation-failed')
+    body=(directory/'failure-observations.json').read_bytes();value=json.loads(body)
+    self.assertEqual(value['observedStates'],[dict(cid=CID,running=False,exitCode=137,oomKilled=True)])
+    self.assertNotIn(b'private-fixture',body)
+    f.cids=[];b.Fresh.temporary_evidence(f,'temporary-stopped')
+    self.assertEqual((directory/'failure-observations.json').read_bytes(),body)
  def test_actual_shell_gets_one_compose_dollar_unescape_not_pid_as_password(self):
   with tempfile.TemporaryDirectory() as temp:
    f=self.fixture(temp);calls=[]

@@ -2551,8 +2551,10 @@ def rootful_cleanup(selection, sources, reviewed, verify, checkpoint):
             'rootfulAfter': expected, 'rootfulNetworkScope': sorted(expected['networks'])}
 
 
-def plan_locked(root, expected, root_fd, lock_pin):
+def plan_locked(root, expected, root_fd, lock_pin, data_only=False):
     selection = binding(root, expected)
+    require(type(data_only) is bool and (not data_only or selection['receipt']['phase'] == 'retired-clean'),
+            'Data-only engineering reset requires authenticated retained clean-current authority')
     external = external_plan(selection)
     stopped(selection)
     network_sources = rootful_network_sources(selection)
@@ -2564,7 +2566,8 @@ def plan_locked(root, expected, root_fd, lock_pin):
     retained = set(selection['policies']) - {SHARED, SCOPE} - set(selection['roots'])
     with directory(SCOPE, selection['policies']) as fd:
         data = scan(fd, selection, retain=retained)
-    plan = {'schemaVersion': 1, 'kind': 'complete-owned-synthetic-clean-reset', 'root': str(root), 'scope': str(SCOPE),
+    plan = {'schemaVersion': 1, 'kind': ('owned-synthetic-data-only-reset' if data_only else 'complete-owned-synthetic-clean-reset'),
+            'dataOnly': data_only, 'root': str(root), 'scope': str(SCOPE),
             'authority': selection['pin'], 'lock': lock_pin, 'nodes': data, 'external': external,
             'rootfulNetworkSources': network_sources, 'rootfulDefault': rootful,
             'rootfulNetworkInspectionProvenance': dict(network_mappings,
@@ -2581,10 +2584,10 @@ def plan_locked(root, expected, root_fd, lock_pin):
     return plan, selection
 
 
-def review(root, expectedIntentSha):
+def review(root, expectedIntentSha, data_only=False):
     root = absolute(root)
     with locked(root) as (fd, pin):
-        plan, _ = plan_locked(root, expectedIntentSha, fd, pin)
+        plan, _ = plan_locked(root, expectedIntentSha, fd, pin, data_only)
         return {'plan': plan, 'planSha256': sha(canonical(plan))}
 
 
@@ -2756,11 +2759,11 @@ class StoppedLease:
                 'Stopped lease expired, consumed or differs from exact selection')
 
 
-def issue_stopped_lease(root, expectedIntentSha, expectedPlanSha):
+def issue_stopped_lease(root, expectedIntentSha, expectedPlanSha, data_only=False):
     root = absolute(root)
     require(isinstance(expectedPlanSha, str) and HEX.fullmatch(expectedPlanSha), 'Exact reviewed plan required')
     with locked(root) as (fd, pin):
-        plan, _ = plan_locked(root, expectedIntentSha, fd, pin)
+        plan, _ = plan_locked(root, expectedIntentSha, fd, pin, data_only)
         require(sha(canonical(plan)) == expectedPlanSha, 'Plan CAS changed before stopped lease')
         return StoppedLease(_LEASE_KEY, root, expectedIntentSha, expectedPlanSha)
 
@@ -2943,12 +2946,12 @@ def remove_dropin_parent(item, policies, attempt, verify):
         require(item['stat'] is None, 'Legacy drop-in ancestry/source disappeared'); return False
 
 
-def execute(root, expectedIntentSha, expectedPlanSha, lease):
+def execute(root, expectedIntentSha, expectedPlanSha, lease, data_only=False):
     root = absolute(root)
     require(type(lease) is StoppedLease, 'Typed canonical stopped lease required; no JSON admission')
     lease.validate(root, expectedIntentSha, expectedPlanSha)
     with locked(root) as (root_fd, lock_pin):
-        plan, selection = plan_locked(root, expectedIntentSha, root_fd, lock_pin)
+        plan, selection = plan_locked(root, expectedIntentSha, root_fd, lock_pin, data_only)
         require(sha(canonical(plan)) == expectedPlanSha, 'Reviewed complete-clean plan CAS changed')
         lease.validate(root, expectedIntentSha, expectedPlanSha)
         lease._used = True
@@ -2998,7 +3001,14 @@ def execute(root, expectedIntentSha, expectedPlanSha, lease):
                     result.update(proof)
                     write_evidence(evidence, attempt + '-progress-' + str(root_progress[0]) + '.json', result)
                     root_progress[0] += 1
-                root_proof = rootful_cleanup(selection, plan['rootfulNetworkSources'], plan['rootfulDefault'], verify, root_checkpoint)
+                if data_only:
+                    verify()
+                    require(rootful_inventory(selection, plan['rootfulNetworkSources'], plan['rootfulDefault']['networks'])
+                            == plan['rootfulDefault'], 'Read-only default store CAS changed')
+                    root_proof = {'rootfulAfter': plan['rootfulDefault'], 'rootfulStoreColdAcceptance': False,
+                                  'defaultStorePreserved': True}
+                else:
+                    root_proof = rootful_cleanup(selection, plan['rootfulNetworkSources'], plan['rootfulDefault'], verify, root_checkpoint)
                 result.update(root_proof)
                 # Re-scan the WHOLE scope before its first deletion, not just
                 # named DB roots. Includes images, layers, cache and Huly volumes.
@@ -3083,9 +3093,15 @@ def execute(root, expectedIntentSha, expectedPlanSha, lease):
                                                        for row in final_rootful['networks'].values())
                 require(rootful_network_sources(selection) == plan['rootfulNetworkSources']
                         and final_rootful == result['rootfulAfter'], 'Final rootful source/store/kernel closure changed')
-                result.update(phase='complete-owned-synthetic-clean', completeCleanReset=True,
-                              cleanScope='declared-synthetic-roots-plus-default-rootful-images-and-selected-networks',
-                              requiredJournalTransition='journal-owner-exact-CAS-retired-clean-no-restart')
+                if data_only:
+                    result.update(phase='complete-owned-synthetic-data-only', completeCleanReset=False,
+                        cleanScope='declared-synthetic-actor-data-and-scoped-runtime-only-default-store-preserved',
+                        rootfulStoreColdAcceptance=False,
+                        requiredJournalTransition='journal-owner-exact-CAS-data-only-no-restart')
+                else:
+                    result.update(phase='complete-owned-synthetic-clean', completeCleanReset=True,
+                                  cleanScope='declared-synthetic-roots-plus-default-rootful-images-and-selected-networks',
+                                  requiredJournalTransition='journal-owner-exact-CAS-retired-clean-no-restart')
             except BaseException:
                 result['rootfulStoreColdAcceptance'] = False
                 result['phase'] = 'failed-partial-fresh-CAS-review-required'

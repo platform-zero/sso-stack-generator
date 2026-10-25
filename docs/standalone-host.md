@@ -70,6 +70,12 @@ deletion. Missing/tampered history, changed source or new unsafe state refuses.
 Prior durable attempt evidence remains retained; neither a previous clean label
 nor a fixture counts as a clean host run.
 
+For engineering iteration with a non-cold shared default store, the separate
+[owned synthetic data-only reset](native-owned-synthetic-data-reset.md) preserves
+that store completely. It requires its own fresh scoped inventory/CAS/stopped
+lease and records `completeCleanReset=false`; it must not replace the full reset
+or supply cold-store/acceptance credit.
+
 Native Seafile preparation can leave UID-mapped **read-only image-cache clones**
 in the default Root store. The reset inventory never chowns or prunes them. Its
 metadata-only classification requires a receipted registry config ID for the
@@ -162,6 +168,14 @@ The current executor is fresh-only and deliberately refuses an existing
 predecessor until its canonical owned-state carry-forward/recovery lifecycle is
 implemented and qualified. Source tests and public namespace probes are not
 installed bootstrap, application, upgrade or recovery acceptance.
+
+Native preparation honors source-declared numeric container UID/GID within the
+exact declared maps, just as the eventual service does. In particular the pinned
+MariaDB mysql identity must not silently become namespace-root during preparation.
+On failure, a private `native-seafile/failure-observations.json` retains only own
+CID, running boolean, bounded exit code and OOM boolean (or observation unavailable).
+Stop cleanup does not overwrite that failure record. No exception text, environment,
+service source, child log, or secret is a diagnostic field.
 
 ## Native stopped backup and restore
 
