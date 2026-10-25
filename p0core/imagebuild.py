@@ -6,15 +6,17 @@ implicitly copied. Runtime staging is a separate Root-owned byte copier.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import shlex
 from pathlib import Path, PurePosixPath
 import re
 import stat
 
 from .model import ContractError, canonical, fields, identifier, load_json
 
-LIMIT = 8 * 1024 * 1024
-TOTAL = 64 * 1024 * 1024
+LIMIT = 128 * 1024 * 1024
+TOTAL = 256 * 1024 * 1024
 
 
 def member(name):
@@ -66,7 +68,44 @@ def base_images(recipe):
     return bases
 
 
-def pack(source, output, name, includes):
+def copy_inputs(recipe, names):
+    aliases = set()
+    for line in recipe.decode().splitlines():
+        try:
+            words = shlex.split(line, comments=True)
+        except ValueError:
+            raise ContractError('unparseable build copy recipe') from None
+        if words and words[0].upper() == 'FROM' and len(words) == 4:
+            aliases.add(words[3])
+        if not words or words[0].upper() not in ('COPY', 'ADD'):
+            continue
+        if line.rstrip().endswith('\\'):
+            raise ContractError('multiline copy needs explicit normalized recipe')
+        parts = words[1:]
+        external = False
+        while parts and parts[0].startswith('--'):
+            if parts[0].startswith('--from='):
+                if parts[0].split('=', 1)[1] not in aliases:
+                    raise ContractError('copy requires an explicit pinned named image stage')
+                external = True
+            parts.pop(0)
+        if external:
+            continue
+        raw = line[line.upper().find(words[0].upper()) + len(words[0]):].strip()
+        if '[' in raw:
+            try:
+                parts = json.loads(raw[raw.index('['):])
+            except ValueError:
+                raise ContractError('unparseable JSON copy recipe') from None
+        if not isinstance(parts, list) or len(parts) < 2 or any(not isinstance(part, str) for part in parts):
+            raise ContractError('invalid local copy recipe')
+        for source in parts[:-1]:
+            path = str(member(source.rstrip('/')))
+            if path not in names and not any(name.startswith(path + '/') for name in names):
+                raise ContractError('recipe references an omitted build input')
+
+
+def pack(source, output, name, includes, artifacts=()):
     source, output = Path(source).resolve(), Path(output)
     identifier(name)
     if output.exists() or output.is_symlink():
@@ -86,9 +125,22 @@ def pack(source, output, name, includes):
             if item in payload or item == 'context.json':
                 raise ContractError('overlapping or reserved build includes')
             payload[item] = regular(source, item)
+    for artifact in artifacts:
+        fields(artifact, {'source', 'target', 'sha256'})
+        if any(not isinstance(artifact[key], str) for key in ('source', 'target', 'sha256')) or not re.fullmatch('[a-f0-9]{64}', artifact['sha256']):
+            raise ContractError('invalid artifact descriptor')
+        target = str(member(artifact['target']))
+        origin = Path(artifact['source'])
+        if origin.resolve() != origin or target in payload or target == 'context.json':
+            raise ContractError('invalid artifact source or duplicate target')
+        content, executable = regular(origin.parent, origin.name)
+        if hashlib.sha256(content).hexdigest() != artifact['sha256']:
+            raise ContractError('independent artifact identity changed')
+        payload[target] = (content, executable)
     if 'Containerfile' not in payload or sum(len(value[0]) for value in payload.values()) > TOTAL:
         raise ContractError('missing recipe or context too large')
     bases = base_images(payload['Containerfile'][0])
+    copy_inputs(payload['Containerfile'][0], set(payload))
     lock = {'schemaVersion': 1, 'kind': 'p0-build-context', 'id': name, 'recipe': 'Containerfile',
             'baseImages': bases, 'files': {key: {'sha256': hashlib.sha256(value[0]).hexdigest(), 'executable': value[1]}
                                           for key, value in sorted(payload.items())}}
@@ -129,6 +181,7 @@ def verify(context, expected):
     actual = {str(path.relative_to(context)) for path in paths if not path.is_dir()}
     if actual != set(lock['files']) | {'context.json'} or total > TOTAL:
         raise ContractError('unlisted build context member or byte limit')
+    copy_inputs((context / 'Containerfile').read_bytes(), set(lock['files']))
     if lock['baseImages'] != base_images((context / 'Containerfile').read_bytes()):
         raise ContractError('build base lock disagrees with recipe')
     return lock

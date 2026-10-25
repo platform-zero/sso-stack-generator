@@ -111,7 +111,7 @@ def render(catalog: Catalog, targets: list[str]) -> tuple[dict, dict[str, str]]:
             raise ContractError("mounts must be an array")
         destinations = set()
         for mount in mounts:
-            fields(mount, {"kind", "source", "target"}, {"readOnly"})
+            fields(mount, {"kind", "source", "target"}, {"readOnly", "sha256"})
             source = identifier(mount["source"])
             target = _absolute(mount["target"])
             if target in destinations:
@@ -120,6 +120,8 @@ def render(catalog: Catalog, targets: list[str]) -> tuple[dict, dict[str, str]]:
             readonly = mount.get("readOnly", mount["kind"] != "volume")
             if type(readonly) is not bool:
                 raise ContractError("readOnly must be boolean")
+            if 'sha256' in mount and mount['kind'] != 'config':
+                raise ContractError('byte binding only applies to configuration mounts')
             if mount["kind"] == "volume":
                 volume = 'p0-' + source
                 result[f"quadlet/{service.runtime}/{volume}.volume"] = (
@@ -129,7 +131,10 @@ def render(catalog: Catalog, targets: list[str]) -> tuple[dict, dict[str, str]]:
             elif mount["kind"] == "secret" and readonly:
                 lines.append("Secret=p0-" + source + ',type=mount,target=' + target)
             elif mount["kind"] == "config" and readonly:
-                lines.append("Volume=/etc/p0/config/" + source + ':' + target + ':ro')
+                checksum = mount.get('sha256')
+                if not isinstance(checksum, str) or not re.fullmatch('[a-f0-9]{64}', checksum):
+                    raise ContractError('configuration mount needs explicit byte identity')
+                lines.append("Volume=/etc/p0-v2/config/" + checksum + ':' + target + ':ro')
             else:
                 raise ContractError("unsupported mount type or writable configuration")
         endpoints = declaration.get("endpoints", [])

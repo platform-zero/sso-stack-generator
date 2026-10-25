@@ -1,4 +1,5 @@
 import json
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
@@ -54,6 +55,37 @@ class ContextTests(unittest.TestCase):
             (root / 'Containerfile').write_text('FROM registry.invalid/base:latest\n')
             with self.assertRaises(ContractError):
                 pack(root, Path(directory) / 'no-output', 'example', ['Containerfile', 'app.py'])
+
+    def test_missing_copy_input_is_rejected_before_publishing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.source(directory)
+            (root / 'Containerfile').write_text('FROM registry.invalid/base@sha256:' + 'a' * 64 + '\nCOPY artifacts/program /program\n')
+            output = Path(directory) / 'context'
+            with self.assertRaisesRegex(ContractError, 'omitted build input'):
+                pack(root, output, 'example', ['Containerfile'])
+            self.assertFalse(output.exists())
+
+    def test_hash_locked_independent_binary_mapping_and_licenses(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.source(directory)
+            artifact = Path(directory) / 'program'
+            artifact.write_bytes(b'synthetic-compiled-binary')
+            artifact.chmod(0o755)
+            (root / 'Containerfile').write_text('FROM registry.invalid/base@sha256:' + 'a' * 64 + '\nCOPY --chmod=0555 artifacts/program /program\n')
+            descriptor = {'source': str(artifact), 'target': 'artifacts/program', 'sha256': hashlib.sha256(artifact.read_bytes()).hexdigest()}
+            result = pack(root, Path(directory) / 'context', 'example', ['Containerfile'], [descriptor])
+            lock = verify(result['context'], result['sha256'])
+            self.assertTrue(lock['files']['artifacts/program']['executable'])
+            descriptor['sha256'] = '0' * 64
+            with self.assertRaisesRegex(ContractError, 'artifact identity changed'):
+                pack(root, Path(directory) / 'refused', 'example', ['Containerfile'], [descriptor])
+
+    def test_external_copy_cannot_bypass_pinned_base_inventory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.source(directory)
+            (root / 'Containerfile').write_text('FROM registry.invalid/base@sha256:' + 'a' * 64 + '\nCOPY --from=other:latest /program /program\n')
+            with self.assertRaisesRegex(ContractError, 'explicit pinned named image stage'):
+                pack(root, Path(directory) / 'context', 'example', ['Containerfile'])
 
     def test_internal_stage_alias_is_not_mutable_external_image(self):
         with tempfile.TemporaryDirectory() as directory:

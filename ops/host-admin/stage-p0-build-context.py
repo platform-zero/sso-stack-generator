@@ -11,8 +11,9 @@ import stat
 
 ROOT = Path('/var/lib/p0-v2-build-inputs')
 SOURCE = Path('/home/gerald/p0_work_cleaned/private/rewrite/build-contexts')
-LIMIT = 8 * 1024 * 1024
-TOTAL = 64 * 1024 * 1024
+CONFIG_SOURCE = Path('/home/gerald/p0_work_cleaned/private/rewrite/config-inputs')
+LIMIT = 128 * 1024 * 1024
+TOTAL = 256 * 1024 * 1024
 
 
 class Refused(RuntimeError):
@@ -80,17 +81,53 @@ def publish(path, content, gid, executable):
         os.close(fd)
 
 
+def stage_configs(args, uid, account):
+    if args.context.resolve() != args.context or args.context.parent != CONFIG_SOURCE:
+        raise Refused('unsupported explicit configuration supply location')
+    encoded = read_file(args.context / 'context.json', args.expected_sha256, uid)
+    lock = json.loads(encoded, object_pairs_hook=pairs)
+    if (set(lock) != {'schemaVersion', 'kind', 'privateInput', 'configs', 'files'}
+            or type(lock['schemaVersion']) is not int or lock['schemaVersion'] != 1
+            or lock['kind'] != 'p0-config-inputs' or lock['privateInput'] is not True
+            or not isinstance(lock['configs'], dict) or not 1 <= len(lock['configs']) <= 1000
+            or not isinstance(lock['files'], dict)):
+        raise Refused('unsupported private configuration contract')
+    for name, checksum in lock['configs'].items():
+        if not re.fullmatch('[a-z][a-z0-9]*(?:-[a-z0-9]+)*', name) or not re.fullmatch('[a-f0-9]{64}', checksum):
+            raise Refused('invalid configuration binding')
+    if lock['files'] != {checksum: checksum for checksum in lock['configs'].values()}:
+        raise Refused('configuration file binding mismatch')
+    payload = {name: read_file(args.context / name, checksum, uid) for name, checksum in lock['files'].items()}
+    if sum(map(len, payload.values())) > 64 * 1024 * 1024:
+        raise Refused('private configuration supply exceeds bound')
+    parent, root = Path('/etc/p0-v2'), Path('/etc/p0-v2/config')
+    directory(parent, account.pw_gid, 0o750)
+    directory(root, account.pw_gid, 0o750)
+    for checksum, content in sorted(payload.items()):
+        publish(root / checksum, content, account.pw_gid, False)
+    print(json.dumps({'schemaVersion': 1, 'scope': 'private-noncredential-config-only',
+                      'configs': lock['configs'], 'privateInput': True, 'installationCertified': False}))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--context', type=Path, required=True)
     parser.add_argument('--expected-sha256', required=True)
+    parser.add_argument('--configs', action='store_true', help='private configuration bytes, never code execution')
     args = parser.parse_args()
     if os.geteuid() != 0 or not re.fullmatch('[a-f0-9]{64}', args.expected_sha256):
         raise Refused('Root and exact context identity required')
+    available = next((int(line.split()[1]) * 1024 for line in Path('/proc/meminfo').read_text().splitlines()
+                      if line.startswith('MemAvailable:')), 0)
+    capacity = os.statvfs('/var/lib')
+    if available < 16 * 1024**3 + 2 * TOTAL or capacity.f_bavail * capacity.f_frsize < 50 * 1024**3 + TOTAL:
+        raise Refused('build staging would violate physical reserves')
     uid = int(os.environ.get('SUDO_UID', '-1'))
     account = pwd.getpwnam('p0-runtime')
     if uid < 1000 or account.pw_uid < 1000 or account.pw_dir != '/var/lib/p0-runtime':
         raise Refused('operator/runtime identity mismatch')
+    if args.configs:
+        return stage_configs(args, uid, account)
     if args.context.resolve() != args.context or args.context.parent != SOURCE:
         raise Refused('unsupported explicit build context location')
     encoded = read_file(args.context / 'context.json', args.expected_sha256, uid)

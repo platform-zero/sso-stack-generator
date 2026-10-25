@@ -176,6 +176,8 @@ class Lifecycle:
         if any(spec.get('runtime') != 'rootless' for spec in specs.values()):
             raise ContractError('rootless publication cannot install rootful/test units')
         Catalog([{'schemaVersion': 1, 'id': 'selected', 'services': list(specs.values())}])
+        from .inputs import verify_installed
+        verify_installed(specs.values())
         self.state.mkdir(parents=True, mode=0o700, exist_ok=True)
         private_directory(self.state)
         self.quadlet.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -350,6 +352,9 @@ class Lifecycle:
             raise ContractError('unsupported lifecycle action')
         registry = self._registry()
         self.verify_owned(registry)
+        if action == 'start':
+            from .inputs import verify_installed
+            verify_installed(registry['services'].values())
         if resources and (action != 'stop' or set(targets) != set(registry['services'])):
             raise ContractError('resource stop requires explicit complete owned service selection')
         catalog = Catalog([{'schemaVersion': 1, 'id': 'selected', 'services': list(registry['services'].values())}])

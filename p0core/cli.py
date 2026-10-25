@@ -10,7 +10,7 @@ from pathlib import Path
 from . import __version__
 from .bundle import build, verify
 from .journal import Journal
-from .model import Catalog, ContractError, canonical
+from .model import Catalog, ContractError, canonical, load_json
 from .lifecycle import Lifecycle, OperationError
 from .readiness import ReadinessError
 
@@ -24,13 +24,20 @@ def parser():
         child.add_argument("--catalog", type=Path, required=True)
         if command != "validate":
             child.add_argument("--target", action="append", required=True)
+            child.add_argument('--inputs', type=Path, help='private image/config bindings; no implicit discovery')
         if command == "build":
             child.add_argument("--output", type=Path, required=True)
+    child = sub.add_parser('pack-configs', help='separate private noncredential site configuration supply')
+    child.add_argument('--catalog', type=Path, required=True)
+    child.add_argument('--target', action='append', required=True)
+    child.add_argument('--inputs', type=Path, required=True)
+    child.add_argument('--output', type=Path, required=True)
     child = sub.add_parser('pack-context', help='explicit nonsecret source files only')
     child.add_argument('--source', type=Path, required=True)
     child.add_argument('--output', type=Path, required=True)
     child.add_argument('--id', required=True)
     child.add_argument('--include', action='append', required=True)
+    child.add_argument('--artifacts', type=Path, help='explicit hash-locked nonsecret independent-source artifact mappings')
     child = sub.add_parser("verify-bundle", help="verify bytes, not installed workflows")
     child.add_argument("--bundle", type=Path, required=True)
     child = sub.add_parser("status", help="read-only operation-journal observation")
@@ -77,9 +84,13 @@ def main(argv=None):
                 output = runtime.status()
             else:
                 output = runtime.change(args.command, args.target, resources=getattr(args, 'resources', False))
+        elif args.command == 'pack-configs':
+            from .inputs import pack_configurations
+            output = pack_configurations(Catalog.read(args.catalog), args.target, load_json(args.inputs), args.output)
         elif args.command == 'pack-context':
             from .imagebuild import pack
-            output = pack(args.source, args.output, args.id, args.include)
+            output = pack(args.source, args.output, args.id, args.include,
+                          load_json(args.artifacts) if args.artifacts else ())
         elif args.command == "status":
             output = Journal.status(args.state_dir / "operations.sqlite3")
         elif args.command == "verify-bundle":
@@ -88,6 +99,9 @@ def main(argv=None):
                       "inputSha256": lock["plan"]["inputSha256"], "installationCertified": False}
         else:
             catalog = Catalog.read(args.catalog)
+            if getattr(args, 'inputs', None):
+                from .inputs import resolve
+                catalog = resolve(catalog, args.target, load_json(args.inputs))
             if args.command == "validate":
                 output = {"schemaVersion": 1, "valid": True, "scope": "graph-contract-only",
                           "modules": len(catalog.modules), "services": len(catalog.services),
