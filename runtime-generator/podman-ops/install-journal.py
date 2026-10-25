@@ -976,6 +976,14 @@ def unselected_clean_current_pin(root, release):
     return (info.st_dev, info.st_ino, info.st_ctime_ns, os.readlink(current), digest(receipt))
 
 
+def unselected_disposition_owner():
+    source = Path(__file__).with_name('native-unselected-disposition.py')
+    spec = importlib.util.spec_from_file_location('stack_unselected_disposition', source)
+    owner = importlib.util.module_from_spec(spec); sys.modules[spec.name] = owner
+    exec(compile(source.read_bytes(), str(source), 'exec'), owner.__dict__)
+    return owner
+
+
 def retire_unselected(root, expected, reviewed, verifier=verify_unselected_preparation):
     """Exact-CAS terminal disposition; no stop/restart/data/account mutation."""
     directory(root)
@@ -989,12 +997,6 @@ def retire_unselected(root, expected, reviewed, verifier=verify_unselected_prepa
     release = Path(value['release'])
     if release.parent != root / 'releases': raise ValueError('Unselected release escaped receipt root')
     directory(release)
-    retired = dict(value, phase='retired-failed', steps=['preparing', 'failed', 'retired-failed'],
-                   retiredIntentSha256=expected, neverSelectedProved=True, dataPreserved=True,
-                   dataCompatibilityProved=False)
-    # Recover ONLY this exact operation's interrupted leaf-before-root write.
-    if read(release / 'installation-receipt.json') not in (value, retired):
-        raise ValueError('Unselected release receipt binding changed')
     if fingerprint(release, value['inputs'].keys()) != value['inputs']:
         raise ValueError('Unselected release input binding changed')
     current = unselected_clean_current_pin(root, release)
@@ -1009,6 +1011,24 @@ def retire_unselected(root, expected, reviewed, verifier=verify_unselected_prepa
                     or not stat.S_ISLNK(info.st_mode) or info.st_nlink != 1
                     or unselected_clean_current_pin(root, release) != current):
                 raise ValueError('Retained clean-current pointer changed before review')
+        disposition = {}
+        if any(key in value for key in ('nativeUnitFileCustody', 'nativeUnitFiles', 'rootfulEnvCustody', 'rootfulEnvironmentStoreHandoff')):
+            # Never erase custody or pretend a published preparation was empty.
+            # Hold the original current pointer across BOTH disposition and
+            # terminal publication; no gap permits same-target symlink ABA.
+            owner = unselected_disposition_owner()
+            leaf = read(release / 'installation-receipt.json')
+            if leaf == value:
+                proof = owner.dispose(root, release, value, expected)
+            else:
+                proof = owner.completed_report(root, release, value, expected)
+            disposition = {'publicationDisposition': proof}
+        retired = dict(value, phase='retired-failed', steps=['preparing', 'failed', 'retired-failed'],
+                       retiredIntentSha256=expected, neverSelectedProved=True, dataPreserved=True,
+                       dataCompatibilityProved=False, **disposition)
+        # Recover ONLY this exact operation's interrupted leaf-before-root write.
+        if read(release / 'installation-receipt.json') not in (value, retired):
+            raise ValueError('Unselected release receipt binding changed')
         verifier(root, release, value)
         if (digest(path) != expected or read(release / 'installation-receipt.json') not in (value, retired)
                 or fingerprint(release, value['inputs'].keys()) != value['inputs']
@@ -1300,6 +1320,10 @@ def main():
                 if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
                     raise ValueError('Unsafe installation lock')
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if args.retire_unselected and fd != 9:
+                    # The publication owners observe the canonical same-process
+                    # FD9 lease; they never acquire a substitute lock.
+                    os.dup2(fd, 9, inheritable=False); os.close(fd); fd = 9
                 if args.retire_empty_preparation:
                     result = retire_empty_preparation(args.root, args.bundle, args.retire_empty_preparation, args.reviewed_data_state)
                 elif args.seal_unselected:

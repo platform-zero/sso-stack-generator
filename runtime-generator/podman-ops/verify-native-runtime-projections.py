@@ -34,6 +34,8 @@ o, p = e.owner, e.p
 require, Refused = o.require, o.Refused
 DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 FILE = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+FAILED_ROOT = Path('/var/lib/stack-host-delivery')
+FAILED_SCOPE = Path('/mnt/stack/host-stack-lab')
 ROOT_ONLY = {'aggregateSha256', 'destination', 'projectionSha256', 'custodySha256',
              'ownershipHandoff', 'environmentHandoff', 'projectionCustody', 'runtimeCustody',
              'environmentStoreHandoff'}
@@ -44,12 +46,22 @@ def digest(value):
 
 
 class Snapshot:
-    def __init__(self, root, release, intent, running, deadline, source_bundle=None):
+    def __init__(self, root, release, intent, running, deadline, source_bundle=None, *, failed_preparation=False):
         self.root, self.release = p.canonical(str(root)), p.canonical(str(release))
         self.source_bundle = p.canonical(str(source_bundle)) if source_bundle is not None else None
         self.intent = p.strict(p.encoded(intent)); self.running = running
         self.fds = []; self.observed = {}; self.deadline = deadline
         self.pointer_choices = {'old', 'selected'}
+        self.failed_preparation = failed_preparation
+        if failed_preparation:
+            require(not running and source_bundle is None
+                    and self.intent.get('phase') == 'failed'
+                    and self.intent.get('steps') == ['preparing', 'failed']
+                    and self.intent.get('previousRelease') is None
+                    and not any(key in self.intent for key in
+                        ('nativeRuntimeEnvUnitCustody', 'nativeRuntimeEnvUnits', 'nativeRuntimeEnvironmentCopies', 'readiness')),
+                    'only never-selected failed preparation source observation permitted')
+        self.preparation = self.intent.get('phase') == 'preparing' or failed_preparation
 
     def close(self):
         for fd in reversed(self.fds):
@@ -235,9 +247,9 @@ class Snapshot:
                 p.custody_permissions(rec, operator.pw_uid, operator.pw_gid, ids, operator=True)
                 require(rec['mode'] == 0o2770, 'operator source graph mode differs')
             self.remember(node, rec)
-        self.pointer(handles[state], state, custody.get('current') if self.intent['phase'] == 'preparing' else slot,
-                     original=self.intent['phase'] == 'preparing', owners=(0, row['uid']),
-                     candidate=slot if self.intent['phase'] == 'preparing' else None)
+        self.pointer(handles[state], state, custody.get('current') if self.preparation else slot,
+                     original=self.preparation, owners=(0, row['uid']),
+                     candidate=slot if self.preparation and not self.failed_preparation else None)
         return handles[state], handles[slot], slot
 
     def runtime_tree(self, slot_fd, slot, row, account, proof, services):
@@ -387,7 +399,7 @@ class Snapshot:
         by importing or executing code from the selected old release.
         """
         current = p.current_record(root_fd)
-        if current is None or self.intent['phase'] != 'preparing':
+        if current is None or not self.preparation:
             return self.intent.get('previousRelease')
         target = current['target']
         previous = p.canonical(target) if target.startswith('/') else self.root / p.relative(target)
@@ -483,7 +495,8 @@ class Snapshot:
         phase = self.intent.get('phase')
         require(self.intent.get('schemaVersion') == 1 and type(self.intent['schemaVersion']) is int
                 and self.intent.get('release') == str(self.release)
-                and phase in (('starting', 'active') if self.running else ('preparing', 'units-selected', 'building', 'starting', 'active')),
+                and (phase in (('starting', 'active') if self.running else ('preparing', 'units-selected', 'building', 'starting', 'active'))
+                     or self.failed_preparation),
                 'projection verification phase differs')
         o.lock_held(self.root)
         root_fd = self.absolute(self.root); release_fd = self.absolute(self.release)
@@ -524,6 +537,10 @@ class Snapshot:
                 and metadata.get('installerStateRoot') == str(self.root)
                 and manifest.get('installerStateRoot', '/var/lib/webservices') == str(self.root)
                 and manifest.get('storageScope') == metadata.get('storageScope'), 'standalone source authority differs')
+        if self.failed_preparation:
+            require(self.root == FAILED_ROOT
+                    and metadata.get('storageScope') == {'root': str(FAILED_SCOPE), 'dataClass': 'synthetic'},
+                    'failed observation is limited to the exact synthetic host scope')
         rows = metadata.get('domains'); operator, accounts, ids = self.accounts(rows)
         scope = p.canonical(metadata['storageScope']['root'])
         require(not scope.is_relative_to(self.root) and not self.root.is_relative_to(scope), 'root/scope overlap')
@@ -594,8 +611,8 @@ class Snapshot:
         scope, inputs, phase = binding['scope'], binding['inputs'], self.intent['phase']
         old_current = self.stop_only_previous(root_fd, manifest, binding['marker'])
         self.pointer(root_fd, self.root, (p.canonical(old_current) if old_current is not None else None)
-                     if phase == 'preparing' else self.release,
-                     candidate=self.release if phase == 'preparing' else None)
+                     if self.preparation else self.release,
+                     candidate=self.release if self.preparation and not self.failed_preparation else None)
         projections = self.intent.get('domainRuntimeProjections')
         require(isinstance(projections, dict) and set(projections) == {row['name'] for row in rows},
                 'all seven completed domain projections required')

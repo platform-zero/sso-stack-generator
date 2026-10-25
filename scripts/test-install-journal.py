@@ -315,6 +315,54 @@ class InstallationJournal(unittest.TestCase):
         (self.root/'current').symlink_to(prior)
         return prior,body,journal.digest(self.path)
 
+    def published_unselected_fixture(self):
+        prior, body, _ = self.partial_unselected_fixture()
+        value = dict(journal.read(self.path), nativeUnitFileCustody={'model': True}, nativeUnitFiles={'model': True})
+        journal.write(self.path, value); journal.write(self.release/'installation-receipt.json', value)
+        return prior, body, journal.digest(self.path)
+
+    def test_published_unselected_requires_owner_before_absence_verification_and_preserves_original_fields(self):
+        prior, body, expected = self.published_unselected_fixture(); events = []
+        report = {'status': 'completed', 'activationAuthorized': False, 'modelOnly': True}
+        owner = SimpleNamespace(dispose=lambda *a: events.append('dispose') or report)
+        with patch.object(journal, 'unselected_disposition_owner', return_value=owner):
+            result = journal.retire_unselected(self.root, expected, True, lambda *a: events.append('verify-absence'))
+        self.assertEqual(events, ['dispose', 'verify-absence'])
+        self.assertEqual(result['publicationDisposition'], report)
+        self.assertEqual(result['nativeUnitFileCustody'], {'model': True})
+        self.assertEqual(self.path.read_bytes(), body)
+
+    def test_published_owner_failure_cannot_retire_or_clear_failed_controls(self):
+        _, _, expected = self.published_unselected_fixture(); before = self.path.read_bytes()
+        owner = SimpleNamespace(dispose=lambda *a: (_ for _ in ()).throw(ValueError('model custody refused')))
+        with patch.object(journal, 'unselected_disposition_owner', return_value=owner):
+            with self.assertRaises(ValueError): journal.retire_unselected(self.root, expected, True, lambda *a: self.fail('unexpected verifier'))
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual((self.release/'installation-receipt.json').read_bytes(), before)
+
+    def test_published_owner_cannot_replace_current_between_disposition_and_terminal_review(self):
+        prior, _, expected = self.published_unselected_fixture(); before = self.path.read_bytes()
+        def replace(*args):
+            current = self.root/'current'; current.unlink(); current.symlink_to(prior)
+            return {'status': 'completed', 'modelOnly': True}
+        with patch.object(journal, 'unselected_disposition_owner', return_value=SimpleNamespace(dispose=replace)):
+            with self.assertRaises(ValueError): journal.retire_unselected(self.root, expected, True, lambda *a: None)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_published_terminal_leaf_interruption_uses_read_only_completed_check(self):
+        _, body, expected = self.published_unselected_fixture(); events = []
+        report = {'status': 'completed', 'modelOnly': True}
+        old = journal.read(self.path)
+        retired = dict(old, phase='retired-failed', steps=['preparing', 'failed', 'retired-failed'],
+            retiredIntentSha256=expected, neverSelectedProved=True, dataPreserved=True,
+            dataCompatibilityProved=False, publicationDisposition=report)
+        journal.write(self.release/'installation-receipt.json', retired)
+        owner = SimpleNamespace(dispose=lambda *a: self.fail('must not replay deletion'),
+            completed_report=lambda *a: events.append('verify-completed') or report)
+        with patch.object(journal, 'unselected_disposition_owner', return_value=owner):
+            journal.retire_unselected(self.root, expected, True, lambda *a: events.append('verify-absence'))
+        self.assertEqual(events, ['verify-completed', 'verify-absence']); self.assertEqual(self.path.read_bytes(), body)
+
     def test_partial_unselected_retirement_restores_only_exact_clean_current_bytes(self):
         prior,body,expected=self.partial_unselected_fixture();before=self.path.read_bytes()
         result=journal.retire_unselected(self.root,expected,True,lambda *a:None)
