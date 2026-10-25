@@ -98,7 +98,7 @@ class Catalog:
                 raise ContractError("services must be an array")
             self.modules[module] = manifest
             for item in declarations:
-                fields(item, {"id", "runtime"}, {"image", "requires", "mounts", "endpoints",
+                fields(item, {"id", "runtime", "requires"}, {"image", "mounts", "endpoints",
                        "probes", "resources", "command", "description", "environment",
                        "networks", "lifecycle", "entrypoint"})
                 name = identifier(item["id"])

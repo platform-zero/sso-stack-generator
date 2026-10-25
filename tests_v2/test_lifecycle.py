@@ -58,8 +58,8 @@ class LifecycleTests(unittest.TestCase):
             self.assertTrue((runtime.quadlet / 'p0-app.container').exists())
 
     def test_control_runner_uses_runtime_home_not_callers_private_cwd(self):
-        with patch('p0core.lifecycle.subprocess.run', return_value=subprocess.CompletedProcess([], 0, b'')) as execute:
-            Runner()(['/usr/bin/podman', 'info'])
+        with patch('p0core.lifecycle.subprocess.Popen', wraps=subprocess.Popen) as execute:
+            Runner()(['/usr/bin/true'])
             self.assertEqual(execute.call_args.kwargs['cwd'], Path.home())
             self.assertEqual(execute.call_args.kwargs['env']['HOME'], str(Path.home()))
             self.assertNotIn('CONTAINERS_CONF', execute.call_args.kwargs['env'])

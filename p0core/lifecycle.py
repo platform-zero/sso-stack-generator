@@ -10,6 +10,8 @@ import json
 import os
 from pathlib import Path
 import pwd
+import selectors
+import signal
 import sqlite3
 import stat
 import subprocess
@@ -29,7 +31,7 @@ class OperationError(RuntimeError):
     pass
 
 
-def verify_reserves():
+def verify_reserves(extra_bytes=0):
     available = next((int(line.split()[1]) * 1024 for line in
                       Path('/proc/meminfo').read_text().splitlines()
                       if line.startswith('MemAvailable:')), 0)
@@ -37,24 +39,64 @@ def verify_reserves():
         raise ContractError('available RAM below reserve')
     for path, floor in (('/', 50), ('/mnt/stack', 100)):
         observed = os.statvfs(path)
-        if observed.f_bavail * observed.f_frsize < floor * 1024 ** 3:
+        if observed.f_bavail * observed.f_frsize < floor * 1024 ** 3 + extra_bytes:
             raise ContractError('free storage below reserve')
 
 
 class Runner:
     def __call__(self, arguments, timeout=30, input_bytes=None):
+        if input_bytes is not None and len(input_bytes) > 4096:
+            raise OperationError('owned control input exceeds bound')
+        deadline = time.monotonic() + timeout
+        process = subprocess.Popen(arguments, stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True,
+                                   cwd=Path.home(), env={'PATH': '/usr/bin:/bin', 'HOME': str(Path.home()),
+                                        'XDG_RUNTIME_DIR': f'/run/user/{os.getuid()}', 'LC_ALL': 'C'})
+        selector = selectors.DefaultSelector()
+        content = bytearray()
         try:
-            result = subprocess.run(arguments, input=input_bytes, stdout=subprocess.PIPE,
-                                    stderr=subprocess.DEVNULL, timeout=timeout, check=False,
-                                    cwd=Path.home(), env={'PATH': '/usr/bin:/bin', 'HOME': str(Path.home()),
-                                         'XDG_RUNTIME_DIR': f'/run/user/{os.getuid()}', 'LC_ALL': 'C'})
-        except subprocess.TimeoutExpired as error:
-            raise OperationError('owned control command timed out; effects require reconciliation') from error
-        if result.returncode != 0:
-            raise OperationError('owned control command failed; no raw service output disclosed')
-        if len(result.stdout) > 1024 * 1024:
-            raise OperationError('owned control response exceeds bound')
-        return result.stdout
+            if input_bytes is not None:
+                process.stdin.write(input_bytes)
+                process.stdin.close()
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(arguments, timeout)
+                for key, _ in selector.select(min(remaining, 1)):
+                    chunk = os.read(key.fd, 65536)
+                    if not chunk:
+                        selector.unregister(key.fd)
+                        continue
+                    if len(content) + len(chunk) > 1024 * 1024:
+                        raise OperationError('owned control response exceeds bound')
+                    content.extend(chunk)
+            process.wait(timeout=max(0.001, deadline - time.monotonic()))
+            if process.returncode != 0:
+                raise OperationError('owned control command failed; no raw service output disclosed')
+            return bytes(content)
+        except BaseException as error:
+            # The unreaped direct child's PID cannot be recycled here. Kill
+            # only its fresh process group, never a manager, container, user or
+            # a cgroup inferred from an empty path. External effects remain
+            # indeterminate and are reconciled by the operation journal.
+            if process.returncode is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    raise OperationError('owned client did not settle; effects require reconciliation') from None
+            if isinstance(error, subprocess.TimeoutExpired):
+                raise OperationError('owned control command timed out; effects require reconciliation') from None
+            raise
+        finally:
+            selector.close()
+            process.stdout.close()
+            if process.stdin is not None and not process.stdin.closed:
+                process.stdin.close()
 
 
 def atomic_json(path: Path, value):
@@ -311,7 +353,7 @@ class Lifecycle:
         with operation_lock(self.state):
             journal = Journal(self.state / 'operations.sqlite3')
             if action == 'start' and journal.connection.execute(
-                    "SELECT 1 FROM operations bad WHERE bad.state IN ('prepared','running','indeterminate') "
+                    "SELECT 1 FROM operations bad WHERE bad.state IN ('prepared','running','indeterminate') AND bad.kind!='build' "
                     "AND NOT (bad.kind='stop' AND EXISTS (SELECT 1 FROM operations done WHERE done.kind='stop' "
                     "AND done.state='succeeded' AND done.input_sha256=bad.input_sha256 AND done.created>bad.updated)) "
                     "AND NOT (bad.kind IN ('start','stop') AND EXISTS (SELECT 1 FROM operations done WHERE done.kind='recover' "

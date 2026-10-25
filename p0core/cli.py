@@ -26,15 +26,23 @@ def parser():
             child.add_argument("--target", action="append", required=True)
         if command == "build":
             child.add_argument("--output", type=Path, required=True)
+    child = sub.add_parser('pack-context', help='explicit nonsecret source files only')
+    child.add_argument('--source', type=Path, required=True)
+    child.add_argument('--output', type=Path, required=True)
+    child.add_argument('--id', required=True)
+    child.add_argument('--include', action='append', required=True)
     child = sub.add_parser("verify-bundle", help="verify bytes, not installed workflows")
     child.add_argument("--bundle", type=Path, required=True)
     child = sub.add_parser("status", help="read-only operation-journal observation")
     child.add_argument("--state-dir", type=Path, required=True)
-    for command in ("install", "start", "stop", "recover", "runtime-status", "secret-generate"):
+    for command in ("install", "start", "stop", "recover", "image-build", "runtime-status", "secret-generate"):
         child = sub.add_parser(command, help="owned rootless runtime only")
         child.add_argument("--state-dir", type=Path, required=True)
         child.add_argument("--quadlet-dir", type=Path, required=True)
-        if command == "install":
+        if command == 'image-build':
+            child.add_argument('--context', type=Path, required=True)
+            child.add_argument('--expected-sha256', required=True)
+        elif command == "install":
             child.add_argument("--bundle", type=Path, required=True)
             child.add_argument("--expected-sha256", required=True)
             child.add_argument("--pull", action="store_true")
@@ -53,9 +61,12 @@ def parser():
 def main(argv=None):
     args = parser().parse_args(argv)
     try:
-        if args.command in ("install", "start", "stop", "recover", "runtime-status", "secret-generate"):
+        if args.command in ("install", "start", "stop", "recover", "image-build", "runtime-status", "secret-generate"):
             runtime = Lifecycle(args.state_dir, args.quadlet_dir)
-            if args.command == "install":
+            if args.command == 'image-build':
+                from .imagebuild import build as build_image
+                output = build_image(runtime, args.context, args.expected_sha256)
+            elif args.command == "install":
                 output = runtime.install(args.bundle, args.expected_sha256, pull=args.pull,
                                          resume_stopped=args.resume_stopped)
             elif args.command == "recover":
@@ -66,6 +77,9 @@ def main(argv=None):
                 output = runtime.status()
             else:
                 output = runtime.change(args.command, args.target, resources=getattr(args, 'resources', False))
+        elif args.command == 'pack-context':
+            from .imagebuild import pack
+            output = pack(args.source, args.output, args.id, args.include)
         elif args.command == "status":
             output = Journal.status(args.state_dir / "operations.sqlite3")
         elif args.command == "verify-bundle":
