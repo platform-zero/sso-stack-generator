@@ -164,7 +164,9 @@ class EmptyLogNamespaces(unittest.TestCase):
 
 class PriorNetworkProvenance(unittest.TestCase):
     def setUp(self):
-        self.root=Path('/model/root');self.sources={'webservices_safe':{'model':'source'}}
+        self.root=Path('/model/root');self.release=self.root/'releases/current'
+        self.sources={str(self.release):{'authority':{'model':'old-intent'},'networks':[
+            {'name':'webservices_safe','path':str(self.release/'quadlet/rootful/webservices_safe.network'),'sha256':'c'*64,'stat':{'model':'stat'}}]}}
         self.mapping=dict(inspect={'name':'webservices_safe','network_interface':'podman9','id':'e'*64},
             bridge='podman9',absenceAttested=True,kernel=None,kernelIdentity=None)
         self.plan=dict(root=str(self.root),scope=str(m.SCOPE),rootfulNetworkSources=self.sources,
@@ -172,7 +174,7 @@ class PriorNetworkProvenance(unittest.TestCase):
         self.plan_sha=m.sha(m.canonical(self.plan));self.attempt=self.plan_sha+'-'+'1'*32
         self.operation=dict(intentSha256='a'*64,planSha256=self.plan_sha,plan=self.plan)
         self.authenticated={'fixture':'authenticated-original-completion'}
-        self.selection=dict(root=self.root,receipt=dict(phase='retired-clean',completeCleanReset=dict(
+        self.selection=dict(root=self.root,release=self.release,receipt=dict(phase='retired-clean',completeCleanReset=dict(
             resultPath=str(self.root/'.host-clean-reset'/(self.attempt+'-result.json')),intentSha256='a'*64,planSha256=self.plan_sha)),
             pin=dict(intentSha256='b'*64,priorCompletedReset=self.authenticated))
         patches=[patch.object(m.os,'open',return_value=100),patch.object(m.os,'close'),patch.object(m,'root_directory'),
@@ -184,6 +186,11 @@ class PriorNetworkProvenance(unittest.TestCase):
     def test_verified_history_recovers_inspect_identity_only_not_old_clean_state(self):
         result=self.recover();self.assertEqual(result,{'webservices_safe':self.mapping})
         self.assertNotIn('lease',result);self.assertNotIn('plan',result)
+    def test_retired_receipt_stamp_may_change_but_network_definitions_may_not(self):
+        changed=copy.deepcopy(self.sources);changed[str(self.release)]['authority']={'model':'new-intent'}
+        self.assertEqual(m.prior_network_mappings(99,self.selection,changed),{'webservices_safe':self.mapping})
+        changed[str(self.release)]['networks'][0]['sha256']='f'*64
+        self.assertEqual(m.prior_network_mappings(99,self.selection,changed),{})
     def test_unverified_history_wrong_source_or_hash_has_no_mapping(self):
         self.selection['pin']['priorCompletedReset']={'foreign':'pin'}
         with self.assertRaises(m.Refusal):self.recover()

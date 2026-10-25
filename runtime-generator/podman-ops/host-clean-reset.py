@@ -2484,12 +2484,22 @@ def prior_network_mappings(root_fd, selection, sources):
                 require(document.get('intentSha256') == historical['intentSha256']
                         and document.get('planSha256') == historical['planSha256'], 'Authenticated prior network intent differs')
             require(document.get('planSha256') == name[:64] == sha(canonical(plan)), 'Reset intent plan evidence CAS differs')
-            if plan.get('rootfulNetworkSources') != sources: continue
+            if prior:
+                # Journal SHA/receipt phase necessarily changed on retirement.
+                # Compare only the exact current release's immutable network
+                # definitions; never inherit a prior action inventory or scope.
+                key = str(selection['release'])
+                before = plan.get('rootfulNetworkSources', {}).get(key, {})
+                if set(sources) != {key} or before.get('networks') != sources[key].get('networks'): continue
+                allowed = {row['name'] for row in sources[key]['networks']}
+            else:
+                if plan.get('rootfulNetworkSources') != sources: continue
+                allowed = {row['name'] for entry in sources.values() for row in entry.get('networks', [])}
             require(plan.get('root') == str(selection['root']) and plan.get('scope') == str(SCOPE), 'Reset network evidence scope differs')
             observed = list(plan.get('rootfulDefault', {}).get('networks', {}).items())
             observed += list(plan.get('rootfulNetworkInspectionProvenance', {}).items())
             for network, value in observed:
-                if value.get('inspect') is None or not value.get('absenceAttested'): continue
+                if network not in allowed or value.get('inspect') is None or not value.get('absenceAttested'): continue
                 require(network == value['inspect'].get('name') and value.get('bridge') == value['inspect'].get('network_interface'),
                         'Reset inspect evidence identity differs')
                 if network in result:
