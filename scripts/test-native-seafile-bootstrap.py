@@ -45,7 +45,53 @@ class Models(unittest.TestCase):
   f.temporary_evidence=mock.Mock()
   f.start_database=lambda cid:f.command(['start',cid])
   f.finish_database_observer=mock.Mock(return_value=True)
+  f.mac_name='webservices_native_'+'a'*32
+  f.mac_body=b.PREPARATION_MAC_TEMPLATE.replace('@PROFILE@',f.mac_name).encode()
+  f.mac_pin=None;f.mac_custody=dict(modelOnly=True)
+  f.install_mac_policy=mock.Mock();f.verify_mac_policy=mock.Mock()
   return f
+ def test_scoped_mac_retains_default_restrictions_and_only_scoped_peer_signalling(self):
+  template=b.PREPARATION_MAC_TEMPLATE
+  for rule in ('deny mount,','deny @{PROC}/* w,','deny @{PROC}/sysrq-trigger rwklx,',
+               'deny @{PROC}/kcore rwklx,','deny /sys/firmware/** rwklx,',
+               'deny /sys/kernel/security/** rwklx,','deny /sys/[^f]*/** wklx,',
+               'deny /sys/f[^s]*/** wklx,','deny /sys/fs/[^c]*/** wklx,',
+               'deny /sys/fs/c[^g]*/** wklx,','deny /sys/fs/cg[^r]*/** wklx,',
+               'signal (send,receive) peer=@PROFILE@,','ptrace (trace,read) peer=@PROFILE@,'):
+   self.assertIn(rule,template)
+  self.assertIn('flags=(attach_disconnected,mediate_deleted)',template)
+  self.assertNotIn('flags=(unconfined)',template)
+  self.assertNotIn('signal (send,receive),',template)
+ def test_mac_loader_creates_new_policy_without_replace_adoption_shared_cache_or_raw_output(self):
+  with tempfile.TemporaryDirectory() as temp:
+   f=self.fixture(temp);f.reserve=mock.Mock()
+   pin=dict(name=f.mac_name,kernelSha256='b'*64,device=1,inode=2)
+   f.kernel_mac_policy=mock.Mock(side_effect=[None,None,pin])
+   expanded=f.mac_body+b'\n# expanded model-only input\n'
+   results=[types.SimpleNamespace(returncode=0,stdout=expanded,stderr=b''),
+            types.SimpleNamespace(returncode=0,stdout=f.mac_name.encode()+b'\n',stderr=b''),
+            types.SimpleNamespace(returncode=0,stdout=b'',stderr=b'')]
+   with mock.patch.object(b.subprocess,'run',side_effect=results) as run:
+    b.Fresh.install_mac_policy(f)
+   self.assertEqual(f.mac_pin,pin)
+   self.assertFalse(f.mac_custody['sharedDefaultModified']);self.assertFalse(f.mac_custody['confinementDisabled'])
+   for call in run.call_args_list:
+    argv=call.args[0]
+    self.assertIn('--skip-cache',argv);self.assertIn('--skip-read-cache',argv)
+    self.assertFalse(any(arg in argv for arg in ('--replace','--remove','--write-cache','--purge-cache','--Complain')))
+    self.assertTrue(any(arg.startswith('--config-file='+str(f.release)) for arg in argv))
+   self.assertIn('--add',run.call_args_list[-1].args[0])
+   self.assertTrue((f.release/'native-seafile/mac-policy/custody.json').is_file())
+   f.mac_pin=None;f.kernel_mac_policy=mock.Mock(return_value=pin)
+   with mock.patch.object(b.subprocess,'run') as run,self.assertRaises(p.Refused):
+    b.Fresh.install_mac_policy(f)
+   run.assert_not_called()
+ def test_mac_kernel_custody_drift_refuses_without_repair_or_replacement(self):
+  with tempfile.TemporaryDirectory() as temp:
+   f=self.fixture(temp);f.mac_pin=dict(kernelSha256='a'*64)
+   f.kernel_mac_policy=mock.Mock(return_value=dict(kernelSha256='b'*64))
+   with mock.patch.object(b.subprocess,'run') as run,self.assertRaises(p.Refused):b.Fresh.verify_mac_policy(f)
+   run.assert_not_called()
  def test_real_writer_finalizes_declared_new_inode_modes_under_private_umask_only(self):
   with tempfile.TemporaryDirectory() as temp:
    f=self.fixture(temp);previous=os.umask(0o077)
@@ -72,6 +118,7 @@ class Models(unittest.TestCase):
     self.assertEqual(result,CID);creation=calls[-1]
     self.assertIn('--timeout=900',creation);self.assertIn('--log-driver=none',creation)
     self.assertIn('--security-opt=no-new-privileges',creation)
+    self.assertIn('--security-opt=apparmor='+f.mac_name,creation)
     self.assertFalse(any('publish' in arg or arg=='--network=host' for arg in creation))
     self.assertNotIn('model-only-secret',' '.join(creation))
     self.assertIn('--uidmap',creation)

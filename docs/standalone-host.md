@@ -164,6 +164,26 @@ normal hash-pinned authorization and derived environment. A log proof alone
 confers no admission. Failures consume preparation and preserve data/evidence;
 there is no adoption, retry repair, data deletion or predecessor restart.
 
+Fresh temporary containers select a new, source-owned AppArmor profile, not an
+unconfined mode or a mutation of the engine's shared default. Its template retains
+the containers/common baseline restrictions and same-profile signalling semantics;
+it adds no OCI capabilities and retains no-new-privileges, UID maps, network and
+resource gates. The exact preparing plan binds its fresh unguessable profile name
+and source hash before loading. The canonical owner exclusively creates private
+source/expanded/parser controls under the release, preprocesses with caches disabled,
+checks that only the one expected profile is defined, refuses any existing kernel
+identity, and uses add (never replace). An enforcing kernel policy/hash/inode is
+recorded and rechecked before mapped execution/publication. Private parser output
+is bounded and never exposed. Source tests are not installed policy proof.
+
+Policy controls/custody and the immutable kernel policy are retained with failed
+or successful release evidence. No possibly live profile is unloaded or replaced,
+no shared policy/cache is repaired or adopted, and a policy is neither an active
+trigger nor stopped/acceptance evidence. Actual own-CID self-signalling, database
+bootstrap/readiness and clean-stop gates must still pass; an outer/stacked-policy
+refusal is not bypassed by changing this profile. Default confinement remains the
+baseline for unrelated workloads.
+
 The current executor is fresh-only and deliberately refuses an existing
 predecessor until its canonical owned-state carry-forward/recovery lifecycle is
 implemented and qualified. Source tests and public namespace probes are not

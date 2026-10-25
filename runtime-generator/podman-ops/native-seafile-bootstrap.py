@@ -25,6 +25,39 @@ import threading
 PROC = Path('/proc')
 CGROUP = Path('/sys/fs/cgroup')
 
+# Apache-2.0: adapted from containers/common v0.62.2,
+# pkg/apparmor/apparmor_linux_template.go. Retain its restrictions; do NOT edit
+# the engine's shared default profile or grant capabilities/disable confinement.
+PREPARATION_MAC_TEMPLATE = r'''#include <tunables/global>
+profile @PROFILE@ flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+  network,
+  capability,
+  file,
+  umount,
+  signal (receive) peer=unconfined,
+  signal (send,receive) peer=@PROFILE@,
+  signal (receive) peer={/usr/bin/,/usr/sbin/,}runc,
+  signal (receive) peer={/usr/bin/,/usr/sbin/,}crun*,
+  signal (receive) set=(int, quit, kill, term) peer={/usr/bin/,/usr/sbin/,}podman,
+  deny @{PROC}/* w,
+  deny @{PROC}/{[^1-9],[^1-9][^0-9],[^1-9s][^0-9y][^0-9s],[^1-9][^0-9][^0-9][^0-9]*}/** w,
+  deny @{PROC}/sys/[^k]** w,
+  deny @{PROC}/sys/kernel/{?,??,[^s][^h][^m]**} w,
+  deny @{PROC}/sysrq-trigger rwklx,
+  deny @{PROC}/kcore rwklx,
+  deny mount,
+  deny /sys/[^f]*/** wklx,
+  deny /sys/f[^s]*/** wklx,
+  deny /sys/fs/[^c]*/** wklx,
+  deny /sys/fs/c[^g]*/** wklx,
+  deny /sys/fs/cg[^r]*/** wklx,
+  deny /sys/firmware/** rwklx,
+  deny /sys/kernel/security/** rwklx,
+  ptrace (trace,read) peer=@PROFILE@,
+}
+'''
+
 
 def load_protocol():
     spec = importlib.util.spec_from_file_location('journal_seafile_protocol',
@@ -125,6 +158,9 @@ class Fresh:
             self.binding.identity, self.binding.email,
             self.p.database_scope(self.environments['seafile']), self.binding.files,
             self.password, secrets.token_hex(32))
+        self.mac_name = 'webservices_native_' + self.p.sha(self.fresh_raw)[:32]
+        self.mac_body = PREPARATION_MAC_TEMPLATE.replace('@PROFILE@', self.mac_name).encode()
+        self.mac_pin = None
         self.images = {}
         for name, service in self.source.items():
             domain = 'apps' if name == 'seafile' else 'platform'
@@ -140,7 +176,7 @@ class Fresh:
                          implementationSha256=self.p.implementation_sha(self.binding.files),
                          freshAuthorizationSha256=self.p.sha(self.fresh_raw),
                          sourceEnvironmentSha256=self.p.sha(self.binding.aggregate),
-                         images=self.images)
+                         images=self.images, macPolicy=dict(name=self.mac_name, sourceSha256=self.p.sha(self.mac_body)))
         self.binding.verify()
 
     def environment(self, name, authorization_sha):
@@ -303,6 +339,7 @@ class Fresh:
         self.file(shared / '.webservices-init-complete', self.marker, account.pw_uid, account.pw_gid)
 
     def create(self, name, authorization_sha=None, action=None, network=None):
+        self.verify_mac_policy()
         domain = 'apps' if name == 'seafile' else 'platform'
         account = self.accounts[domain]
         native_name = 'stack-seafile-prep-' + self.p.sha(self.fresh_raw)[:16] + '-' + name
@@ -317,6 +354,7 @@ class Fresh:
         self.cidfiles[cidfile] = native_name
         arguments = ['create', '--name=' + native_name, '--cidfile=' + str(cidfile), '--timeout=900', '--pull=never', '--image-volume=ignore',
                      '--health-cmd=none', '--log-driver=none', '--security-opt=no-new-privileges',
+                     '--security-opt=apparmor=' + self.mac_name,
                      '--memory=2G', '--cpus=1.5', '--pids-limit=256',
                      '--network=' + ('container:' + network if network else 'none'),
                      '--env-file=' + str(env_path), *self.uidmaps(domain)]
@@ -505,6 +543,91 @@ class Fresh:
                     else 'engine-other-assigned-profile')
         except BaseException:
             return 'own-mac-assignment-unavailable'
+
+    def kernel_mac_policy(self):
+        """Exact freshly source-created kernel policy ONLY; no process enumeration."""
+        opened = []
+        def directory(path):
+            fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW); opened.append(fd)
+            for part in path.parts[1:]:
+                fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd); opened.append(fd)
+                info = os.fstat(fd)
+                self.require(info.st_uid == 0 and not info.st_mode & 0o022, 'Native MAC control ancestry differs')
+            return fd
+        def read(fd, name):
+            child = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+            try:
+                self.require(os.fstat(child).st_uid == 0, 'Native MAC kernel control owner differs')
+                body = os.read(child, 513)
+                self.require(len(body) <= 512, 'Native MAC kernel control bound refused')
+                return body.strip()
+            finally:
+                os.close(child)
+        try:
+            self.require(re.fullmatch(r'webservices_native_[0-9a-f]{32}', self.mac_name), 'Native MAC name differs')
+            fd = directory(Path('/sys/kernel/security/apparmor/.policy/profiles'))
+            libc = ctypes.CDLL(None, use_errno=True); function = libc.fstatfs
+            function.argtypes = (ctypes.c_int, ctypes.c_void_p); function.restype = ctypes.c_int
+            filesystem = ctypes.create_string_buffer(256)
+            self.require(function(fd, filesystem) == 0 and ctypes.c_long.from_buffer(filesystem).value == 0x73636673,
+                         'Native MAC control filesystem differs')
+            entries = os.listdir(fd)
+            self.require(len(entries) <= 100000, 'Native MAC kernel inventory bound refused')
+            entries = [name for name in entries if re.fullmatch(re.escape(self.mac_name) + r'\.[0-9]+', name)]
+            self.require(len(entries) <= 1, 'Native MAC kernel name ambiguous')
+            if not entries:
+                return None
+            child = os.open(entries[0], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd); opened.append(child)
+            info = os.fstat(child)
+            self.require(read(child, 'name') == self.mac_name.encode() and read(child, 'mode') == b'enforce',
+                         'Native MAC kernel policy name/mode differs')
+            digest = read(child, 'sha256')
+            self.require(re.fullmatch(rb'[0-9a-f]{64}', digest), 'Native MAC kernel policy hash unavailable')
+            return dict(name=self.mac_name, kernelSha256=digest.decode(), device=info.st_dev, inode=info.st_ino)
+        finally:
+            for fd in reversed(opened):
+                os.close(fd)
+
+    def install_mac_policy(self):
+        """Create a new scoped baseline-equivalent policy; never replace/adopt any policy.
+
+        Failed controls and this immutable kernel policy are retained with their
+        exact source/kernel custody. It is not a trigger, stopped proof or permit.
+        No unload/replacement is attempted on a possibly live profile.
+        """
+        self.reserve()
+        self.require(self.mac_pin is None and self.kernel_mac_policy() is None, 'Native MAC policy already exists; no adoption')
+        base = self.release / 'native-seafile/mac-policy'
+        source, config, expanded = base / 'source.apparmor', base / 'parser.conf', base / 'expanded.apparmor'
+        self.file(source, self.mac_body)
+        self.file(config, b'# No parser configuration or cache overrides.\n')
+        def parser(arguments):
+            result = subprocess.run(['/usr/sbin/apparmor_parser', '--config-file=' + str(config),
+                '--skip-cache', '--skip-read-cache', '--jobs=1', '--max-jobs=1', *arguments],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60,
+                env=dict(PATH='/usr/sbin:/usr/bin:/sbin:/bin', HOME='/root', TMPDIR=str(self.capsule)),
+                close_fds=True, umask=0o077)
+            self.require(len(result.stdout) + len(result.stderr) <= 8 * 1024 * 1024 and result.returncode == 0,
+                         'Native scoped MAC parser refused')
+            return result.stdout
+        body = parser(['--skip-kernel-load', '--preprocess', str(source)])
+        self.require(body and source.read_bytes() == self.mac_body, 'Native MAC source changed')
+        self.file(expanded, body)
+        self.require(parser(['--skip-kernel-load', '--names', str(expanded)]).strip() == self.mac_name.encode(),
+                     'Native MAC expanded policy set differs')
+        self.require(self.kernel_mac_policy() is None, 'Native MAC policy collision before load')
+        parser(['--add', str(expanded)])
+        self.mac_pin = self.kernel_mac_policy()
+        self.require(self.mac_pin is not None and expanded.read_bytes() == body, 'Native MAC loaded source/custody differs')
+        self.mac_custody = dict(schemaVersion=1, sourceSha256=self.p.sha(self.mac_body),
+            expandedSha256=self.p.sha(body), kernel=self.mac_pin, sharedDefaultModified=False,
+            capabilitiesAdded=False, confinementDisabled=False, retainedImmutableControl=True,
+            applicationAcceptance=False)
+        self.file(base / 'custody.json', self.p.encoded(self.mac_custody))
+
+    def verify_mac_policy(self):
+        self.require(self.mac_pin is not None and self.kernel_mac_policy() == self.mac_pin,
+                     'Native MAC exact kernel custody changed')
 
     def classify_runtime_policy(self, document):
         policy = document.get('linux', {}).get('seccomp')
@@ -879,6 +1002,7 @@ class Fresh:
         prior_signal = signal.signal(signal.SIGTERM, interrupted)
         try:
             self.file(self.capsule / 'empty-auth.json', b'{"auths":{}}\n')
+            self.install_mac_policy()
             for name in ('mariadb', 'valkey', 'seafile'):
                 self.command(['pull', '--quiet', self.images[name]], timeout=900)
             # Exact selected public upstream bytes qualify BEFORE any data init.
@@ -893,7 +1017,8 @@ class Fresh:
             self.cidfiles[qualifier_cidfile] = qualifier_name
             qualifier = self.command(['create', '--name=' + qualifier_name, '--cidfile=' + str(qualifier_cidfile),
                 '--timeout=120', '--pull=never', '--network=none', '--read-only',
-                '--cap-drop=all', '--security-opt=no-new-privileges', '--image-volume=ignore',
+                '--cap-drop=all', '--security-opt=no-new-privileges', '--security-opt=apparmor=' + self.mac_name,
+                '--image-volume=ignore',
                 '--health-cmd=none', '--log-driver=none', '--memory=512M', '--pids-limit=64', *self.uidmaps('apps'),
                 '--volume=' + str(verifier) + ':/reviewed-admin.py:ro', '--entrypoint=/usr/bin/python3',
                 self.images['seafile'], '-B', '-c', code], timeout=120).stdout.strip().decode()
@@ -962,6 +1087,7 @@ class Fresh:
     def publish(self, expected, result):
         self.require(result.get('status') == 'completed' and result.get('nativeTemporaryStop') is True)
         self.check(expected)
+        self.verify_mac_policy()
         raw = result['authorization']; auth = self.p.strict(raw)
         self.p.native_proof(self.p.PROOF_PREFIX + self.p.encoded(result['readback']), auth)
         path = self.release / 'runtime/configs/seafile-admin'
@@ -990,4 +1116,4 @@ class Fresh:
                     implementationSha256=auth['implementation_sha256'],
                     authorizationSha256=self.p.sha(raw), sourceEnvironmentSha256=self.p.sha(aggregate),
                     derivedEnvironmentSha256=self.p.sha(body), freshProof=result['proof'],
-                    existingReadback=result['readback'], nativeTemporaryStop=True)
+                    existingReadback=result['readback'], nativeTemporaryStop=True, macPolicy=self.mac_custody)
