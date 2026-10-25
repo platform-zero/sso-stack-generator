@@ -22,6 +22,9 @@ from .model import Catalog, ContractError, canonical, identifier, load_json
 from .readiness import wait
 
 
+STORE_ROOT = '/mnt/stack/p0-v2/rootless/engine'
+
+
 class OperationError(RuntimeError):
     pass
 
@@ -90,7 +93,7 @@ class Lifecycle:
         identifier(name)
         verify_reserves()
         store = self.run(['/usr/bin/podman', 'info', '--format', '{{.Store.GraphRoot}}'], timeout=30)
-        if store.decode().strip() != '/mnt/stack/p0-v2/rootless/storage':
+        if store.decode().strip() != STORE_ROOT:
             raise ContractError('unexpected rootless image store; refusing secret mutation')
         value = secrets.token_urlsafe(48).encode()
         self.run(['/usr/bin/podman', 'secret', 'create', 'p0-' + name, '-'],
@@ -109,7 +112,7 @@ class Lifecycle:
             raise ContractError('unsupported runtime selection')
         return registry
 
-    def install(self, bundle: Path, expected_sha256: str, *, pull=False):
+    def install(self, bundle: Path, expected_sha256: str, *, pull=False, resume_stopped=False):
         # Expected digest comes from independently reviewed release input, not
         # from blindly trusting the lock inside the same bundle.
         if hashlib.sha256((bundle / 'bundle.json').read_bytes()).hexdigest() != expected_sha256:
@@ -130,8 +133,18 @@ class Lifecycle:
             try:
                 # Do not replace an existing selection in the initial-install
                 # path. Upgrade must prove stopped/input/recovery conditions.
+                previous = None
                 if (self.state / 'selection.json').exists():
-                    raise ContractError('existing selection requires explicit upgrade')
+                    if not resume_stopped:
+                        raise ContractError('existing selection requires explicit upgrade')
+                    previous = self._registry()
+                    self.verify_owned(previous)
+                    if previous['releaseSha256'] != expected_sha256:
+                        raise ContractError('stopped resume cannot change release inputs')
+                    if any(self.observe(name)['ActiveState'] != 'inactive' for name in previous['services']):
+                        raise ContractError('stopped resume requires all owned services inactive')
+                elif resume_stopped:
+                    raise ContractError('stopped resume requires an owned prior selection')
                 publications = {}
                 for name, checksum in lock['files'].items():
                     if name.startswith('quadlet/rootless/'):
@@ -140,11 +153,14 @@ class Lifecycle:
                             raise ContractError('unexpected nested unit path')
                         destination = self.quadlet / basename
                         if destination.exists() or destination.is_symlink():
-                            raise ContractError('refusing unowned matching Quadlet name')
+                            if previous is None or previous['units'].get(basename) != checksum:
+                                raise ContractError('refusing unowned matching Quadlet name')
                         publications[basename] = checksum
+                if previous is not None and publications != previous['units']:
+                    raise ContractError('stopped resume cannot change unit selection')
                 verify_reserves()
                 store = self.run(['/usr/bin/podman', 'info', '--format', '{{.Store.GraphRoot}}'], timeout=30)
-                if store.decode().strip() != '/mnt/stack/p0-v2/rootless/storage':
+                if store.decode().strip() != STORE_ROOT:
                     raise ContractError('unexpected rootless image store; refusing engine mutation')
                 for image in sorted(set(lock['images'].values())):
                     command = ['/usr/bin/podman', 'pull', '--quiet', image] if pull else ['/usr/bin/podman', 'image', 'exists', image]
@@ -152,6 +168,8 @@ class Lifecycle:
                 # Publish selected units exclusively. A failed publication is
                 # retained as a failed operation, not silently overwritten/retried.
                 for basename, checksum in publications.items():
+                    if previous is not None:
+                        continue  # Exact owned bytes already verified; never overwrite.
                     content = (bundle / 'quadlet/rootless' / basename).read_bytes()
                     if hashlib.sha256(content).hexdigest() != checksum:
                         raise ContractError('unit changed during publication')

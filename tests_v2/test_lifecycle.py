@@ -18,7 +18,7 @@ class FakeRunner:
     def __call__(self, arguments, timeout=30, input_bytes=None):
         self.calls.append(arguments)
         if arguments[0].endswith('podman') and 'info' in arguments:
-            return b'/mnt/stack/p0-v2/rootless/storage\n'
+            return b'/mnt/stack/p0-v2/rootless/engine\n'
         if arguments[0].endswith('systemctl'):
             if 'show' in arguments:
                 name = next(value for value in arguments if value.endswith('.service'))
@@ -85,7 +85,7 @@ class LifecycleTests(unittest.TestCase):
             captured = []
             def secret_runner(*args, **kwargs):
                 if 'info' in args[0]:
-                    return b'/mnt/stack/p0-v2/rootless/storage'
+                    return b'/mnt/stack/p0-v2/rootless/engine'
                 captured.append((args, kwargs))
                 return b''
             runtime.run = secret_runner
@@ -111,6 +111,29 @@ class LifecycleTests(unittest.TestCase):
                 runtime.install(bundle, identity)
             self.assertEqual(path.read_text(), 'protected')
             self.assertEqual(runner.calls, [])
+
+    def test_stopped_resume_same_owned_release_without_overwrite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime, runner, bundle, identity = self.prepare(Path(directory))
+            runtime.install(bundle, identity)
+            path = runtime.quadlet / 'p0-app.container'
+            inode = path.stat().st_ino
+            runtime.install(bundle, identity, resume_stopped=True)
+            self.assertEqual(path.stat().st_ino, inode)
+            runner.active['p0-app.service'] = True
+            with self.assertRaises(ContractError):
+                runtime.install(bundle, identity, resume_stopped=True)
+
+    def test_stopped_resume_cannot_replace_release(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime, runner, bundle, identity = self.prepare(root)
+            runtime.install(bundle, identity)
+            second = root / 'second'
+            build(Catalog([module(service('app', command=['different']))]), ['app'], second)
+            second_identity = hashlib.sha256((second / 'bundle.json').read_bytes()).hexdigest()
+            with self.assertRaises(ContractError):
+                runtime.install(second, second_identity, resume_stopped=True)
 
     def test_rootful_install_is_not_rootless_permission(self):
         with tempfile.TemporaryDirectory() as directory:

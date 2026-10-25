@@ -19,6 +19,7 @@ ACCOUNT = 'p0-runtime'
 HOME = Path('/var/lib/p0-runtime')
 STACK = Path('/mnt/stack/p0-v2')
 STORAGE = STACK / 'rootless'
+ENGINE = STORAGE / 'engine'
 
 
 class Refused(RuntimeError):
@@ -73,6 +74,11 @@ def private_directory(path, uid, gid, *, create, mode=0o700):
         try:
             os.fchown(fd, uid, gid)
             os.fchmod(fd, mode)
+            # A private parent mode does not remove DEFAULT ACL inheritance.
+            # Preserve image UID/mode semantics by clearing only the default ACL
+            # on this just-created runtime inode, never on shared ancestors.
+            if 'system.posix_acl_default' in os.listxattr(fd):
+                os.removexattr(fd, 'system.posix_acl_default')
         finally:
             os.close(fd)
     observed = path.lstat()
@@ -129,6 +135,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--apply', action='store_true')
     parser.add_argument('--finish-created-namespace', metavar='DEVICE:INODE')
+    parser.add_argument('--replace-storage-config-sha256')
     args = parser.parse_args(argv)
     if os.geteuid() != 0:
         raise Refused('Root required for account inventory/provisioning')
@@ -153,18 +160,47 @@ def main(argv=None):
         private_directory(STACK, 0, 0, create=args.apply, mode=0o711)
         if args.apply:
             private_directory(STORAGE, entry.pw_uid, entry.pw_gid, create=True)
+            private_directory(ENGINE, entry.pw_uid, entry.pw_gid, create=True)
+            if 'system.posix_acl_default' in os.listxattr(ENGINE):
+                raise Refused('engine directory has inherited default ACL; do not repair existing image trees')
             for directory in (HOME / '.config', HOME / '.config/containers'):
                 private_directory(directory, entry.pw_uid, entry.pw_gid, create=True)
             configuration = ('[storage]\ndriver = "overlay"\n'
                              f'runroot = "/run/user/{entry.pw_uid}/containers"\n'
-                             f'graphroot = "{STORAGE}/storage"\n').encode()
+                             f'graphroot = "{ENGINE}"\n').encode()
             destination = HOME / '.config/containers/storage.conf'
             if destination.exists() or destination.is_symlink():
                 observed = destination.lstat()
                 if (not stat.S_ISREG(observed.st_mode) or observed.st_uid != entry.pw_uid
                         or observed.st_nlink != 1 or stat.S_IMODE(observed.st_mode) != 0o600
-                        or destination.read_bytes() != configuration):
+                        ):
                     raise Refused('runtime storage configuration identity mismatch')
+                if destination.read_bytes() != configuration:
+                    import hashlib
+                    old = destination.read_bytes()
+                    expected_old = ('[storage]\ndriver = "overlay"\n'
+                                    f'runroot = "/run/user/{entry.pw_uid}/containers"\n'
+                                    f'graphroot = "{STORAGE}/storage"\n').encode()
+                    if (old != expected_old or not args.replace_storage_config_sha256
+                            or hashlib.sha256(old).hexdigest() != args.replace_storage_config_sha256):
+                        raise Refused('storage configuration replacement requires exact old input')
+                    observation = subprocess.run(['/usr/sbin/runuser', '-u', ACCOUNT, '--', '/usr/bin/env', '-i',
+                        'HOME=' + str(HOME), f'XDG_RUNTIME_DIR=/run/user/{entry.pw_uid}', 'PATH=/usr/bin:/bin',
+                        '/usr/bin/systemctl', '--user', 'is-active', 'p0-postgres.service'],
+                        capture_output=True, timeout=10)
+                    if observation.stdout.strip() != b'inactive':
+                        raise Refused('old experimental PostgreSQL must be stopped before store replacement')
+                    temporary = destination.with_name('storage.conf.new')
+                    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                    try:
+                        os.fchown(fd, entry.pw_uid, entry.pw_gid)
+                        os.write(fd, configuration)
+                        os.fsync(fd)
+                    finally:
+                        os.close(fd)
+                    if destination.read_bytes() != old:
+                        raise Refused('storage configuration changed during replacement')
+                    os.replace(temporary, destination)
             else:
                 fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
                 try:

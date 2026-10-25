@@ -36,6 +36,22 @@ class BootstrapTests(unittest.TestCase):
                 os.umask(previous)
             self.assertEqual(path.stat().st_mode & 0o7777, 0o711)
 
+    def test_fresh_private_directory_removes_only_its_inherited_default_acl(self):
+        import shutil
+        import subprocess
+        executable = shutil.which('setfacl')
+        if not executable:
+            self.skipTest('default ACL fixture tool unavailable')
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            subprocess.run([executable, '-d', '-m', 'u::rwx,g::r-x,o::---', str(parent)], check=True)
+            self.assertIn('system.posix_acl_default', os.listxattr(parent))
+            child = parent / 'new-runtime'
+            bootstrap.private_directory(child, os.getuid(), os.getgid(), create=True)
+            self.assertNotIn('system.posix_acl_default', os.listxattr(child))
+            self.assertIn('system.posix_acl_default', os.listxattr(parent))
+            self.assertEqual(child.stat().st_mode & 0o777, 0o700)
+
     def test_created_namespace_recovery_exact_identity_and_empty_only(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'namespace'
