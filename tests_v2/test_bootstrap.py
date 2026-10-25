@@ -26,6 +26,35 @@ class BootstrapTests(unittest.TestCase):
             with self.assertRaises(bootstrap.Refused):
                 bootstrap.private_directory(link, os.getuid(), os.getgid(), create=False)
 
+    def test_fresh_creation_normalizes_inherited_umask(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'namespace'
+            previous = os.umask(0o077)
+            try:
+                bootstrap.private_directory(path, os.getuid(), os.getgid(), create=True, mode=0o711)
+            finally:
+                os.umask(previous)
+            self.assertEqual(path.stat().st_mode & 0o7777, 0o711)
+
+    def test_created_namespace_recovery_exact_identity_and_empty_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'namespace'
+            path.mkdir()
+            observed = path.stat()
+            synthetic = SimpleNamespace(st_dev=observed.st_dev, st_ino=observed.st_ino,
+                                        st_uid=0, st_gid=0, st_mode=0o42710)
+            identity = f'{observed.st_dev}:{observed.st_ino}'
+            with patch.object(bootstrap, 'STACK', path), \
+                 patch.object(bootstrap.os, 'fstat', return_value=synthetic), \
+                 patch.object(bootstrap.os, 'fchmod') as chmod:
+                bootstrap.finish_created_namespace(identity)
+                chmod.assert_called_once()
+                with self.assertRaises(bootstrap.Refused):
+                    bootstrap.finish_created_namespace('0:0')
+                (path / 'protected').write_text('do not touch')
+                with self.assertRaises(bootstrap.Refused):
+                    bootstrap.finish_created_namespace(identity)
+
     def test_read_only_missing_account_does_not_run_commands(self):
         with patch.object(bootstrap.os, 'geteuid', return_value=0), \
              patch.object(bootstrap, 'reserves'), \

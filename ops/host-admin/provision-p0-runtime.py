@@ -67,7 +67,14 @@ def private_directory(path, uid, gid, *, create, mode=0o700):
         if not create:
             return False
         path.mkdir(mode=mode)
-        os.chown(path, uid, gid)
+        # Parent default ACL/setgid and process umask may change a fresh inode.
+        # Normalize only the inode just created, through a no-follow descriptor.
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fchown(fd, uid, gid)
+            os.fchmod(fd, mode)
+        finally:
+            os.close(fd)
     observed = path.lstat()
     if (not stat.S_ISDIR(observed.st_mode) or observed.st_uid != uid
             or observed.st_gid != gid or stat.S_IMODE(observed.st_mode) != mode):
@@ -99,14 +106,38 @@ def subordinate_ranges(entry):
                     raise Refused('runtime subordinate IDs overlap another allocation')
 
 
+def finish_created_namespace(identity):
+    """Explicit recovery of this bootstrap's empty namespace, never shared paths."""
+    try:
+        device, inode = map(int, identity.split(':'))
+    except (ValueError, AttributeError) as error:
+        raise Refused('invalid created namespace identity') from error
+    fd = os.open(STACK, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        observed = os.fstat(fd)
+        if ((observed.st_dev, observed.st_ino) != (device, inode)
+                or observed.st_uid != 0 or observed.st_gid != 0
+                or stat.S_IMODE(observed.st_mode) != 0o2710
+                or STACK.resolve(strict=True) != STACK or os.listdir(fd)):
+            raise Refused('created namespace recovery identity mismatch')
+        os.fchmod(fd, 0o711)
+    finally:
+        os.close(fd)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--apply', action='store_true')
+    parser.add_argument('--finish-created-namespace', metavar='DEVICE:INODE')
     args = parser.parse_args(argv)
     if os.geteuid() != 0:
         raise Refused('Root required for account inventory/provisioning')
     reserves()
     entry = account()
+    if args.finish_created_namespace:
+        if not args.apply or entry is None:
+            raise Refused('namespace recovery requires matching runtime account and apply')
+        finish_created_namespace(args.finish_created_namespace)
     created = False
     if entry is None and args.apply:
         if HOME.exists() or HOME.is_symlink() or STORAGE.exists() or STORAGE.is_symlink():
@@ -133,7 +164,8 @@ def main(argv=None):
 if __name__ == '__main__':
     try:
         main()
-    except (Refused, OSError, ValueError, subprocess.SubprocessError):
-        print(json.dumps({'schemaVersion': 1, 'refused': True,
+    except (Refused, OSError, ValueError, subprocess.SubprocessError) as error:
+        reason = str(error) if isinstance(error, Refused) else 'owned account operation unavailable'
+        print(json.dumps({'schemaVersion': 1, 'refused': True, 'reason': reason,
                           'scope': 'runtime-account-only', 'installationCertified': False}))
         raise SystemExit(2)
