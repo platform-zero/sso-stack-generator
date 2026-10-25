@@ -259,6 +259,7 @@ class Fresh:
             databaseInitializationProbe=getattr(self, 'database_initialization_observation', 'not-observed'),
             databaseConsole=(self.database_console.snapshot() if hasattr(self, 'database_console') else []),
             databaseProcesses=getattr(self, 'database_process_observation', {'status': 'not-observed'}),
+            databaseInstallerDefaults=getattr(self, 'database_installer_observation', 'not-observed'),
             applicationAcceptance=False))
         temporary = directory / ('.temporary-' + secrets.token_hex(16))
         self.file(temporary, body)
@@ -447,6 +448,21 @@ class Fresh:
             time.sleep(0.05)
         raise self.p.Refused('Native database attached start deadline exceeded')
 
+    def observe_installer_defaults(self):
+        try:
+            cid = getattr(self, 'database_cid', None)
+            self.require(cid in self.cids and isinstance(cid, str) and self.p.HEX.fullmatch(cid),
+                         'Foreign installer defaults observation refused')
+            result = self.command(['exec', cid, 'my_print_defaults', '--mariadbd',
+                                   'mysql_install_db', 'mariadb-install-db'], timeout=10, allow_failure=True)
+            if result.returncode != 0:
+                return 'installer-defaults-unavailable'
+            flags = result.stdout.splitlines()
+            return ('installer-verbose-enabled' if any(value in flags for value in
+                    (b'--verbose', b'--verbose=1', b'--verbose=ON')) else 'installer-verbose-not-enabled')
+        except BaseException:
+            return 'installer-defaults-unavailable'
+
     def observe_database_processes(self):
         """Only an exact nonempty own CID cgroup; never enumerate/fall back globally."""
         opened = []
@@ -514,7 +530,13 @@ class Fresh:
                      b'futex_wait_queue_me': 'futex-wait', b'folio_wait_bit_common': 'io-wait',
                      b'wait_on_page_bit_common': 'io-wait', b'blk_mq_get_tag': 'io-wait',
                      b'wait_for_completion': 'completion-wait', b'do_epoll_wait': 'event-wait',
+                     b'do_sigtimedwait': 'signal-wait', b'do_sigtimedwait.isra.0': 'signal-wait',
+                     b'poll_schedule_timeout.constprop.0': 'poll-wait', b'locks_lock_inode_wait': 'file-lock-wait',
                      b'pipe_read': 'pipe-read', b'hrtimer_nanosleep': 'timer-wait', b'ep_poll': 'event-wait'}
+            syscall_classes = {0: 'read', 1: 'write', 7: 'poll', 23: 'select', 35: 'sleep',
+                42: 'connect', 43: 'accept', 44: 'send', 45: 'receive', 47: 'receive',
+                61: 'child-wait', 128: 'signal-wait', 130: 'signal-wait', 202: 'futex',
+                232: 'event-wait', 270: 'select', 271: 'poll', 281: 'event-wait', 426: 'async-io'}
             rows = []
             phase = 'own-process-state'
             for selected in threads[:32]:
@@ -524,8 +546,17 @@ class Fresh:
                 name = first.partition(b'(')[2]; fields = rest.split()
                 self.require(len(fields) >= 20, 'Own database process stat absent')
                 role = 'database-initializer' if name.startswith(b'mariadb-install') else roles.get(name, 'other')
+                syscall = 'unavailable'
+                if os.uname().machine == 'x86_64':
+                    try:
+                        # Privately read only to a closed class; never retain
+                        # syscall arguments, addresses or raw kernel text.
+                        number = read(fd, 'syscall', 512).split(maxsplit=1)[0]
+                        syscall = syscall_classes.get(int(number), 'other') if number.isdigit() else 'not-in-syscall'
+                    except OSError:
+                        pass
                 rows.append(dict(role=role, state=states.get(fields[0], 'other'),
-                                 wait=waits.get(read(fd, 'wchan').strip(), 'other')))
+                                 wait=waits.get(read(fd, 'wchan').strip(), 'other'), syscall=syscall))
                 after = read(fd, 'stat').rpartition(b')')[2].split()
                 self.require(len(after) >= 20 and after[19] == fields[19]
                              and read(fd, 'cgroup').decode('ascii') == membership,
@@ -737,6 +768,7 @@ class Fresh:
             readback = self.p.native_proof(output, self.p.strict(normal_raw))
         except BaseException as error:
             try:
+                self.database_installer_observation = self.observe_installer_defaults()
                 self.database_process_observation = self.observe_database_processes()
                 self.temporary_evidence('preparation-failed')
             except BaseException:

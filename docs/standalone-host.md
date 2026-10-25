@@ -190,13 +190,16 @@ retained. The reader has bounded chunks/tail and an 8 MiB classification ceiling
 helper signals do not proxy to the database. A helper that cannot finish cleanly
 cannot produce a successful temporary-stop proof. Failure observations may also
 classify a bounded set of process/thread roles, scheduler states and kernel wait
-classes from at most 32 explicitly listed threads in the exact nonempty own-CID
+classes (and closed x86_64 syscall classes, never arguments/addresses) from at
+most 32 explicitly listed threads in the exact nonempty own-CID
 cgroup (at most 256 members; no global process/task enumeration). A held PID descriptor, unchanged main PID,
 process start identity and cgroup membership are rechecked. No PID, arbitrary
 process name, argv/environment, kernel symbol or raw `/proc` content is emitted.
 Empty/foreign/global/unavailable cgroups have no global process fallback. The exact
 own scope/container cgroups can additionally expose bounded task counts, declared
-task limits and limit-event counters. These are observations only, not permission
+task limits and limit-event counters. One exact own-CID `my_print_defaults`
+probe may classify only whether installer verbosity is enabled; no option values
+are emitted or retained. These are observations only, not permission
 to raise a limit, change host policy, or weaken readiness/stop gates. No exception text,
 environment, service source, child log, or secret is a diagnostic field. The database's
 isolated network gets a deterministic source-derived hostname with a local readonly
