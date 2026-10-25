@@ -6,7 +6,6 @@ implicitly copied. Runtime staging is a separate Root-owned byte copier.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -48,6 +47,25 @@ def regular(root, name):
         os.close(fd)
 
 
+def base_images(recipe):
+    stages, bases = set(), []
+    for line in recipe.decode().splitlines():
+        words = line.strip().split()
+        if words and words[0].upper() == 'FROM':
+            if len(words) not in (2, 4) or (len(words) == 4 and words[2].upper() != 'AS'):
+                raise ContractError('unsupported FROM statement')
+            base = words[1]
+            if base not in stages:
+                if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9./:_-]*@sha256:[a-f0-9]{64}', base):
+                    raise ContractError('build base must be immutable')
+                bases.append(base)
+            if len(words) == 4:
+                stages.add(words[3])
+    if not bases:
+        raise ContractError('build recipe has no pinned base')
+    return bases
+
+
 def pack(source, output, name, includes):
     source, output = Path(source).resolve(), Path(output)
     identifier(name)
@@ -65,29 +83,12 @@ def pack(source, output, name, includes):
             raise ContractError('build subtree contains symlink')
         names = [str(item.relative_to(source)) for item in children if not item.is_dir()] if path.is_dir() else [include]
         for item in names:
-            if item in payload:
-                raise ContractError('overlapping build includes')
+            if item in payload or item == 'context.json':
+                raise ContractError('overlapping or reserved build includes')
             payload[item] = regular(source, item)
     if 'Containerfile' not in payload or sum(len(value[0]) for value in payload.values()) > TOTAL:
         raise ContractError('missing recipe or context too large')
-    # No mutable base aliases: all FROM statements in the reviewed recipe must
-    # either be a preceding named stage or an immutable registry reference.
-    stages = set()
-    bases = []
-    for line in payload['Containerfile'][0].decode().splitlines():
-        words = line.strip().split()
-        if words and words[0].upper() == 'FROM':
-            if len(words) not in (2, 4) or (len(words) == 4 and words[2].upper() != 'AS'):
-                raise ContractError('unsupported FROM statement')
-            base = words[1]
-            if base not in stages:
-                if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9./:_-]*@sha256:[a-f0-9]{64}', base):
-                    raise ContractError('build base must be immutable')
-                bases.append(base)
-            if len(words) == 4:
-                stages.add(words[3])
-    if not bases:
-        raise ContractError('build recipe has no pinned base')
+    bases = base_images(payload['Containerfile'][0])
     lock = {'schemaVersion': 1, 'kind': 'p0-build-context', 'id': name, 'recipe': 'Containerfile',
             'baseImages': bases, 'files': {key: {'sha256': hashlib.sha256(value[0]).hexdigest(), 'executable': value[1]}
                                           for key, value in sorted(payload.items())}}
@@ -128,14 +129,12 @@ def verify(context, expected):
     actual = {str(path.relative_to(context)) for path in paths if not path.is_dir()}
     if actual != set(lock['files']) | {'context.json'} or total > TOTAL:
         raise ContractError('unlisted build context member or byte limit')
+    if lock['baseImages'] != base_images((context / 'Containerfile').read_bytes()):
+        raise ContractError('build base lock disagrees with recipe')
     return lock
 
 
-def build(runtime, context, expected):
-    from .journal import Journal, operation_lock
-    from .lifecycle import STORE_ROOT, verify_reserves
-    context = Path(context)
-    lock = verify(context, expected)
+def trusted_context(context, lock):
     # Compiler/builder input is private Root-owned immutable supply, not a
     # mutable user working tree that could change after verification.
     if context.resolve() != context or context.parent != Path('/var/lib/p0-v2-build-inputs'):
@@ -144,6 +143,14 @@ def build(runtime, context, expected):
         observed = path.lstat()
         if observed.st_uid != 0 or observed.st_mode & 0o222:
             raise ContractError('build supply is writable or not Root-owned')
+
+
+def build(runtime, context, expected):
+    from .journal import Journal, operation_lock
+    from .lifecycle import STORE_ROOT, verify_reserves
+    context = Path(context)
+    lock = verify(context, expected)
+    trusted_context(context, lock)
     verify_reserves(extra_bytes=2 * 1024**3)
     tag = 'localhost/p0-' + lock['id'] + ':input-' + expected
     with operation_lock(runtime.state):

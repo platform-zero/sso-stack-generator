@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from p0core.imagebuild import pack, verify
 from p0core.model import ContractError
@@ -60,6 +61,31 @@ class ContextTests(unittest.TestCase):
             (root / 'Containerfile').write_text('FROM registry.invalid/base@sha256:' + 'a' * 64 + ' AS builder\nFROM builder\n')
             result = pack(root, Path(directory) / 'context', 'example', ['Containerfile', 'app.py'])
             self.assertEqual(len(verify(result['context'], result['sha256'])['baseImages']), 1)
+
+
+class BuilderJournalTests(unittest.TestCase):
+    def test_real_journal_accepts_build_and_immutable_reference_is_verified(self):
+        from p0core.imagebuild import build
+        from p0core.lifecycle import Lifecycle, STORE_ROOT
+        from p0core.journal import Journal
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = ContextTests().source(directory)
+            packed = pack(source, root / 'context', 'example', ['Containerfile', 'app.py'])
+            calls = []
+            def runner(arguments, **kwargs):
+                calls.append(arguments)
+                if arguments[1] == 'info':
+                    return STORE_ROOT.encode()
+                if arguments[1:3] == ['image', 'inspect']:
+                    return ('sha256:' + 'b' * 64).encode()
+                return b''
+            runtime = Lifecycle(root / 'state', root / 'quadlet', runner=runner, enforce_identity=False)
+            with patch('p0core.imagebuild.trusted_context'), patch('p0core.lifecycle.verify_reserves'):
+                result = build(runtime, root / 'context', packed['sha256'])
+            self.assertEqual(result['image'], 'localhost/p0-example@sha256:' + 'b' * 64)
+            self.assertEqual(Journal.status(root / 'state/operations.sqlite3')['operations'][0]['state'], 'succeeded')
+            self.assertEqual(sum(arguments[1:3] == ['image', 'inspect'] for arguments in calls), 2)
 
 
 class RunnerBoundsTests(unittest.TestCase):
