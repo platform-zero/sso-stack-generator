@@ -1,5 +1,15 @@
 # P0 v2 pinned data namespace: bounded Root authority
 
+> **CRITICAL07 SUPERSESSION:** Native10 proved old-mount-namespace UID1000 can
+> rename the Root0 bound dentry under its mutable parent; the Host target follows
+> with SAME mount ID. The v2 custody premise below is superseded, NOT native
+> acceptance. Current source `pin` (all modes) and engine observers fail closed
+> with `protected-view-v3-integration-required`. Actual old records/staged sources
+> remain untouched. Task05/06 mechanisms are historical regressions only until
+> independent protected-parent v3/native/manager/actual-unshare integration.
+> See [native-view-custody.md](native-view-custody.md) for containment, precise
+> remaining backend cells and protected-view protocol. No publication/boot claim.
+
 `ops/host-admin/provision-p0-v2-namespace.py` is a standalone stdlib helper, not a
 dispatcher, controller, general mount manager or cleanup tool. Its only mount
 target is the **existing new** `/mnt/stack/p0-v2`. It accepts no caller commands,
@@ -28,9 +38,11 @@ The shared parent's inherited default ACLs, modes, owners and existing lanes/dat
 are preserved. Strict child modes alone do not stop a shared-ancestor writer from
 renaming/replacing a child. The helper clones the reviewed directory mount via
 held FDs, attaches it to that exact directory FD and verifies the resulting
-canonical kernel mountpoint. A non-Root ancestor writer cannot replace that
-mountpoint. Root and the kernel remain trusted; this is not protection against
-Root unmounting it. A pre-attachment rename causes refusal, not privileged native
+canonical kernel mountpoint. **The old claim that this prevents a non-Root
+ancestor writer moving the mountpoint was falsified by Native10 in an older mount
+namespace.** Same ID/private state does not secure that pathname. Only the new
+independent protected-parent target/view direction addresses that attack; the
+old checks here are mechanism/forensic evidence, not native authority. A pre-attachment rename causes refusal, not privileged native
 access through a replacement. No permission repair makes a replaceable pathname
 safe for Host Root native storage access.
 
@@ -333,7 +345,7 @@ Derive **only** `/etc/systemd/system/p0-v2-<id>.service` and `.socket`, with soc
 no-follow and non-group/other-writable under safe Root ancestors, exact approved
 hash **and** exact independently reproduced closed renderer bytes. This binds the
 fixed `/usr/lib/systemd/systemd-socket-proxyd --exit-idle-time=5min <literal>:<port>`,
-`User/Group=p0-runtime`, exact hardening/limits, SocketUser/Group,0600/0710 modes
+`User/Group=p0-runtime`, exact hardening/limits, SocketUser=0/SocketGroup=0,0600/0710 modes
 and RemoveOnStop. No extra directives, commands, alternate fragments, generic/
 exact/dash-prefix drop-ins or Install/enablement clauses are admitted. The Root
 helper never imports core/service Python. Parent owns proving the declared graph,
@@ -356,9 +368,22 @@ same network namespace as PID1 and bounded4 MiB `/proc/net/unix`: **any** row
 naming the derived filesystem socket path refuses, irrespective of flags/state.
 The socket path must also be absent; a stale filesystem socket is retained and
 refused, never removed. If present, the fixed parent directories must have Root
-custody; the relay directory must be Root0, resolved runtime GID,0710. Nothing is
+custody; the relay directory must be Root0:G0,0710. Nothing is
 created/repaired. Extra/active sockets, timers, paths, unrelated TriggeredBy or
 listener rows still refuse. Protected legacy Root `p0-*` remains out of scope.
+
+### Task06 DAC/FD correction
+
+Parent Native06 independently demonstrated that a capless UID0 client cannot use
+runtime-UID1004/0600 sockets, but can use Root0/0600. Native09 demonstrated the
+fixed native UID1004 capless proxy forwarding via an **inherited** Root0:G0/0600
+listener in a Root0:G0/0710 directory: the proxy does not need pathname access.
+Failed07/08 fixture umask evidence remains retained; only newly created inodes
+were normalized in09. These are not installed systemd/container proofs. The
+corrected contract grants no DAC override and widens no socket mode. Rootful
+container DropCapability=all rendering is Parent-owned, not a helper action.
+See [host-relay-supply.md](host-relay-supply.md) for the separate fresh source
+preparer; it neither changes namespace evidence nor activates these units.
 
 ## Active namespace marker v2 (evidence v1/v2, reports v1)
 
@@ -404,9 +429,10 @@ Changed stable identity/device refuses. No ID/device
 persistence across reboot is asserted.
 
 Public reports expose bounded namespace/boot/mount identity, opaque owner,
-`authorityStrategy:canonical-after-verified-pin`,
+`authorityStrategy:legacy-v2-unsafe-mutable-parent`, `secureAuthority:false`,
+`protectedViewRequired:true`,
 `mountStrategy:open-tree-setattr-move-mount-setattr`,
-`existingRootfulRepinSupported:true`, `repinRequiresCompletePriorPin:true`,
+`existingRootfulRepinSupported:false`, `repinRequiresCompletePriorPin:true`,
 `installationCertified:false`. Supported here means source interface, not native
 or installed acceptance. Refusals are
 fixed reason codes. No credential values/fingerprints, raw diagnostics or source.

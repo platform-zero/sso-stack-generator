@@ -1,4 +1,9 @@
-"""Source-only namespace contract and fake-native integration. Never mounts/runs engines."""
+"""Legacy mechanism regressions, NOT custody proof. Never mounts/runs engines.
+
+Critical07: named legacy fixtures explicitly stub require_protected_view to retain
+ABI/CAS/state-machine regressions. Separate containment tests DO NOT stub it.
+Native10 supersedes the old security premise even when every mechanism passes.
+"""
 import ast
 import copy
 import hashlib
@@ -128,7 +133,8 @@ class NamespaceTests(unittest.TestCase):
     def contexts(self, obs):
         real_lstat = Path.lstat
         target_stat = types.SimpleNamespace(st_dev=self.expected['device'], st_ino=self.expected['inode'])
-        return [patch.object(n, 'namespace', side_effect=lambda expected: os.dup(self.fd)),
+        return [patch.object(n, 'require_protected_view'),
+                patch.object(n, 'namespace', side_effect=lambda expected: os.dup(self.fd)),
                 patch.object(n, 'kernel', side_effect=lambda: copy.deepcopy(obs)), patch.object(n, 'reserves'),
                 patch.object(n, 'preflight_children'), patch.object(n, 'create_children'),
                 patch.object(n, 'check_actor_directories'), patch.object(n, 'RepinPermit'),
@@ -652,7 +658,8 @@ class NativeStoppedTests(unittest.TestCase):
         raise AssertionError('unrecognized fixed API')
 
     def stopped(self, *, protected=True, fresh_error=None):
-        with patch.object(self.native, 'call', side_effect=self.call), patch.object(n, 'strict_directory'), \
+        with patch.object(n, 'require_protected_view'), \
+             patch.object(self.native, 'call', side_effect=self.call), patch.object(n, 'strict_directory'), \
              patch.object(n, 'no_quadlet_dropins'), patch.object(n, 'read_exact', return_value=(self.source, None)), \
              patch.object(n, 'check_actor_directories'), patch.object(n, 'EngineAnchor'), \
              patch.object(n, 'inventory_authority', return_value=protected), \
@@ -809,7 +816,7 @@ class NativeStoppedTests(unittest.TestCase):
 
     def test_rootful_store_refuses_without_protected_pin_before_any_native(self):
         with patch.object(n, 'inventory_authority', return_value=False), patch.object(self.native, 'call') as call:
-            with self.assertRaisesRegex(n.Refused, '^rootful-pin-required$'):
+            with self.assertRaisesRegex(n.Refused, '^protected-view-v3-integration-required$'):
                 self.native.observe_empty_engine('rootful', 7, self.proof, None, self.observation)
             call.assert_not_called()
 
@@ -1074,7 +1081,7 @@ class ModernMountAndAuthorityTests(unittest.TestCase):
         target_stat = types.SimpleNamespace(st_dev=self.expected['device'], st_ino=self.expected['inode'])
         with patch.object(n, 'namespace', side_effect=lambda expected: os.dup(self.fd)), \
              patch.object(n, 'kernel', side_effect=lambda: copy.deepcopy(self.obs)), \
-             patch.object(n, 'preflight_children'), patch.object(n, 'reserves'), \
+             patch.object(n, 'require_protected_view'), patch.object(n, 'preflight_children'), patch.object(n, 'reserves'), \
              patch.object(n.Path, 'lstat', new=lambda p: target_stat if p == n.TARGET else real_lstat(p)), \
              patch.object(native, 'call') as call, patch.object(native, 'pin_namespace') as mount:
             with self.assertRaisesRegex(n.Refused, '^prior-complete-pin-required$'):
@@ -1118,7 +1125,7 @@ class OwnedBootRecheckTests(unittest.TestCase):
             real_owned(fd, os.getuid() if uid == 0 else uid, os.getgid() if gid == 0 else gid, mode)))
         self.stack.enter_context(patch.object(n, 'namespace', side_effect=lambda expected: os.dup(self.fd)))
         self.stack.enter_context(patch.object(n, 'kernel', side_effect=lambda: copy.deepcopy(self.obs)))
-        for name in ('reserves', 'preflight_children', 'create_children', 'check_actor_directories'):
+        for name in ('require_protected_view', 'reserves', 'preflight_children', 'create_children', 'check_actor_directories'):
             self.stack.enter_context(patch.object(n, name))
         target = types.SimpleNamespace(st_dev=self.expected['device'], st_ino=self.expected['inode'])
         self.stack.enter_context(patch.object(n.Path, 'lstat', new=lambda p: target if p == n.TARGET else real_lstat(p)))
@@ -1153,7 +1160,8 @@ class OwnedBootRecheckTests(unittest.TestCase):
 
     def test_initialized_complete_old_claim_repins_before_any_root_native_and_preserves_data(self):
         result = self.run_pin()
-        self.assertTrue(result['existingRootfulRepinSupported'])
+        self.assertFalse(result['existingRootfulRepinSupported'])
+        self.assertFalse(result['secureAuthority'])
         self.assertFalse(result['installationCertified'])
         self.assertEqual(len(self.root_calls()), 2)
         self.assertEqual(self.marker.record['owner'], self.old['owner'])
@@ -1603,11 +1611,11 @@ class RelayMaintenanceTests(unittest.TestCase):
             read.assert_not_called()
         view = types.SimpleNamespace(st_dev=4, st_ino=5)
         with patch.object(n.os, 'stat', return_value=view), patch.object(n.os.path, 'lexists', return_value=True), \
-             patch.object(n, 'strict_directory'), patch.object(n.Path, 'lstat', return_value=types.SimpleNamespace(st_gid=1234)):
+             patch.object(n, 'strict_directory'), patch.object(n.Path, 'lstat', return_value=types.SimpleNamespace(st_gid=0)):
             with self.assertRaisesRegex(n.Refused, '^relay-socket-path-remains$'):
                 n.closed_relay_listener(self.relay, self.entry)
         with patch.object(n.os, 'stat', return_value=view), patch.object(n.os.path, 'lexists', return_value=True), \
-             patch.object(n, 'strict_directory'), patch.object(n.Path, 'lstat', return_value=types.SimpleNamespace(st_gid=999)):
+             patch.object(n, 'strict_directory'), patch.object(n.Path, 'lstat', return_value=types.SimpleNamespace(st_gid=1234)):
             with self.assertRaisesRegex(n.Refused, '^relay-directory-custody$'):
                 n.closed_relay_listener(self.relay, self.entry)
 

@@ -179,6 +179,14 @@ def validate_namespace_marker(record, observation, expected):
 
 
 def pinned_namespace():
+    # Native10 invalidates v2 canonical/private-bind custody across mount NSs.
+    # Do not read a v2 marker as authority, even for info or preflight. Pending
+    # independent v3 native-view + actual-unshare integration fails CLOSED.
+    raise Refused('protected-view-v3-integration-required')
+
+
+def legacy_pinned_namespace_observation():
+    """Forensic geometry only; never used by credential authority or CLI."""
     directory('/mnt')
     shared = SHARED.lstat()
     require(stat.S_ISDIR(shared.st_mode) and shared.st_uid == 1000 and shared.st_gid == 1000
@@ -241,7 +249,7 @@ def reserves():
             if line.startswith('MemAvailable:'):
                 available = int(line.split()[1]) * 1024
     require(available >= 16 * 1024**3, 'ram-reserve')
-    for path, floor in (('/', 50), ('/mnt/stack', 100), ('/var/lib', 1)):
+    for path, floor in (('/', 50), ('/mnt/stack/p0-v2', 100), ('/var/lib', 1)):
         data = os.statvfs(path)
         require(data.f_bavail * data.f_frsize >= floor * 1024**3, 'disk-reserve')
 

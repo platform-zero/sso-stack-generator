@@ -1,5 +1,15 @@
 # P0 v2 ordinary machine-credential supply
 
+> **CRITICAL07:** v2 private Host binds do not secure canonical paths across old
+> mount namespaces (Native10: UID1000 rename, SAME Host mount ID). Current source
+> `pinned_namespace` refuses `protected-view-v3-integration-required` before any
+> old marker observation/native preflight. Ordinary credential mutation is blocked
+> until independent protected-view v3 and actual-Podman-unshare consumer integration.
+> Format/claim/metadata tests below remain mechanism regressions, not custody or
+> installed proof. No actual records/staged helpers/credentials were changed.
+> See [native-view-custody.md](native-view-custody.md). Root0 socket DAC corrections
+> do not repair this namespace flaw; both protected refusal cells remain stopped.
+
 `ops/host-admin/provision-p0-machine-credentials.py` is a standalone, stdlib-only
 Root helper. It creates **new ordinary service credentials only** in the new P0
 namespaces. It is not Keykeeper, OpenBao, vault migration, owner credential access,
@@ -202,7 +212,10 @@ credential witness just like any other marker change; before/after guards remain
 mandatory. Parent serializes these operations under its interlock. This helper
 never updates namespace evidence, supplies an unpinned store, ignores an inactive
 relay or starts/stops a unit. Details and native qualification gates are in
-[runtime-namespace.md](runtime-namespace.md).
+[runtime-namespace.md](runtime-namespace.md). The separate
+[host-relay-supply.md](host-relay-supply.md) source preparer leaves namespace
+evidence unchanged and activates nothing; its Root0 socket DAC contract does not
+grant this credential helper any listener/publication API.
 The parent's namespaces must already be provisioned: even native `info` can
 initialize internal metadata within a dedicated store, so mutating modes are not
 advertised as side-effect-free preflight. Status/dry-run never call `info`.

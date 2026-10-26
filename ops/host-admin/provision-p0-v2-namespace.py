@@ -47,6 +47,12 @@ def require(ok, code):
         raise Refused(code)
 
 
+def require_protected_view():
+    # Native10: old-NS rename moves even a private Host bind with SAME mount ID.
+    # Legacy v2 geometry remains forensic/mechanism evidence, NEVER authority.
+    raise Refused('protected-view-v3-integration-required')
+
+
 def strict_json(raw):
     def pairs(items):
         result = {}
@@ -244,7 +250,7 @@ def reserves():
             if line.startswith('MemAvailable:'):
                 available = int(line.split()[1]) * 1024
     require(available >= 16 * 1024**3, 'ram-reserve')
-    for path, floor in (('/', 50), ('/mnt/stack', 100), ('/var/lib', 1)):
+    for path, floor in (('/', 50), ('/mnt/stack/p0-v2', 100), ('/var/lib', 1)):
         v = os.statvfs(path)
         require(v.f_bavail * v.f_frsize >= floor * 1024**3, 'disk-reserve')
 
@@ -349,7 +355,7 @@ def relay_sources(relay):
     prefix = '# Generated closed P0 HTTP socket relay; no auto-start.\n'
     sock = (prefix + '[Unit]\nDescription=P0 private upstream listener\n\n[Socket]\n'
             + f'ListenStream={RELAY_BASE / relay["id"] / "http.sock"}\nService={service}\n'
-            + 'SocketUser=p0-runtime\nSocketGroup=p0-runtime\nSocketMode=0600\n'
+            + 'SocketUser=0\nSocketGroup=0\nSocketMode=0600\n'
             + 'DirectoryMode=0710\nRemoveOnStop=true\n')
     unit = (prefix + '[Unit]\nDescription=P0 fixed upstream forwarding\n\n[Service]\n'
             + f'ExecStart={RELAY_PROXY} --exit-idle-time=5min {host}:{relay["port"]}\n'
@@ -392,7 +398,7 @@ def closed_relay_listener(relay, entry):
         strict_directory(RELAY_BASE)
     if os.path.lexists(path.parent):
         strict_directory(path.parent, mode=0o710)
-        require(path.parent.lstat().st_gid == entry.pw_gid, 'relay-directory-custody')
+        require(path.parent.lstat().st_gid == 0, 'relay-directory-custody')
     require(not os.path.lexists(path), 'relay-socket-path-remains')
     raw = bounded_read('/proc/net/unix', 4 * 1024**2).decode('ascii')
     lines = raw.splitlines()
@@ -494,6 +500,7 @@ class Native:
             require(fresh_rootful(fd, proof) == fresh, 'fresh-rootful-changed')
 
     def observe_empty_engine(self, actor, fd, proof, record, observation, *, repin=None):
+        require_protected_view()
         require(actor == 'rootless' or inventory_authority(fd, proof, record, observation), 'rootful-pin-required')
         check_actor_directories(self.entry, actor)
         anchor = EngineAnchor(fd, actor, self.entry)
@@ -1026,6 +1033,7 @@ class Marker:
 
 
 def pin(proof, digest, marker, native, entry, mode, *, previous_digest=None):
+    require_protected_view()
     expected = proof['namespace']
     fd = namespace(expected)
     repin = None
@@ -1174,7 +1182,8 @@ def report(record, mode):
     return {'version': 1, 'scope': 'p0-v2-namespace', 'mode': mode, 'state': record['state'],
             'namespace': record['namespace'], 'bootId': record['bootId'],
             'mountId': record['mount']['id'], 'owner': record['owner'],
-            'authorityStrategy': 'canonical-after-verified-pin', 'existingRootfulRepinSupported': True, 'repinRequiresCompletePriorPin': True,
+            'authorityStrategy': 'legacy-v2-unsafe-mutable-parent', 'secureAuthority': False,
+            'protectedViewRequired': True, 'existingRootfulRepinSupported': False, 'repinRequiresCompletePriorPin': True,
             'mountStrategy': 'open-tree-setattr-move-mount-setattr',
             'installationCertified': False}
 
