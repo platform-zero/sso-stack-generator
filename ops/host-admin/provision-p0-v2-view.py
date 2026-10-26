@@ -14,6 +14,8 @@ import fcntl
 import hashlib
 import json
 import os
+import pwd
+import grp
 from pathlib import Path
 import re
 import stat
@@ -406,7 +408,7 @@ class MountAttr(ctypes.Structure):
 
 
 def independent_clone(api, source_fd, target_fd, *, mount_id, claim, before_attach, verify):
-    """Exact FD protocol; source and target MUST differ. Pure fake ABI tests only.
+    """Exact FD protocol; source and target MUST differ. Source08 backend boundary.
 
     api is private trusted libc syscall, never a caller command or path. Actual
     source/target custody and operation lock must already be held by backend.
@@ -438,7 +440,7 @@ def recursive_projection(api, parent_fd, target_fd, *, mount_id, claim, before_a
     Backend must already be inside its NEW private mount namespace, not Host.
     Record BOTH detached parent and child mount IDs before attachment; source
     Stack parent and child are independently Root-owned, never physical aliases.
-    Exact ABI is unqualified; production ClosedHost cannot reach this primitive.
+    Primitive14 qualified the empty ABI; the Source08 whole backend is unqualified.
     """
     source, target = os.fstat(parent_fd), os.fstat(target_fd)
     need((source.st_dev, source.st_ino) != (target.st_dev, target.st_ino), 'projection-independent-target-required')
@@ -490,7 +492,7 @@ def read_previous(expected_sha):
 
 
 class ViewStore:
-    """Private source ledger only. Production CLI cannot yet reach this store.
+    """Private source ledger; Source08 CLI uses a separate fresh bootstrap root.
 
     Parent must preflight BEFORE private bootstrap; private authority container
     setup is not authority to create/repair an independent mount target.
@@ -593,10 +595,10 @@ class ViewStore:
 
 
 class Transition:
-    """Source state machine. Backend observes facts, not intent-supplied permits.
+    """Historical07 mechanism model, NOT the Source08 CLI backend.
 
-    Production backend is deliberately closed until exact native/manager/pause
-    qualification. Fake adapters exercise ordering/CAS, NOT installed proof.
+    Source08 uses Bootstrap; this retained model/ClosedHost keeps old fixture
+    ordering coverage, NOT an operational permit or installed proof.
     """
     def __init__(self, store, backend):
         self.store, self.backend = store, backend
@@ -809,6 +811,15 @@ class MetadataObserver:
         return result
 
 
+def runtime_account():
+    entry = pwd.getpwnam('p0-runtime')
+    group = grp.getgrgid(1004)
+    need(entry.pw_uid == entry.pw_gid == 1004 and entry.pw_dir == '/var/lib/p0-runtime'
+         and entry.pw_shell == '/usr/sbin/nologin' and group.gr_name == 'p0-runtime' and not group.gr_mem
+         and not any('p0-runtime' in item.gr_mem for item in grp.getgrall()), 'dedicated-account-binding')
+    return entry
+
+
 def boot_id():
     value = bounded('/proc/sys/kernel/random/boot_id', 128).decode('ascii').strip()
     need(UUID.fullmatch(value), 'boot-id')
@@ -997,6 +1008,10 @@ class KernelBackend:
             def holder_claim(mid):
                 facts.update(phase='holder-mount-preclaimed', holder={'identity': identity, 'mountId': mid})
                 claim(dict(facts))
+            # A lost detached effect cannot silently retry even before its ID
+            # was read. Request claim precedes open_tree; ID precedes attachment.
+            facts.update(phase='holder-clone-requested')
+            claim(dict(facts))
             # Primitive14 correction: PRIVATE fresh holder mount BEFORE forking.
             self.attach(holder, holder, HANDLE.parent, holder_claim, recheck)
             os.close(holder)
@@ -1049,6 +1064,8 @@ class KernelBackend:
                     target = os.open('/mnt/stack', os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
                     try:
                         need(fd_node(local_parent) == fd_node(parent_fd) == anchor['parent'], 'worker-protected-parent-changed')
+                        send_frame(to_parent, {'kind': 'projection-request'})
+                        need(receive_frame(from_parent) == {'ack': 'projection-request'}, 'worker-request-ack')
                         def preclaim(ids):
                             send_frame(to_parent, {'kind': 'projection-claim', 'ids': ids})
                             need(receive_frame(from_parent) == {'ack': 'projection-claim'}, 'worker-claim-ack')
@@ -1066,6 +1083,11 @@ class KernelBackend:
             creator = OwnedChild(pid)
             os.close(from_parent); from_parent = None
             os.close(to_parent); to_parent = None
+            message = receive_frame(from_child)
+            need(message == {'kind': 'projection-request'}, 'projection-request-frame')
+            facts.update(phase='projection-clone-requested', creator={'pid': pid, 'startTime': creator.start, 'exited': False})
+            claim(dict(facts))
+            send_frame(to_child, {'ack': 'projection-request'})
             message = receive_frame(from_child)
             need(set(message) == {'kind', 'ids'} and message['kind'] == 'projection-claim'
                  and set(message['ids']) == {'parent', 'data'} and all(type(v) is int and v > 0 for v in message['ids'].values())
@@ -1087,6 +1109,8 @@ class KernelBackend:
                 def handle_claim(mid):
                     facts.update(phase='handle-mount-preclaimed', handlePreclaim=mid, projection=observed)
                     claim(dict(facts))
+                facts.update(phase='handle-clone-requested', projection=observed)
+                claim(dict(facts))
                 mid = self.attach(nsfd, cover, HANDLE, handle_claim, recheck, nsfs=True)
                 facts['handle'] = {'device': ns.st_dev, 'inode': ns.st_ino, 'mountId': mid, 'type': 'mnt', 'fsType': 'nsfs'}
             finally:
@@ -1203,7 +1227,10 @@ class BootstrapHost:
         # Qualification is necessary before publishing manager source or starting
         # it, NOT to collect facts or make a fresh independent protected anchor.
         inactive(facts)
-        need(facts['User'] in ('1004', 'p0-runtime') and facts['Group'] in ('1004', 'p0-runtime')
+        runtime_account()
+        # Empty Group means the verified account's primary GID for this hashed
+        # packaged template, not an arbitrary inferred group or caller assertion.
+        need(facts['User'] in ('1004', 'p0-runtime') and facts['Group'] in ('', '1004', 'p0-runtime')
              and not manager['unknownDropins'] and str(DROPIN) not in manager['sources'], 'manager-bootstrap-not-stopped')
         scope = MetadataObserver().stopped_scope()
         self.check()
@@ -1271,6 +1298,10 @@ class Bootstrap:
                 os.close(fd)
         return journal
 
+    def stable_objects(self, record):
+        self.host.check()
+        self.validate_binding(record)
+
     def mkdir(self, record, path, mode):
         journal = record['anchor']['bootstrap']
         need(not os.path.lexists(path), 'bootstrap-target-exists')
@@ -1332,6 +1363,9 @@ class Bootstrap:
                 self.mkdir(record, path, mode_bits)
             target = os.open(ANCHOR, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
             try:
+                record['state'] = 'anchor-preclaimed'
+                record['anchor'].update(cloneRequested=True, preclaimedId=None)
+                self.save(record)  # Before open_tree, not just before move_mount.
                 def claim(mid):
                     need(type(mid) is int and mid > 0, 'anchor-clone-id')
                     record['state'] = 'anchor-preclaimed'
@@ -1342,7 +1376,7 @@ class Bootstrap:
                     if private:
                         record['anchor']['result'] = observed
                 self.kernel.clone_anchor(self.host.data_fd, target, claim=claim,
-                    recheck=lambda: self.host.preflight(), verify=verify)
+                    recheck=lambda: (self.host.preflight(), self.stable_objects(record)), verify=verify)
             finally:
                 os.close(target)
             need(record['state'] == 'anchor-preclaimed' and 'result' in record['anchor'], 'anchor-observation-required')
@@ -1356,7 +1390,8 @@ class Bootstrap:
                     record['state'] = 'native-namespace-claimed'
                     record['native'] = facts
                     self.save(record)
-                native = self.kernel.persist_namespace(parent, record, claim=claim_namespace, recheck=self.host.check)
+                native = self.kernel.persist_namespace(parent, record, claim=claim_namespace,
+                                                       recheck=lambda: self.stable_objects(record))
             finally:
                 os.close(parent)
             need(record['state'] == 'native-namespace-claimed', 'namespace-preclaim-required')
@@ -1454,10 +1489,11 @@ class PauseObserver:
             status = {}
             for line in bounded(process / 'status', 16384).decode('ascii').splitlines():
                 key, _, val = line.partition(':')
-                if key in ('Uid', 'Gid', 'CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'NoNewPrivs'):
+                if key in ('Uid', 'Gid', 'Groups', 'CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'NoNewPrivs'):
                     need(key not in status, 'pause-status-schema')
                     status[key] = val.split()
-            need(status.get('Uid') == status.get('Gid') == ['1004'] * 4, 'pause-process-identity')
+            need(status.get('Uid') == status.get('Gid') == ['1004'] * 4
+                 and status.get('Groups') == ['1004'], 'pause-process-identity')
             # Parent15 pause is root inside its userNS: CapPrm/Eff are NOT zero.
             # Observe capabilities; do not mistake userNS privileges for Host0,
             # or turn either observation into permission to signal/release.
@@ -1495,6 +1531,17 @@ class PauseObserver:
             with selectors.DefaultSelector() as poller:
                 poller.register(pidfd, selectors.EVENT_READ)
                 need(not poller.select(0), 'pause-process-exited')
+            for kind, key in (('user', 'user'), ('mnt', 'mnt')):
+                current = os.stat(process / 'ns' / kind)
+                need({'device': current.st_dev, 'inode': current.st_ino} == namespaces[key], 'pause-namespace-changed')
+            after_status = {}
+            for line in bounded(process / 'status', 16384).decode('ascii').splitlines():
+                key, _, val = line.partition(':')
+                if key in status:
+                    need(key not in after_status, 'pause-status-schema')
+                    after_status[key] = val.split()
+            need(after_status == status and bounded(process / 'cgroup', 4096).decode('ascii') == cgroup
+                 and binary_snapshot(exe) == expected, 'pause-observation-changed')
             need(process_start(bounded(process / 'stat', 4096)) == start
                  and file_snapshot(os.fstat(fd)) == file_snapshot(value)
                  and file_snapshot(os.stat(path, follow_symlinks=False)) == file_snapshot(value)
@@ -1556,6 +1603,16 @@ class ProcessObserver:
             with selectors.DefaultSelector() as poller:
                 poller.register(pidfd, selectors.EVENT_READ)
                 need(not poller.select(0), 'manager-process-exited')
+            for kind, expected in namespaces.items():
+                value = os.stat(base / 'ns' / kind)
+                need({'device': value.st_dev, 'inode': value.st_ino} == expected, 'manager-namespace-changed')
+            after_status = {}
+            for line in bounded(base / 'status', 65536).decode('ascii').splitlines():
+                key, _, val = line.partition(':')
+                if key in status:
+                    need(key not in after_status, 'manager-process-status')
+                    after_status[key] = val.split()
+            need(after_status == status and binary_snapshot(exe) == code, 'manager-process-observation-changed')
             need(before == process_start(bounded(base / 'stat', 8192)) and os.readlink(base / 'exe') == exe
                  and bounded(base / 'cgroup', 4096).decode('ascii') == cgroup, 'manager-process-changed')
             return {'pid': pid, 'startTime': before, 'namespaces': namespaces, 'view': views,
@@ -1610,6 +1667,8 @@ class ManagerPublication:
         inactive(observed['facts'])
         need(observed['profileQualified'] and not observed['unknownDropins'], 'manager-os-profile-unqualified')
         MetadataObserver().stopped_scope()
+        self.bootstrap.stable_objects(record)
+        self.bootstrap.kernel.verify_bound(record)
         return observed
 
     def run(self):

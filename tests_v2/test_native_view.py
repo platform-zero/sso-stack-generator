@@ -571,6 +571,33 @@ class Source08MetadataTests(unittest.TestCase):
                     n.PauseObserver().observe(profile)
                 opened.assert_not_called()
 
+    def test_private_source_guard_binds_hash_snapshot_and_executable_filesystem(self):
+        raw, snapshot = b'SYNTHETIC_STAGED_SOURCE_ONLY', tuple(range(9))
+        path = '/var/lib/UNCREATED-source08-fixture/provision-p0-v2-view.py'
+        with patch.object(n, '__file__', path), patch.object(n, 'root_ancestors'), \
+             patch.object(n, 'owned_file', return_value=(raw, snapshot)) as reader, \
+             patch.object(n.os, 'statvfs', return_value=types.SimpleNamespace(f_flag=0)):
+            guard = n.SelfGuard(n.sha(raw))
+            guard.check()
+            reader.return_value = (raw, (*snapshot[:-1], 999))
+            with self.assertRaisesRegex(n.Refused, '^held-source-snapshot-changed$'):
+                guard.check()
+        with patch.object(n, '__file__', path), patch.object(n, 'root_ancestors'), \
+             patch.object(n, 'owned_file', return_value=(raw, snapshot)), \
+             patch.object(n.os, 'statvfs', return_value=types.SimpleNamespace(f_flag=n.os.ST_NOEXEC)):
+            with self.assertRaisesRegex(n.Refused, '^source-filesystem-noexec$'):
+                n.SelfGuard(n.sha(raw))
+
+    def test_dedicated_account_requires_fixed_uid_gid_home_and_no_supplementary_membership(self):
+        entry = types.SimpleNamespace(pw_uid=1004, pw_gid=1004, pw_dir='/var/lib/p0-runtime', pw_shell='/usr/sbin/nologin')
+        group = types.SimpleNamespace(gr_name='p0-runtime', gr_mem=[])
+        with patch.object(n.pwd, 'getpwnam', return_value=entry), patch.object(n.grp, 'getgrgid', return_value=group), \
+             patch.object(n.grp, 'getgrall', return_value=[group]) as groups:
+            self.assertEqual(n.runtime_account(), entry)
+            groups.return_value = [group, types.SimpleNamespace(gr_mem=['p0-runtime'])]
+            with self.assertRaisesRegex(n.Refused, '^dedicated-account-binding$'):
+                n.runtime_account()
+
     def test_process_stat_parser_handles_spaces_and_closing_parentheses_in_comm(self):
         raw = ('77 (fixture ) comm) S ' + ' '.join(['1'] * 18 + ['12345', '0'])).encode()
         self.assertEqual(n.process_start(raw), 12345)
@@ -645,7 +672,9 @@ class Source08BootstrapTests(unittest.TestCase):
         finally:
             os.umask(old)
         self.assertEqual(observations, [str(path) for path, _ in self.targets])
-        self.assertEqual(record['state'], 'claimed')
+        self.assertEqual(record['state'], 'anchor-preclaimed')
+        self.assertTrue(record['anchor']['cloneRequested'])
+        self.assertIsNone(record['anchor']['preclaimedId'])
         for effect, (path, mode) in zip(record['anchor']['bootstrap']['effects'], self.targets):
             self.assertEqual(effect['state'], 'prepared')
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), mode)
@@ -671,12 +700,25 @@ class Source08BootstrapTests(unittest.TestCase):
             self.bootstrap.run('resume')
         self.assertEqual(self.store.load()['anchor']['bootstrap']['effects'][-1]['state'], 'claimed')
 
-    def test_prepared_exact_inode_can_resume_to_kernel_boundary_without_recreating(self):
+    def test_requested_clone_never_replays_even_if_no_mount_id_was_published(self):
         self.prepare()
+        with patch.object(n.os, 'mkdir') as mkdir:
+            with self.assertRaisesRegex(n.Refused, '^detached-or-namespace-effect-review-required$'):
+                self.bootstrap.run('resume')
+            mkdir.assert_not_called()
+
+    def test_prepared_before_request_checkpoint_resumes_without_any_mkdir(self):
+        record = self.prepare()
+        # Construct NEW fixture's durable snapshot immediately before request.
+        record['state'] = 'claimed'
+        record['anchor'].pop('cloneRequested')
+        record['anchor'].pop('preclaimedId')
+        self.store.save(n.seal(record))
         with patch.object(n.os, 'mkdir') as mkdir:
             with self.assertRaisesRegex(n.Refused, '^synthetic-before-clone$'):
                 self.bootstrap.run('resume')
             mkdir.assert_not_called()
+        self.assertTrue(self.store.load()['anchor']['cloneRequested'])
 
     def test_prepared_directory_substitution_refuses(self):
         self.prepare()
@@ -724,7 +766,7 @@ class Source08KernelBackendTests(unittest.TestCase):
         def attach(source, target, path, preclaim, recheck):
             self.assertEqual(source, target)  # ONLY fresh holder self-clone, not DATA.
             self.assertEqual(path, self.handle.parent)
-            self.assertEqual(self.claims[-1]['phase'], 'holder-prepared')
+            self.assertEqual(self.claims[-1]['phase'], 'holder-clone-requested')
             self.assertFalse(self.handle.exists())
             preclaim(777)
             self.assertEqual(self.claims[-1]['phase'], 'holder-mount-preclaimed')
@@ -741,7 +783,7 @@ class Source08KernelBackendTests(unittest.TestCase):
         with self.assertRaisesRegex(n.Refused, '^synthetic-no-fork$'):
             self.kernel.persist_namespace(55, self.record, claim=claim, recheck=lambda: None)
         self.assertEqual([c['phase'] for c in self.claims], ['holder-directory-claimed', 'holder-prepared',
-            'holder-mount-preclaimed', 'holder-private', 'handle-file-claimed', 'handle-file-prepared'])
+            'holder-clone-requested', 'holder-mount-preclaimed', 'holder-private', 'handle-file-claimed', 'handle-file-prepared'])
         self.assertTrue(self.handle.exists())  # No uncertain-effect cleanup.
 
     def test_existing_holder_refuses_without_claim_or_adoption(self):
@@ -830,6 +872,18 @@ class Source08ManagerPublicationTests(unittest.TestCase):
         self.assertFalse(stage.exists())
         self.assertEqual(self.store.load()['manager']['state'], 'published')
 
+    def test_rename_effect_then_interruption_reconciles_exact_final_inode(self):
+        def rename_then_fail(parent, source, destination):
+            os.rename(source, destination, src_dir_fd=parent, dst_dir_fd=parent)
+            os.fsync(parent)
+            raise OSError('SYNTHETIC_AFTER_RENAME_BEFORE_CLAIM_PUBLICATION')
+        with patch.object(n, 'rename_fresh', side_effect=rename_then_fail), self.assertRaises(OSError):
+            self.publisher.run()
+        self.assertTrue(self.dropin.exists())
+        self.assertEqual(self.store.load()['manager']['state'], 'publish-claimed')
+        self.publisher.run()
+        self.assertEqual(self.store.load()['manager']['state'], 'published')
+
     def test_lost_inode_proof_after_source_create_never_replays_or_adopts(self):
         real_write = n.os.write
         def write(fd, raw):
@@ -851,6 +905,112 @@ class Source08ManagerPublicationTests(unittest.TestCase):
         with self.assertRaisesRegex(n.Refused, '^manager-publication-phase$'):
             self.publisher.run()
         self.assertFalse(self.dropin.parent.exists())
+
+
+class Source08PauseMetadataTests(unittest.TestCase):
+    def setUp(self):
+        from contextlib import ExitStack
+        self.stack = self.enterContext(ExitStack())
+        self.pid = 1313  # Synthetic only, never opened on this Host.
+        self.path = Path(n.PAUSE_PROFILE['pidfile'])
+        self.file = types.SimpleNamespace(st_dev=64, st_ino=44, st_mode=stat.S_IFREG | 0o600,
+            st_uid=1004, st_gid=1004, st_nlink=1, st_size=5, st_mtime_ns=10, st_ctime_ns=11)
+        self.executable = types.SimpleNamespace(st_dev=1, st_ino=77, st_mode=stat.S_IFREG | 0o755,
+            st_uid=0, st_gid=0, st_nlink=1, st_size=30, st_mtime_ns=20, st_ctime_ns=21)
+        self.status_reads, self.maps_root, self.changed_namespace, self.exited = 0, False, False, False
+        self.uid_after = False
+        self.closed, self.opened = [], []
+        self.fd_types = {10: 'pidfile', 11: 'pidfd', 12: 'procdir', 13: 'exe', 14: 'parent', 15: 'data', 16: 'user', 17: 'mnt'}
+        def opened(path, flags):
+            path = str(path)
+            self.opened.append(path)
+            if path == str(self.path):
+                return 10
+            return {'/proc/1313': 12, '/proc/1313/exe': 13, '/proc/1313/root/mnt/stack': 14,
+                '/proc/1313/root/mnt/stack/p0-v2': 15, '/proc/1313/ns/user': 16, '/proc/1313/ns/mnt': 17}[path]
+        def fstat(fd):
+            if fd == 10:
+                return self.file
+            if fd == 13:
+                return self.executable
+            return types.SimpleNamespace(st_dev=4, st_ino=900 + fd, st_mode=stat.S_IFREG | 0o444)
+        def file_stat(path, **kwargs):
+            if Path(path) == self.path:
+                return self.file
+            fd = {'/proc/1313/ns/user': 16, '/proc/1313/ns/mnt': 17}[str(path)]
+            result = fstat(fd)
+            if self.changed_namespace:
+                return types.SimpleNamespace(st_dev=4, st_ino=result.st_ino + 1)
+            return result
+        def bounded(path, limit):
+            path = str(path)
+            if path.endswith('/stat'):
+                return ('1313 (fake pause) S ' + ' '.join(['1'] * 18 + ['12345', '0'])).encode()
+            if path.endswith('/status'):
+                self.status_reads += 1
+                uid = '1005' if self.uid_after and self.status_reads > 1 else '1004'
+                return ('Uid:\t' + ' '.join([uid] * 4) + '\nGid:\t1004 1004 1004 1004\nGroups:\t1004\n'
+                    'CapInh:\t0000000000000000\nCapPrm:\t000001ffffffffff\nCapEff:\t000001ffffffffff\n'
+                    'CapBnd:\t000001ffffffffff\nNoNewPrivs:\t0\n').encode()
+            if path.endswith(('/uid_map', '/gid_map')):
+                return b'0 0 1\n' if self.maps_root else b'0 1004 1\n1 300000 65536\n'
+            if path.endswith('/cgroup'):
+                return ('0::' + n.PAUSE_PROFILE['cgroup'] + '\n').encode()
+            if path == '/proc/self/fdinfo/11':
+                return b'Pid:\t1313\n'
+            if path.endswith('/boot_id'):
+                return previous()['bootId'].encode()
+            self.fail('Unexpected synthetic metadata read: ' + path)
+        owner = self
+        class Poller:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def register(self, *args): pass
+            def select(self, timeout): return [(1, 1)] if owner.exited else []
+        for target, value in (('open', opened), ('fstat', fstat), ('stat', file_stat),
+                              ('read', lambda fd, size: b'1313\n'), ('close', self.closed.append),
+                              ('pidfd_open', lambda *args: 11), ('readlink', lambda path: '/usr/bin/catatonit')):
+            self.stack.enter_context(patch.object(n.os, target, side_effect=value))
+        self.stack.enter_context(patch.object(n, 'bounded', side_effect=bounded))
+        self.stack.enter_context(patch.object(n, 'binary_snapshot', return_value={
+            'sha256': n.PAUSE_PROFILE['sha256'], 'snapshot': list(n.file_snapshot(self.executable))}))
+        self.stack.enter_context(patch.object(n, 'fd_node', side_effect=lambda fd:
+            node(10, uid=1000, gid=1000, mode=0o2775) if fd == 14 else node(20)))
+        self.stack.enter_context(patch.object(n.fcntl, 'ioctl', side_effect=lambda fd, op: 0x10000000 if fd == 16 else 0x20000))
+        self.stack.enter_context(patch.object(n.selectors, 'DefaultSelector', Poller))
+
+    def test_actual_style_userns_capabilities_are_metadata_not_host_root_or_signal_permit(self):
+        result = n.PauseObserver().collect()
+        self.assertTrue(result['available'])
+        self.assertEqual(result['capabilities']['CapEff'], '000001ffffffffff')
+        self.assertFalse(result['signalAuthority'])
+        self.assertFalse(result['oldPauseClosed'])
+        self.assertIsNone(result['emptyContainerReceipt'])
+        self.assertEqual(result['view']['parent']['uid'], 1000)  # unsafe old view observed, not blessed.
+        self.assertEqual(len(self.closed), 8)
+        self.assertEqual(self.status_reads, 2)
+        self.assertNotIn('/proc/1313/environ', self.opened)
+
+    def test_namespace_change_refuses_and_closes_all_pinned_metadata_fds(self):
+        self.changed_namespace = True
+        with self.assertRaisesRegex(n.Refused, '^pause-namespace-changed$'):
+            n.PauseObserver().collect()
+        self.assertEqual(len(self.closed), 8)
+
+    def test_credentials_changed_during_observation_refuse(self):
+        self.uid_after = True
+        with self.assertRaisesRegex(n.Refused, '^pause-observation-changed$'):
+            n.PauseObserver().collect()
+
+    def test_exited_pidfd_never_becomes_process_or_signal_authority(self):
+        self.exited = True
+        with self.assertRaisesRegex(n.Refused, '^pause-process-exited$'):
+            n.PauseObserver().collect()
+
+    def test_host_root_mapping_refuses_before_namespace_authority(self):
+        self.maps_root = True
+        with self.assertRaisesRegex(n.Refused, '^rootless-host-root-mapped$'):
+            n.PauseObserver().collect()
 
 
 if __name__ == '__main__':

@@ -169,10 +169,15 @@ empty cover inode. A lost detached/worker/NSFS effect refuses reviewed continuat
 A missing retained previous snapshot refuses, never recreates/adopts it.
 
 Concrete holder subphases are `holder-directory-claimed`, `holder-prepared`,
-`holder-mount-preclaimed`, `holder-private`, `handle-file-claimed`,
-`handle-file-prepared`, `creator-claimed`, `projection-preclaimed`,
+`holder-clone-requested`, `holder-mount-preclaimed`, `holder-private`,
+`handle-file-claimed`, `handle-file-prepared`, `creator-claimed`,
+`projection-clone-requested`, `projection-preclaimed`, `handle-clone-requested`,
 `handle-mount-preclaimed`, `creator-exited`, `bound`. Parent-only ledger claims
-precede each effect/child acknowledgement. The current CLI stops at
+precede each effect/child acknowledgement. Anchor cloning likewise writes a
+request claim **before open_tree**, then exact ID before move_mount. A lost
+clone before ID observation must not silently allocate/replay another tree.
+The child sends request/ack before recursive open_tree, then ID-preclaim/ack
+before move; Host alone fsyncs both claims. The current CLI stops at
 `native-view-bound`, **nativeAuthority=false**, not manager-pending or complete.
 That phase permits only bounded observations and the exact manager-source
 publication. Manager transition needs separate approved offline user-unit/trigger
@@ -210,7 +215,10 @@ profile includes `/usr/lib/systemd/system/user@.service` and its
 `10-login-barrier.conf` OS default, not a false dropins-empty assumption. Authored
 or unknown overrides refuse qualification. Manager metadata also pins exact
 systemd executable hash/starttime/pidfd/namespace/cgroup and observes parent/data
-metadata without reading environment/cmdline/logs. Active old manager is observed,
+metadata without reading environment/cmdline/logs. Dedicated UID/GID1004,
+`/var/lib/p0-runtime`, nologin and no supplementary groups are independently
+verified; an empty systemd Group property can mean that verified primary GID,
+not a guessed GID. Active old manager is observed,
 not stopped by this helper; publication requires explicit independent shutdown.
 
 `ManagerPublication` implements only fresh literal directory/file publication:
@@ -245,7 +253,9 @@ old owned cgroup. The readonly source profile binds those facts without freezing
 PID15 as an authority or guessing another PIDfile. Other missing candidates do
 not prove absence. The observer holds pidfd/process/executable/namespace FDs,
 checks starttime, actual code snapshot, exact cgroup, maps, PIDfile before/after
-and bounded status/parent/data metadata. UserNS pause CapPrm/Eff were nonzero in15;
+and bounded status/parent/data metadata. Namespace/code/status/cgroup identity is
+rechecked before reporting; same-UID supplementary groups or Host-root mappings
+refuse. Held original DATA identity stays open throughout bootstrap checks. UserNS pause CapPrm/Eff were nonzero in15;
 observe them, do not incorrectly require zero or equate them to Host privileges.
 All observations say `oldPauseClosed:false`, `signalAuthority:false`; no signaling
 or no-container receipt producer/release protocol exists yet. Actual stopped
