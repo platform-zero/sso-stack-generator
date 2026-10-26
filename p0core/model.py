@@ -140,6 +140,11 @@ class Catalog:
                     edges.append(parsed)
                 self.services[name] = Service(name, module, runtime, image,
                                               tuple(sorted(edges, key=lambda e: (e.service, e.kind))), item)
+        from .volumes import VolumeError, declared_custodies
+        try:
+            declared_custodies(service.declaration for service in self.services.values())
+        except VolumeError as error:
+            raise ContractError(str(error)) from None
         for service in self.services.values():
             for edge in service.requires:
                 if edge.service not in self.services:

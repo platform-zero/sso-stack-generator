@@ -80,7 +80,7 @@ class Journal:
         self.connection.close()
 
     def create(self, kind: str, input_sha256: str) -> str:
-        if kind not in {"install", "start", "stop", "upgrade", "recover", "uninstall", "test", "build"}:
+        if kind not in {"install", "start", "stop", "upgrade", "recover", "uninstall", "test", "build", "volume-prepare"}:
             raise ContractError("invalid operation kind")
         import re
         if not isinstance(input_sha256, str) or not re.fullmatch("[0-9a-f]{64}", input_sha256):

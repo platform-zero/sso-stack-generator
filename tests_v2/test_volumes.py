@@ -124,6 +124,30 @@ class VolumeTests(unittest.TestCase):
         record['integrity'] = v.digest({k: val for k, val in record.items() if k != 'integrity'})
         (self.state / 'p0-consumer-data.json').write_bytes(v.encoded(record))
 
+    def test_prepared_only_missing_or_claimed_never_initializes_or_resumes(self):
+        with self.assertRaisesRegex(v.VolumeError, '^volume-preparation-required$'):
+            self.ensure(prepared_only=True)
+        self.assertEqual(self.adapter.creates, 0)
+        self.assertEqual(list(self.state.iterdir()), [])
+        self.claim_crash()
+        before = (self.state / 'p0-consumer-data.json').read_bytes()
+        with self.assertRaisesRegex(v.VolumeError, '^volume-preparation-required$'):
+            self.ensure(prepared_only=True, resume=True)
+        self.assertEqual(self.adapter.creates, 1)
+        self.assertEqual(self.adapter.effects, [])
+        self.assertEqual((self.state / 'p0-consumer-data.json').read_bytes(), before)
+
+    def test_prepared_only_populated_admission_has_no_mutation(self):
+        result = self.ensure()
+        before = (self.state / 'p0-consumer-data.json').read_bytes()
+        self.adapter.not_empty = True
+        effects = list(self.adapter.effects)
+        with patch.object(v.secrets, 'token_hex', side_effect=AssertionError('no entropy during admission')):
+            self.assertEqual(self.ensure(prepared_only=True), result)
+        self.assertEqual(self.adapter.effects, effects)
+        self.assertEqual(self.adapter.creates, 1)
+        self.assertEqual((self.state / 'p0-consumer-data.json').read_bytes(), before)
+
     def test_fresh_claim_before_create_mapping_and_prepared_admission(self):
         result = self.ensure()
         self.assertEqual(self.adapter.effects, ['chmod', 'chown'])

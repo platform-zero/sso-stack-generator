@@ -153,6 +153,73 @@ class Lifecycle:
         self.quadlet = quadlet.absolute()
         self.run = runner or Runner()
 
+    def verify_volume_context(self):
+        from .volumecontext import observe
+        return observe(self.run)
+
+    def _admit_prepared_volumes(self, services):
+        from .volumes import NativeAdapter, VolumeCustody, VolumeError, declared_custodies
+        try:
+            policies = declared_custodies(services)
+            if not policies:
+                return []
+            # Publication/start cannot initialize or resume a fresh inode.
+            custody = VolumeCustody(self.state / 'volume-custody', NativeAdapter(self))
+            return [custody.ensure(name, policy, prepared_only=True) for name, policy in policies.items()]
+        except VolumeError as error:
+            raise ContractError(str(error)) from None
+
+    def prepare_volumes(self, bundle, expected_sha256, resource, *, resume=False):
+        from .volumes import NativeAdapter, VolumeCustody, VolumeError, declared_custodies, digest
+        if type(resume) is not bool:
+            raise ContractError('volume resume requires explicit boolean')
+        if hashlib.sha256((bundle / 'bundle.json').read_bytes()).hexdigest() != expected_sha256:
+            raise ContractError('release lock identity mismatch')
+        lock = verify(bundle)
+        specs = list(lock['serviceSpecs'].values())
+        if any(spec.get('runtime') != 'rootless' for spec in specs):
+            raise ContractError('volume preparation requires a rootless release')
+        Catalog([{'schemaVersion': 1, 'id': 'selected', 'services': specs}])
+        try:
+            policies = declared_custodies(specs)
+            identifier(resource)
+            if resource not in policies:
+                raise ContractError('release has no custody for requested volume')
+            policies = {resource: policies[resource]}
+            self.state.mkdir(parents=True, mode=0o700, exist_ok=True)
+            private_directory(self.state)
+            with operation_lock(self.state):
+                verify_reserves()
+                directory = self.state / 'volume-custody'
+                directory.mkdir(mode=0o700, exist_ok=True)
+                private_directory(directory)
+                journal = Journal(self.state / 'operations.sqlite3')
+                try:
+                    intent = digest(policies)
+                    pending = journal.connection.execute(
+                        "SELECT input_sha256 FROM operations WHERE kind='volume-prepare' "
+                        "AND state IN ('prepared','running','indeterminate') "
+                        "AND NOT EXISTS (SELECT 1 FROM operations done WHERE done.kind='volume-prepare' "
+                        "AND done.state='succeeded' AND done.input_sha256=operations.input_sha256 "
+                        "AND done.created>operations.updated)").fetchall()
+                    if pending and (not resume or any(row[0] != intent for row in pending)):
+                        raise ContractError('unreconciled volume preparation requires exact explicit resume')
+                    operation = journal.create('volume-prepare', intent)
+                    journal.transition(operation, 0, 'running')
+                    try:
+                        custody = VolumeCustody(directory, NativeAdapter(self))
+                        frames = [custody.ensure(name, policy, resume=resume) for name, policy in policies.items()]
+                        journal.transition(operation, 1, 'succeeded')
+                        return {'schemaVersion': 1, 'operation': operation, 'state': 'prepared-not-published',
+                                'volumes': frames, 'requiresExplicitStart': True, 'installationCertified': False}
+                    except BaseException:
+                        journal.transition(operation, 1, 'indeterminate')
+                        raise
+                finally:
+                    journal.close()
+        except VolumeError as error:
+            raise ContractError(str(error)) from None
+
     def generate_service_secret(self, name):
         # This creates a NEW ordinary service credential, never reads an existing
         # credential or a Keykeeper-protected secret. Podman refuses duplicates.
@@ -233,6 +300,7 @@ class Lifecycle:
                     raise ContractError('unexpected rootless image store; refusing engine mutation')
                 from .inputs import ensure_materialized
                 ensure_materialized(self, specs.values())
+                self._admit_prepared_volumes(specs.values())
                 for image in sorted(set(lock['images'].values())):
                     command = ['/usr/bin/podman', 'pull', '--quiet', image] if pull else ['/usr/bin/podman', 'image', 'exists', image]
                     self.run(command, timeout=300)
@@ -388,6 +456,8 @@ class Lifecycle:
                     "SELECT 1 FROM operations bad WHERE bad.state IN ('prepared','running','indeterminate') AND bad.kind!='build' "
                     "AND NOT (bad.kind='stop' AND EXISTS (SELECT 1 FROM operations done WHERE done.kind='stop' "
                     "AND done.state='succeeded' AND done.input_sha256=bad.input_sha256 AND done.created>bad.updated)) "
+                    "AND NOT (bad.kind='volume-prepare' AND EXISTS (SELECT 1 FROM operations done WHERE done.kind='volume-prepare' "
+                    "AND done.state='succeeded' AND done.input_sha256=bad.input_sha256 AND done.created>bad.updated)) "
                     "AND NOT (bad.kind='upgrade' AND EXISTS (SELECT 1 FROM operations done WHERE done.kind='upgrade' "
                     "AND done.state='succeeded' AND done.input_sha256=bad.input_sha256 AND done.created>bad.updated)) "
                     "AND NOT (bad.kind IN ('start','stop') AND EXISTS (SELECT 1 FROM operations done WHERE done.kind='recover' "
@@ -402,6 +472,7 @@ class Lifecycle:
                     verify_reserves()
                     from .inputs import ensure_materialized
                     ensure_materialized(self, (registry['services'][name] for name in plan['services']))
+                    self._admit_prepared_volumes(registry['services'][name] for name in plan['services'])
                 ordered = (plan['services'] if action == 'start' else
                            [name for name in reversed(plan['services']) if name in set(targets)])
                 for name in ordered:

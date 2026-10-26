@@ -140,6 +140,7 @@ def upgrade(runtime, bundle, expected, predecessor, *, resume=False, pull=False)
         if resume:
             stopped(runtime, runtime._registry())
         verify_reserves()
+        runtime._admit_prepared_volumes(specs.values())
         if runtime.run(['/usr/bin/podman', 'info', '--format', '{{.Store.GraphRoot}}']).decode().strip() != STORE_ROOT:
             raise ContractError('unexpected upgrade engine')
         journal = Journal(runtime.state / 'operations.sqlite3')

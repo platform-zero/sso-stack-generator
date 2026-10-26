@@ -4,8 +4,8 @@
 named volumes. It is not application inventory, permission repair, data adoption,
 cleanup, migration or a Root helper. Never import/execute it as Host Root. It
 creates no account, container, mount, service or scheduler. It does not alter the
-task03 helpers. Parent owns manifest/render/lifecycle/Runner/CLI integration and
-actual native qualification; this component is not yet an installed interface.
+task03 helpers. Parent is integrating manifest/render/lifecycle/Runner/CLI and actual native
+qualification; implemented source interfaces below are not installed acceptance.
 
 The existing PostgreSQL volume has no custody declaration. **Do not pass it here**,
 adopt it because it looks empty, add ownership labels or chmod/chown its data.
@@ -14,8 +14,7 @@ Old/foreign volumes refuse even if they have matching mode, options or contents.
 ## Early integration contract
 
 A separate Parent interface proposal accompanies this component. The following
-describes the implemented component, not fields already admitted by
-Parent's manifest schema:
+describes the component and new Parent source-only typed admission:
 
 ```json
 {"kind":"volume","source":"consumer-journal","target":"/private-journal",
@@ -37,7 +36,7 @@ Component API:
 
 ```text
 VolumeCustody(preprovisioned_private_directory, adapter)
-    .ensure(resource, custody, resume=False) -> prepared admission frame
+    .ensure(resource, custody, resume=False, prepared_only=False) -> prepared frame
 NativeAdapter(runtime)  # requires actual non-Root p0-runtime identity
 ```
 
@@ -77,8 +76,27 @@ and exact custody. It identifies noncredential resource semantics, not data.
   returned ownership labels, driver/local empty options and custody; do not let
   Quadlet options, copy-up, `:U` recursive chown or another initializer override
   them. Existing native row/identity must remain unchanged during publication.
-* No CLI or automatic resume is supplied. Parent must expose explicit reviewed
-  continuation rather than using ordinary install as a force/reset mechanism.
+* Parent source CLI `volume-prepare --bundle ... --expected-sha256 ... --volume
+  <one-declared-resource> [--resume]` holds the existing operation interlock and
+  journals a separate `volume-prepare` semantic intent. Exactly one resource per
+  operation avoids pretending a partially attempted batch preclaimed all names.
+  Unsettled work needs same-policy explicit resume; another name/intent cannot
+  supersede it. Success never publishes or starts a service. Installation/start/
+  stopped-upgrade call `prepared_only=True`: missing/incomplete records refuse
+  before creation, mutation or resume; populated prepared state is rechecked.
+  A successful exact explicit prepare reconciles prior same-intent journal work.
+* Parent source CLI `volume-context` obtains actual Host p0-runtime identity,
+  initial Host UID/GID maps, canonical fixed directories/config/native info,
+  current Root-owned private kernel namespace attachment and reserves. It reads
+  no Root-private marker and supplies no pin/repair authority. NativeAdapter
+  compares the immutable witness around every command. Only actual qualification
+  can establish this witness works on the selected Host.
+* Typed policy conflicts and declared/undeclared mixes fail in Catalog admission.
+  Generated custodied mounts explicitly use `nocopy`, never `:U` or UID/GID
+  volume-create options. Immutable source labels include resource/semantic intent;
+  private precreation supplies the nonce. Actual nonexecuting Quadlet translation
+  confirms `nocopy` and volume-create `--ignore`, not preservation after actual
+  mounting or absence of native automatic first-use ownership behavior.
 
 ## Custody journal and native identity
 
@@ -221,8 +239,17 @@ FD-alias failures remain material; no alias graphroot is reintroduced here.
 
 Remaining Parent gates:
 
-* Implement/review the narrow Runner pass_fds + context witness interface and
-  manifest conflicts, immutable publication, reserves and activation interlock.
+* Parent source now implements narrow Runner descriptors, typed conflicts/
+  rendering, private context witness and explicit one-resource preparation/
+  prepared-only lifecycle gates. Native metadata/O_PATH/first-use/cancellation/
+  crash/installed integration remain unqualified.163 Parent source/local tests
+  pass in parent-core-tests-33.log, excluding concurrently worker-owned helper
+  tests;36 original component fixtures are included, not added again. Source32
+  retains a sqlite3.Row fixture representation failure; no runtime gate changed.
+  Schema06 retained an unavailable optional jsonschema import; no Host package
+  installed, tests now explicitly stdlib schema-shape only (core tests execute
+  discriminating policies). CLI edit ambiguity was rejected before application,
+  retained in volume-cli-edit-failure-06.json.
 * Qualify actual native metadata shapes/options/CreatedAt/MountCount, namespace
   map/canonical identity, O_PATH inheritance/reopen, direct FD effects and Host
   readback on disposable **new empty owned** fixtures. Unsupported native facts

@@ -46,13 +46,18 @@ def parser():
     child.add_argument("--bundle", type=Path, required=True)
     child = sub.add_parser("status", help="read-only operation-journal observation")
     child.add_argument("--state-dir", type=Path, required=True)
-    for command in ("install", "upgrade", "start", "stop", "recover", "image-build", "runtime-status", "secret-generate"):
+    for command in ("install", "upgrade", "start", "stop", "recover", "image-build", "runtime-status", "secret-generate", "volume-context", "volume-prepare"):
         child = sub.add_parser(command, help="owned rootless runtime only")
         child.add_argument("--state-dir", type=Path, required=True)
         child.add_argument("--quadlet-dir", type=Path, required=True)
         if command == 'image-build':
             child.add_argument('--context', type=Path, required=True)
             child.add_argument('--expected-sha256', required=True)
+        elif command == 'volume-prepare':
+            child.add_argument('--bundle', type=Path, required=True)
+            child.add_argument('--expected-sha256', required=True)
+            child.add_argument('--volume', required=True, help='one declared resource, never a caller Host path')
+            child.add_argument('--resume', action='store_true')
         elif command in ("install", "upgrade"):
             child.add_argument("--bundle", type=Path, required=True)
             child.add_argument("--expected-sha256", required=True)
@@ -76,11 +81,20 @@ def parser():
 def main(argv=None):
     args = parser().parse_args(argv)
     try:
-        if args.command in ("install", "upgrade", "start", "stop", "recover", "image-build", "runtime-status", "secret-generate"):
+        if args.command in ("install", "upgrade", "start", "stop", "recover", "image-build", "runtime-status", "secret-generate", "volume-context", "volume-prepare"):
             runtime = Lifecycle(args.state_dir, args.quadlet_dir)
             if args.command == 'image-build':
                 from .imagebuild import build as build_image
                 output = build_image(runtime, args.context, args.expected_sha256)
+            elif args.command == 'volume-context':
+                from .volumes import VolumeError
+                try:
+                    output = {'schemaVersion': 1, 'scope': 'actual-rootless-volume-context-only',
+                              'context': runtime.verify_volume_context(), 'installationCertified': False}
+                except VolumeError as error:
+                    raise ContractError(str(error)) from None
+            elif args.command == 'volume-prepare':
+                output = runtime.prepare_volumes(args.bundle, args.expected_sha256, args.volume, resume=args.resume)
             elif args.command == "install":
                 output = runtime.install(args.bundle, args.expected_sha256, pull=args.pull,
                                          resume_stopped=args.resume_stopped)

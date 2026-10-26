@@ -63,6 +63,36 @@ def definition(resource, custody):
             'driver': 'local', 'options': {}, 'custody': dict(custody)}
 
 
+def declared_custodies(services):
+    """Pure catalog admission; no native lookup, permission or resource effect."""
+    seen = {}
+    for service in services:
+        mounts = service.get('mounts', [])
+        if not isinstance(mounts, list):
+            continue  # Existing renderer owns unrelated malformed mount schemas.
+        for mount in mounts:
+            if not isinstance(mount, dict):
+                continue
+            supplied = 'custody' in mount
+            need(not supplied or mount.get('kind') == 'volume', 'volume-custody-kind')
+            if mount.get('kind') != 'volume':
+                continue
+            policy = None
+            if supplied:
+                need(service.get('runtime') == 'rootless', 'volume-custody-rootless-only')
+                policy = definition(mount.get('source'), mount['custody'])['custody']
+            source = mount.get('source')
+            if not isinstance(source, str):
+                continue  # Custodied sources were validated by definition above.
+            key = (service.get('runtime'), source)
+            if key in seen:
+                need(seen[key] == policy, 'volume-shared-custody-conflict')
+            else:
+                seen[key] = policy
+    return {source: dict(policy) for (runtime, source), policy in sorted(seen.items())
+            if runtime == 'rootless' and policy is not None}
+
+
 def labels(record):
     return {'io.platform-zero.managed': 'v2', 'io.platform-zero.volume.resource': record['definition']['resource'],
             'io.platform-zero.volume.intent': record['definitionSha256'],
@@ -487,21 +517,24 @@ class VolumeCustody:
         need(os.geteuid() != 0, 'volume-rootless-only')
         self.state, self.adapter = Path(private_state_directory), adapter
 
-    def ensure(self, resource, custody, *, resume=False):
+    def ensure(self, resource, custody, *, resume=False, prepared_only=False):
         try:
-            return self._ensure(resource, custody, resume=resume)
+            need(type(prepared_only) is bool, 'volume-prepared-only-flag')
+            return self._ensure(resource, custody, resume=resume, prepared_only=prepared_only)
         except VolumeError:
             raise
         except Exception:
             raise VolumeError('volume-operation-indeterminate') from None
 
-    def _ensure(self, resource, custody, *, resume=False):
+    def _ensure(self, resource, custody, *, resume=False, prepared_only=False):
         desired = definition(resource, custody)
         custody = desired['custody']  # Snapshot policy; caller mutation is never an effect input.
         need(type(resume) is bool, 'volume-resume-flag')
         adapter, path = self.adapter, self.adapter.mountpoint(resource)
         with Records(self.state) as records:
             record = records.load(desired['nativeName'] + '.json')
+            if prepared_only:
+                need(record is not None and record.get('state') == 'prepared', 'volume-preparation-required')
             if record is None:
                 need(not resume, 'volume-resume-claim-missing')
                 need(adapter.lookup(resource) is None, 'volume-foreign-native')
