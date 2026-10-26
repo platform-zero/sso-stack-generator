@@ -44,13 +44,21 @@ def verify_reserves(extra_bytes=0):
 
 
 class Runner:
-    def __call__(self, arguments, timeout=30, input_bytes=None):
+    def __call__(self, arguments, timeout=30, input_bytes=None, *, pass_fds=()):
         if input_bytes is not None and len(input_bytes) > 4096:
             raise OperationError('owned control input exceeds bound')
+        if (type(pass_fds) is not tuple or len(pass_fds) > 1
+                or any(type(fd) is not int or fd < 3 for fd in pass_fds)):
+            raise OperationError('owned directory descriptor bound')
+        try:
+            if any(not stat.S_ISDIR(os.fstat(fd).st_mode) for fd in pass_fds):
+                raise OperationError('owned descriptor must be a directory')
+        except OSError:
+            raise OperationError('owned directory descriptor unavailable') from None
         deadline = time.monotonic() + timeout
         process = subprocess.Popen(arguments, stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
-                                   cwd=Path.home(), env={'PATH': '/usr/bin:/bin', 'HOME': str(Path.home()),
+                                   close_fds=True, pass_fds=pass_fds, cwd=Path.home(), env={'PATH': '/usr/bin:/bin', 'HOME': str(Path.home()),
                                         'XDG_RUNTIME_DIR': f'/run/user/{os.getuid()}', 'LC_ALL': 'C'})
         selector = selectors.DefaultSelector()
         content, diagnostics = bytearray(), bytearray()

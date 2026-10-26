@@ -48,13 +48,16 @@ literal canonical paths, never inherited-FD aliases. The definition hash covers
 schemaVersion1, runtime rootless, resource/nativeName, driver local, options empty
 and exact custody. It identifies noncredential resource semantics, not data.
 
-### Parent Runner/Runtime additions (not implemented in shared files here)
+### Parent Runner/Runtime integration
 
-* Extend the existing single bounded Runner with keyword-only `pass_fds=()`;
-  admit only empty tuple or **one** exact-int valid directory FD. Keep
+* Parent has extended the existing single bounded Runner with keyword-only
+  `pass_fds=()`: only an empty tuple or **one** exact-int valid directory FD.
   `close_fds=True`, fresh clean environment/cwd, output limits, per-call deadline
-  and cancellation/reaping of its own process group. No shell or alternative
-  subprocess runner. No blanket FD relaxation in credential/mount helpers.
+  and cancellation/reaping of its own process group remain. Actual unprivileged
+  child-process tests preserve one O_PATH inode, deny unrelated file/default
+  directory inheritance and reject malformed/non-directory FDs before spawn.
+  This is not Podman/unshare or mapped ownership qualification. No shell or
+  alternative subprocess runner; no FD relaxation in Root credential/mount helpers.
 * `runtime.run(arguments, timeout=30, input_bytes=None, pass_fds=()) -> bytes`
   delegates to that Runner. Component checks response <=256 KiB, JSON bounds and
   uses one fixed unshare command. Input <=4096 bytes. Parent's tighter bounds may
