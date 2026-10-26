@@ -644,6 +644,11 @@ class Source08BootstrapTests(unittest.TestCase):
         self.base = self.root / 'protected'
         self.targets = ((self.base, 0o700), (self.base / 'stack', 0o711), (self.base / 'stack/p0-v2', 0o711))
         self.host.targets = self.targets
+        real_space = n.os.fstatvfs
+        def fixture_space(fd):
+            actual = real_space(fd)
+            return types.SimpleNamespace(f_fsid=actual.f_fsid, f_bavail=2 * 1024**3, f_frsize=1)
+        self.stack.enter_context(patch.object(n.os, 'fstatvfs', side_effect=fixture_space))
         self.stack.enter_context(patch.object(n, 'BASE', self.base))
         self.stack.enter_context(patch.object(n, 'STACK', self.base / 'stack'))
         self.stack.enter_context(patch.object(n, 'ANCHOR', self.base / 'stack/p0-v2'))
@@ -728,6 +733,28 @@ class Source08BootstrapTests(unittest.TestCase):
         path.chmod(0o711)
         with self.assertRaisesRegex(n.Refused, '^bootstrap-created-inode-changed$'):
             self.bootstrap.run('resume')
+
+    def test_copied_same_byte_ledger_directory_cannot_adopt_previous_claim(self):
+        self.prepare()
+        active = (self.store.base / 'active.json').read_bytes()
+        previous_raw = (self.store.base / 'previous-v2.json').read_bytes()
+        self.store.close()
+        self.store.base.rename(self.root / 'retained-original-ledger-fixture')
+        self.store.base.mkdir(mode=0o700)
+        for name, raw in (('active.json', active), ('previous-v2.json', previous_raw)):
+            path = self.store.base / name
+            path.write_bytes(raw)
+            path.chmod(0o400)
+        self.store.open()
+        with self.assertRaisesRegex(n.Refused, '^bootstrap-record-binding$'):
+            self.bootstrap.run('resume')
+
+    def test_actual_ledger_filesystem_low_capacity_refuses_before_target_claims(self):
+        with patch.object(n.os, 'fstatvfs', return_value=types.SimpleNamespace(f_bavail=1024, f_frsize=1)):
+            with self.assertRaisesRegex(n.Refused, '^actual-ledger-staging-reserve$'):
+                self.bootstrap.run('transition')
+        self.assertFalse(self.base.exists())
+        self.assertIsNone(self.store.load())
 
     def test_changed_source_boot_prior_snapshot_refuses_resume(self):
         self.prepare()

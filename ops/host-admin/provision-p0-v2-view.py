@@ -1266,6 +1266,8 @@ class Bootstrap:
 
     def save(self, record):
         self.host.check()
+        space = os.fstatvfs(self.store.fd)
+        need(space.f_bavail * space.f_frsize >= 1024**3, 'actual-ledger-staging-reserve')
         self.store.save(seal(record))
 
     def validate_binding(self, record):
@@ -1276,8 +1278,9 @@ class Bootstrap:
              and record['data'] == self.host.prior['namespace']
              and journal['sourceSha256'] == self.host.guard.digest
              and journal['previousSnapshot'] == list(self.host.previous_snapshot)
-             and journal['hostNamespace'] == self.host.namespace, 'bootstrap-record-binding')
-        need(set(journal) == {'sourceSha256', 'previousSnapshot', 'hostNamespace', 'effects'}, 'bootstrap-journal-schema')
+             and journal['hostNamespace'] == self.host.namespace
+             and journal['ledgerDirectory'] == list(self.store.directory), 'bootstrap-record-binding')
+        need(set(journal) == {'sourceSha256', 'previousSnapshot', 'hostNamespace', 'ledgerDirectory', 'effects'}, 'bootstrap-journal-schema')
         effects = journal['effects']
         need(isinstance(effects, list) and len(effects) <= len(self.host.targets), 'bootstrap-effect-limit')
         for effect, (path, mode) in zip(effects, self.host.targets):
@@ -1349,7 +1352,8 @@ class Bootstrap:
                 'previousSha256': self.host.previous_sha, 'evidenceSha256': self.host.prior['evidenceSha256'],
                 'bootId': self.host.boot, 'data': self.host.prior['namespace'],
                 'anchor': {'bootstrap': {'sourceSha256': self.host.guard.digest,
-                    'previousSnapshot': list(self.host.previous_snapshot), 'hostNamespace': self.host.namespace, 'effects': []}},
+                    'previousSnapshot': list(self.host.previous_snapshot), 'hostNamespace': self.host.namespace,
+                    'ledgerDirectory': list(self.store.directory), 'effects': []}},
                 'native': None, 'manager': None, 'pause': None}
             self.save(record)
             self.store.retain_previous(self.host.raw, self.host.previous_sha)

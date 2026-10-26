@@ -161,7 +161,10 @@ One Parent operation interlock, Root-private exclusive lock and byte/stat CAS:
 | `complete` | all exact manager/private-view, pause closure, actual-unshare and consumer before/after observations independently qualified; not published by current implementation |
 
 SOURCE08's intermediate `anchor.bootstrap` journal binds source SHA, old file
-snapshot, Host namespace and each exact prepared target. Its `anchor.result`
+snapshot, Host namespace, the private ledger directory's device/inode and each
+exact prepared target. Copying same bytes into an unknown directory cannot adopt
+its claim. Every publication checks the actual held ledger filesystem's 1GiB
+staging floor, not just the parent `/var/lib` filesystem. Its `anchor.result`
 contains the observed private data mount. Fresh target creation can explicitly
 resume only prepared exact inodes; a `claimed` mkdir without inode proof cannot
 replay. After attachment, verify the mounted DATA identity, not the now-covered
