@@ -567,6 +567,17 @@ class Source08MetadataTests(unittest.TestCase):
         for key in ('qualified', 'publicationImplemented', 'transitionImplemented', 'nativeAuthority', 'installationCertified'):
             self.assertFalse(proposal[key])
 
+    def test_public_quadlet_code_profile20_does_not_admit_aliases_or_generator_behavior(self):
+        proposal = n.manager_boot_proposal()
+        self.assertEqual(proposal['quadletPublicCodeSha256'],
+                         '5e605b8d917c954e353538858dab6baf77f90ac326e2216b7a261d49551600f2')
+        for gate in ('unqualified-search-roots-and-aliases', 'generator-and-environment-source-output-profile',
+                     'private-control-socket-and-service-transport'):
+            self.assertIn(gate, proposal['required'])
+        for key in ('qualified', 'publicationImplemented', 'transitionImplemented', 'nativeAuthority'):
+            self.assertFalse(proposal[key])
+        self.assertNotIn(b'ExecStart=', n.DROPIN_BYTES)
+
     def test_incomplete_duplicate_or_extra_properties_refuse(self):
         facts = self.facts()
         raw = b'\n'.join((k + '=' + v).encode() for k, v in facts.items())

@@ -1791,9 +1791,11 @@ def manager_boot_proposal():
         'dropinSha256': sha(PROPOSED_MANAGER_BYTES), 'currentBindOnlySha256': sha(DROPIN_BYTES),
         'managerExecutableSha256': '799fd89964a716fb5f26c4506047190b6e842ac2745b473bd45351c4d8cbd929',
         'podmanPublicCodeSha256': '6e4993e061eb88205003892252e2e13bbf49c12a6f67f519881b9b3c94e980e6',
+        'quadletPublicCodeSha256': '5e605b8d917c954e353538858dab6baf77f90ac326e2216b7a261d49551600f2',
         'qualified': False, 'publicationImplemented': False, 'transitionImplemented': False,
         'nativeAuthority': False, 'installationCertified': False,
-        'required': ['closed-user-searchpath-and-overrides', 'generator-and-environment-source-output-profile',
+        'required': ['closed-user-searchpath-and-overrides', 'unqualified-search-roots-and-aliases',
+                     'generator-and-environment-source-output-profile',
                      'private-control-socket-and-service-transport', 'stopped-owned-app-trigger-scope',
                      'exact-old-pause-and-protected-native-inventory']}
 

@@ -347,6 +347,20 @@ generators or environment generators: freeze their public code/symlink/source/
 output profile;16 left the Quadlet generator target unqualified. Control inherited
 search/environment overrides; do not assume no side effects from an empty target.
 
+Readonly supplement **20**, not failed19, supplies the public Quadlet executable
+SHA `5e605b8d917c954e353538858dab6baf77f90ac326e2216b7a261d49551600f2`;
+its generator symlink resolves to that public executable. The pure proposal now
+records this code identity, **not generator behavior or source admission**.20 adds
+user.control/transient/localshare/XDG/usr-local metadata and observes zero NEW
+target/generic/dash-prefix collisions in the examined candidates. Missing entries
+are not qualified source absence. `/etc/xdg/systemd/user` is a symlink with literal
+`../../systemd/user`; its root remains `rootTypeUnqualifiedContentsUnread`, not
+adopted/followed as a qualified root or falsely reported empty. Unknown roots and
+aliases remain explicit gates. Failed19's AssertionError is retained.20's active
+manager PID and InvocationID are observations, not a stopped/release receipt;
+current transition preflight still refuses. No original authored contents were
+read or hashed and no generator/user-bus/native command was executed by Worker.
+
 `observe-control-peer` adds only a bounded readonly kernel peer observation of
 that **existing** fixed private socket: nofollow parent/socket custody snapshots,
 2-second connect, SO_PEERCRED PID/UID/GID equality to independently observed exact
@@ -411,8 +425,14 @@ identity. Preserve all old claims/bytes/CAS; new fields require separate review.
 Recovery must be explicit new boot, exact previously claimed covering-stub inode
 and protected ancestors (not matching unknown directory), new current private
 anchor/holder/NSFS, new manager/pause/per-command qualification; triggers stay
-closed. Parent17 empty rename/closed-original-FD primitive is not actual P0-data
-adoption, reboot/manager/complete or installed proof. Never use old NativeExecStop
+closed. Parent17 failed EBADF9 with an O_PATH-only backing mount descriptor;
+Parent18 passed the EMPTY rename/closed-original-FD primitive using a readable
+O_RDONLY|O_DIRECTORY backing mount FD and same-filesystem checks. The original
+DATA FD was closed before the old-namespace capless rename and its actor exited;
+type1/length8 handle reopened the same dev/inode/FSID/owner/mode. This does not
+qualify actual P0-data capture, stable reboot filesystem identity, durable schema,
+boot/manager/complete or installed authority. Both receipts remain retained; no
+actual handle capture/recovery fields or syscalls were added. Never use old NativeExecStop
 cleanup to stop a manager under the old unsafe view.
 
 ## Every native lifecycle phase needs custody (Parent integration)
