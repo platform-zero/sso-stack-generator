@@ -21,6 +21,8 @@ import re
 import stat
 import selectors
 import signal
+import socket
+import struct
 import subprocess
 import time
 
@@ -1204,6 +1206,7 @@ class BootstrapHost:
         prior = parse(self.raw)
         self.prior = previous_claim(self.raw, previous_sha, prior.get('namespace'))
         self.boot, self.namespace = boot_id(), host_namespace()
+        need(self.prior['bootId'] == self.boot, 'previous-boot-pathless-bootstrap-required')
         self.data_fd = None
 
     def check(self):
@@ -1246,6 +1249,7 @@ class BootstrapHost:
         return {'manager': manager, 'stoppedScope': scope, 'data': actual}
 
     def plan(self):
+        need(not os.path.lexists(BOOTSTRAP), 'existing-bootstrap-explicit-resume-or-boot-review-required')
         facts = self.preflight()
         for path, _ in self.targets:
             need(not os.path.lexists(path), 'bootstrap-target-exists')
@@ -1348,6 +1352,9 @@ class Bootstrap:
         need(mode in ('transition', 'resume'), 'bootstrap-mode')
         record = self.store.load()
         if record is not None:
+            # Neither mutable PHYSICAL nor an unmounted old covering stub is a
+            # reboot locator. Refuse BEFORE any data-path preflight/lookup.
+            need(record['bootId'] == self.host.boot, 'bootstrap-old-boot-pathless-recovery-required')
             retained, _ = owned_file(self.store.base / 'previous-v2.json')
             need(retained == self.host.raw, 'bootstrap-retention-incomplete')
         anchored = record is not None and record['state'] in ('anchor-private', 'native-namespace-claimed', 'native-view-bound')
@@ -1925,6 +1932,55 @@ class ActorSourceObserver:
                 'approvedProtectedViewUnshareProbe': False, 'oldPauseReleaseAuthorized': False}
 
 
+class PrivateControlObserver:
+    """Kernel peer metadata ONLY, no D-Bus handshake/methods or reusable FD.
+
+    Observes the existing exact dedicated manager. It does not prove new-target
+    startup/transport works or that no bus/socket/default unit was activated.
+    """
+    def collect(self):
+        runtime_account()
+        manager = MetadataObserver().manager()
+        facts = manager['facts']
+        need(facts['ActiveState'] == 'active' and facts['MainPID'].isdigit()
+             and int(facts['MainPID']) > 1 and manager['process'] is not None
+             and manager['process']['pid'] == int(facts['MainPID']), 'control-manager-not-active')
+        path = Path('/run/user/1004/systemd/private')
+        parent = actor_directory(path.parent)
+        peer = None
+        try:
+            directory = fd_node(parent)
+            before = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+            need(stat.S_ISSOCK(before.st_mode) and before.st_uid == before.st_gid == 1004
+                 and stat.S_IMODE(before.st_mode) == 0o600 and before.st_nlink == 1, 'control-socket-custody')
+            epoch = boot_id()
+            peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM | socket.SOCK_CLOEXEC)
+            peer.settimeout(2)
+            peer.connect(str(path))
+            raw = peer.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize('3i'))
+            need(len(raw) == struct.calcsize('3i'), 'control-peer-schema')
+            pid, uid, gid = struct.unpack('3i', raw)
+            need((pid, uid, gid) == (int(facts['MainPID']), 1004, 1004), 'control-peer-identity')
+            after = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+            current = actor_directory(path.parent)
+            try:
+                need(fd_node(current) == directory and file_snapshot(before) == file_snapshot(after), 'control-path-changed')
+            finally:
+                os.close(current)
+            need(boot_id() == epoch and MetadataObserver().manager() == manager, 'control-manager-changed')
+            return {'version': 1, 'bootId': epoch, 'socketSnapshot': list(file_snapshot(before)),
+                    'peerPid': pid, 'peerUid': uid, 'peerGid': gid,
+                    'process': manager['process'], 'noMethodsSent': True,
+                    'transportQualified': False, 'activationCertifiedAbsent': False,
+                    'nativeAuthority': False, 'oldPauseReleaseAuthorized': False}
+        except OSError:
+            raise Refused('control-metadata-unavailable') from None
+        finally:
+            if peer is not None:
+                peer.close()
+            os.close(parent)
+
+
 class ClosedHost:
     def preflight(self, previous):
         raise Refused('native-manager-pause-gates-unqualified')
@@ -1937,16 +1993,17 @@ class Parser(argparse.ArgumentParser):
 
 def main(argv=None):
     parser = Parser(description=__doc__)
-    parser.add_argument('mode', choices=('plan', 'transition', 'resume', 'observe-manager', 'observe-pause', 'observe-actor-sources', 'publish-manager'))
+    parser.add_argument('mode', choices=('plan', 'transition', 'resume', 'observe-manager', 'observe-pause', 'observe-actor-sources', 'observe-control-peer', 'publish-manager'))
     parser.add_argument('--helper-sha256', required=True)
     parser.add_argument('--expected-previous-sha256', required=True)
     args = parser.parse_args(argv)
     need(os.getuid() == os.geteuid() == os.getgid() == os.getegid() == 0, 'root-required')
     guard = SelfGuard(args.helper_sha256)
-    if args.mode in ('observe-manager', 'observe-pause', 'observe-actor-sources'):
+    if args.mode in ('observe-manager', 'observe-pause', 'observe-actor-sources', 'observe-control-peer'):
         result = {'observe-manager': lambda: MetadataObserver().manager(),
                   'observe-pause': lambda: PauseObserver().collect(),
-                  'observe-actor-sources': lambda: ActorSourceObserver().collect()}[args.mode]()
+                  'observe-actor-sources': lambda: ActorSourceObserver().collect(),
+                  'observe-control-peer': lambda: PrivateControlObserver().collect()}[args.mode]()
         guard.check()
         print(json.dumps({'version': 1, 'scope': 'p0-native-view-metadata', 'observation': result,
                           'nativeAuthority': False, 'installationCertified': False}, sort_keys=True))

@@ -626,6 +626,17 @@ class Source08MetadataTests(unittest.TestCase):
         raw = ('77 (fixture ) comm) S ' + ' '.join(['1'] * 18 + ['12345', '0'])).encode()
         self.assertEqual(n.process_start(raw), 12345)
 
+    def test_even_first_v2_bootstrap_cannot_use_previous_boot_mutable_locator(self):
+        raw = n.encoded(previous())
+        guard = types.SimpleNamespace(digest='a' * 64)
+        with patch.object(n, 'read_previous', return_value=(raw, (1, 2, 3))), \
+             patch.object(n, 'boot_id', return_value='87654321-1234-1234-1234-123456789abc'), \
+             patch.object(n, 'host_namespace', return_value={'device': 4, 'inode': 9}), \
+             patch.object(n.os, 'open') as opened:
+            with self.assertRaisesRegex(n.Refused, '^previous-boot-pathless-bootstrap-required$'):
+                n.BootstrapHost(guard, n.sha(raw))
+            opened.assert_not_called()
+
     def test_phase_vocabulary_does_not_grant_secrets_store_or_complete(self):
         record, _ = complete_fixture()
         for state in n.STATES:
@@ -785,11 +796,19 @@ class Source08BootstrapTests(unittest.TestCase):
         for key, value in (('boot', '87654321-1234-1234-1234-123456789abc'), ('previous_snapshot', (9, 9))):
             old = getattr(self.host, key)
             setattr(self.host, key, value)
-            with self.subTest(key=key), self.assertRaisesRegex(n.Refused, '^bootstrap-record-binding$'):
+            reason = 'bootstrap-old-boot-pathless-recovery-required' if key == 'boot' else 'bootstrap-record-binding'
+            with self.subTest(key=key), self.assertRaisesRegex(n.Refused, '^' + reason + '$'):
                 self.bootstrap.run('resume')
             setattr(self.host, key, old)
         self.host.guard.digest = 'd' * 64
         with self.assertRaisesRegex(n.Refused, '^bootstrap-record-binding$'):
+            self.bootstrap.run('resume')
+
+    def test_old_boot_refuses_before_any_mutable_or_stub_data_path_preflight(self):
+        self.prepare()
+        self.host.boot = '87654321-1234-1234-1234-123456789abc'
+        self.host.preflight = lambda **kwargs: self.fail('old boot must never consult PHYSICAL/stub')
+        with self.assertRaisesRegex(n.Refused, '^bootstrap-old-boot-pathless-recovery-required$'):
             self.bootstrap.run('resume')
 
     def test_incomplete_retention_never_replays_target_creation(self):
@@ -1167,6 +1186,56 @@ class Source08ActorSourceTests(unittest.TestCase):
             with self.subTest(raw=raw), patch.object(n, 'bounded', return_value=raw):
                 with self.assertRaisesRegex(n.Refused, '^host-initial-user-namespace-required$'):
                     n.initial_host_user_namespace()
+
+
+class Source08ControlPeerTests(unittest.TestCase):
+    def setUp(self):
+        from contextlib import ExitStack
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix='.p0-control-source08-', dir=Path.home())))
+        self.stack = self.enterContext(ExitStack())
+        self.parent = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, self.parent)
+        self.manager = {'facts': {'ActiveState': 'active', 'MainPID': '1313'},
+                        'process': {'pid': 1313, 'viewAuthority': False, 'signalAuthority': False}}
+        self.snapshot = types.SimpleNamespace(st_dev=64, st_ino=42, st_mode=stat.S_IFSOCK | 0o600,
+            st_uid=1004, st_gid=1004, st_nlink=1, st_size=0, st_mtime_ns=1, st_ctime_ns=2)
+        self.peer = types.SimpleNamespace(settimeout=lambda seconds: None, connect=lambda path: None,
+            getsockopt=lambda *args: n.struct.pack('3i', 1313, 1004, 1004), close=lambda: None)
+        self.stack.enter_context(patch.object(n, 'runtime_account'))
+        self.manager_mock = self.stack.enter_context(patch.object(n.MetadataObserver, 'manager', return_value=self.manager))
+        self.stack.enter_context(patch.object(n, 'actor_directory', side_effect=lambda path: os.dup(self.parent)))
+        self.stack.enter_context(patch.object(n, 'fd_node', return_value=node(10, uid=1004, gid=1004, mode=0o700)))
+        self.stat_mock = self.stack.enter_context(patch.object(n.os, 'stat', return_value=self.snapshot))
+        self.stack.enter_context(patch.object(n, 'boot_id', return_value=previous()['bootId']))
+        self.stack.enter_context(patch.object(n.socket, 'socket', return_value=self.peer))
+
+    def test_peer_metadata_sends_no_method_and_is_not_transport_or_activation_certificate(self):
+        result = n.PrivateControlObserver().collect()
+        self.assertEqual(result['peerPid'], 1313)
+        self.assertTrue(result['noMethodsSent'])
+        for key in ('transportQualified', 'activationCertifiedAbsent', 'nativeAuthority', 'oldPauseReleaseAuthorized'):
+            self.assertFalse(result[key])
+        self.assertEqual(self.manager_mock.call_count, 2)
+        # Fake peer deliberately has no send/sendall/DBus method API.
+
+    def test_same_uid_different_server_pid_refuses(self):
+        self.peer.getsockopt = lambda *args: n.struct.pack('3i', 9999, 1004, 1004)
+        with self.assertRaisesRegex(n.Refused, '^control-peer-identity$'):
+            n.PrivateControlObserver().collect()
+
+    def test_listener_inode_replacement_refuses_even_with_same_peer_pid(self):
+        changed = types.SimpleNamespace(**vars(self.snapshot))
+        changed.st_ino += 1
+        self.stat_mock.side_effect = [self.snapshot, changed]
+        with self.assertRaisesRegex(n.Refused, '^control-path-changed$'):
+            n.PrivateControlObserver().collect()
+
+    def test_manager_changed_during_connection_refuses(self):
+        changed = copy.deepcopy(self.manager)
+        changed['facts']['MainPID'] = '1414'
+        self.manager_mock.side_effect = [self.manager, changed]
+        with self.assertRaisesRegex(n.Refused, '^control-manager-changed$'):
+            n.PrivateControlObserver().collect()
 
 
 if __name__ == '__main__':

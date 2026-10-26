@@ -347,6 +347,15 @@ generators or environment generators: freeze their public code/symlink/source/
 output profile;16 left the Quadlet generator target unqualified. Control inherited
 search/environment overrides; do not assume no side effects from an empty target.
 
+`observe-control-peer` adds only a bounded readonly kernel peer observation of
+that **existing** fixed private socket: nofollow parent/socket custody snapshots,
+2-second connect, SO_PEERCRED PID/UID/GID equality to independently observed exact
+current manager and before/after manager/source/namespace/process metadata. It
+sends **no D-Bus authentication/method or other application bytes**, closes all
+FDs and reports transport/activation/native/release qualification false. It does
+not retain a reusable manager pidfd/connection grant and cannot prove new-target
+startup. Tests use fake socket/manager frames only; Worker never connected.
+
 Manager's `/run/user/1004/systemd/private` endpoint and fixed transient SERVICE
 transport must be independently qualified without starting default/basic/dbus/
 sockets targets or falling back to another bus. Bind socket inode/custody and
@@ -355,6 +364,56 @@ InvocationID; same UID alone is not attestation. Current source implements no
 manager transition or old-pause release. Public Podman hash16, storage config and
 three-source equality are code profiles, **not** running-task/DB-object inventory,
 actual safe-unshare proof, source admission or release authority.
+
+### Stronger closed-path/launch proposal — source syntax, not adoption
+
+Installed public manual source documents full replacement semantics for
+SYSTEMD_UNIT_PATH, SYSTEMD_GENERATOR_PATH and
+SYSTEMD_ENVIRONMENT_GENERATOR_PATH **unless a trailing empty component appends
+defaults**. A closed profile must forbid every empty component/relative/parent
+path. Proposed dedicated-only roots include selected actor direct units/runtime
+generator outputs/qualified OS sources/new Root target supply, excluding authored
+global/etc/XDG/local/control fallbacks. A new Root generator directory would hold
+only the pinned public Quadlet generator link; a separate Root empty environment
+generator directory prevents environment-d/global imports. QUADLET_UNIT_DIRS is
+documented to replace common sources but described in debug scope: exact pinned
+generator behavior needs separate qualification, not inference from docs.
+
+No path profile, new Root config directories, generator link, target location,
+PAMName or new ExecStart has been adopted/published by this source. Before code,
+a separate versioned contract records these proposed limits. PAMName= reset is
+supported syntax only for the dedicated instance. Disabling it removes PAM
+session/runtime setup; fixed HOME/USER/LOGNAME/XDG runtime/cgroup must qualify.
+Plain `env -i` is **not** a complete launch: it erases PID1 NOTIFY_SOCKET needed
+by packaged Type=notify-reload and other approved supervision fields; it also
+cannot sanitize loader injection before `env` itself loads. Need exact PID1-side
+supported environment reset/UnsetEnvironment semantics, loader safeguards and
+fixed whitelist of necessary validated notification/incarnation fields. No
+wildcard UnsetEnvironment or arbitrary env API. Manuals support syntax, not
+runtime/code/transport/absence proof. Original global graph remains untouched.
+
+### Boot is closed until a pathless durable DATA locator exists
+
+The independent anchor mount and `/run` NSFS handle vanish across reboot. A prior
+old-namespace source rename means the physical canonical pathname cannot locate
+DATA safely afterward. SOURCE08 now refuses an old-boot record **before any
+DATA/stub/physical-path preflight**; it never falls back or searches old data.
+Fresh plan also refuses an existing bootstrap claim instead of treating it as
+new. Even a first v2-to-v3 transition refuses a previous-boot v2 marker before
+opening DATA; lack of an intermediate v3 ledger is not a canonical fallback.
+No boot schema fields, filesystem-handle syscalls or recovery effects exist.
+
+Proposed independently qualified name_to_handle_at/open_by_handle_at profile must
+bind the exact held original DATA object/opaque handle/generation to stable backing
+filesystem identity and an independently trusted mount FD. Unsupported/stale or
+changed FS fails closed; old mount IDs/device numbers alone are not durable
+identity. Preserve all old claims/bytes/CAS; new fields require separate review.
+Recovery must be explicit new boot, exact previously claimed covering-stub inode
+and protected ancestors (not matching unknown directory), new current private
+anchor/holder/NSFS, new manager/pause/per-command qualification; triggers stay
+closed. Parent17 empty rename/closed-original-FD primitive is not actual P0-data
+adoption, reboot/manager/complete or installed proof. Never use old NativeExecStop
+cleanup to stop a manager under the old unsafe view.
 
 ## Every native lifecycle phase needs custody (Parent integration)
 
