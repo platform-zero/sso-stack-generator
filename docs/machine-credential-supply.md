@@ -200,7 +200,13 @@ The only secret commands are exact-name `secret exists`, metadata-only `secret
 inspect`, and `secret create --driver file --label ... p0-<name> -`. Absence is
 accepted only from `secret exists` status 1; other failures are uncertain, not
 absence. Inspect must report one exact name, a bounded alphanumeric ID, driver
-`file` without driver options and the exact expected ownership labels. Native
+`file` with absent/empty options or exactly Podman's actor-bound canonical
+`{"path":"<fixed-graphroot>/secrets/filedriver"}` metadata, and the exact expected
+ownership labels. The materialized native default path is metadata, not a caller
+configuration API. Other paths, other-actor paths, FD aliases, trailing aliases or
+extra options refuse. This exact native shape was found after an actual create
+succeeded but empty-options-only readback marked it uncertain; existing owned
+metadata is reconciled by explicit resume, never by creating it again. Native
 stdout is bounded to 256 KiB and parsed only as metadata; stderr is discarded.
 Native calls have 30-second deadlines; cleanup may wait at most another 5 seconds
 for the exact newly created session/process group. Unsettled output/deadline

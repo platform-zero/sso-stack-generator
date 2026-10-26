@@ -384,9 +384,13 @@ class Native:
         item = items[0]
         spec = item.get('Spec', {})
         driver = spec.get('Driver', {})
+        graph = ROOTLESS if actor == 'rootless' else ROOTFUL
+        # Native Podman can materialize its default file-driver path in metadata.
+        # Admit only that exact actor store, never caller paths/aliases/options.
+        canonical_options = {'path': str(graph / 'secrets/filedriver')}
         require(spec.get('Name') == 'p0-' + name and isinstance(spec.get('Labels'), dict)
                 and isinstance(driver, dict) and driver.get('Name') == 'file'
-                and driver.get('Options') in (None, {})
+                and driver.get('Options') in (None, {}, canonical_options)
                 and isinstance(item.get('ID'), str) and NATIVE_ID.fullmatch(item['ID']), 'native-metadata')
         return {'id': item['ID'], 'labels': spec['Labels']}
 

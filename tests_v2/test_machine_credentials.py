@@ -435,6 +435,23 @@ class MachineCredentialTests(unittest.TestCase):
             with self.assertRaisesRegex(m.Refused, '^native-exists-uncertain$'):
                 native.inspect('rootful', 'boot-shared')
 
+    def test_native_canonical_file_driver_metadata_path_is_actor_bound(self):
+        native = m.Native(types.SimpleNamespace())
+        for actor, graph in (('rootless', m.ROOTLESS), ('rootful', m.ROOTFUL)):
+            item = {'ID': 'x' * 24, 'Spec': {'Name': 'p0-boot-shared', 'Labels': {},
+                    'Driver': {'Name': 'file', 'Options': {'path': str(graph / 'secrets/filedriver')}}}}
+            with self.subTest(actor=actor), patch.object(native, 'call', side_effect=[(0, b''), (0, json.dumps([item]).encode())]):
+                self.assertEqual(native.inspect(actor, 'boot-shared'), {'id': 'x' * 24, 'labels': {}})
+            for options in ({'path': '/tmp/foreign'}, {'path': '/proc/self/fd/7/secrets/filedriver'},
+                            {'path': str(graph / 'secrets/filedriver') + '/'},
+                            {'path': str(graph / 'secrets/filedriver'), 'unknown': 'x'},
+                            {'path': str((m.ROOTFUL if actor == 'rootless' else m.ROOTLESS) / 'secrets/filedriver')}):
+                item['Spec']['Driver']['Options'] = options
+                with self.subTest(actor=actor, options=options), \
+                     patch.object(native, 'call', side_effect=[(0, b''), (0, json.dumps([item]).encode())]):
+                    with self.assertRaisesRegex(m.Refused, '^native-metadata$'):
+                        native.inspect(actor, 'boot-shared')
+
     def test_resume_without_exact_record_never_generates_or_creates(self):
         with self.assertRaisesRegex(m.Refused, '^resume-record-required$'):
             self.run_supply('resume')
