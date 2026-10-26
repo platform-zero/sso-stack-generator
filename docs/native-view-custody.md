@@ -288,22 +288,28 @@ need actual qualification before mutation can be enabled.
 
 ## Readonly actor sources are not a native inventory
 
-`ActorSourceObserver` reads only fixed dedicated-account storage configuration
-and scoped `p0-*.container/.network/.volume` source metadata under the new actor's
-configuration directory. It compares exact storage.conf bytes with the fixed
-canonical graphroot/runroot/overlay source contract (independently reimplemented,
-no Root import of core). Safe nofollow held directory traversal, regular-file
-custody/link/size limits, before/after inode/stat and directory-inventory snapshots
-bound hashes; unknown authored names and symlink targets are not read. Source
-`[Install]` nonempty WantedBy/RequiredBy/Also/Alias is conservatively flagged as
-possible replay. No source is adopted, normalized, enabled or executed.
+`ActorSourceObserver.storage()` retains its independently constrained fixed
+storage.conf literal route: canonical graphroot/runroot/overlay bytes, no core
+import, nofollow held traversal and file/directory before/after custody checks.
+That route is not broadened to other actor files.
 
-These live hashes must still be compared with Parent's frozen selected source;
-they do **not** qualify the OS user boot/generator/dependency/enablement graph.
-Even an exact container source with no WantedBy and Restart=on-failure can have
-unsafe generated native cleanup. Every Quadlet row reports that it requires the
-all-lifecycle guard below. Current selected three PG Quadlets remain Parent-owned;
-the generic helper does not hardcode an app inventory or claim they are stopped.
+**Mutable actor Quadlet CONTENT observation is CLOSED/unqualified.** Review12
+identified that the previous `p0-*` name/UID pattern could read and fingerprint
+unknown private content. Even an exact familiar selected filename plus an expected
+public literal cannot establish the mutable candidate's content is public BEFORE
+reading it. The helper now opens, compares, reads, hashes, parses and follows
+**no actor Quadlet entries**, including the three familiar PG source names. It
+returns `available:false`, a fixed unqualified reason and no file rows, while
+absence/boot/frozen-supply/native flags remain false. It does not fabricate zero
+unknown counts or claim the source directory is absent. This temporary engineering
+denial is **not a product cut or completion**. A future independently qualified
+immutable Root-owned public-source custody route requires separate Parent review.
+
+No source is adopted, normalized, enabled or executed. Selected source/Install
+replay/dependency/enablement and every-native-lifecycle reviews remain required;
+no metadata/hash observation can replace them. Current PG sources remain
+Parent-owned and are not claimed stopped. Earlier Source16 comparisons remain
+separate historical observations, not admission of this removed prefix policy.
 
 Keep three independent questions distinct:
 
@@ -459,7 +465,7 @@ cleanup to stop a manager under the old unsafe view.
 
 ## Own-process child supervision signal premise
 
-Before any metadata Popen or creator/readonly-consumer fork, the trusted
+Before every fixed metadata or creator/readonly-consumer fork, the trusted
 single-threaded helper establishes its **own** closed signal profile: SIGCHLD is
 reset through supported CPython/Linux `signal.signal(SIG_DFL)` (clearing inherited
 SIG_IGN/SA_NOCLDWAIT), and `pthread_sigmask(SIG_SETMASK, empty)` explicitly clears
@@ -468,12 +474,16 @@ local profile ready. Python's other dispositions, including SIGPIPE, are unchang
 Failure refuses before spawn. Startup also establishes this profile before the
 self guard; externally independently verified private source remains mandatory.
 
-`OwnedChild` checks the established premise **before pidfd_open**, without trying
-to repair it after fork: a child already auto-reaped under SIG_IGN cannot be
-re-associated safely by resetting the signal later. The retained-child premise
-also depends on the trusted single-threaded helper having no asynchronous/wait-any
-reaper. Only its exact direct children are waited; no PID-signalling fallback.
-This changes no Host service signal state and grants no manager/pause authority.
+`OwnedChild` is preallocated before resource allocation/spawn. The direct fork
+result is associated with that already-owned object BEFORE fallible profile,
+pidfd or proc-start checks; acquisition failure cannot hide an object-held pidfd
+or child from caller cleanup. It checks the established premise **before
+pidfd_open**, without repairing it after fork: a child auto-reaped under SIG_IGN
+cannot be recovered that way. The retained-child premise also depends on having
+no asynchronous/wait-any reaper. One exact WNOHANG status consumer marks a consumed
+status reaped before nonzero-status refusal; ECHILD is an invariant failure, never
+proof of intended exit. No Popen/destructor/poll/hidden reaper remains in the helper.
+No PID-signalling fallback, Host service signal change or pause authority exists.
 
 Isolated ordinary-user own-child tests cover ignored SIGCHLD inherited across
 exec, explicitly blocked SIGCHLD/termination mask, immediate failed child retained
@@ -483,6 +493,52 @@ supported default setup. Signal changes stay inside fresh test processes; helper
 main/Root/mount/unshare/setns/systemctl are not executed. Normal cleanup/timeout
 coverage uses fake process adapters, not real signals. These primitives are not
 whole-backend or installed proof; native staging still needs independent review.
+
+## Review12 source corrections and remaining native fault gates
+
+Fixed readonly metadata uses a finite direct fork/exec, preserving the exact
+systemctl hash/argv/property vocabulary, literal environment, DEVNULL stdin/stderr
+and 65536-byte response ceiling. Its write/null source FDs are promoted above2
+before fork so initially closed stdio cannot cause dup2 self-clobber. Only the
+child restores exec-side SIGPIPE/SIGXFZ/SIGXFSZ defaults, duplicates fixed stdio,
+invokes fixed libc `close_range(3,UINT_MAX,0)` then executes `/usr/bin/systemctl`.
+Unavailable/failed close_range refuses without an inherited-FD fallback; child
+setup/exec failure exits fixed nonzero with no error-channel protocol. Parent
+stdout/exit observation shares one absolute ten-second deadline. No generic
+Root executable/argv/path/environment or syscall API is introduced.
+
+Preallocated local FD slots cover the run-directory open/ACL/first claim, first
+and second pipes, holder close/reopen, cover and all three child-launch paths.
+FD slots detach before close; every remaining FD and child cleanup is attempted
+even if a previous cleanup fails. Only held exact own-child pidfds can receive a
+cleanup signal. Forced cleanup is **not clean-stop evidence**; fd/readiness/wait
+failure is retained uncertainty, not a fabricated exited claim or effect replay.
+
+**No-pidfd tail remains a native-admission blocker.** If association fails after
+spawn, close owned communications, do not authorize further ACK/effects, and use
+only bounded exact own-child WNOHANG waits for up to five seconds. No integer-PID,
+process-group, external or cgroup signalling fallback exists. Failure to obtain a
+status returns fixed supervision uncertainty; it does NOT guarantee termination
+or keep a live child managed after helper exit. Parent accepted this honest SOURCE
+failure disposition, not actual native containment of that fault. Existing claims
+remain; no clone3 ABI, new handshake/schema or recovery/cleanup protocol is added.
+
+Owned IPC pipes are nonblocking from creation. Newline JSON framing, <=8192-byte
+limit, kinds/ACKs/order and pre-effect claims remain unchanged. Send and receive
+use fixed absolute fifteen-second deadlines; partial progress, EINTR, EAGAIN and
+spurious readiness never reset the deadline. A blocking descriptor is refused,
+not changed; no foreign/shared descriptor flags are modified. Zero write, peer
+closure and timeout fail rather than publish success. This bounds userspace
+readiness/backpressure handling, not an uninterruptible kernel task.
+
+Focused regressions use fake child/syscall/clock adapters and new ordinary owned
+pipe fixtures. Two existing isolated ordinary-own-child signal/pidfd/status tests
+remain real, not mocked. The full-pipe primitive actually observes EAGAIN on its
+own nonblocking pipe but mocks the deadline adapter: it is **not** whole-backend
+kernel/CAS/IPC/fault qualification. Worker does not execute metadata helper-main,
+systemctl, Root, namespace operations, actual child signals or service/store work.
+Independent Parent review/frozen EMPTY qualification and current-bound-resume
+verification remain open. No source correction authorizes staging or installation.
 
 ## Every native lifecycle phase needs custody (Parent integration)
 

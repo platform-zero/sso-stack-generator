@@ -23,7 +23,6 @@ import selectors
 import signal
 import socket
 import struct
-import subprocess
 import time
 
 PHYSICAL = Path('/mnt/stack/p0-v2')
@@ -777,31 +776,67 @@ def metadata_call(arguments):
     before = binary_snapshot('/usr/bin/systemctl')
     need(before['sha256'] == '848c70d7e2c2f43f4f93287897ac8946e8eda45e7daa5f2975d9728071856b1a',
          'systemctl-os-code-profile-unqualified')
-    establish_child_supervision()
-    child = subprocess.Popen(['/usr/bin/systemctl', '--no-pager', *arguments], stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C',
-        'SYSTEMD_PAGER': 'cat', 'SYSTEMD_COLORS': '0'}, close_fds=True)
-    raw, deadline = bytearray(), time.monotonic() + 10
-    try:
-        with selectors.DefaultSelector() as poller:
-            poller.register(child.stdout, selectors.EVENT_READ)
-            while True:
-                need(time.monotonic() < deadline, 'metadata-timeout')
-                if not poller.select(min(0.25, max(0, deadline - time.monotonic()))):
-                    continue
-                chunk = os.read(child.stdout.fileno(), min(4096, 65537 - len(raw)))
-                if not chunk:
-                    break
-                raw.extend(chunk)
-                need(len(raw) <= 65536, 'metadata-limit')
-        need(child.wait(timeout=max(0.01, deadline - time.monotonic())) == 0, 'metadata-unavailable')
+    close_range = metadata_close_range()
+    with LocalResources(4) as resources:
+        resources.pipe(0, nonblocking=False)
+        resources.fds[2] = os.open('/dev/null', os.O_RDWR | os.O_CLOEXEC)
+        # Child dup2 sources must survive all three stdio replacements, even
+        # when our caller initially had stdin/stdout/stderr closed.
+        resources.above_stdio(1, 3)
+        resources.above_stdio(2, 3)
+        reader, writer, null, _ = resources.fds
+        os.set_blocking(reader, False)  # Own new read end only; child stdout blocks normally.
+        raw, deadline = bytearray(), time.monotonic() + 10
+        establish_child_supervision()
+        pid = os.fork()
+        if pid == 0:
+            metadata_exec(arguments, writer, null, close_range)
+            os._exit(2)
+        resources.child.adopt(pid)
+        resources.close_fd(1)
+        resources.close_fd(2)
+        while True:
+            wait_ready(reader, selectors.EVENT_READ, deadline, 'metadata-timeout')
+            try:
+                chunk = os.read(reader, min(4096, 65537 - len(raw)))
+            except (InterruptedError, BlockingIOError):
+                continue
+            if not chunk:
+                break
+            raw.extend(chunk)
+            need(len(raw) <= 65536, 'metadata-limit')
+        resources.child.wait(deadline=deadline)
         need(binary_snapshot('/usr/bin/systemctl') == before, 'metadata-executable-changed')
         return bytes(raw)
-    finally:
-        if child.poll() is None:
-            child.kill()  # Exact supervised metadata child only, never a Host service.
-            child.wait(timeout=2)
-        child.stdout.close()
+
+
+def metadata_close_range():
+    """Binding only here; fixed child-only FD closure, never a caller syscall API."""
+    try:
+        close_range = ctypes.CDLL(None, use_errno=True).close_range
+        close_range.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_int]
+        close_range.restype = ctypes.c_int
+        return close_range
+    except (AttributeError, OSError):
+        raise Refused('metadata-close-range-unavailable') from None
+
+
+def metadata_exec(arguments, writer, null, close_range):
+    # Only metadata_call's child branch calls this. No generic exec interface.
+    try:
+        need(writer > 2 and null > 2 and writer != null, 'metadata-stdio-source')
+        for source, target in ((null, 0), (writer, 1), (null, 2)):
+            os.dup2(source, target, inheritable=True)
+        for name in ('SIGPIPE', 'SIGXFZ', 'SIGXFSZ'):
+            number = getattr(signal, name, None)
+            if number is not None:
+                signal.signal(number, signal.SIG_DFL)
+        need(close_range(3, 0xffffffff, 0) == 0, 'metadata-close-range-unavailable')
+        os.execve('/usr/bin/systemctl', ['/usr/bin/systemctl', '--no-pager', *arguments],
+                  {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', 'SYSTEMD_PAGER': 'cat', 'SYSTEMD_COLORS': '0'})
+    except BaseException:
+        os._exit(2)  # No exec-error channel, stderr/exception or partial success.
+    os._exit(2)  # execve must not return.
 
 
 def properties(raw, unit=MANAGER):
@@ -959,59 +994,174 @@ def projection_now(expected_parent, expected_data):
         'parentMount': mount_row('/mnt/stack'), 'dataMount': mount_row(PHYSICAL)}, expected_parent, expected_data)
 
 
+def wait_ready(fd, event, deadline, reason):
+    with selectors.DefaultSelector() as poller:
+        poller.register(fd, event)
+        while True:
+            remaining = deadline - time.monotonic()
+            need(remaining > 0, reason)
+            try:
+                ready = poller.select(min(0.25, remaining))
+            except InterruptedError:
+                continue
+            if ready:
+                need(time.monotonic() < deadline, reason)
+                return
+
+
 def send_frame(fd, value):
+    deadline = time.monotonic() + 15
     raw = encoded(value) + b'\n'
     need(len(raw) <= 8192, 'worker-frame-limit')
+    need(not os.get_blocking(fd), 'worker-nonblocking-required')
     while raw:
-        count = os.write(fd, raw)
+        need(time.monotonic() < deadline, 'worker-write-timeout')
+        try:
+            count = os.write(fd, raw)
+        except InterruptedError:
+            continue
+        except BlockingIOError:
+            wait_ready(fd, selectors.EVENT_WRITE, deadline, 'worker-write-timeout')
+            continue
+        except OSError:
+            raise Refused('worker-write-unavailable') from None
         need(count > 0, 'worker-write')
         raw = raw[count:]
+    need(time.monotonic() < deadline, 'worker-write-timeout')
 
 
 def receive_frame(fd):
     raw, deadline = bytearray(), time.monotonic() + 15
-    with selectors.DefaultSelector() as poller:
-        poller.register(fd, selectors.EVENT_READ)
-        while not raw.endswith(b'\n'):
-            need(time.monotonic() < deadline, 'worker-timeout')
-            if not poller.select(min(0.25, max(0, deadline - time.monotonic()))):
-                continue
+    need(not os.get_blocking(fd), 'worker-nonblocking-required')
+    while not raw.endswith(b'\n'):
+        wait_ready(fd, selectors.EVENT_READ, deadline, 'worker-timeout')
+        try:
             chunk = os.read(fd, 8193 - len(raw))
-            need(chunk, 'worker-closed')
-            raw.extend(chunk)
-            need(len(raw) <= 8192 and raw.count(b'\n') <= 1, 'worker-frame-limit')
+        except (InterruptedError, BlockingIOError):
+            continue
+        except OSError:
+            raise Refused('worker-read-unavailable') from None
+        need(chunk, 'worker-closed')
+        raw.extend(chunk)
+        need(len(raw) <= 8192 and raw.count(b'\n') <= 1, 'worker-frame-limit')
+    need(time.monotonic() < deadline, 'worker-timeout')
     return parse(bytes(raw))
 
 
 class OwnedChild:
-    """Only direct unreaped children; exact pidfd, bounded wait, no global scan."""
-    def __init__(self, pid):
+    """Preallocated direct-child custody, one status consumer, no PID signals."""
+    def __init__(self):
+        self.pid = self.fd = self.start = None
+        self.reaped = self.closed = self.lost = self.uncertain = False
+
+    def adopt(self, pid):
+        need(self.pid is None and not self.closed and type(pid) is int and pid > 1, 'owned-worker-association')
+        self.pid = pid  # BEFORE any fallible profile/pidfd/proc observation.
         check_child_supervision()
-        self.pid, self.fd, self.reaped = pid, os.pidfd_open(pid, 0), False
+        self.fd = os.pidfd_open(pid, 0)
         self.start = process_start(bounded('/proc/' + str(pid) + '/stat', 4096))
 
-    def wait(self):
-        with selectors.DefaultSelector() as poller:
-            poller.register(self.fd, selectors.EVENT_READ)
-            need(poller.select(15), 'owned-worker-exit-timeout')
-        got, status = os.waitpid(self.pid, 0)
-        self.reaped = True
-        need(got == self.pid and os.waitstatus_to_exitcode(status) == 0, 'owned-worker-failed')
+    def reap(self, deadline):
+        while not self.reaped:
+            need(not self.lost and time.monotonic() < deadline, 'owned-worker-supervision-uncertain')
+            if self.fd is not None:
+                wait_ready(self.fd, selectors.EVENT_READ, deadline, 'owned-worker-supervision-uncertain')
+            try:
+                got, status = os.waitpid(self.pid, os.WNOHANG)
+            except InterruptedError:
+                continue
+            except OSError:
+                self.lost = self.uncertain = True  # ECHILD is NOT intended exit.
+                raise Refused('owned-worker-supervision-uncertain') from None
+            if got == self.pid:
+                self.reaped = True  # Before any nonzero-status conversion/refusal.
+                return status
+            if got != 0:
+                self.lost = self.uncertain = True
+                raise Refused('owned-worker-supervision-uncertain')
+            if self.fd is None:
+                time.sleep(min(0.01, max(0, deadline - time.monotonic())))
+
+    def wait(self, *, deadline=None):
+        need(self.pid is not None and self.fd is not None and not self.closed and not self.reaped,
+             'owned-worker-wait-state')
+        deadline = time.monotonic() + 15 if deadline is None else deadline
+        wait_ready(self.fd, selectors.EVENT_READ, deadline, 'owned-worker-exit-timeout')
+        status = self.reap(deadline)
+        need(os.waitstatus_to_exitcode(status) == 0, 'owned-worker-failed')
 
     def close(self):
+        if self.closed:
+            return
+        self.closed = True  # Never signal/wait/close again, including uncertain failure.
+        failure = False
         try:
-            if not self.reaped:
-                try:
-                    signal.pidfd_send_signal(self.fd, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                with selectors.DefaultSelector() as poller:
-                    poller.register(self.fd, selectors.EVENT_READ)
-                    need(poller.select(5), 'owned-worker-cleanup-timeout')
-                os.waitpid(self.pid, 0)
-                self.reaped = True
+            if self.pid is not None and not self.reaped:
+                deadline = time.monotonic() + 5
+                if self.lost:
+                    raise Refused('owned-worker-supervision-uncertain')
+                if self.fd is not None:
+                    try:
+                        signal.pidfd_send_signal(self.fd, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass  # Still need an exact consumed wait status.
+                    except OSError:
+                        failure = True  # Still attempt bounded status collection.
+                self.reap(deadline)
+        except BaseException:
+            failure = True
         finally:
-            os.close(self.fd)
+            fd, self.fd = self.fd, None  # Detach BEFORE possibly uncertain close.
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except BaseException:
+                    failure = True
+        if failure:
+            self.uncertain = True
+            raise Refused('owned-worker-supervision-uncertain') from None
+        # No-pidfd timeout may leave a live child after helper exit. Never claim
+        # clean stop/absence/managed-after-exit or replay the retained intent.
+
+
+class LocalResources:
+    """Preallocated local FD slots and child; no public Root resource API."""
+    def __init__(self, slots):
+        self.child = OwnedChild()
+        self.fds = [None] * slots
+
+    def __enter__(self):
+        return self
+
+    def pipe(self, slot, *, nonblocking=True):
+        need(self.fds[slot] is None and self.fds[slot + 1] is None, 'local-fd-slot-owned')
+        self.fds[slot], self.fds[slot + 1] = os.pipe2(os.O_CLOEXEC | (os.O_NONBLOCK if nonblocking else 0))
+
+    def close_fd(self, slot):
+        fd, self.fds[slot] = self.fds[slot], None
+        if fd is not None:
+            os.close(fd)
+
+    def above_stdio(self, slot, spare):
+        if self.fds[slot] <= 2:
+            self.fds[spare] = fcntl.fcntl(self.fds[slot], fcntl.F_DUPFD_CLOEXEC, 3)
+            old = self.fds[slot]
+            self.fds[slot], self.fds[spare] = self.fds[spare], None
+            os.close(old)
+
+    def __exit__(self, *exc):
+        failure = None
+        for slot in reversed(range(len(self.fds))):
+            try:
+                self.close_fd(slot)
+            except BaseException:
+                failure = Refused('local-fd-cleanup-unavailable')
+        try:
+            self.child.close()  # Even after another FD's close failed.
+        except BaseException:
+            failure = Refused('owned-worker-supervision-uncertain')
+        if failure is not None:
+            raise failure from None
 
 
 class KernelBackend:
@@ -1067,14 +1217,15 @@ class KernelBackend:
         facts = {'phase': 'holder-directory-claimed'}
         need(not os.path.lexists(HANDLE.parent), 'namespace-holder-exists')
         root_ancestors(HANDLE.parent.parent)
-        run = os.open(HANDLE.parent.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        no_default_acl(run)
-        claim(dict(facts))  # Before fresh directory; uncertain mkdir never replayed.
-        holder = cover = None
-        try:
+        with LocalResources(3) as resources:
+            resources.fds[0] = os.open(HANDLE.parent.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            run = resources.fds[0]
+            no_default_acl(run)
+            claim(dict(facts))  # Before fresh directory; uncertain mkdir never replayed.
             recheck()
             os.mkdir(HANDLE.parent.name, 0o700, dir_fd=run)
-            holder = os.open(HANDLE.parent.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=run)
+            resources.fds[1] = os.open(HANDLE.parent.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=run)
+            holder = resources.fds[1]
             os.fchmod(holder, 0o700)
             no_default_acl(holder)
             identity = fd_node(holder)
@@ -1091,15 +1242,17 @@ class KernelBackend:
             claim(dict(facts))
             # Primitive14 correction: PRIVATE fresh holder mount BEFORE forking.
             self.attach(holder, holder, HANDLE.parent, holder_claim, recheck)
-            os.close(holder)
-            holder = os.open(HANDLE.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            resources.close_fd(1)
+            resources.fds[1] = os.open(HANDLE.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            holder = resources.fds[1]
             need(fd_node(holder) == identity and fd_mount_id(holder) == facts['holder']['mountId'], 'holder-mount-changed')
             mount_row(HANDLE.parent, holder)
             facts.update(phase='holder-private')
             claim(dict(facts))
             facts.update(phase='handle-file-claimed')
             claim(dict(facts))
-            cover = os.open(HANDLE.name, os.O_RDONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400, dir_fd=holder)
+            resources.fds[2] = os.open(HANDLE.name, os.O_RDONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400, dir_fd=holder)
+            cover = resources.fds[2]
             os.fchmod(cover, 0o400)
             os.fsync(cover); os.fsync(holder)
             facts.update(phase='handle-file-prepared', coverSnapshot=list(file_snapshot(os.fstat(cover))))
@@ -1107,24 +1260,21 @@ class KernelBackend:
             recheck()
             result = self.create_projection(parent_fd, cover, record, facts, claim, recheck)
             return result
-        finally:
-            for fd in (cover, holder, run):
-                if fd is not None:
-                    os.close(fd)
 
     def create_projection(self, parent_fd, cover, record, facts, claim, recheck):
         anchor = record['anchor']['result']
-        from_parent, to_child = os.pipe2(os.O_CLOEXEC)
-        from_child, to_parent = os.pipe2(os.O_CLOEXEC)
-        creator = None
-        try:
+        with LocalResources(4) as resources:
+            resources.pipe(0)
+            resources.pipe(2)
+            from_parent, to_child, from_child, to_parent = resources.fds
+            creator = resources.child
             facts.update(phase='creator-claimed')
             claim(dict(facts))  # Durable effect claim before fork/unshare.
             establish_child_supervision()
             pid = os.fork()
             if pid == 0:
-                os.close(to_child); os.close(from_child)
                 try:
+                    resources.close_fd(1); resources.close_fd(2)
                     need(self.libc.unshare(0x20000) == 0, 'worker-unshare-unavailable')
                     now = os.stat('/proc/self/ns/mnt')
                     need({'device': now.st_dev, 'inode': now.st_ino} != record['anchor']['bootstrap']['hostNamespace'], 'worker-still-host-namespace')
@@ -1158,9 +1308,9 @@ class KernelBackend:
                     os._exit(0)
                 except BaseException:
                     os._exit(2)
-            creator = OwnedChild(pid)
-            os.close(from_parent); from_parent = None
-            os.close(to_parent); to_parent = None
+            creator.adopt(pid)
+            resources.close_fd(0)
+            resources.close_fd(3)
             message = receive_frame(from_child)
             need(message == {'kind': 'projection-request'}, 'projection-request-frame')
             facts.update(phase='projection-clone-requested', creator={'pid': pid, 'startTime': creator.start, 'exited': False})
@@ -1204,12 +1354,6 @@ class KernelBackend:
             facts.update(phase='bound')
             claim(dict(facts))
             return facts
-        finally:
-            for fd in (from_parent, to_child, from_child, to_parent):
-                if fd is not None:
-                    os.close(fd)
-            if creator is not None:
-                creator.close()
 
     def verify_bound(self, record):
         need(record['bootId'] == boot_id(), 'native-view-boot-changed')
@@ -1236,14 +1380,15 @@ class KernelBackend:
                 os.close(nsfd)
 
     def readonly_consumer(self, nsfd, expected, anchor):
-        reader, writer = os.pipe2(os.O_CLOEXEC)
-        child = None
-        try:
+        with LocalResources(2) as resources:
+            resources.pipe(0)
+            reader, writer = resources.fds
+            child = resources.child
             establish_child_supervision()
             pid = os.fork()
             if pid == 0:
-                os.close(reader)
                 try:
+                    resources.close_fd(0)
                     need(self.libc.setns(nsfd, 0x20000) == 0, 'consumer-setns-unavailable')
                     os.chdir('/')
                     observed = projection_now(anchor['parent'], anchor['data'])
@@ -1252,16 +1397,10 @@ class KernelBackend:
                     os._exit(0)
                 except BaseException:
                     os._exit(2)
-            child = OwnedChild(pid)
-            os.close(writer); writer = None
+            child.adopt(pid)
+            resources.close_fd(1)
             need(receive_frame(reader) == {'observed': True}, 'consumer-observation-failed')
             child.wait()
-        finally:
-            os.close(reader)
-            if writer is not None:
-                os.close(writer)
-            if child is not None:
-                child.close()
 
 
 class BootstrapHost:
@@ -1914,8 +2053,8 @@ class ActorSourceObserver:
 
     No Podman/unshare/ps/info invocation and no engine/data content read. File
     comparisons do not prove running-task absence, stopped DB-object absence or
-    safety of cached pause reexec. Parent must supply the independent frozen
-    selected supply comparison; these live source hashes are not authority.
+    safety of cached pause reexec. Mutable Quadlet content observation is CLOSED;
+    future immutable public-source custody requires separate Parent review.
     """
     def storage(self):
         runtime_account()
@@ -1946,55 +2085,13 @@ class ActorSourceObserver:
 
     def quadlets(self):
         runtime_account()
-        directory = RUNTIME_HOME / '.config/containers/systemd'
-        try:
-            parent = actor_directory(directory)
-        except FileNotFoundError:
-            return {'version': 1, 'available': False, 'reason': 'actor-source-directory-missing',
-                    'absenceCertified': False, 'nativeAuthority': False}
-        rows, unknown, links = [], 0, 0
-        try:
-            held = fd_node(parent)
-            directory_snapshot = file_snapshot(os.fstat(parent))
-            with os.scandir(parent) as entries:
-                for count, entry in enumerate(entries, 1):
-                    need(count <= 256, 'actor-source-inventory-limit')
-                    name = entry.name
-                    value = entry.stat(follow_symlinks=False)
-                    if stat.S_ISLNK(value.st_mode):
-                        links += 1  # Do not follow an unknown target or infer absence.
-                        continue
-                    if not re.fullmatch(r'p0-[a-z0-9][a-z0-9-]{0,62}\.(container|network|volume)', name):
-                        unknown += 1  # Never read authored/foreign content.
-                        continue
-                    need(stat.S_ISREG(value.st_mode) and value.st_uid in (0, 1004) and value.st_gid in (0, 1004)
-                         and value.st_nlink == 1 and not value.st_mode & 0o022 and value.st_size <= 65536,
-                         'actor-quadlet-source-custody')
-                    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
-                    try:
-                        need(file_snapshot(os.fstat(fd)) == file_snapshot(value), 'actor-quadlet-source-changed')
-                        raw = os.read(fd, 65537)
-                        need(len(raw) == value.st_size and file_snapshot(os.fstat(fd)) == file_snapshot(value),
-                             'actor-quadlet-source-changed')
-                        rows.append({'name': name, 'snapshot': list(file_snapshot(value)), 'sha256': sha(raw),
-                                     'installReplay': install_replay(raw), 'requiresEveryNativeLifecycleGuard': True})
-                    finally:
-                        os.close(fd)
-            current = actor_directory(directory)
-            try:
-                need(fd_node(current) == held and file_snapshot(os.fstat(current)) == directory_snapshot,
-                     'actor-source-parent-changed')
-                # Recheck each collected file's inode/stat, not just directory inode.
-                for row in rows:
-                    actual = os.stat(row['name'], dir_fd=current, follow_symlinks=False)
-                    need(list(file_snapshot(actual)) == row['snapshot'], 'actor-quadlet-source-changed')
-            finally:
-                os.close(current)
-            return {'version': 1, 'available': True, 'files': sorted(rows, key=lambda row: row['name']),
-                    'unknownEntries': unknown, 'symlinks': links, 'nativeAuthority': False,
-                    'frozenSupplyCompared': False, 'bootGraphCertified': False, 'absenceCertified': False}
-        finally:
-            os.close(parent)
+        # A familiar filename/UID/expected literal cannot prove mutable CONTENT
+        # public BEFORE reading it. No actor entry (even selected PG) is opened,
+        # compared, read, hashed, parsed or followed. Future immutable public
+        # source custody needs separate review; this is temporary denial, not cut.
+        return {'version': 1, 'available': False, 'reason': 'actor-quadlet-content-unqualified',
+                'files': [], 'nativeAuthority': False, 'frozenSupplyCompared': False,
+                'bootGraphCertified': False, 'absenceCertified': False}
 
     def collect(self):
         return {'version': 1, 'storage': self.storage(), 'quadlets': self.quadlets(),

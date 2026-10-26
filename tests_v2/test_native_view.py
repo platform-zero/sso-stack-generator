@@ -550,7 +550,7 @@ class Source08MetadataTests(unittest.TestCase):
     def test_metadata_os_executable_hash_mismatch_refuses_before_spawn(self):
         args = ['show', n.MANAGER, '--property=' + ','.join(n.MANAGER_PROPERTIES)]
         with patch.object(n, 'binary_snapshot', return_value={'sha256': '0' * 64}), \
-             patch.object(n.subprocess, 'Popen') as spawn:
+             patch.object(n.os, 'fork') as spawn:
             with self.assertRaisesRegex(n.Refused, '^systemctl-os-code-profile-unqualified$'):
                 n.metadata_call(args)
             spawn.assert_not_called()
@@ -713,25 +713,25 @@ class Source08ChildSignalTests(unittest.TestCase):
                  patch.object(n.signal, 'pthread_sigmask', return_value=mask), \
                  patch.object(n.signal, 'signal') as repair, patch.object(n.os, 'pidfd_open') as opened:
                 with self.assertRaisesRegex(n.Refused, '^child-signal-profile-required$'):
-                    n.OwnedChild(73)  # Fake only: no foreign PID opened/signalled.
+                    n.OwnedChild().adopt(73)  # Fake only: no foreign PID opened/signalled.
                 repair.assert_not_called(); opened.assert_not_called()
 
-    def test_metadata_profile_precedes_popen_and_failure_cannot_spawn(self):
+    def test_metadata_profile_precedes_fixed_fork_and_failure_cannot_spawn(self):
         args = ['show', n.MANAGER, '--property=' + ','.join(n.MANAGER_PROPERTIES)]
         events = []
-        def spawn(*a, **kw):
+        def spawn():
             events.append('spawn'); raise n.Refused('SYNTHETIC-spawn')
-        with patch.object(n, 'binary_snapshot', return_value={
+        with patch.object(n, 'metadata_close_range'), patch.object(n, 'binary_snapshot', return_value={
                 'sha256': '848c70d7e2c2f43f4f93287897ac8946e8eda45e7daa5f2975d9728071856b1a'}), \
              patch.object(n, 'establish_child_supervision', side_effect=lambda: events.append('profile')), \
-             patch.object(n.subprocess, 'Popen', side_effect=spawn):
+             patch.object(n.os, 'fork', side_effect=spawn):
             with self.assertRaisesRegex(n.Refused, '^SYNTHETIC-spawn$'):
                 n.metadata_call(args)
         self.assertEqual(events, ['profile', 'spawn'])
-        with patch.object(n, 'binary_snapshot', return_value={
+        with patch.object(n, 'metadata_close_range'), patch.object(n, 'binary_snapshot', return_value={
                 'sha256': '848c70d7e2c2f43f4f93287897ac8946e8eda45e7daa5f2975d9728071856b1a'}), \
              patch.object(n, 'establish_child_supervision', side_effect=n.Refused('SYNTHETIC-profile')), \
-             patch.object(n.subprocess, 'Popen') as spawn:
+             patch.object(n.os, 'fork') as spawn:
             with self.assertRaisesRegex(n.Refused, '^SYNTHETIC-profile$'):
                 n.metadata_call(args)
             spawn.assert_not_called()
@@ -765,42 +765,34 @@ class Source08ChildSignalTests(unittest.TestCase):
             guard.assert_not_called(); metadata.assert_not_called()
 
     def test_normal_child_exit_is_reaped_once_without_cleanup_signal(self):
-        child = n.OwnedChild.__new__(n.OwnedChild)
-        child.pid, child.fd, child.reaped = 73, 44, False
-        with patch.object(n.selectors, 'DefaultSelector') as selector, \
-             patch.object(n.os, 'waitpid', return_value=(73, 0)) as wait, \
+        child = n.OwnedChild(); child.pid, child.fd = 73, 44
+        with patch.object(n, 'wait_ready'), patch.object(n.os, 'waitpid', return_value=(73, 0)) as wait, \
              patch.object(n.signal, 'pidfd_send_signal') as signal_child, patch.object(n.os, 'close'):
-            selector.return_value.__enter__.return_value.select.return_value = [(None, None)]
-            child.wait(); child.close()
+            child.wait(); child.close(); child.close()
             self.assertTrue(child.reaped)
-            wait.assert_called_once_with(73, 0); signal_child.assert_not_called()
+            wait.assert_called_once_with(73, os.WNOHANG); signal_child.assert_not_called()
 
     def test_failed_child_wait_is_reaped_once_and_close_does_not_signal(self):
-        child = n.OwnedChild.__new__(n.OwnedChild)
-        child.pid, child.fd, child.reaped = 73, 44, False  # All process operations fake.
-        with patch.object(n.selectors, 'DefaultSelector') as selector, \
-             patch.object(n.os, 'waitpid', return_value=(73, 7 << 8)) as wait, \
+        child = n.OwnedChild(); child.pid, child.fd = 73, 44
+        with patch.object(n, 'wait_ready'), patch.object(n.os, 'waitpid', return_value=(73, 7 << 8)) as wait, \
              patch.object(n.signal, 'pidfd_send_signal') as signal_child, patch.object(n.os, 'close'):
-            selector.return_value.__enter__.return_value.select.return_value = [(None, None)]
             with self.assertRaisesRegex(n.Refused, '^owned-worker-failed$'):
                 child.wait()
             self.assertTrue(child.reaped)
             child.close()
-            wait.assert_called_once_with(73, 0); signal_child.assert_not_called()
+            wait.assert_called_once_with(73, os.WNOHANG); signal_child.assert_not_called()
 
     def test_timeout_cleanup_uses_only_exact_pidfd_and_reaps_once(self):
-        child = n.OwnedChild.__new__(n.OwnedChild)
-        child.pid, child.fd, child.reaped = 73, 44, False
-        with patch.object(n.selectors, 'DefaultSelector') as selector, \
+        child = n.OwnedChild(); child.pid, child.fd = 73, 44
+        with patch.object(n, 'wait_ready', side_effect=[n.Refused('owned-worker-exit-timeout'), None]), \
              patch.object(n.os, 'waitpid', return_value=(73, 9)) as wait, \
              patch.object(n.signal, 'pidfd_send_signal') as signal_child, \
              patch.object(n.os, 'kill') as pid_signal, patch.object(n.os, 'close'):
-            selector.return_value.__enter__.return_value.select.side_effect = [[], [(None, None)]]
             with self.assertRaisesRegex(n.Refused, '^owned-worker-exit-timeout$'):
                 child.wait()
-            child.close()
+            child.close(); child.close()
             signal_child.assert_called_once_with(44, n.signal.SIGKILL)
-            wait.assert_called_once_with(73, 0); pid_signal.assert_not_called()
+            wait.assert_called_once_with(73, os.WNOHANG); pid_signal.assert_not_called()
             self.assertTrue(child.reaped)  # Forced cleanup is NOT clean-stop evidence.
 
     def own_child_primitive(self, kind):
@@ -833,15 +825,15 @@ assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == set()
 if sys.argv[2] != 'ignored':
     check = Action(); assert libc.sigaction(signal.SIGCHLD, None, ctypes.byref(check)) == 0
     assert not check.flags & 2
+child = m.OwnedChild()  # Preallocated before this ordinary own-child fork.
 pid = os.fork()
 if pid == 0:
     os._exit(7)
-child = None
 try:
     # WNOWAIT explicitly witnesses immediate failure retained before pidfd_open.
     status = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
     assert status.si_pid == pid and status.si_status == 7
-    child = m.OwnedChild(pid)
+    child.adopt(pid)
     assert child.pid == pid and child.start > 0
     with selectors.DefaultSelector() as poll:
         poll.register(child.fd, selectors.EVENT_READ); assert poll.select(2)
@@ -859,7 +851,7 @@ try:
     else:
         raise AssertionError('not-once-only-reap')
 finally:
-    if child is not None:
+    if child.pid is not None:
         child.close()
     else:
         os.waitpid(pid, 0)  # Exact retained own child, never signal by PID.
@@ -871,9 +863,9 @@ import os, signal, sys
 assert os.getuid() == os.geteuid() != 0
 signal.signal(signal.SIGCHLD, signal.SIG_IGN)
 signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGCHLD, signal.SIGTERM})
-os.execv(sys.executable, [sys.executable, '-I', '-c', sys.argv[1], *sys.argv[2:]])
+os.execv(sys.executable, [sys.executable, '-I', '-B', '-c', sys.argv[1], *sys.argv[2:]])
 '''
-        result = subprocess.run([sys.executable, '-I', '-c', launcher, body,
+        result = subprocess.run([sys.executable, '-I', '-B', '-c', launcher, body,
             str(ROOT / 'ops/host-admin/provision-p0-v2-view.py'), kind],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr[-4096:].decode(errors='replace'))
@@ -1028,7 +1020,7 @@ class Source08TypedPropertyTests(unittest.TestCase):
             name = self.facts(kind)['Id']
             correct = ['show', name, '--property=' + ','.join(self.expected(kind))]
             with self.subTest(kind=kind), patch.object(n, 'binary_snapshot', return_value={'sha256': '0' * 64}), \
-                 patch.object(n.subprocess, 'Popen') as spawn:
+                 patch.object(n.os, 'fork') as spawn:
                 with self.assertRaisesRegex(n.Refused, '^systemctl-os-code-profile-unqualified$'):
                     n.metadata_call(correct)
                 spawn.assert_not_called()
@@ -1258,7 +1250,7 @@ class Source08KernelBackendTests(unittest.TestCase):
         self.assertEqual(self.claims[-1]['phase'], 'creator-claimed')
 
     def test_framed_claim_ipc_exact_roundtrip_uses_only_new_unprivileged_pipe(self):
-        reader, writer = os.pipe()
+        reader, writer = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
         try:
             expected = {'kind': 'projection-claim', 'ids': {'parent': 701, 'data': 702}}
             n.send_frame(writer, expected)
@@ -1499,45 +1491,46 @@ class Source08ActorSourceTests(unittest.TestCase):
             def __exit__(inner, *args): pass
         self.stack.enter_context(patch.object(n.os, 'scandir', Entries))
 
-    def test_fixed_storage_bytes_and_quadlet_hashes_are_metadata_not_any_kind_of_absence(self):
+    def test_fixed_storage_bytes_but_quadlet_content_closed_not_any_kind_of_absence(self):
         source = self.units / 'p0-fixture.container'
         source.write_bytes(b'[Container]\nImage=fixture@sha256:' + b'a' * 64 + b'\n[Service]\nRestart=on-failure\n')
         source.chmod(0o600)  # This NEW fixture's declared source custody.
         with patch.object(n, 'metadata_call', side_effect=AssertionError('NO_NATIVE_CALL')):
             report = n.ActorSourceObserver().collect()
         self.assertEqual(report['storage']['sha256'], n.sha(n.STORAGE_BYTES))
-        self.assertEqual(len(report['quadlets']['files']), 1)
-        self.assertFalse(report['quadlets']['files'][0]['installReplay'])
-        self.assertTrue(report['quadlets']['files'][0]['requiresEveryNativeLifecycleGuard'])
+        self.assertEqual(report['quadlets']['files'], [])
+        self.assertFalse(report['quadlets']['available'])
+        self.assertEqual(report['quadlets']['reason'], 'actor-quadlet-content-unqualified')
         for key in ('runningKernelTasksCertifiedAbsent', 'stoppedDatabaseObjectsCertifiedAbsent',
                     'approvedProtectedViewUnshareProbe', 'oldPauseReleaseAuthorized'):
             self.assertFalse(report[key])
         self.assertFalse(report['quadlets']['frozenSupplyCompared'])
         self.assertFalse(report['quadlets']['bootGraphCertified'])
 
-    def test_install_replay_is_conservative_and_unknown_authored_files_not_read(self):
-        (self.units / 'p0-fixture.container').write_bytes(b'[Container]\nImage=fixture\n[Install]\nWantedBy=default.target\n')
-        (self.units / 'p0-fixture.container').chmod(0o600)
-        (self.units / 'authored.txt').write_bytes(b'NEW_TEST_FIXTURE_NOT_TO_BE_READ')
+    def test_all_mutable_names_and_symlinks_remain_unread_unhashed_unparsed(self):
+        for name in ('p0-postgres.container', 'p0-network-identity.network', 'p0-postgres-data.volume',
+                     'p0-private.container', 'authored.txt'):
+            (self.units / name).write_bytes(b'PRIVATE_SENTINEL_NOT_TO_BE_FINGERPRINTED')
         (self.units / 'p0-foreign.volume').symlink_to(self.units / 'authored.txt')
-        report = n.ActorSourceObserver().quadlets()
-        self.assertTrue(report['files'][0]['installReplay'])
-        self.assertEqual(report['unknownEntries'], 1)
-        self.assertEqual(report['symlinks'], 1)
-        self.assertEqual(len(report['files']), 1)
+        with patch.object(n, 'actor_directory') as directory, patch.object(n.os, 'open') as opened, \
+             patch.object(n.os, 'read') as read, patch.object(n.os, 'readlink') as readlink, \
+             patch.object(n, 'sha') as digest, patch.object(n, 'install_replay') as parse:
+            report = n.ActorSourceObserver().quadlets()
+        for operation in (directory, opened, read, readlink, digest, parse):
+            operation.assert_not_called()
+        self.assertEqual(report['files'], [])
+        self.assertNotIn('unknownEntries', report)
+        self.assertNotIn('PRIVATE_SENTINEL', repr(report))
 
-    def test_file_changed_after_hash_refuses_before_metadata_report(self):
-        path = self.units / 'p0-fixture.container'
-        path.write_bytes(b'[Container]\nImage=fixture\n')
-        path.chmod(0o600)
-        original = n.install_replay
-        def change(raw):
-            result = original(raw)
-            path.write_bytes(raw + b'# NEW_CHANGED_FIXTURE\n')
-            return result
-        with patch.object(n, 'install_replay', side_effect=change):
-            with self.assertRaisesRegex(n.Refused, '^actor-quadlet-source-changed$'):
-                n.ActorSourceObserver().quadlets()
+    def test_familiar_name_and_literal_cannot_admit_mutable_candidate_content(self):
+        (self.units / 'p0-postgres.container').write_bytes(b'[Container]\nImage=fixture\n')
+        with patch.object(n.os, 'scandir') as scan, patch.object(n.os, 'stat') as observe, \
+             patch.object(n, 'sha') as digest:
+            report = n.ActorSourceObserver().quadlets()
+        scan.assert_not_called(); observe.assert_not_called(); digest.assert_not_called()
+        self.assertEqual(report['reason'], 'actor-quadlet-content-unqualified')
+        for key in ('available', 'nativeAuthority', 'frozenSupplyCompared', 'bootGraphCertified', 'absenceCertified'):
+            self.assertFalse(report[key])
 
     def test_storage_path_same_byte_inode_replacement_refuses(self):
         original = n.actor_directory
@@ -1622,6 +1615,337 @@ class Source08ControlPeerTests(unittest.TestCase):
         self.manager_mock.side_effect = [self.manager, changed]
         with self.assertRaisesRegex(n.Refused, '^control-manager-changed$'):
             n.PrivateControlObserver().collect()
+
+
+class Source12OwnershipFaultTests(unittest.TestCase):
+    """Fake failure matrix; only explicitly named own-pipe test uses real pipe I/O."""
+    def child(self, fd=44):
+        child = n.OwnedChild()
+        child.pid, child.fd = 73, fd
+        return child
+
+    def metadata_fixture(self, reads=(b'Id=fixture\n', b''), status=0):
+        from contextlib import ExitStack
+        stack = self.enterContext(ExitStack())
+        mocks = {}
+        for target, name, value in (
+            (n, 'binary_snapshot', {'sha256': '848c70d7e2c2f43f4f93287897ac8946e8eda45e7daa5f2975d9728071856b1a'}),
+            (n, 'metadata_close_range', None), (n, 'establish_child_supervision', None),
+            (n, 'check_child_supervision', None), (n, 'bounded', b'fake-own-stat'),
+            (n, 'process_start', 123), (n, 'wait_ready', None),
+            (n.os, 'pipe2', (10, 11)), (n.os, 'open', 20), (n.os, 'set_blocking', None),
+            (n.os, 'fork', 73), (n.os, 'pidfd_open', 44),
+            (n.os, 'waitpid', (73, status)), (n.os, 'close', None),
+            (n.os, 'kill', None), (n.os, 'execve', None), (n.signal, 'pidfd_send_signal', None)):
+            mocks[name] = stack.enter_context(patch.object(target, name, return_value=value))
+        mocks['read'] = stack.enter_context(patch.object(n.os, 'read', side_effect=reads))
+        return mocks
+
+    def metadata(self):
+        return n.metadata_call(['show', n.MANAGER, '--property=' + ','.join(n.MANAGER_PROPERTIES)])
+
+    def test_pidfd_failure_preserves_preallocated_child_and_only_own_status_wait(self):
+        child = n.OwnedChild()
+        with patch.object(n, 'check_child_supervision'), patch.object(n.os, 'pidfd_open', side_effect=OSError('FAKE')), \
+             patch.object(n.os, 'waitpid', return_value=(73, 0)) as wait, patch.object(n.os, 'kill') as kill, \
+             patch.object(n.signal, 'pidfd_send_signal') as signal_child:
+            with self.assertRaises(OSError):
+                child.adopt(73)
+            self.assertEqual(child.pid, 73); self.assertIsNone(child.fd)
+            child.close(); child.close()
+        wait.assert_called_once_with(73, os.WNOHANG)
+        kill.assert_not_called(); signal_child.assert_not_called()
+        self.assertTrue(child.reaped)
+
+    def test_no_pidfd_live_tail_is_bounded_uncertain_not_managed_after_exit(self):
+        child = self.child(None)
+        with patch.object(n.time, 'monotonic', side_effect=[0, 0, 0, 6]), patch.object(n.time, 'sleep'), \
+             patch.object(n.os, 'waitpid', return_value=(0, 0)) as wait, patch.object(n.os, 'kill') as kill, \
+             patch.object(n.signal, 'pidfd_send_signal') as signal_child:
+            with self.assertRaisesRegex(n.Refused, '^owned-worker-supervision-uncertain$'):
+                child.close()
+            child.close()
+        self.assertTrue(child.uncertain); self.assertTrue(child.closed); self.assertFalse(child.reaped)
+        wait.assert_called_once_with(73, os.WNOHANG)
+        kill.assert_not_called(); signal_child.assert_not_called()
+
+    def test_proc_construction_failure_still_closes_held_pidfd_and_own_child(self):
+        child = n.OwnedChild()
+        with patch.object(n, 'check_child_supervision'), patch.object(n.os, 'pidfd_open', return_value=44), \
+             patch.object(n, 'bounded', side_effect=ValueError('FAKE_PRIVATE_ERROR')), patch.object(n, 'wait_ready'), \
+             patch.object(n.os, 'waitpid', return_value=(73, 9)), patch.object(n.os, 'close') as close, \
+             patch.object(n.signal, 'pidfd_send_signal') as signal_child:
+            with self.assertRaises(ValueError):
+                child.adopt(73)
+            child.close(); child.close()
+        close.assert_called_once_with(44); signal_child.assert_called_once_with(44, n.signal.SIGKILL)
+        self.assertTrue(child.reaped); self.assertIsNone(child.fd)
+
+    def test_echild_is_invariant_failure_not_exit_or_second_signal_wait(self):
+        child = self.child()
+        with patch.object(n, 'wait_ready'), patch.object(n.os, 'waitpid', side_effect=ChildProcessError) as wait, \
+             patch.object(n.os, 'close') as close, patch.object(n.signal, 'pidfd_send_signal') as signal_child:
+            with self.assertRaisesRegex(n.Refused, '^owned-worker-supervision-uncertain$'):
+                child.wait()
+            with self.assertRaisesRegex(n.Refused, '^owned-worker-supervision-uncertain$'):
+                child.close()
+            child.close()
+        self.assertTrue(child.lost); self.assertFalse(child.reaped)
+        wait.assert_called_once_with(73, os.WNOHANG); close.assert_called_once_with(44)
+        signal_child.assert_not_called()
+
+    def test_signal_denial_still_attempts_status_and_fd_closure_without_fallback(self):
+        child = self.child()
+        with patch.object(n, 'wait_ready'), patch.object(n.os, 'waitpid', return_value=(73, 9)) as wait, \
+             patch.object(n.signal, 'pidfd_send_signal', side_effect=PermissionError) as signal_child, \
+             patch.object(n.os, 'kill') as kill, patch.object(n.os, 'close') as close:
+            with self.assertRaisesRegex(n.Refused, '^owned-worker-supervision-uncertain$'):
+                child.close()
+        self.assertTrue(child.reaped); self.assertTrue(child.uncertain)
+        wait.assert_called_once(); signal_child.assert_called_once_with(44, n.signal.SIGKILL)
+        close.assert_called_once_with(44); kill.assert_not_called()
+
+    def test_pidfd_esrch_is_not_absence_without_consumed_status(self):
+        child = self.child()
+        with patch.object(n, 'wait_ready', side_effect=n.Refused('owned-worker-supervision-uncertain')), \
+             patch.object(n.signal, 'pidfd_send_signal', side_effect=ProcessLookupError), \
+             patch.object(n.os, 'waitpid') as wait, patch.object(n.os, 'close') as close:
+            with self.assertRaisesRegex(n.Refused, '^owned-worker-supervision-uncertain$'):
+                child.close()
+        self.assertFalse(child.reaped); self.assertTrue(child.uncertain)
+        wait.assert_not_called(); close.assert_called_once_with(44)
+
+    def test_all_local_closures_and_child_attempted_despite_multiple_errors(self):
+        resources = n.LocalResources(3); resources.fds = [10, 11, 12]
+        closed = []
+        def close(fd):
+            closed.append(fd)
+            if fd == 11:
+                raise OSError('FAKE_CLOSE')
+        with patch.object(n.os, 'close', side_effect=close), \
+             patch.object(resources.child, 'close', side_effect=ValueError('FAKE_CHILD')) as child_close:
+            with self.assertRaisesRegex(n.Refused, '^owned-worker-supervision-uncertain$'):
+                resources.__exit__(None, None, None)
+        self.assertEqual(closed, [12, 11, 10]); self.assertEqual(resources.fds, [None] * 3)
+        child_close.assert_called_once()
+
+    def test_uncertain_fd_close_detaches_slot_before_retry_is_possible(self):
+        resources = n.LocalResources(1); resources.fds[0] = 10
+        with patch.object(n.os, 'close', side_effect=OSError) as close:
+            with self.assertRaises(OSError):
+                resources.close_fd(0)
+            resources.close_fd(0)
+        close.assert_called_once_with(10)
+        self.assertIsNone(resources.fds[0])
+
+    def test_closed_standard_fds_promote_sources_above2_without_clobber(self):
+        resources = n.LocalResources(4); resources.fds = [0, 1, 2, None]
+        with patch.object(n.fcntl, 'fcntl', side_effect=[11, 12]) as duplicate, patch.object(n.os, 'close') as close:
+            resources.above_stdio(1, 3); resources.above_stdio(2, 3)
+        self.assertEqual(resources.fds, [0, 11, 12, None])
+        self.assertEqual([c.args for c in duplicate.call_args_list], [(1, n.fcntl.F_DUPFD_CLOEXEC, 3), (2, n.fcntl.F_DUPFD_CLOEXEC, 3)])
+        self.assertEqual([c.args for c in close.call_args_list], [(1,), (2,)])
+
+    def test_stdio_promotion_failure_keeps_original_in_cleanup_scope(self):
+        resources = n.LocalResources(4); resources.fds[1] = 1
+        with patch.object(n.fcntl, 'fcntl', side_effect=OSError), patch.object(n.os, 'close') as close:
+            with self.assertRaises(OSError):
+                resources.above_stdio(1, 3)
+            resources.__exit__(None, None, None)
+        close.assert_called_once_with(1)
+
+    def exec_fixture(self, close_result=0, writer=11, null=12):
+        class ChildExit(BaseException): pass
+        from unittest.mock import Mock
+        close_range = Mock(return_value=close_result)
+        args = ['show', n.MANAGER, '--property=' + ','.join(n.MANAGER_PROPERTIES)]
+        with patch.object(n.os, 'dup2') as duplicate, patch.object(n.signal, 'signal') as disposition, \
+             patch.object(n.os, 'execve', side_effect=OSError('FAKE_EXEC')) as execute, \
+             patch.object(n.os, '_exit', side_effect=ChildExit) as exit_child:
+            with self.assertRaises(ChildExit):
+                n.metadata_exec(args, writer, null, close_range)
+        exit_child.assert_called_once_with(2)
+        return args, close_range, duplicate, disposition, execute
+
+    def test_fixed_metadata_child_exec_stdio_signals_env_and_close_range(self):
+        args, close_range, duplicate, disposition, execute = self.exec_fixture()
+        self.assertEqual([c.args for c in duplicate.call_args_list], [(12, 0), (11, 1), (12, 2)])
+        self.assertTrue(all(c.kwargs == {'inheritable': True} for c in duplicate.call_args_list))
+        self.assertIn((n.signal.SIGPIPE, n.signal.SIG_DFL), [c.args for c in disposition.call_args_list])
+        close_range.assert_called_once_with(3, 0xffffffff, 0)
+        execute.assert_called_once_with('/usr/bin/systemctl', ['/usr/bin/systemctl', '--no-pager', *args],
+            {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', 'SYSTEMD_PAGER': 'cat', 'SYSTEMD_COLORS': '0'})
+
+    def test_metadata_child_close_range_failure_never_executes_with_inherited_fds(self):
+        _, close_range, _, _, execute = self.exec_fixture(close_result=-1)
+        close_range.assert_called_once(); execute.assert_not_called()
+
+    def test_metadata_child_bad_stdio_sources_fail_before_dup_or_exec(self):
+        _, close_range, duplicate, _, execute = self.exec_fixture(writer=1)
+        close_range.assert_not_called(); duplicate.assert_not_called(); execute.assert_not_called()
+
+    def test_missing_close_range_symbol_fails_closed_without_spawn(self):
+        with patch.object(n.ctypes, 'CDLL', return_value=object()):
+            with self.assertRaisesRegex(n.Refused, '^metadata-close-range-unavailable$'):
+                n.metadata_close_range()
+
+    def test_metadata_parent_normal_eintr_eagain_eof_single_reaper(self):
+        mocks = self.metadata_fixture([InterruptedError(), BlockingIOError(), b'fixed\n', b''])
+        self.assertEqual(self.metadata(), b'fixed\n')
+        mocks['waitpid'].assert_called_once_with(73, os.WNOHANG)
+        mocks['set_blocking'].assert_called_once_with(10, False)
+        mocks['execve'].assert_not_called(); mocks['kill'].assert_not_called(); mocks['pidfd_send_signal'].assert_not_called()
+        self.assertEqual([c.args[0] for c in mocks['close'].call_args_list], [11, 20, 10, 44])
+
+    def test_metadata_overflow_discards_response_and_uses_held_pidfd_cleanup(self):
+        mocks = self.metadata_fixture([b'x' * 4096] * 16 + [b'x'])
+        with self.assertRaisesRegex(n.Refused, '^metadata-limit$'):
+            self.metadata()
+        mocks['pidfd_send_signal'].assert_called_once_with(44, n.signal.SIGKILL)
+        mocks['kill'].assert_not_called(); mocks['waitpid'].assert_called_once()
+
+    def test_metadata_nonzero_status_already_reaped_before_failure_cleanup(self):
+        mocks = self.metadata_fixture(status=7 << 8)
+        with self.assertRaisesRegex(n.Refused, '^owned-worker-failed$'):
+            self.metadata()
+        mocks['pidfd_send_signal'].assert_not_called(); mocks['waitpid'].assert_called_once()
+
+    def test_metadata_timeout_cleans_only_own_pidfd_and_retains_failure(self):
+        mocks = self.metadata_fixture(status=9)
+        mocks['wait_ready'].side_effect = [n.Refused('metadata-timeout'), None]
+        with self.assertRaisesRegex(n.Refused, '^metadata-timeout$'):
+            self.metadata()
+        mocks['pidfd_send_signal'].assert_called_once_with(44, n.signal.SIGKILL)
+        mocks['kill'].assert_not_called()
+
+    def test_metadata_pidfd_acquisition_failure_is_represented_and_never_pid_signalled(self):
+        mocks = self.metadata_fixture()
+        mocks['pidfd_open'].side_effect = OSError('FAKE_PIDFD')
+        with self.assertRaises(OSError):
+            self.metadata()
+        mocks['waitpid'].assert_called_once_with(73, os.WNOHANG)
+        mocks['pidfd_send_signal'].assert_not_called(); mocks['kill'].assert_not_called()
+        self.assertEqual(sorted(c.args[0] for c in mocks['close'].call_args_list), [10, 11, 20])
+
+    def test_metadata_pre_spawn_open_failure_closes_pipe_and_spawns_nothing(self):
+        mocks = self.metadata_fixture(); mocks['open'].side_effect = OSError('FAKE_DEVNULL')
+        with self.assertRaises(OSError):
+            self.metadata()
+        mocks['fork'].assert_not_called(); mocks['waitpid'].assert_not_called()
+        self.assertEqual([c.args[0] for c in mocks['close'].call_args_list], [11, 10])
+
+    def test_metadata_fork_failure_closes_all_preallocated_resources(self):
+        mocks = self.metadata_fixture(); mocks['fork'].side_effect = OSError('FAKE_FORK')
+        with self.assertRaises(OSError):
+            self.metadata()
+        mocks['waitpid'].assert_not_called(); mocks['pidfd_send_signal'].assert_not_called()
+        self.assertEqual([c.args[0] for c in mocks['close'].call_args_list], [20, 11, 10])
+
+    def test_creator_second_pipe_failure_closes_first_pair_before_any_claim_or_fork(self):
+        backend = n.KernelBackend.__new__(n.KernelBackend)
+        claims = []
+        with patch.object(n.os, 'pipe2', side_effect=[(10, 11), OSError('FAKE_PIPE')]), \
+             patch.object(n.os, 'close') as close, patch.object(n.os, 'fork') as fork:
+            with self.assertRaises(OSError):
+                backend.create_projection(None, None, {'anchor': {'result': {}}}, {}, claims.append, lambda: None)
+        self.assertEqual([c.args for c in close.call_args_list], [(11,), (10,)])
+        fork.assert_not_called(); self.assertFalse(claims)
+
+    def test_holder_acl_and_first_claim_failure_close_run_fd(self):
+        backend = n.KernelBackend.__new__(n.KernelBackend)
+        for fail_acl in (True, False):
+            with self.subTest(acl=fail_acl), patch.object(n.os.path, 'lexists', return_value=False), \
+                 patch.object(n, 'root_ancestors'), patch.object(n.os, 'open', return_value=10), \
+                 patch.object(n, 'no_default_acl', side_effect=OSError('FAKE_ACL') if fail_acl else None), \
+                 patch.object(n.os, 'close') as close, patch.object(n.os, 'mkdir') as mkdir:
+                def claim(_): raise OSError('FAKE_CLAIM')
+                with self.assertRaises(OSError):
+                    backend.persist_namespace(None, {'anchor': {'result': {}}}, claim=claim, recheck=lambda: None)
+            close.assert_called_once_with(10); mkdir.assert_not_called()
+
+    def test_creator_and_consumer_proc_failure_keep_child_visible_to_cleanup(self):
+        backend = n.KernelBackend.__new__(n.KernelBackend)
+        calls = (lambda: backend.create_projection(None, None, {'anchor': {'result': {}}}, {}, lambda _: None, lambda: None),
+                 lambda: backend.readonly_consumer(None, None, None))
+        for call in calls:
+            with patch.object(n.os, 'pipe2', side_effect=[(10, 11), (12, 13)]), \
+                 patch.object(n, 'establish_child_supervision'), patch.object(n, 'check_child_supervision'), \
+                 patch.object(n.os, 'fork', return_value=73), patch.object(n.os, 'pidfd_open', return_value=44), \
+                 patch.object(n, 'bounded', side_effect=ValueError('FAKE_PROC')), patch.object(n, 'wait_ready'), \
+                 patch.object(n.os, 'waitpid', return_value=(73, 9)) as wait, \
+                 patch.object(n.signal, 'pidfd_send_signal') as signal_child, patch.object(n.os, 'close') as close:
+                with self.assertRaises(ValueError): call()
+            wait.assert_called_once_with(73, os.WNOHANG); signal_child.assert_called_once_with(44, n.signal.SIGKILL)
+            self.assertEqual(len({c.args[0] for c in close.call_args_list}), close.call_count)
+            self.assertIn(44, [c.args[0] for c in close.call_args_list])
+
+    def test_partial_write_eintr_eagain_retains_same_fixed_frame_and_deadline(self):
+        with patch.object(n.os, 'get_blocking', return_value=False), patch.object(n.time, 'monotonic', return_value=0), \
+             patch.object(n.os, 'write', side_effect=[InterruptedError(), 2, BlockingIOError(), 6]) as write, \
+             patch.object(n, 'wait_ready') as wait:
+            n.send_frame(11, {'a': 1})  # Exactly8 bytes including newline.
+        self.assertEqual([c.args[1] for c in write.call_args_list], [b'{"a":1}\n', b'{"a":1}\n', b'a":1}\n', b'a":1}\n'])
+        wait.assert_called_once_with(11, n.selectors.EVENT_WRITE, 15, 'worker-write-timeout')
+
+    def test_partial_progress_and_interrupts_cannot_reset_send_deadline(self):
+        with patch.object(n.os, 'get_blocking', return_value=False), \
+             patch.object(n.time, 'monotonic', side_effect=[0, 0, 8, 16]), \
+             patch.object(n.os, 'write', side_effect=[1, InterruptedError()]) as write:
+            with self.assertRaisesRegex(n.Refused, '^worker-write-timeout$'):
+                n.send_frame(11, {'a': 1})
+        self.assertEqual(write.call_count, 2)
+
+    def test_zero_write_broken_peer_and_blocking_fd_have_fixed_refusals(self):
+        for result, reason in ((0, 'worker-write'), (BrokenPipeError(), 'worker-write-unavailable')):
+            with patch.object(n.os, 'get_blocking', return_value=False), \
+                 patch.object(n.os, 'write', side_effect=result if isinstance(result, BaseException) else None, return_value=result):
+                with self.assertRaisesRegex(n.Refused, '^' + reason + '$'):
+                    n.send_frame(11, {'a': 1})
+        with patch.object(n.os, 'get_blocking', return_value=True), patch.object(n.os, 'write') as write:
+            with self.assertRaisesRegex(n.Refused, '^worker-nonblocking-required$'):
+                n.send_frame(11, {'a': 1})
+        write.assert_not_called()
+
+    def test_spurious_readiness_and_eintr_do_not_extend_selector_deadline(self):
+        with patch.object(n.time, 'monotonic', side_effect=[0, 1, 16]), \
+             patch.object(n.selectors, 'DefaultSelector') as selector:
+            selector.return_value.__enter__.return_value.select.side_effect = [InterruptedError(), []]
+            with self.assertRaisesRegex(n.Refused, '^worker-write-timeout$'):
+                n.wait_ready(11, n.selectors.EVENT_WRITE, 15, 'worker-write-timeout')
+        self.assertEqual(selector.return_value.__enter__.return_value.select.call_count, 2)
+
+    def test_receive_retries_nonblocking_interrupts_and_keeps_frame_grammar(self):
+        with patch.object(n.os, 'get_blocking', return_value=False), patch.object(n, 'wait_ready') as wait, \
+             patch.object(n.time, 'monotonic', return_value=0), \
+             patch.object(n.os, 'read', side_effect=[InterruptedError(), BlockingIOError(), b'{"a":', b'1}\n']):
+            self.assertEqual(n.receive_frame(10), {'a': 1})
+        self.assertTrue(all(c.args[2] == 15 for c in wait.call_args_list))
+        for raw, reason in ((b'', 'worker-closed'), (b'{}\n{}\n', 'worker-frame-limit'), (b'x' * 8193, 'worker-frame-limit')):
+            with patch.object(n.os, 'get_blocking', return_value=False), patch.object(n, 'wait_ready'), \
+                 patch.object(n.os, 'read', return_value=raw):
+                with self.assertRaisesRegex(n.Refused, '^' + reason + '$'):
+                    n.receive_frame(10)
+
+    def test_actual_own_full_nonblocking_pipe_eagain_with_mocked_deadline_not_native_backend(self):
+        # Real ordinary-user pipe fill/write EAGAIN only. Deadline adapter mocked;
+        # not whole-backend kernel/IPC/fault qualification or an actual child signal.
+        self.assertNotEqual(os.geteuid(), 0)
+        with n.LocalResources(2) as resources:
+            resources.pipe(0)
+            reader, writer = resources.fds
+            total = 0
+            while True:
+                try:
+                    total += os.write(writer, b'x' * 4096)
+                except BlockingIOError:
+                    break
+                self.assertLessEqual(total, 1024**2)
+            self.assertGreater(total, 0)
+            with patch.object(n, 'wait_ready', side_effect=n.Refused('worker-write-timeout')) as wait:
+                with self.assertRaisesRegex(n.Refused, '^worker-write-timeout$'):
+                    n.send_frame(writer, {'a': 1})
+            self.assertEqual(wait.call_args.args[:2], (writer, n.selectors.EVENT_WRITE))
+            self.assertFalse(os.get_blocking(reader)); self.assertFalse(os.get_blocking(writer))
 
 
 if __name__ == '__main__':
