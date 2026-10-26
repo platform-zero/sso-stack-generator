@@ -100,13 +100,17 @@ class Catalog:
             for item in declarations:
                 fields(item, {"id", "runtime", "requires"}, {"image", "mounts", "endpoints",
                        "probes", "resources", "command", "description", "environment",
-                       "networks", "lifecycle", "entrypoint"})
+                       "networks", "lifecycle", "entrypoint", "kind", "relay"})
                 name = identifier(item["id"])
                 if name in self.services:
                     raise ContractError("duplicate service owner")
                 runtime = item["runtime"]
                 if runtime not in ("rootless", "rootful", "test"):
                     raise ContractError("invalid runtime")
+                if item.get('kind', 'container') not in ('container', 'http-socket-relay'):
+                    raise ContractError('unsupported service executor')
+                if item.get('kind', 'container') == 'container' and 'relay' in item:
+                    raise ContractError('relay fields require the closed Host builtin')
                 image = item.get("image")
                 if image is not None and (not isinstance(image, str) or not IMAGE.fullmatch(image)):
                     raise ContractError("image must use immutable sha256 digest")
@@ -129,6 +133,10 @@ class Catalog:
             for edge in service.requires:
                 if edge.service not in self.services:
                     raise ContractError("missing dependency provider")
+        for service in self.services.values():
+            if service.declaration.get('kind') == 'http-socket-relay':
+                from .socketrelay import validate
+                validate(self, service)
         # Validate the entire catalog, not just the next target's reachable graph.
         self._order(set(self.services))
 

@@ -71,6 +71,10 @@ def render(catalog: Catalog, targets: list[str]) -> tuple[dict, dict[str, str]]:
     for name in plan["services"]:
         service = catalog.services[name]
         declaration = service.declaration
+        if declaration.get('kind') == 'http-socket-relay':
+            from .socketrelay import render as render_relay
+            result.update(render_relay(catalog, service))
+            continue
         if not service.image:
             raise ContractError("build requires pinned image for every selected service")
         spec = probe_spec(service)
@@ -148,6 +152,18 @@ def render(catalog: Catalog, targets: list[str]) -> tuple[dict, dict[str, str]]:
                     + _runtime_globals(service.runtime)
                     + f"VolumeName={volume}\nLabel=io.platform-zero.managed=v2\n")
                 lines.append("Volume=" + volume + '.volume:' + target + (':ro' if readonly else ''))
+            elif mount['kind'] == 'upstream' and readonly:
+                from .socketrelay import KIND, directory
+                provider = catalog.services.get(source)
+                if (service.runtime != 'rootful' or provider is None
+                        or provider.declaration.get('kind') != KIND
+                        or not any(edge.service == source and edge.kind in ('order', 'ready', 'provision')
+                                   for edge in service.requires)
+                        or target != '/run/p0/upstreams/' + source):
+                    raise ContractError('upstream socket mount requires exact declared relay and bounded target')
+                # --mount fails if the approved source is absent; -v can create
+                # a host directory and must not be used for this authority path.
+                lines.append('Mount=type=bind,source=' + directory(source) + ',destination=' + target + ',ro')
             elif mount["kind"] == "secret" and readonly:
                 custody = ''
                 if 'uid' in mount or 'gid' in mount:
