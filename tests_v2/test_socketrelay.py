@@ -43,10 +43,13 @@ class SocketRelayTests(unittest.TestCase):
         self.assertNotIn('DynamicUser=true', unit)
         self.assertNotIn('[Install]', unit)
         self.assertIn('SocketMode=0600', files['systemd/rootful/p0-v2-app-upstream.socket'])
+        self.assertIn('SocketUser=0\nSocketGroup=0\n', files['systemd/rootful/p0-v2-app-upstream.socket'])
+        self.assertNotIn('SocketUser=p0-runtime', files['systemd/rootful/p0-v2-app-upstream.socket'])
         edge = files['quadlet/rootful/p0-v2-edge.container']
         self.assertIn('Mount=type=bind,source=/run/p0-v2-upstreams/app-upstream,destination=/run/p0/upstreams/app-upstream,ro', edge)
         self.assertNotIn('Volume=/run/', edge)
         self.assertNotIn('Network=host', edge)
+        self.assertIn('DropCapability=all', edge)
 
     def test_no_extra_builtin_fields_or_arbitrary_executor(self):
         for extra in ({'command':['/bin/sh']},{'image':IMAGE},{'environment':{'PATH':'/tmp'}},

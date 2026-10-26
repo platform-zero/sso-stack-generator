@@ -35,6 +35,7 @@ class RootfulStoreRenderTests(unittest.TestCase):
                 with self.subTest(runtime=runtime, name=name):
                     self.assertNotIn('GlobalArgs=', body)
                     self.assertNotIn('/mnt/stack/p0-v2/rootful', body)
+                    self.assertNotIn('DropCapability=', body)
 
     def test_system_manager_names_are_reserved_and_rootless_names_unchanged(self):
         for runtime, prefix in (('rootful', 'p0-v2-'), ('rootless', 'p0-'), ('test', 'p0-')):
@@ -72,4 +73,5 @@ class RootfulStoreRenderTests(unittest.TestCase):
             self.assertIn('p0-v2-network-private', result.stdout)
             self.assertIn('p0-v2-edge-data', result.stdout)
             self.assertIn('p0-v2-edge.service', result.stdout)
+            self.assertRegex(result.stdout, r'--cap-drop(?:=| )all')
             self.assertIn('VolumeName=p0-edge-data', files['quadlet/rootful/p0-v2-edge-data.volume'])

@@ -77,7 +77,7 @@ def render(catalog, service):
     prefix = '# Generated closed P0 HTTP socket relay; no auto-start.\n'
     socket = (prefix + '[Unit]\nDescription=P0 private upstream listener\n\n[Socket]\n'
               + f'ListenStream={directory(service.id)}/http.sock\nService={name}.service\n'
-              + 'SocketUser=p0-runtime\nSocketGroup=p0-runtime\nSocketMode=0600\n'
+              + 'SocketUser=0\nSocketGroup=0\nSocketMode=0600\n'
               + 'DirectoryMode=0710\nRemoveOnStop=true\n')
     host = f'[{address}]' if address.version == 6 else str(address)
     unit = (prefix + '[Unit]\nDescription=P0 fixed upstream forwarding\n\n[Service]\n'

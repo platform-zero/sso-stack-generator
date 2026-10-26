@@ -53,9 +53,12 @@ Before activation, an independently reviewed Root authority must:
 
 - Validate immutable graph/unit supply and current private namespace/data custody.
 - Verify the exact native upstream container/port ownership and real readiness.
-- Create **only fresh** approved socket directories, Root-owned with GID of
-  `p0-runtime` and mode0710, so that account can traverse known names but model
-  tools running mapped UID1000 cannot. Never repair a foreign/existing directory.
+- Create **only fresh** approved socket directories, Host Root0:G0 mode0710.
+  Socket ownership is Host Root0:G0 mode0600 for the Rootful namespaceUID0
+  consumer, **not** the proxy's UID1004. The proxy receives an already-open
+  activation FD and needs neither pathname access nor directory ownership.
+  Never repair foreign/existing directories or grant DAC override/wider modes.
+  Native systemd auto-parent creation remains a separate qualification gate.
 - Validate native binary/platform compatibility, then install the exact ordinary
   Root units through its direct-systemd path, not the Quadlet user installer.
 - Explicitly start the listener socket, validate ownership/mode0600 and native
@@ -68,5 +71,17 @@ Source tests include an actual local unprivileged native socket-proxy process,
 synthetic HTTP backend and genuine socket-activation FD. That proves basic Unix
 forwarding only, **not** installed systemd, mapped UID/cgroup isolation, container
 bind custody, ingress compatibility, complete routing or SSO/revocation.
+Subsequent actual empty Root fixtures qualify a narrower kernel contract:
+`relay-socket-dac-native-06.json` proves a Host UID0 all-caps-zero/noNewPriv client
+is denied a UID1004/0600 socket but can connect Root0/0600. Native09 independently
+observes the fixed OS proxy's actual UID/GID1004/all-caps-zero/executable and
+proves Root0/0600 activation-FD forwarding in Root0:G0/0710 to a capless Root0
+synthetic HTTP client, followed by clean idle exit/exact fixture removal.
+Initial07/08 fixture umask failure remains;09 explicitly chmods only its newly
+created empty directory. No real namespace/store/service/credentials touched.
+This is **not** installed systemd/container forwarding. New Rootful container
+source uses `DropCapability=all` rather than relying on default DAC override;
+Rootless profiles and existing installations are unchanged. Actual required
+port/syscall behavior must qualify without a broad capability fallback.
 Private bridge/IPAM/TLS and any needed return route remain separate explicit
 engineering work. No container Host networking or administrative socket is used.

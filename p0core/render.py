@@ -92,7 +92,9 @@ def render(catalog: Catalog, targets: list[str]) -> tuple[dict, dict[str, str]]:
         lines += ["", "[Container]", f"Image={service.image}",
                   f"ContainerName=p0-{name}", "NoNewPrivileges=true"]
         if service.runtime == 'rootful':
-            lines.append('GlobalArgs=' + ROOTFUL_GLOBAL_ARGS)
+            # New Rootful publication is not installed yet. Require least
+            # privilege; never rely on default DAC override for upstream access.
+            lines += ['GlobalArgs=' + ROOTFUL_GLOBAL_ARGS, 'DropCapability=all']
         lines += ["Pull=never", "Label=io.platform-zero.managed=v2", f"Label=io.platform-zero.service={name}"]
         environment = declaration.get("environment", {})
         if not isinstance(environment, dict):
