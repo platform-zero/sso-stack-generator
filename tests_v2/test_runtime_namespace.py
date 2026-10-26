@@ -44,9 +44,9 @@ def observations(expected, pinned=True):
 
 def marker_record(expected, obs, state='pinned'):
     own = next((m for m in obs['mounts'] if m['target'] == str(n.TARGET)), None)
-    return seal({'version': 1, 'state': state, 'owner': 'a' * 32, 'evidenceSha256': 'b' * 64,
+    return seal({'version': 2, 'state': state, 'owner': 'a' * 32, 'evidenceSha256': 'b' * 64,
                  'namespace': dict(expected), 'bootId': obs['bootId'], 'mountNamespace': dict(obs['mountNamespace']),
-                 'mount': copy.deepcopy(own)})
+                 'mount': copy.deepcopy(own), 'cloneMountId': own['id'] if own else None})
 
 
 class MemoryMarker:
@@ -75,25 +75,41 @@ class FakeNative:
         self.crash_after_private = False
         self.next_mount_id = 101
 
-    def stopped(self, proof, fd):
+    def stopped(self, proof, fd, *, record, observation):
         n.require(not self.fail_stopped, 'runtime-unit-not-stopped')
 
-    def bind(self, fd):
+    def pin_namespace(self, fd, expected, *, claim_clone, before_attach, verify_attached):
         assert self.marker.record['state'] == 'claimed'
-        self.effects.append(('bind', fd))
-        self.obs['mounts'] = observations(self.expected)['mounts']
-        self.obs['mounts'][-1]['id'] = self.next_mount_id
-        self.obs['mounts'][-1]['optional'] = ['shared:7']
-        if self.crash_after_bind:
-            self.crash_after_bind = False
-            raise RuntimeError('SYNTHETIC_NATIVE_ERROR')
+        self.source_fd = fd
+        tree = os.dup(fd)  # Private fixture FD, NOT an actual mount.
+        try:
+            self.effects.append(('clone', tree))
+            claim_clone(self.next_mount_id)
+            self.effects.append(('private-detached', tree))
+            before_attach()
+            assert self.marker.record['cloneMountId'] == self.next_mount_id
+            self.effects.append(('attach', tree))
+            self.obs['mounts'] = observations(self.expected)['mounts']
+            self.obs['mounts'][-1]['id'] = self.next_mount_id
+            self.obs['mounts'][-1]['optional'] = ['shared:7']
+            verify_attached(self.next_mount_id, require_private=False)
+            if self.crash_after_bind:
+                self.crash_after_bind = False
+                raise RuntimeError('SYNTHETIC_NATIVE_ERROR')
+            self.effects.append(('private-attached', tree))
+            self.obs['mounts'][-1]['optional'] = []
+            verify_attached(self.next_mount_id, require_private=True)
+            if self.crash_after_private:
+                self.crash_after_private = False
+                raise RuntimeError('SYNTHETIC_PRIVATE_EFFECT_CRASH')
+        finally:
+            os.close(tree)
 
-    def make_private(self, fd):
-        self.effects.append(('private', fd))
+    def privatize_owned(self, fd, expected, mount_id, *, verify_attached):
+        verify_attached(mount_id, require_private=False)
+        self.effects.append(('private-repair', fd))
         self.obs['mounts'][-1]['optional'] = []
-        if self.crash_after_private:
-            self.crash_after_private = False
-            raise RuntimeError('SYNTHETIC_PRIVATE_EFFECT_CRASH')
+        verify_attached(mount_id, require_private=True)
 
 
 class NamespaceTests(unittest.TestCase):
@@ -133,6 +149,15 @@ class NamespaceTests(unittest.TestCase):
 
     def invalid_cases(self):
         cases = []
+        record = copy.deepcopy(self.record)
+        record['cloneMountId'] += 1
+        seal(record)
+        cases.append(('wrong-preclaimed-clone', record, self.obs))
+        record = copy.deepcopy(self.record)
+        record['version'] = 1
+        record.pop('cloneMountId')
+        seal(record)
+        cases.append(('legacy-marker-version', record, self.obs))
         record = copy.deepcopy(self.record)
         record['owner'] = 'FORGED'
         cases.append(('forged', record, self.obs))
@@ -216,7 +241,7 @@ class NamespaceTests(unittest.TestCase):
         intent = {'version': 1, 'classification': 'ordinary-service', 'resources': [{'name': 'ordinary', 'actors': ['rootful']}]}
         with patch.object(c, 'pinned_namespace', side_effect=gate), patch.object(c, 'directory'), \
              patch.object(c, 'trusted_binary'), patch.object(c, 'reserves'), \
-             patch.object(c.Path, 'lstat', return_value=types.SimpleNamespace(st_gid=0)), \
+             patch.object(c.Path, 'lstat', return_value=types.SimpleNamespace(st_gid=0, st_uid=0, st_dev=1, st_ino=2, st_mode=stat.S_IFDIR | 0o700)), \
              patch.object(native, 'call', side_effect=call):
             try:
                 result = c.supply(intent, 'd' * 64, custody, native, 'apply')
@@ -240,8 +265,11 @@ class NamespaceTests(unittest.TestCase):
         marker = MemoryMarker()
         native = FakeNative(self.expected, obs, marker)
         result = self.run_pin(marker, native, obs)
-        self.assertEqual([e[0] for e in native.effects], ['bind', 'private'])
-        self.assertNotEqual(native.effects[0][1], native.effects[1][1])
+        self.assertEqual([e[0] for e in native.effects], ['clone', 'private-detached', 'attach', 'private-attached'])
+        self.assertNotEqual(native.effects[0][1], native.source_fd)
+        self.assertTrue(all(e[1] == native.effects[0][1] for e in native.effects))
+        self.assertEqual(marker.writes[1]['cloneMountId'], 101)
+        self.assertIsNone(marker.writes[1]['mount'])
         self.assertEqual(marker.writes[0]['state'], 'claimed')
         self.assertIsNone(marker.writes[0]['mount'])
         self.assertEqual(marker.writes[-1]['state'], 'pinned')
@@ -281,7 +309,7 @@ class NamespaceTests(unittest.TestCase):
         with self.assertRaises(n.Refused):
             self.run_pin(marker, native, obs, 'apply')
         result = self.run_pin(marker, native, obs, 'resume')
-        self.assertEqual([e[0] for e in native.effects], ['bind', 'private'])
+        self.assertEqual([e[0] for e in native.effects], ['clone', 'private-detached', 'attach', 'private-repair'])
         self.assertEqual(result['state'], 'pinned')
 
     def test_crash_after_private_reconciles_only_same_mount_with_removed_tags(self):
@@ -292,11 +320,25 @@ class NamespaceTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.run_pin(marker, native, obs)
         self.assertEqual(marker.record['state'], 'claimed')
-        self.assertEqual(marker.record['mount']['optional'], ['shared:7'])
+        self.assertIsNone(marker.record['mount'])
+        self.assertEqual(marker.record['cloneMountId'], 101)
         self.assertEqual(obs['mounts'][-1]['optional'], [])
         self.run_pin(marker, native, obs, 'resume')
         self.assertEqual(marker.record['state'], 'pinned')
-        self.assertEqual([e[0] for e in native.effects], ['bind', 'private', 'private'])
+        self.assertEqual([e[0] for e in native.effects], ['clone', 'private-detached', 'attach', 'private-attached'])
+
+    def test_absent_preclaimed_clone_is_not_blindly_reallocated(self):
+        obs = observations(self.expected, False)
+        record = marker_record(self.expected, obs, 'claimed')
+        record['cloneMountId'] = 101
+        seal(record)
+        marker = MemoryMarker(record)
+        native = FakeNative(self.expected, obs, marker)
+        with self.assertRaisesRegex(n.Refused, '^preclaimed-clone-absent-review-required$'):
+            self.run_pin(marker, native, obs, 'resume')
+        self.assertFalse(marker.writes)
+        self.assertFalse(native.effects)
+        self.assertEqual(marker.record, record)
 
     def test_no_reserve_prevents_marker_or_mount_effect(self):
         obs = observations(self.expected, False)
@@ -439,16 +481,19 @@ class NamespaceTests(unittest.TestCase):
 
     def test_mount_native_calls_are_fixed_fd_anchored_not_caller_paths(self):
         native = n.Native(self.entry)
-        with patch.object(native, 'call') as call:
-            native.bind(7)
-            native.make_private(8)
-        self.assertEqual(call.call_args_list[0].args[0], ['/usr/bin/mount', '--no-canonicalize', '--bind',
-                                                        '/proc/self/fd/7', '/proc/self/fd/7'])
-        self.assertEqual(call.call_args_list[0].kwargs['pass_fds'], (7,))
-        self.assertEqual(call.call_args_list[1].args[0], ['/usr/bin/mount', '--no-canonicalize', '--make-private', '/proc/self/fd/8'])
-        self.assertIn('/proc/self/fd/7/rootful/engine', native.engine('rootful', 7))
-        self.assertIn(str(n.RUNFUL), native.engine('rootful', 7))
-        self.assertIn(str(n.NETWORK), native.engine('rootful', 7))
+        claim, before, verify = object(), object(), object()
+        with patch.object(n, 'modern_private_pin') as pin, patch.object(n, 'modern_privatize_owned') as repair, \
+             patch.object(native, 'call') as call:
+            native.pin_namespace(7, self.expected, claim_clone=claim, before_attach=before, verify_attached=verify)
+            native.privatize_owned(8, self.expected, 101, verify_attached=verify)
+        call.assert_not_called()
+        pin.assert_called_once_with(7, self.expected, claim_clone=claim, before_attach=before, verify_attached=verify)
+        repair.assert_called_once_with(8, self.expected, 101, verify_attached=verify)
+        self.assertIn(str(n.ROOTFUL), native.engine('rootful'))
+        self.assertIn(str(n.ROOTLESS), native.engine('rootless'))
+        self.assertNotIn('/proc/self/fd/', repr(native.engine('rootful')) + repr(native.engine('rootless')))
+        self.assertIn(str(n.RUNFUL), native.engine('rootful'))
+        self.assertIn(str(n.NETWORK), native.engine('rootful'))
 
     def test_real_marker_atomic_cas_lock_and_readonly_absence(self):
         real_directory, real_read = n.strict_directory, n.read_exact
@@ -522,7 +567,10 @@ class NativeStoppedTests(unittest.TestCase):
         self.entry = types.SimpleNamespace(pw_uid=1234, pw_gid=1234)
         self.native = n.Native(self.entry)
         self.source = b'SYNTHETIC QUADLET SOURCE'
-        self.proof = {'units': {'rootless': [{'name': 'p0-prototype.service',
+        self.expected = {'device': os.makedev(8, 1), 'inode': 23, 'filesystemId': 45}
+        self.observation = observations(self.expected)
+        self.record = marker_record(self.expected, self.observation, 'claimed')
+        self.proof = {'namespace': self.expected, 'units': {'rootless': [{'name': 'p0-prototype.service',
                       'sourceSha256': hashlib.sha256(self.source).hexdigest()}], 'rootful': []}}
         self.props = {'LoadState': 'loaded', 'ActiveState': 'inactive', 'MainPID': '0', 'ControlGroup': '', 'Job': '',
                       'SourcePath': str(n.HOME / '.config/containers/systemd/p0-prototype.container'), 'TriggeredBy': ''}
@@ -546,18 +594,21 @@ class NativeStoppedTests(unittest.TestCase):
             return json.dumps(self.containers).encode()
         raise AssertionError('unrecognized fixed API')
 
-    def stopped(self):
+    def stopped(self, *, protected=True, fresh_error=None):
         with patch.object(self.native, 'call', side_effect=self.call), patch.object(n, 'strict_directory'), \
              patch.object(n, 'read_exact', return_value=(self.source, None)), \
-             patch.object(n, 'check_actor_directories'), patch.object(n, 'anchored_engine', return_value=True):
-            self.native.stopped(self.proof, 7)
+             patch.object(n, 'check_actor_directories'), patch.object(n, 'EngineAnchor'), \
+             patch.object(n, 'inventory_authority', return_value=protected), \
+             patch.object(n, 'fresh_rootful', side_effect=fresh_error, return_value=('absent', ())):
+            self.native.stopped(self.proof, 7, record=self.record if protected else None, observation=self.observation)
 
     def test_stopped_owned_units_and_empty_anchored_engines_succeed(self):
         self.stopped()
         engine_calls = [call for call in self.calls if call[0][0] == '/usr/bin/podman']
         self.assertEqual(len(engine_calls), 4)
-        self.assertTrue(all(call[2] == (7,) for call in engine_calls))
-        self.assertTrue(all(call[0][2].startswith('/proc/self/fd/7/') for call in engine_calls))
+        self.assertTrue(all(call[2] == () for call in engine_calls))
+        self.assertEqual({call[0][2] for call in engine_calls}, {str(n.ROOTLESS), str(n.ROOTFUL)})
+        self.assertNotIn('/proc/self/fd/', repr(engine_calls))
         self.assertTrue(all('--all' in call[0] and '--external' in call[0] for call in engine_calls if 'ps' in call[0]))
 
     def test_active_pid_cgroup_job_trigger_and_unknown_unit_refuse(self):
@@ -594,24 +645,317 @@ class NativeStoppedTests(unittest.TestCase):
              patch.object(n.os, 'stat', return_value=types.SimpleNamespace(st_mode=0o755)), \
              patch.object(n.subprocess, 'Popen', return_value=process) as popen:
             with self.assertRaisesRegex(n.Refused, '^native-operation-uncertain$') as refused:
-                self.native.call(['/usr/bin/systemctl', '--user', 'show', 'p0-prototype.service'], 'rootless', (7,))
+                self.native.call(['/usr/bin/systemctl', '--user', 'show', 'p0-prototype.service'], 'rootless')
         args = popen.call_args.args[0]
         self.assertEqual(args[0], '/usr/bin/setpriv')
         self.assertIn('/usr/bin/systemctl', args)
         self.assertIn('--clear-groups', args)
         self.assertIn('--inh-caps=-all', args)
         self.assertIn('--ambient-caps=-all', args)
-        self.assertEqual(popen.call_args.kwargs['pass_fds'], (7,))
+        self.assertEqual(popen.call_args.kwargs['pass_fds'], ())
         self.assertEqual(popen.call_args.kwargs['stderr'], n.subprocess.DEVNULL)
         self.assertEqual(set(popen.call_args.kwargs['env']), {'PATH', 'LC_ALL', 'HOME', 'XDG_RUNTIME_DIR'})
         self.assertNotIn('SYNTHETIC_NATIVE_SENSITIVE_TEXT', str(refused.exception))
         self.assertTrue(output.closed)
+
+    def test_unpinned_only_rootless_canonical_observation_and_fresh_rootful_gate(self):
+        self.stopped(protected=False)
+        engine_calls = [call for call in self.calls if call[0][0] == '/usr/bin/podman']
+        self.assertEqual(len(engine_calls), 2)
+        self.assertTrue(all(call[1] == 'rootless' and call[0][2] == str(n.ROOTLESS) and call[2] == () for call in engine_calls))
+        self.calls.clear()
+        with self.assertRaisesRegex(n.Refused, '^rootful-unpinned-existing-store-unsupported$'):
+            self.stopped(protected=False, fresh_error=n.Refused('rootful-unpinned-existing-store-unsupported'))
+        self.assertFalse(self.calls)
+
+    def test_no_alias_or_inherited_fd_native_api_even_if_canonical_control_would_work(self):
+        with patch.object(n.subprocess, 'Popen') as popen:
+            for args, pass_fds in ((['/usr/bin/podman', '--root', '/proc/self/fd/7/rootless/engine', 'info'], ()),
+                                   (['/usr/bin/podman', '--root', str(n.ROOTLESS), 'info'], (7,))):
+                with self.assertRaisesRegex(n.Refused, '^native-fd-alias-refused$'):
+                    self.native.call(args, 'rootless', pass_fds)
+            popen.assert_not_called()
+        # A canonical-first fake native succeeds; both old FD-number APIs are
+        # discriminated, not silently retried under a different identity.
+        self.stopped(protected=True)
+        self.assertTrue(all('/proc/self/fd/' not in repr(call) for call in self.calls))
+
+    def test_rootful_store_refuses_without_protected_pin_before_any_native(self):
+        with patch.object(n, 'inventory_authority', return_value=False), patch.object(self.native, 'call') as call:
+            with self.assertRaisesRegex(n.Refused, '^rootful-pin-required$'):
+                self.native.observe_empty_engine('rootful', 7, self.proof, None, self.observation)
+            call.assert_not_called()
+
+    def test_future_inactive_native_relay_socket_still_blocks_current_contract(self):
+        original = self.call
+        def relay_files(args, actor='rootful', pass_fds=()):
+            if 'list-unit-files' in args and 'p0-*.socket' in args:
+                return b'p0-future-relay.socket disabled\n'
+            return original(args, actor, pass_fds)
+        self.call = relay_files
+        with self.assertRaisesRegex(n.Refused, '^runtime-triggers-remain$'):
+            self.stopped()
+        self.assertFalse(any(call[0][0] == '/usr/bin/podman' for call in self.calls))
 
     def test_wrong_unit_source_hash_refuses_before_engine_inspection(self):
         self.proof['units']['rootless'][0]['sourceSha256'] = 'f' * 64
         with self.assertRaisesRegex(n.Refused, '^unit-source-binding$'):
             self.stopped()
         self.assertFalse(any(call[0][0] == '/usr/bin/podman' for call in self.calls))
+
+
+class ModernMountAndAuthorityTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='.p0-source03-fixture-', dir=Path.home())
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.root.chmod(0o711)  # Only this new private synthetic fixture inode.
+        self.fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, self.fd)
+        s = os.fstat(self.fd)
+        self.expected = dict(n.identity(s), filesystemId=os.fstatvfs(self.fd).f_fsid)
+        self.entry = types.SimpleNamespace(pw_uid=os.getuid(), pw_gid=os.getgid())
+        self.proof = {'version': 1, 'namespace': self.expected, 'units': {'rootless': [], 'rootful': []}}
+        self.obs = observations(self.expected, False)
+        self.marker = MemoryMarker(marker_record(self.expected, self.obs, 'claimed'))
+        self.events, self.mount_ids, self.set_count = [], {self.fd: 100}, 0
+        real_owned = n.owned_directory_fd
+        self.addCleanup(patch.stopall)
+        patch.object(n, 'owned_directory_fd', side_effect=lambda fd, uid, gid, mode=0o700:
+                     real_owned(fd, os.getuid() if uid == 0 else uid, os.getgid() if gid == 0 else gid, mode)).start()
+        self.actual_mount_api, self.actual_fd_mount_id = n._mount_api, n.fd_mount_id
+        patch.object(n, '_mount_api', return_value=self.api).start()
+        patch.object(n, '_mount_deadline_start').start()
+        patch.object(n, '_mount_deadline_end').start()
+        patch.object(n, 'fd_mount_id', side_effect=lambda fd: self.mount_ids[fd]).start()
+        self.keep_shared = False
+        self.fail_move = False
+        self.fail_open = False
+
+    def api(self, number, *args):
+        # Pure Python fake. No ctypes syscall/CDLL/native mount is executed.
+        if number == n.NR_OPEN_TREE:
+            self.events.append('open-tree')
+            self.assertEqual(args[0].value, self.fd)
+            self.assertEqual(args[1].value, b'')
+            self.assertEqual(args[2].value & n.AT_EMPTY_PATH, n.AT_EMPTY_PATH)
+            self.assertEqual(args[2].value & os.O_CLOEXEC, os.O_CLOEXEC)
+            if self.fail_open:
+                return -1
+            tree = os.dup(self.fd)
+            self.tree = tree
+            self.mount_ids[tree] = 101
+            return tree
+        if number == n.NR_MOUNT_SETATTR:
+            self.events.append('set-private')
+            self.assertEqual(args[0].value, self.tree)
+            self.assertNotEqual(args[0].value, self.fd, 'must never privatize covering/shared ancestor FD')
+            self.assertEqual(args[1].value, b'')
+            self.assertEqual(args[2].value, n.AT_EMPTY_PATH)
+            attrs = n.ctypes.cast(args[3], n.ctypes.POINTER(n.MountAttr)).contents
+            self.assertEqual((attrs.attr_set, attrs.attr_clr, attrs.propagation, attrs.userns_fd), (0, 0, n.MS_PRIVATE, 0))
+            self.assertEqual(args[4].value, 32)
+            self.set_count += 1
+            if self.set_count >= 2 and not self.keep_shared:
+                self.obs['mounts'][-1]['optional'] = []
+            return 0
+        if number == n.NR_MOVE_MOUNT:
+            self.events.append('move')
+            self.assertEqual(self.marker.record['cloneMountId'], 101, 'clone ID not durable before attach')
+            self.assertEqual((args[0].value, args[1].value, args[2].value, args[3].value, args[4].value),
+                             (self.tree, b'', self.fd, b'', 0x44))
+            if self.fail_move:
+                return -1
+            self.obs['mounts'] = observations(self.expected)['mounts']
+            # Discriminate receipt03: shared propagation inherited ON attach.
+            self.obs['mounts'][-1]['optional'] = ['shared:7']
+            return 0
+        raise AssertionError('arbitrary syscall is not allowed')
+
+    def claim(self, mount_id):
+        self.events.append('claim-id')
+        self.marker.record['cloneMountId'] = mount_id
+        self.marker.save(self.marker.record)
+
+    def before(self):
+        self.events.append('stopped-recheck')
+        n.require(len(self.obs['mounts']) == 1, 'unexpected-mount-before-attach')
+
+    def verify(self, mount_id, *, require_private):
+        self.events.append('verify-private' if require_private else 'verify-attached')
+        own = n.observed_mount(self.obs, self.expected, pinned=True)
+        n.require(own['id'] == mount_id == self.marker.record['cloneMountId'], 'preclaimed-mount-id-changed')
+        if require_private:
+            n.private_mount(own)
+
+    def pin(self):
+        n.modern_private_pin(self.fd, self.expected, claim_clone=self.claim,
+                             before_attach=self.before, verify_attached=self.verify)
+
+    def test_unsupported_abi_refuses_before_any_libc_symbol_resolution(self):
+        with patch.object(n.os, 'uname', return_value=types.SimpleNamespace(machine='aarch64')), \
+             patch.object(n.ctypes, 'CDLL') as library:
+            with self.assertRaisesRegex(n.Refused, '^modern-mount-unsupported-abi$'):
+                self.actual_mount_api()
+            library.assert_not_called()
+
+    def test_mount_id_parser_bounded_exact_nonboolean_positive_id(self):
+        with patch.object(n, 'bounded_read', return_value=b'pos:\t0\nmnt_id:\t761\n') as read:
+            self.assertEqual(self.actual_fd_mount_id(7), 761)
+            read.assert_called_once_with('/proc/self/fdinfo/7', 16384)
+        for malformed in (b'', b'mnt_id: 0\n', b'mnt_id: -1\n', b'mnt_id: True\n',
+                          b'mnt_id: 1\nmnt_id: 2\n', b'mnt_id: 18446744073709551616\n'):
+            with patch.object(n, 'bounded_read', return_value=malformed):
+                with self.assertRaisesRegex(n.Refused, '^mount-fdinfo$'):
+                    self.actual_fd_mount_id(7)
+
+    def test_exact_fd_syscall_protocol_preclaims_id_and_enforces_private_after_attach(self):
+        self.pin()
+        self.assertEqual(self.events, ['open-tree', 'claim-id', 'set-private', 'stopped-recheck',
+                                      'move', 'verify-attached', 'set-private', 'verify-private'])
+        self.assertEqual(self.set_count, 2)
+        self.assertEqual(self.marker.record['cloneMountId'], 101)
+        self.assertEqual(self.obs['mounts'][-1]['id'], 101)
+        self.assertEqual(self.obs['mounts'][-1]['optional'], [])
+        with self.assertRaises(OSError):
+            os.fstat(self.tree)
+
+    def test_syscall_success_without_private_kernel_result_is_not_accepted(self):
+        self.keep_shared = True
+        with self.assertRaisesRegex(n.Refused, '^namespace-mount-not-private$'):
+            self.pin()
+        self.assertEqual(self.marker.record['state'], 'claimed')
+        self.assertEqual(self.marker.record['cloneMountId'], 101)
+        self.assertEqual(self.obs['mounts'][-1]['optional'], ['shared:7'])
+        self.assertEqual(self.set_count, 2)
+
+    def test_failed_move_keeps_durable_claim_no_legacy_or_pathname_retry(self):
+        self.fail_move = True
+        with patch.object(n.subprocess, 'Popen') as native:
+            with self.assertRaisesRegex(n.Refused, '^mount-move-uncertain$'):
+                self.pin()
+            native.assert_not_called()
+        self.assertEqual(self.marker.record['state'], 'claimed')
+        self.assertEqual(self.marker.record['cloneMountId'], 101)
+        self.assertEqual(len(self.obs['mounts']), 1)
+        self.assertEqual(self.events.count('open-tree'), 1)
+        self.assertEqual(self.events.count('move'), 1)
+
+    def test_open_tree_failure_never_sets_attributes_moves_or_changes_claim(self):
+        self.fail_open = True
+        with self.assertRaisesRegex(n.Refused, '^mount-open-tree-refused$'):
+            self.pin()
+        self.assertEqual(self.events, ['open-tree'])
+        self.assertIsNone(self.marker.record['cloneMountId'])
+        self.assertFalse(self.marker.writes)
+
+    def test_pre_attach_recheck_failure_discards_detached_clone_no_move(self):
+        def stopped_failure():
+            raise n.Refused('runtime-unit-not-stopped')
+        with self.assertRaisesRegex(n.Refused, '^runtime-unit-not-stopped$'):
+            n.modern_private_pin(self.fd, self.expected, claim_clone=self.claim,
+                                 before_attach=stopped_failure, verify_attached=self.verify)
+        self.assertNotIn('move', self.events)
+        self.assertEqual(self.marker.record['cloneMountId'], 101)
+        with self.assertRaises(OSError):
+            os.fstat(self.tree)
+
+    def test_covering_mount_fd_cannot_be_used_for_attached_private_repair(self):
+        with self.assertRaisesRegex(n.Refused, '^covering-mount-fd-refused$'):
+            n.modern_privatize_owned(self.fd, self.expected, 101, verify_attached=self.verify)
+        self.assertFalse(self.events)
+
+    def test_exact_attached_repair_reopens_without_clone_no_move(self):
+        self.mount_ids[self.fd] = 101  # Reopened exact mounted directory, not covering FD.
+        self.obs['mounts'] = observations(self.expected)['mounts']
+        self.obs['mounts'][-1]['optional'] = ['shared:7']
+        self.marker.record['cloneMountId'] = 101
+        seal(self.marker.record)
+        self.set_count = 1
+        api = self.api
+        def reopen(number, *args):
+            if number == n.NR_OPEN_TREE:
+                self.assertFalse(args[2].value & n.OPEN_TREE_CLONE)
+            return api(number, *args)
+        with patch.object(n, '_mount_api', return_value=reopen):
+            n.modern_privatize_owned(self.fd, self.expected, 101, verify_attached=self.verify)
+        self.assertEqual(self.events, ['open-tree', 'verify-attached', 'set-private', 'verify-private'])
+        self.assertEqual(self.obs['mounts'][-1]['optional'], [])
+
+    def test_fresh_rootful_absent_empty_existing_and_alien_controls(self):
+        self.assertEqual(n.fresh_rootful(self.fd, self.proof), ('absent', ()))
+        rootful = self.root / 'rootful'
+        rootful.mkdir(mode=0o700)
+        self.assertEqual(n.fresh_rootful(self.fd, self.proof)[0], 'absent')
+        engine = rootful / 'engine'
+        engine.mkdir(mode=0o700)
+        witness = n.fresh_rootful(self.fd, self.proof)
+        self.assertEqual(witness[0], 'empty')
+        self.assertEqual(n.fresh_rootful(self.fd, self.proof), witness)
+        (engine / 'synthetic-native-metadata').write_text('not a credential')
+        with self.assertRaisesRegex(n.Refused, '^rootful-unpinned-existing-store-unsupported$'):
+            n.fresh_rootful(self.fd, self.proof)
+        proof = copy.deepcopy(self.proof)
+        proof['units']['rootful'] = [{'name': 'p0-existing.service', 'sourceSha256': 'b' * 64}]
+        with self.assertRaisesRegex(n.Refused, '^rootful-unpinned-units-unsupported$'):
+            n.fresh_rootful(self.fd, proof)
+
+    def test_engine_anchor_holds_actual_owned_inode_and_detects_replacement_and_symlink(self):
+        actor = self.root / 'rootless'
+        actor.mkdir(mode=0o700)
+        engine = actor / 'engine'
+        engine.mkdir(mode=0o700)
+        anchor = n.EngineAnchor(self.fd, 'rootless', self.entry)
+        self.addCleanup(anchor.close)
+        anchor.verify(self.fd)
+        engine.rename(actor / 'previous-owned-fixture')
+        engine.mkdir(mode=0o700)
+        with self.assertRaisesRegex(n.Refused, '^engine-identity-changed$'):
+            anchor.verify(self.fd)
+        engine.rmdir()  # Exact new empty fixture only.
+        engine.symlink_to(actor / 'previous-owned-fixture', target_is_directory=True)
+        with self.assertRaises(OSError):
+            anchor.verify(self.fd)
+
+    def test_inventory_requires_current_owned_private_preclaimed_pin_for_rootful_authority(self):
+        with patch.object(n, 'namespace', side_effect=lambda expected: os.dup(self.fd)), \
+             patch.object(n, 'kernel', side_effect=lambda: copy.deepcopy(self.obs)):
+            self.assertFalse(n.inventory_authority(self.fd, self.proof, None, self.obs))
+            self.obs['mounts'] = observations(self.expected)['mounts']
+            record = marker_record(self.expected, self.obs, 'claimed')
+            self.assertTrue(n.inventory_authority(self.fd, self.proof, record, self.obs))
+            record['cloneMountId'] += 1
+            seal(record)
+            with self.assertRaisesRegex(n.Refused, '^preclaimed-mount-id-changed$'):
+                n.inventory_authority(self.fd, self.proof, record, self.obs)
+            record = marker_record(self.expected, self.obs, 'claimed')
+            self.obs['mounts'][-1]['optional'] = ['shared:7']
+            record['mount'] = copy.deepcopy(self.obs['mounts'][-1])
+            seal(record)
+            self.assertFalse(n.inventory_authority(self.fd, self.proof, record, self.obs))
+
+    def test_rootful_recheck_with_existing_metadata_has_no_native_store_or_mount_effect(self):
+        (self.root / 'rootful').mkdir(mode=0o700)
+        engine = self.root / 'rootful/engine'
+        engine.mkdir(mode=0o700)
+        (engine / 'synthetic-native-metadata').write_text('not a credential')
+        old = marker_record(self.expected, observations(self.expected))
+        self.obs['bootId'] = '87654321-1234-1234-1234-123456789abc'
+        native = n.Native(self.entry)
+        marker = MemoryMarker(old)
+        real_lstat = Path.lstat
+        target_stat = types.SimpleNamespace(st_dev=self.expected['device'], st_ino=self.expected['inode'])
+        with patch.object(n, 'namespace', side_effect=lambda expected: os.dup(self.fd)), \
+             patch.object(n, 'kernel', side_effect=lambda: copy.deepcopy(self.obs)), \
+             patch.object(n, 'preflight_children'), patch.object(n, 'reserves'), \
+             patch.object(n.Path, 'lstat', new=lambda p: target_stat if p == n.TARGET else real_lstat(p)), \
+             patch.object(native, 'call') as call, patch.object(native, 'pin_namespace') as mount:
+            with self.assertRaisesRegex(n.Refused, '^rootful-unpinned-existing-store-unsupported$'):
+                n.pin(self.proof, 'b' * 64, marker, native, self.entry, 'recheck')
+            call.assert_not_called()
+            mount.assert_not_called()
+        self.assertFalse(marker.writes)
+        self.assertEqual(marker.record, old)
 
 
 if __name__ == '__main__':

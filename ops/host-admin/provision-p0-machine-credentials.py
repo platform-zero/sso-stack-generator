@@ -140,16 +140,19 @@ def kernel():
 def validate_namespace_marker(record, observation, expected):
     # Deliberately self-contained. NEVER import the namespace helper as Root.
     require(isinstance(record, dict) and set(record) == {'version', 'state', 'owner', 'evidenceSha256',
-            'namespace', 'bootId', 'mountNamespace', 'mount', 'integrity'}, 'marker-schema')
+            'namespace', 'bootId', 'mountNamespace', 'mount', 'cloneMountId', 'integrity'}, 'marker-schema')
     fields = {k: v for k, v in record.items() if k != 'integrity'}
     digest = hashlib.sha256(json.dumps(fields, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-    require(record['integrity'] == digest and type(record['version']) is int and record['version'] == 1
+    require(record['integrity'] == digest and type(record['version']) is int and record['version'] == 2
             and record['state'] == 'pinned' and isinstance(record['owner'], str)
             and re.fullmatch(r'[0-9a-f]{32}', record['owner'])
             and isinstance(record['evidenceSha256'], str) and HEX.fullmatch(record['evidenceSha256'])
             and isinstance(record['namespace'], dict) and set(record['namespace']) == {'device', 'inode', 'filesystemId'}
             and all(type(v) is int and v > 0 for v in record['namespace'].values())
-            and record['namespace'] == expected, 'marker-binding')
+            and record['namespace'] == expected
+            and isinstance(record['bootId'], str) and UUID.fullmatch(record['bootId'])
+            and isinstance(record['mountNamespace'], dict) and set(record['mountNamespace']) == {'device', 'inode'}
+            and all(type(v) is int and v > 0 for v in record['mountNamespace'].values()), 'marker-binding')
     require(record['bootId'] == observation['bootId'] and record['mountNamespace'] == observation['mountNamespace'],
             'marker-stale-boot-or-namespace')
     mounts = observation['mounts']
@@ -168,6 +171,8 @@ def validate_namespace_marker(record, observation, expected):
             and 'rw' in own['options'], 'foreign-namespace-mount')
     require(not any(s.startswith(('shared:', 'master:', 'propagate_from:')) or s == 'unbindable'
                     for s in own['optional']), 'namespace-mount-not-private')
+    require(type(record['cloneMountId']) is int and 0 < record['cloneMountId'] < 2**64
+            and record['cloneMountId'] == own['id'], 'preclaimed-mount-id-changed')
     require(record['mount'] == own, 'marker-mount-changed')
     return own
 
@@ -178,16 +183,20 @@ def pinned_namespace():
     require(stat.S_ISDIR(shared.st_mode) and shared.st_uid == 1000 and shared.st_gid == 1000
             and stat.S_IMODE(shared.st_mode) == 0o2775, 'shared-parent-identity')
     directory(NAMESPACE_MARKER, mode=0o700)
-    raw, _ = read_exact(NAMESPACE_MARKER / 'active.json', 0, 0o400)
+    raw, marker_identity = read_exact(NAMESPACE_MARKER / 'active.json', 0, 0o400)
     record = strict_json(raw)
     fd = os.open(TARGET, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         s = os.fstat(fd)
         require(s.st_uid == 0 and s.st_gid == 0 and stat.S_IMODE(s.st_mode) == 0o711, 'namespace-identity')
         expected = {'device': s.st_dev, 'inode': s.st_ino, 'filesystemId': os.fstatvfs(fd).f_fsid}
-        validate_namespace_marker(record, kernel(), expected)
+        observation = kernel()
+        mount = validate_namespace_marker(record, observation, expected)
         current = TARGET.lstat()
         require((current.st_dev, current.st_ino) == (s.st_dev, s.st_ino), 'namespace-renamed')
+        return {'markerBytes': raw, 'markerIdentity': marker_identity, 'namespace': expected,
+                'bootId': observation['bootId'], 'mountNamespace': observation['mountNamespace'],
+                'mount': mount, 'parent': next(m for m in observation['mounts'] if m['target'] == str(SHARED))}
     finally:
         os.close(fd)
 
@@ -195,7 +204,7 @@ def pinned_namespace():
 def policy(entry):
     result = entry.get('policy', {'encoding': 'base64url', 'entropyBytes': 48})
     require(isinstance(result, dict) and set(result) == {'encoding', 'entropyBytes'}
-            and result['encoding'] == 'base64url' and type(result['entropyBytes']) is int
+            and result['encoding'] in ('base64url', 'base64url-unpadded', 'hex') and type(result['entropyBytes']) is int
             and result['entropyBytes'] in (32, 48), 'resource-policy')
     return dict(result)
 
@@ -255,6 +264,7 @@ def trusted_binary(path):
 class Native:
     def __init__(self, entry):
         self.entry = entry
+        self.authorities = {}
 
     def environment(self, actor):
         env = {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', 'HOME': '/root'}
@@ -273,13 +283,14 @@ class Native:
 
     def call(self, actor, args, payload=None):
         """Bounded pipe output, discarded stderr, 30s deadline; never surface native text."""
+        self.check_authority(actor)
         p = subprocess.Popen(self.prefix(actor) + args, stdin=subprocess.PIPE if payload else subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                              env=self.environment(actor), cwd='/', start_new_session=True)
         output = bytearray()
         try:
             if payload:
-                # Generated 44/64-byte ASCII payload fits in one small pipe write.
+                # Bounded generated ASCII payload (at most96 bytes) fits in one small pipe write.
                 p.stdin.write(payload)
                 p.stdin.close()
             with selectors.DefaultSelector() as selector:
@@ -296,6 +307,7 @@ class Native:
                             output.extend(block)
                             require(len(output) <= LIMIT, 'native-output-limit')
                 rc = p.wait(timeout=max(0.01, deadline - time.monotonic()))
+            self.check_authority(actor)
             return rc, bytes(output)
         finally:
             if p.poll() is None:
@@ -305,32 +317,51 @@ class Native:
             if p.stdin and not p.stdin.closed:
                 p.stdin.close()
 
+    def layout(self, actor):
+        e, observed = self.entry, []
+        require(actor in ACTORS, 'native-actor')
+        uid, gid = (e.pw_uid, e.pw_gid) if actor == 'rootless' else (0, 0)
+        paths = ((HOME, ROOTLESS.parent, ROOTLESS, Path(f'/run/user/{e.pw_uid}/containers')) if actor == 'rootless'
+                 else (ROOTFUL.parent, ROOTFUL, RUNFUL.parent, RUNFUL, NETWORK.parent, NETWORK))
+        for path in paths:
+            directory(path, (0, uid), mode=0o700)
+            s = path.lstat()
+            require(stat.S_ISDIR(s.st_mode) and s.st_uid == uid and s.st_gid == gid
+                    and stat.S_IMODE(s.st_mode) == 0o700, 'actor-directory-owner')
+            observed.append((str(path), (s.st_dev, s.st_ino, s.st_uid, s.st_gid, stat.S_IMODE(s.st_mode))))
+        if actor == 'rootless':
+            config = HOME / '.config/containers/storage.conf'
+            directory(config.parent, (0, uid))
+            raw, config_identity = read_exact(config, uid, 0o600)
+            expected = ('[storage]\ndriver = "overlay"\n'
+                        f'runroot = "/run/user/{uid}/containers"\n'
+                        f'graphroot = "{ROOTLESS}"\n').encode()
+            require(raw == expected, 'actor-storage-config')
+            observed.append((str(config), raw, config_identity))
+        return tuple(observed)
+
+    def check_authority(self, actor):
+        require(actor in self.authorities, 'native-preflight-required')
+        current = (pinned_namespace(), self.layout(actor))
+        require(current == self.authorities[actor], 'native-authority-changed')
+
     def preflight(self, actors):
-        pinned_namespace()  # Before ANY native info/secret call or writable-ancestor exception.
-        e = self.entry
+        require(actors and len(set(actors)) == len(actors) and all(a in ACTORS for a in actors), 'native-actors')
+        self.authorities = {}
+        boundary = pinned_namespace()  # Before ANY native or writable-ancestor exception.
         trusted_binary('/usr/bin/podman')
         if 'rootless' in actors:
             trusted_binary('/usr/bin/setpriv')
-            for path in (HOME, ROOTLESS.parent, ROOTLESS, Path(f'/run/user/{e.pw_uid}/containers')):
-                directory(path, (0, e.pw_uid), mode=0o700)
-                require(path.lstat().st_uid == e.pw_uid and path.lstat().st_gid == e.pw_gid, 'actor-directory-owner')
-            config = HOME / '.config/containers/storage.conf'
-            directory(config.parent, (0, e.pw_uid))
-            raw, _ = read_exact(config, e.pw_uid, 0o600)
-            expected = ('[storage]\ndriver = "overlay"\n'
-                        f'runroot = "/run/user/{e.pw_uid}/containers"\n'
-                        f'graphroot = "{ROOTLESS}"\n').encode()
-            require(raw == expected, 'actor-storage-config')
-        if 'rootful' in actors:
-            for path in (ROOTFUL.parent, ROOTFUL, RUNFUL.parent, RUNFUL, NETWORK.parent, NETWORK):
-                directory(path, mode=0o700)
-                require(path.lstat().st_gid == 0, 'actor-directory-owner')
+        for actor in actors:
+            layout = self.layout(actor)
+            require(pinned_namespace() == boundary, 'native-authority-changed')
+            self.authorities[actor] = (boundary, layout)
         for actor in actors:
             rc, raw = self.call(actor, ['info', '--format', 'json'])
             require(rc == 0, 'native-info')
             store = strict_json(raw).get('store', {})
             graph = str(ROOTLESS if actor == 'rootless' else ROOTFUL)
-            run = f'/run/user/{e.pw_uid}/containers' if actor == 'rootless' else str(RUNFUL)
+            run = f'/run/user/{self.entry.pw_uid}/containers' if actor == 'rootless' else str(RUNFUL)
             require(store.get('graphRoot') == graph and store.get('runRoot') == run
                     and store.get('graphDriverName') == 'overlay', 'native-store-mismatch')
 
@@ -365,10 +396,37 @@ def labels(record, item):
             'p0.machine.intent': record['intentSha256'], 'p0.machine.class': 'ordinary-service'}
 
 
+def encode_value(raw, encoding):
+    require(encoding in ('base64url', 'base64url-unpadded', 'hex'), 'resource-policy')
+    if encoding == 'hex':
+        return raw.hex()
+    value = base64.urlsafe_b64encode(raw).decode('ascii')
+    return value.rstrip('=') if encoding == 'base64url-unpadded' else value
+
+
+def validate_value(value, selected):
+    size, encoding = selected['entropyBytes'], selected['encoding']
+    require(isinstance(value, str) and 1 <= len(value) <= 96, 'record-value-encoding')
+    if encoding == 'hex':
+        require(re.fullmatch(r'[0-9a-f]{' + str(2 * size) + '}', value), 'record-value-encoding')
+        decoded = bytes.fromhex(value)
+    else:
+        expected_length = 4 * ((size + 2) // 3)
+        if encoding == 'base64url-unpadded':
+            expected_length -= (3 - size % 3) % 3
+            require(re.fullmatch(r'[A-Za-z0-9_-]+', value), 'record-value-encoding')
+        else:
+            require(re.fullmatch(r'[A-Za-z0-9_-]+={0,2}', value), 'record-value-encoding')
+        require(len(value) == expected_length, 'record-value-encoding')
+        padded = value + '=' * (-len(value) % 4) if encoding == 'base64url-unpadded' else value
+        decoded = base64.b64decode(padded, altchars=b'-_', validate=True)
+    require(len(decoded) == size and encode_value(decoded, encoding) == value, 'record-value-encoding')
+
+
 def prepared(spec, digest):
     return {'version': 2, 'intentSha256': digest, 'owner': secrets.token_hex(16),
             'resources': {entry['name']: {'version': secrets.token_hex(16), 'policy': policy(entry),
-                'value': base64.urlsafe_b64encode(secrets.token_bytes(policy(entry)['entropyBytes'])).decode('ascii'),
+                'value': encode_value(secrets.token_bytes(policy(entry)['entropyBytes']), policy(entry)['encoding']),
                 'actors': {actor: {'state': 'prepared', 'id': None} for actor in entry['actors']}}
                 for entry in spec['resources']}}
 
@@ -393,10 +451,7 @@ def validate_record(record, spec, digest):
                 and isinstance(item['version'], str) and OPAQUE.fullmatch(item['version'])
                 and isinstance(item['value'], str), 'record-schema')
         require(item['policy'] == policy(entries[name]), 'record-policy')
-        encoding = policy({'policy': item['policy']})
-        decoded = base64.b64decode(item['value'], altchars=b'-_', validate=True)
-        require(len(decoded) == encoding['entropyBytes']
-                and base64.urlsafe_b64encode(decoded).decode('ascii') == item['value'], 'record-value-encoding')
+        validate_value(item['value'], policy({'policy': item['policy']}))
         require(isinstance(item['actors'], dict) and set(item['actors']) == set(entries[name]['actors']), 'record-actors')
         for state in item['actors'].values():
             require(isinstance(state, dict) and set(state) == {'state', 'id'}

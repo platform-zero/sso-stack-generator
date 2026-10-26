@@ -320,6 +320,47 @@ class MachineCredentialTests(unittest.TestCase):
                         '--intent-sha256', self.digest, '--helper-sha256', hashlib.sha256(source).hexdigest()])
             opened.assert_not_called()
 
+    def test_native_call_requires_preflight_authority_before_process_creation(self):
+        native = m.Native(types.SimpleNamespace())
+        with patch.object(m.subprocess, 'Popen') as process:
+            with self.assertRaisesRegex(m.Refused, '^native-preflight-required$'):
+                native.call('rootful', ['info', '--format', 'json'])
+            process.assert_not_called()
+
+    def test_marker_mount_or_directory_change_before_native_prevents_all_effects(self):
+        native = m.Native(types.SimpleNamespace())
+        boundary = {'markerBytes': b'synthetic-marker', 'cloneMountId': 101}
+        layout = (('canonical-rootful-engine', (1, 2, 0, 0, 0o700)),)
+        native.authorities['rootful'] = (boundary, layout)
+        for actual_boundary, actual_layout in ((dict(boundary, cloneMountId=102), layout),
+                                                (dict(boundary, markerBytes=b'changed-marker'), layout),
+                                                (boundary, (('canonical-rootful-engine', (1, 3, 0, 0, 0o700)),))):
+            with patch.object(m, 'pinned_namespace', return_value=actual_boundary), \
+                 patch.object(native, 'layout', return_value=actual_layout), patch.object(m.subprocess, 'Popen') as process:
+                with self.assertRaisesRegex(m.Refused, '^native-authority-changed$'):
+                    native.call('rootful', ['secret', 'exists', 'p0-new'])
+                process.assert_not_called()
+
+    def test_native_rechecks_authority_after_successful_canonical_command(self):
+        native = m.Native(types.SimpleNamespace())
+        boundary, layout = {'cloneMountId': 101}, (('engine-inode', 2),)
+        native.authorities['rootful'] = (boundary, layout)
+        reader, writer = os.pipe()
+        os.close(writer)
+        output = os.fdopen(reader, 'rb')
+        process = types.SimpleNamespace(stdout=output, stdin=None)
+        process.poll = lambda: 0
+        process.wait = lambda **kwargs: 0
+        with patch.object(m, 'pinned_namespace', side_effect=[boundary, {'cloneMountId': 102}]), \
+             patch.object(native, 'layout', return_value=layout), \
+             patch.object(m.subprocess, 'Popen', return_value=process) as popen:
+            with self.assertRaisesRegex(m.Refused, '^native-authority-changed$'):
+                native.call('rootful', ['info', '--format', 'json'])
+        args = popen.call_args.args[0]
+        self.assertIn(str(m.ROOTFUL), args)
+        self.assertNotIn('/proc/self/fd/', repr(args))
+        self.assertTrue(output.closed)
+
     def test_native_commands_explicit_namespaces_and_clean_identity(self):
         native = m.Native(types.SimpleNamespace(pw_uid=1234, pw_gid=1234))
         rootless = native.prefix('rootless')
@@ -347,7 +388,7 @@ class MachineCredentialTests(unittest.TestCase):
             calls.append(args)
             return 0, b'{"store":{"graphRoot":"/default","runRoot":"/default","graphDriverName":"overlay"}}'
         with patch.object(m, 'directory'), patch.object(m, 'trusted_binary'), \
-             patch.object(m.Path, 'lstat', return_value=types.SimpleNamespace(st_gid=0)), \
+             patch.object(m.Path, 'lstat', return_value=types.SimpleNamespace(st_gid=0, st_uid=0, st_dev=1, st_ino=2, st_mode=stat.S_IFDIR | 0o700)), \
              patch.object(native, 'call', side_effect=call):
             with self.assertRaisesRegex(m.Refused, '^native-store-mismatch$'):
                 native.preflight(['rootful'])
@@ -362,7 +403,7 @@ class MachineCredentialTests(unittest.TestCase):
                 native.preflight(['rootful'])
             call.assert_not_called()
         with patch.object(m, 'trusted_binary'), patch.object(m, 'directory'), \
-             patch.object(m.Path, 'lstat', return_value=types.SimpleNamespace(st_uid=1234, st_gid=1234)), \
+             patch.object(m.Path, 'lstat', return_value=types.SimpleNamespace(st_uid=1234, st_gid=1234, st_dev=1, st_ino=2, st_mode=stat.S_IFDIR | 0o700)), \
              patch.object(m, 'read_exact', return_value=(b'foreign storage configuration', None)), \
              patch.object(native, 'call') as call:
             with self.assertRaisesRegex(m.Refused, '^actor-storage-config$'):
@@ -422,7 +463,7 @@ class MachineCredentialTests(unittest.TestCase):
         process.poll = lambda: 0 if killed else None
         process.kill = lambda: killed.append(True)
         process.wait = lambda **kwargs: 0
-        with patch.object(m.subprocess, 'Popen', return_value=process), \
+        with patch.object(native, 'check_authority'), patch.object(m.subprocess, 'Popen', return_value=process), \
              patch.object(m.time, 'monotonic', side_effect=[0, 31]):
             with self.assertRaisesRegex(m.Refused, '^native-timeout$'):
                 native.call('rootful', ['info', '--format', 'json'])
@@ -476,7 +517,8 @@ class MachineCredentialTests(unittest.TestCase):
         process = types.SimpleNamespace(stdout=output, stdin=None, returncode=0)
         process.poll = lambda: 0
         process.wait = lambda **kwargs: 0
-        with patch.object(m.subprocess, 'Popen', return_value=process) as popen, patch.object(m, 'LIMIT', 128):
+        with patch.object(native, 'check_authority'), \
+             patch.object(m.subprocess, 'Popen', return_value=process) as popen, patch.object(m, 'LIMIT', 128):
             with self.assertRaisesRegex(m.Refused, '^native-output-limit$'):
                 native.call('rootful', ['secret', 'inspect', 'p0-boot-shared'])
         self.assertEqual(popen.call_args.kwargs['stderr'], m.subprocess.DEVNULL)
@@ -497,7 +539,7 @@ class MachineCredentialTests(unittest.TestCase):
         process.poll = lambda: 0
         process.wait = lambda **kwargs: 0
         payload = b'SYNTHETIC_ONLY_NOT_A_CREDENTIAL'
-        with patch.object(m.subprocess, 'Popen', return_value=process) as popen:
+        with patch.object(native, 'check_authority'), patch.object(m.subprocess, 'Popen', return_value=process) as popen:
             native.create('rootful', 'boot-shared', {'p0.machine.owner': 'a' * 32}, payload)
         self.assertTrue(stdin.saved == payload, 'stdin bytes changed')
         self.assertNotIn(payload.decode(), repr(popen.call_args))
@@ -571,13 +613,116 @@ class MachineCredentialTests(unittest.TestCase):
     def test_policy_rejects_weak_unknown_or_malformed_formats(self):
         for policy in ({'encoding': 'base64url', 'entropyBytes': 16},
                        {'encoding': 'base64', 'entropyBytes': 48},
-                       {'encoding': 'hex', 'entropyBytes': 48},
+                       {'encoding': 'hexadecimal', 'entropyBytes': 48},
                        {'encoding': 'base64url', 'entropyBytes': True},
                        {'encoding': 'base64url', 'entropyBytes': 32, 'extra': 1}, None):
             value = copy.deepcopy(self.intent)
             value['resources'][0]['policy'] = policy
             with self.assertRaises(m.Refused):
                 m.intent(json.dumps(value).encode())
+
+    def test_generic_encoding_matrix_exact_lengths_alphabet_and_policy_binding(self):
+        import base64
+        for encoding, size, length in (('base64url', 32, 44), ('base64url', 48, 64),
+                                       ('base64url-unpadded', 32, 43), ('base64url-unpadded', 48, 64),
+                                       ('hex', 32, 64), ('hex', 48, 96)):
+            with self.subTest(encoding=encoding, entropyBytes=size):
+                spec = copy.deepcopy(self.intent)
+                spec['resources'][0]['policy'] = {'encoding': encoding, 'entropyBytes': size}
+                m.intent(json.dumps(spec).encode())
+                record = m.prepared(spec, self.digest)
+                record['integrity'] = m.record_integrity(record)
+                m.validate_record(record, spec, self.digest)
+                value = record['resources']['boot-shared']['value']
+                self.assertEqual(len(value), length)
+                if encoding == 'hex':
+                    self.assertTrue(all(c in '0123456789abcdef' for c in value), 'noncanonical hex alphabet')
+                    decoded = bytes.fromhex(value)
+                else:
+                    self.assertTrue(all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-='
+                                        for c in value), 'noncanonical URL-safe alphabet')
+                    if encoding == 'base64url-unpadded':
+                        self.assertTrue('=' not in value, 'unpadded format contains padding')
+                    decoded = base64.b64decode(value + '=' * (-len(value) % 4), altchars=b'-_', validate=True)
+                self.assertEqual(len(decoded), size)
+                changed = copy.deepcopy(spec)
+                changed['resources'][0]['policy']['encoding'] = 'hex' if encoding != 'hex' else 'base64url-unpadded'
+                with self.assertRaisesRegex(m.Refused, '^record-policy$'):
+                    m.validate_record(record, changed, self.digest)
+
+    def test_identical_48_byte_base64_encodings_do_not_erase_policy_binding(self):
+        spec = copy.deepcopy(self.intent)
+        spec['resources'][0]['policy'] = {'encoding': 'base64url-unpadded', 'entropyBytes': 48}
+        record = m.prepared(spec, self.digest)
+        record['integrity'] = m.record_integrity(record)
+        m.validate_record(record, spec, self.digest)
+        spec['resources'][0]['policy']['encoding'] = 'base64url'
+        with self.assertRaisesRegex(m.Refused, '^record-policy$'):
+            m.validate_record(record, spec, self.digest)
+
+    def test_unpadded_and_hex_canonical_rejections_do_not_normalize_stored_values(self):
+        cases = {
+            'base64url-unpadded': ('A' * 43 + '=', 'A' * 42 + 'B', 'A' * 42 + '+',
+                                   'A' * 42 + '/', 'A' * 42 + ' ', 'A' * 43 + '\n',
+                                   'fb' * 32, 'A' * 64),
+            'hex': ('FB' * 32, '0x' + 'fb' * 32, 'fb ' * 32, 'f' * 63, 'g' * 64,
+                    'fb' * 32 + '\n', 'A' * 43)}
+        for encoding, values in cases.items():
+            spec = copy.deepcopy(self.intent)
+            spec['resources'][0]['policy'] = {'encoding': encoding, 'entropyBytes': 32}
+            record = m.prepared(spec, self.digest)
+            for value in values:
+                record['resources']['boot-shared']['value'] = value
+                record['integrity'] = m.record_integrity(record)
+                with self.subTest(encoding=encoding, length=len(value)), \
+                     self.assertRaisesRegex(m.Refused, '^record-value-encoding$'):
+                    m.validate_record(record, spec, self.digest)
+
+    def test_all_encoding_policies_resume_original_bytes_without_regeneration(self):
+        self.intent['resources'] = [
+            {'name': f'{encoding}-{size}', 'actors': ['rootless', 'rootful'],
+             'policy': {'encoding': encoding, 'entropyBytes': size}}
+            for encoding in ('base64url', 'base64url-unpadded', 'hex') for size in (32, 48)]
+        self.digest = hashlib.sha256(json.dumps(self.intent).encode()).hexdigest()
+        self.native.crash = True
+        with self.assertRaises(Crash):
+            self.run_supply()
+        before = copy.deepcopy(self.c.load()['resources'])
+        self.reopen()
+        token_bytes = m.secrets.token_bytes
+        def metadata_only(size):
+            self.assertNotIn(size, (32, 48), 'resume regenerated entropy')
+            return token_bytes(size)
+        with patch.object(m.secrets, 'token_bytes', side_effect=metadata_only):
+            result = self.run_supply('resume')
+        after = self.c.load()['resources']
+        for name, item in before.items():
+            self.assertTrue(after[name]['value'] == item['value'], 'resume changed value')
+            self.assertEqual(after[name]['policy'], item['policy'])
+            self.assertTrue(item['value'] not in json.dumps(result), 'value leaked in report')
+        self.assertEqual(len(self.native.inputs), 12)
+        for i in range(0, 12, 2):
+            self.assertTrue(self.native.inputs[i][1] == self.native.inputs[i + 1][1], 'actor payload differs')
+
+    def test_five_independent_consumer_formats_use_five_entropy_draws_not_app_inventory(self):
+        self.intent['resources'] = [
+            {'name': f'independent-{i}', 'actors': ['rootless'],
+             'policy': {'encoding': 'hex' if i < 4 else 'base64url-unpadded', 'entropyBytes': 32}}
+            for i in range(5)]
+        self.digest = hashlib.sha256(json.dumps(self.intent).encode()).hexdigest()
+        token_bytes, draws = m.secrets.token_bytes, []
+        def counted(size):
+            if size == 32:
+                draws.append(size)
+            return token_bytes(size)
+        with patch.object(m.secrets, 'token_bytes', side_effect=counted):
+            result = self.run_supply()
+        payloads = [entry[1] for entry in self.native.inputs]
+        self.assertEqual(len(draws), 5)
+        self.assertEqual(len(set(payloads)), 5)
+        self.assertEqual([len(value) for value in payloads], [64, 64, 64, 64, 43])
+        self.assertTrue(all(b'=' not in value and b'\n' not in value for value in payloads), 'padding or terminator')
+        self.assertTrue(all(value.decode() not in json.dumps(result) for value in payloads), 'value report leak')
 
     def intent_custody(self, digest):
         other = m.IntentCustody(Path(self.temp.name) / 'authority', digest)

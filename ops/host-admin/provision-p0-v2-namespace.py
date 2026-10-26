@@ -6,6 +6,7 @@ if __name__ == '__main__' and not sys.flags.isolated:
     raise SystemExit(2)
 
 import argparse
+import ctypes
 import fcntl
 import grp
 import hashlib
@@ -17,6 +18,7 @@ import re
 import resource
 import secrets
 import selectors
+import signal
 import stat
 import subprocess
 import time
@@ -124,6 +126,13 @@ def kernel():
             'mounts': mountinfo(bounded_read('/proc/self/mountinfo', 4 * 1024**2))}
 
 
+def boundary_view(observation):
+    # Independent mounts outside the owned boundary are not an activation gate.
+    return {'bootId': observation['bootId'], 'mountNamespace': observation['mountNamespace'],
+            'mounts': [m for m in observation['mounts'] if m['target'] in ('/', '/mnt', str(SHARED), str(TARGET))
+                       or m['target'].startswith(str(TARGET) + '/')]}
+
+
 def namespace(expected):
     """Anchor the existing inode; never follow an operator-replaced link."""
     strict_directory('/mnt')
@@ -175,23 +184,45 @@ def private_mount(own):
                     for s in own['optional']), 'namespace-mount-not-private')
 
 
-def verify_marker(record, observation, expected):
+def same_mount_or_private_transition(saved, own):
+    if saved == own:
+        return True
+    return (isinstance(saved, dict) and set(saved) == set(own) and isinstance(saved.get('optional'), list)
+            and all(isinstance(v, str) and re.fullmatch(r'(shared|master|propagate_from):[1-9][0-9]*', v)
+                    for v in saved['optional']) and own['optional'] == []
+            and {k: v for k, v in own.items() if k != 'optional'}
+                == {k: v for k, v in saved.items() if k != 'optional'})
+
+
+def record_binding(record, expected):
     require(isinstance(record, dict) and set(record) == {'version', 'state', 'owner', 'evidenceSha256',
-            'namespace', 'bootId', 'mountNamespace', 'mount', 'integrity'}, 'marker-schema')
+            'namespace', 'bootId', 'mountNamespace', 'mount', 'cloneMountId', 'integrity'}, 'marker-schema')
     require(isinstance(record['namespace'], dict) and set(record['namespace']) == {'device', 'inode', 'filesystemId'}
             and all(type(v) is int and v > 0 for v in record['namespace'].values()), 'marker-binding')
     fields = {k: v for k, v in record.items() if k != 'integrity'}
     digest = hashlib.sha256(json.dumps(fields, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-    require(record['integrity'] == digest and type(record['version']) is int and record['version'] == 1
-            and record['state'] == 'pinned' and isinstance(record['owner'], str)
+    require(record['integrity'] == digest and type(record['version']) is int and record['version'] == 2
+            and record['state'] in ('claimed', 'pinned') and isinstance(record['owner'], str)
             and re.fullmatch(r'[0-9a-f]{32}', record['owner'])
             and isinstance(record['evidenceSha256'], str) and HEX.fullmatch(record['evidenceSha256'])
-            and record['namespace'] == expected, 'marker-binding')
+            and record['namespace'] == expected and isinstance(record['bootId'], str) and UUID.fullmatch(record['bootId'])
+            and isinstance(record['mountNamespace'], dict) and set(record['mountNamespace']) == {'device', 'inode'}
+            and all(type(v) is int and v > 0 for v in record['mountNamespace'].values())
+            and (record['mount'] is None or isinstance(record['mount'], dict))
+            and (record['cloneMountId'] is None or (type(record['cloneMountId']) is int
+                 and 0 < record['cloneMountId'] < 2**64)), 'marker-binding')
+
+
+def verify_marker(record, observation, expected, *, allow_claimed=False):
+    record_binding(record, expected)
+    require(record['state'] == 'pinned' or (allow_claimed and record['state'] == 'claimed'), 'marker-binding')
     require(record['bootId'] == observation['bootId'] and record['mountNamespace'] == observation['mountNamespace'],
             'marker-stale-boot-or-namespace')
     own = observed_mount(observation, expected, pinned=True)
     private_mount(own)
-    require(record['mount'] == own, 'marker-mount-changed')
+    require(record['cloneMountId'] == own['id'], 'preclaimed-mount-id-changed')
+    require(record['mount'] == own or (allow_claimed and record['state'] == 'claimed'
+            and same_mount_or_private_transition(record['mount'], own)), 'marker-mount-changed')
     return own
 
 
@@ -242,6 +273,8 @@ class Native:
         self.entry = entry
 
     def call(self, args, actor='rootful', pass_fds=()):
+        require(actor in ('rootless', 'rootful') and not pass_fds
+                and not any('/proc/self/fd/' in arg for arg in args), 'native-fd-alias-refused')
         env = {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', 'HOME': '/root'}
         executable = args[0]
         if actor == 'rootless':
@@ -250,7 +283,7 @@ class Native:
             env.update(HOME=str(HOME), XDG_RUNTIME_DIR=f'/run/user/{self.entry.pw_uid}')
         # Validate only fixed native binaries; no caller-supplied executable paths.
         for executable in ({executable, '/usr/bin/setpriv'} if actor == 'rootless' else {executable}):
-            require(executable in ('/usr/bin/setpriv', '/usr/bin/podman', '/usr/bin/systemctl', '/usr/bin/mount'), 'native-executable')
+            require(executable in ('/usr/bin/setpriv', '/usr/bin/podman', '/usr/bin/systemctl'), 'native-executable')
             strict_directory(Path(executable).parent)
             read_exact(executable, limit=128 * 1024**2)
             require(os.stat(executable).st_mode & 0o111, 'native-executable')
@@ -279,17 +312,65 @@ class Native:
                 p.wait(timeout=5)
             p.stdout.close()
 
-    def engine(self, actor, fd):
-        # The shared ancestor is not trusted UNTIL pinned. Native observation
-        # uses the reviewed open inode, never that replaceable pathname.
-        graph = f'/proc/self/fd/{fd}/{actor}/engine'
+    def engine(self, actor):
+        # Literal persistent identity only. FD aliases are NOT native-compatible.
+        require(actor in ('rootless', 'rootful'), 'engine-actor')
+        graph = str(ROOTLESS if actor == 'rootless' else ROOTFUL)
         if actor == 'rootless':
             return ['/usr/bin/podman', '--root', graph, '--runroot',
                     f'/run/user/{self.entry.pw_uid}/containers', '--storage-driver', 'overlay']
         return ['/usr/bin/podman', '--root', graph, '--runroot', str(RUNFUL),
                 '--storage-driver', 'overlay', '--network-config-dir', str(NETWORK)]
 
-    def stopped(self, proof, fd):
+    def stopped(self, proof, fd, *, record, observation):
+        protected = inventory_authority(fd, proof, record, observation)
+        fresh = fresh_rootful(fd, proof) if not protected else None
+        self.stopped_units(proof)
+        # No Host Root Podman command may resolve an unpinned shared-ancestor path.
+        # The sole pre-pin native store observer is the unprivileged fixed actor.
+        for actor in ('rootless', 'rootful'):
+            if actor == 'rootful':
+                if not protected:
+                    continue
+                try:
+                    anchor = EngineAnchor(fd, actor, self.entry)
+                except FileNotFoundError:
+                    # A claimed private pin can precede creation of new children.
+                    # Only exact absence with no Rootful units permits provisioning.
+                    require(fresh_rootful(fd, proof)[0] == 'absent', 'rootful-engine-missing')
+                    continue
+                else:
+                    anchor.close()
+            self.observe_empty_engine(actor, fd, proof, record, observation)
+        require(inventory_authority(fd, proof, record, observation) == protected, 'inventory-authority-changed')
+        if not protected:
+            require(fresh_rootful(fd, proof) == fresh, 'fresh-rootful-changed')
+
+    def observe_empty_engine(self, actor, fd, proof, record, observation):
+        require(actor == 'rootless' or inventory_authority(fd, proof, record, observation), 'rootful-pin-required')
+        check_actor_directories(self.entry, actor)
+        anchor = EngineAnchor(fd, actor, self.entry)
+        try:
+            def guard():
+                protected = inventory_authority(fd, proof, record, observation)
+                require(actor == 'rootless' or protected, 'rootful-pin-required')
+                anchor.verify(fd)
+                check_actor_directories(self.entry, actor)
+            guard()
+            prefix = self.engine(actor)
+            store = strict_json(self.call(prefix + ['info', '--format', 'json'], actor)).get('store', {})
+            guard()
+            run = f'/run/user/{self.entry.pw_uid}/containers' if actor == 'rootless' else str(RUNFUL)
+            require(store.get('graphRoot') == prefix[2] and store.get('runRoot') == run
+                    and store.get('graphDriverName') == 'overlay', 'native-store-mismatch')
+            guard()
+            containers = strict_json(self.call(prefix + ['ps', '--all', '--external', '--format', 'json'], actor))
+            guard()
+            require(isinstance(containers, list) and not containers, 'engine-containers-remain')
+        finally:
+            anchor.close()
+
+    def stopped_units(self, proof):
         for actor, units in proof['units'].items():
             prefix = ['/usr/bin/systemctl'] + (['--user'] if actor == 'rootless' else [])
             expected = {entry['name'] for entry in units}
@@ -324,43 +405,231 @@ class Native:
                         and props['LoadState'] == 'loaded' and props['ActiveState'] in ('inactive', 'failed')
                         and props['MainPID'] == '0' and props['ControlGroup'] == '' and props['Job'] == ''
                         and props['SourcePath'] == str(source) and props['TriggeredBy'] == '', 'runtime-unit-not-stopped')
-            present = anchored_engine(fd, actor, self.entry)
-            if not present:
-                require(actor == 'rootful', 'rootless-engine-missing')
-                continue  # Proven missing fixed child; no default native store is initialized.
-            check_actor_directories(self.entry, actor)
-            prefix = self.engine(actor, fd)
-            store = strict_json(self.call(prefix + ['info', '--format', 'json'], actor, pass_fds=(fd,))).get('store', {})
-            run = f'/run/user/{self.entry.pw_uid}/containers' if actor == 'rootless' else str(RUNFUL)
-            require(store.get('graphRoot') == prefix[2] and store.get('runRoot') == run
-                    and store.get('graphDriverName') == 'overlay', 'native-store-mismatch')
-            containers = strict_json(self.call(prefix + ['ps', '--all', '--external', '--format', 'json'], actor, pass_fds=(fd,)))
-            require(isinstance(containers, list) and not containers, 'engine-containers-remain')
 
-    def bind(self, fd):
-        ref = f'/proc/self/fd/{fd}'
-        self.call(['/usr/bin/mount', '--no-canonicalize', '--bind', ref, ref], pass_fds=(fd,))
+    def pin_namespace(self, fd, expected, *, claim_clone, before_attach, verify_attached):
+        modern_private_pin(fd, expected, claim_clone=claim_clone,
+                           before_attach=before_attach, verify_attached=verify_attached)
 
-    def make_private(self, fd):
-        self.call(['/usr/bin/mount', '--no-canonicalize', '--make-private', f'/proc/self/fd/{fd}'], pass_fds=(fd,))
+    def privatize_owned(self, fd, expected, mount_id, *, verify_attached):
+        modern_privatize_owned(fd, expected, mount_id, verify_attached=verify_attached)
 
 
-def anchored_engine(fd, actor, entry):
-    parent = os.dup(fd)
+def directory_identity(s):
+    return (s.st_dev, s.st_ino, s.st_uid, s.st_gid, stat.S_IMODE(s.st_mode))
+
+
+def owned_directory_fd(fd, uid, gid, mode=0o700):
+    s = os.fstat(fd)
+    require(stat.S_ISDIR(s.st_mode) and s.st_uid == uid and s.st_gid == gid
+            and stat.S_IMODE(s.st_mode) == mode, 'anchored-engine-custody')
+    return directory_identity(s)
+
+
+class EngineAnchor:
+    """Hold only identity FDs; NEVER pass them as native store paths or to Podman."""
+    def __init__(self, namespace_fd, actor, entry):
+        require(actor in ('rootless', 'rootful'), 'engine-actor')
+        self.actor, self.entry = actor, entry
+        self.uid, self.gid = (entry.pw_uid, entry.pw_gid) if actor == 'rootless' else (0, 0)
+        self.fds, self.identities = [], []
+        parent = namespace_fd
+        try:
+            for name in (actor, 'engine'):
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                self.fds.append(child)
+                self.identities.append(owned_directory_fd(child, self.uid, self.gid))
+                parent = child
+        except BaseException:
+            self.close()
+            raise
+
+    def verify(self, namespace_fd):
+        for fd, observed in zip(self.fds, self.identities):
+            require(owned_directory_fd(fd, self.uid, self.gid) == observed, 'engine-anchor-changed')
+        current = EngineAnchor(namespace_fd, self.actor, self.entry)
+        try:
+            require(current.identities == self.identities, 'engine-identity-changed')
+        finally:
+            current.close()
+
+    def close(self):
+        for fd in self.fds:
+            os.close(fd)
+        self.fds = []
+
+
+def fresh_rootful(fd, proof):
+    """No native Root store access. Absence/empty directory is not an adoption API."""
+    require(not proof['units']['rootful'], 'rootful-unpinned-units-unsupported')
+    fds, identities, parent = [], [], fd
     try:
-        for name in (actor, 'engine'):
+        for name in ('rootful', 'engine'):
             try:
                 child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
             except FileNotFoundError:
-                return False
-            os.close(parent)
+                return ('absent', tuple(identities))
+            fds.append(child)
+            identities.append(owned_directory_fd(child, 0, 0))
             parent = child
-            s = os.fstat(parent)
-            uid, gid = (entry.pw_uid, entry.pw_gid) if actor == 'rootless' else (0, 0)
-            require(s.st_uid == uid and s.st_gid == gid and stat.S_IMODE(s.st_mode) == 0o700, 'anchored-engine-custody')
-        return True
+        with os.scandir(parent) as entries:
+            require(next(entries, None) is None, 'rootful-unpinned-existing-store-unsupported')
+        return ('empty', tuple(identities))
     finally:
-        os.close(parent)
+        for child in fds:
+            os.close(child)
+
+
+def inventory_authority(fd, proof, record, observation):
+    """Return Rootful-native authority only from the current, private, owned pin."""
+    expected = proof['namespace']
+    owned_directory_fd(fd, 0, 0, 0o711)
+    s = os.fstat(fd)
+    require(dict(identity(s), filesystemId=os.fstatvfs(fd).f_fsid) == expected, 'namespace-anchor-changed')
+    current_fd = namespace(expected)
+    try:
+        require(identity(os.fstat(current_fd)) == identity(s), 'namespace-renamed')
+    finally:
+        os.close(current_fd)
+    current = kernel()
+    require(boundary_view(current) == boundary_view(observation), 'namespace-observation-changed')
+    mounted = any(m['target'] == str(TARGET) for m in current['mounts'])
+    own = observed_mount(current, expected, pinned=mounted)
+    if record is not None:
+        record_binding(record, expected)
+    if not mounted:
+        if record is not None:
+            same_boot = record['bootId'] == current['bootId'] and record['mountNamespace'] == current['mountNamespace']
+            require(not same_boot or (record['state'] == 'claimed' and record['mount'] is None), 'owned-pin-lost')
+        return False
+    require(record is not None, 'unowned-namespace-mount')
+    require(record['cloneMountId'] == own['id'], 'preclaimed-mount-id-changed')
+    require(record['bootId'] == current['bootId'] and record['mountNamespace'] == current['mountNamespace'], 'marker-stale-boot-or-namespace')
+    if record['mount'] is None:
+        require(record['state'] == 'claimed', 'marker-binding')
+        return False  # Bind outcome not yet recorded: only fresh-gated unprivileged observation.
+    require(same_mount_or_private_transition(record['mount'], own), 'marker-mount-changed')
+    is_private = not any(v.startswith(('shared:', 'master:', 'propagate_from:')) or v == 'unbindable' for v in own['optional'])
+    if not is_private:
+        require(record['state'] == 'claimed', 'namespace-mount-not-private')
+        return False
+    verify_marker(record, current, expected, allow_claimed=True)
+    return True
+
+
+# Linux UAPI: mount.h, asm/unistd_64.h, fcntl.h. No legacy mount(8)/mount(2)
+# fd-symlink endpoints, arbitrary syscall selection, or pathname ABI fallback.
+AT_EMPTY_PATH = 0x1000
+OPEN_TREE_CLONE = 1
+MOVE_MOUNT_EMPTY_PATHS = 0x04 | 0x40
+MS_PRIVATE = 1 << 18
+NR_OPEN_TREE, NR_MOVE_MOUNT, NR_MOUNT_SETATTR = 428, 429, 442
+
+
+class MountAttr(ctypes.Structure):
+    _fields_ = [('attr_set', ctypes.c_uint64), ('attr_clr', ctypes.c_uint64),
+                ('propagation', ctypes.c_uint64), ('userns_fd', ctypes.c_uint64)]
+
+
+def _mount_api():
+    require(sys.platform == 'linux' and os.uname().machine == 'x86_64'
+            and ctypes.sizeof(ctypes.c_void_p) == 8 and ctypes.sizeof(MountAttr) == 32, 'modern-mount-unsupported-abi')
+    # Only the already-loaded trusted system libc; no caller library/symbol path.
+    api = ctypes.CDLL(None, use_errno=True).syscall
+    api.restype, api.argtypes = ctypes.c_long, [ctypes.c_long]
+    return api
+
+
+def fd_mount_id(fd):
+    require(type(fd) is int and fd >= 0, 'mount-fd')
+    raw = bounded_read(f'/proc/self/fdinfo/{fd}', 16384).decode('ascii')
+    ids = [line.split(':', 1)[1].strip() for line in raw.splitlines() if line.startswith('mnt_id:')]
+    require(len(ids) == 1 and re.fullmatch(r'[1-9][0-9]{0,19}', ids[0]), 'mount-fdinfo')
+    result = int(ids[0])
+    require(result < 2**64, 'mount-fdinfo')
+    return result
+
+
+def _open_tree(api, fd, *, clone):
+    flags = AT_EMPTY_PATH | os.O_CLOEXEC | (OPEN_TREE_CLONE if clone else 0)
+    tree = api(NR_OPEN_TREE, ctypes.c_int(fd), ctypes.c_char_p(b''), ctypes.c_uint(flags))
+    require(tree >= 0, 'mount-open-tree-refused')
+    return int(tree)
+
+
+def _set_private(api, tree):
+    attrs = MountAttr(0, 0, MS_PRIVATE, 0)
+    result = api(NR_MOUNT_SETATTR, ctypes.c_int(tree), ctypes.c_char_p(b''),
+                 ctypes.c_uint(AT_EMPTY_PATH), ctypes.byref(attrs), ctypes.c_size_t(ctypes.sizeof(attrs)))
+    require(result == 0, 'mount-setattr-private-uncertain')
+
+
+def _mount_deadline_start():
+    # Synchronous in-process calls: no escaped child can attach later after this
+    # helper releases its marker lock. Uninterruptible kernel waits can delay
+    # signal delivery; exclusive custody remains locked until the call settles.
+    require(signal.getsignal(signal.SIGALRM) == signal.SIG_DFL
+            and signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0), 'mount-existing-deadline')
+    def expired(signum, frame):
+        raise Refused('modern-mount-deadline-uncertain')
+    signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, 30)
+
+
+def _mount_deadline_end():
+    signal.setitimer(signal.ITIMER_REAL, 0)
+    signal.signal(signal.SIGALRM, signal.SIG_DFL)
+
+
+def modern_private_pin(fd, expected, *, claim_clone, before_attach, verify_attached):
+    api, tree = _mount_api(), None
+    _mount_deadline_start()
+    try:
+        owned_directory_fd(fd, 0, 0, 0o711)
+        require(dict(identity(os.fstat(fd)), filesystemId=os.fstatvfs(fd).f_fsid) == expected, 'namespace-anchor-changed')
+        tree = _open_tree(api, fd, clone=True)
+        owned_directory_fd(tree, 0, 0, 0o711)
+        require(dict(identity(os.fstat(tree)), filesystemId=os.fstatvfs(tree).f_fsid) == expected, 'clone-directory-changed')
+        mount_id = fd_mount_id(tree)
+        claim_clone(mount_id)  # Exact detached ID durable BEFORE move_mount.
+        _set_private(api, tree)
+        before_attach()
+        require(fd_mount_id(tree) == mount_id, 'clone-mount-id-changed')
+        result = api(NR_MOVE_MOUNT, ctypes.c_int(tree), ctypes.c_char_p(b''), ctypes.c_int(fd),
+                     ctypes.c_char_p(b''), ctypes.c_uint(MOVE_MOUNT_EMPTY_PATHS))
+        require(result == 0, 'mount-move-uncertain')
+        require(fd_mount_id(tree) == mount_id, 'clone-mount-id-changed')
+        verify_attached(mount_id, require_private=False)
+        # A shared parent can confer propagation on attach. Detached-private is
+        # NOT sufficient. Affect only this SAME attached tree FD, not the old
+        # covering directory FD/shared parent, then verify actual kernel state.
+        _set_private(api, tree)
+        require(fd_mount_id(tree) == mount_id, 'clone-mount-id-changed')
+        verify_attached(mount_id, require_private=True)
+    finally:
+        if tree is not None:
+            os.close(tree)  # Detached failure drops clone; attached mount remains.
+        _mount_deadline_end()
+
+
+def modern_privatize_owned(fd, expected, mount_id, *, verify_attached):
+    api, tree = _mount_api(), None
+    _mount_deadline_start()
+    try:
+        owned_directory_fd(fd, 0, 0, 0o711)
+        require(dict(identity(os.fstat(fd)), filesystemId=os.fstatvfs(fd).f_fsid) == expected, 'namespace-anchor-changed')
+        require(fd_mount_id(fd) == mount_id, 'covering-mount-fd-refused')
+        tree = _open_tree(api, fd, clone=False)  # Reopen, never clone/rebind.
+        owned_directory_fd(tree, 0, 0, 0o711)
+        require(dict(identity(os.fstat(tree)), filesystemId=os.fstatvfs(tree).f_fsid) == expected, 'clone-directory-changed')
+        require(fd_mount_id(tree) == mount_id, 'covering-mount-fd-refused')
+        verify_attached(mount_id, require_private=False)
+        _set_private(api, tree)
+        require(fd_mount_id(tree) == mount_id, 'clone-mount-id-changed')
+        verify_attached(mount_id, require_private=True)
+    finally:
+        if tree is not None:
+            os.close(tree)
+        _mount_deadline_end()
 
 
 def owned_descendant(path, entry, uid=None, mode=None):
@@ -411,7 +680,9 @@ def preflight_children(entry):
 def create_children(entry):
     # Parent already provisioned rootless identity/home/store; never repair them.
     check_actor_directories(entry, 'rootless')
-    for path in (TARGET / 'rootful', ROOTFUL, RUNFUL.parent, RUNFUL, NETWORK.parent, NETWORK):
+    # Publish the empty new engine last, so a partial mkdir cannot leave an
+    # engine requiring native inspection before its fixed auxiliary paths exist.
+    for path in (TARGET / 'rootful', RUNFUL.parent, RUNFUL, NETWORK.parent, NETWORK, ROOTFUL):
         if os.path.lexists(path):
             owned_descendant(path, entry, 0, 0o700)
             continue
@@ -520,17 +791,7 @@ def pin(proof, digest, marker, native, entry, mode):
             require(mode == 'apply', 'marker-required')
             observed_mount(observation, expected, pinned=False)
         else:
-            require(set(record) == {'version', 'state', 'owner', 'evidenceSha256', 'namespace', 'bootId',
-                                   'mountNamespace', 'mount', 'integrity'}
-                    and type(record['version']) is int and record['version'] == 1
-                    and record['namespace'] == expected
-                    and isinstance(record['evidenceSha256'], str) and HEX.fullmatch(record['evidenceSha256'])
-                    and isinstance(record['owner'], str) and re.fullmatch(r'[0-9a-f]{32}', record['owner'])
-                    and record['state'] in ('claimed', 'pinned')
-                    and isinstance(record['bootId'], str) and UUID.fullmatch(record['bootId'])
-                    and isinstance(record['mountNamespace'], dict) and set(record['mountNamespace']) == {'device', 'inode'}
-                    and all(type(v) is int and v > 0 for v in record['mountNamespace'].values())
-                    and (record['mount'] is None or isinstance(record['mount'], dict)), 'marker-binding')
+            record_binding(record, expected)
             same_boot = record['bootId'] == observation['bootId'] and record['mountNamespace'] == observation['mountNamespace']
             require(record['evidenceSha256'] == digest or (mode == 'recheck' and not same_boot), 'namespace-evidence-changed')
             if same_boot and record['state'] == 'pinned':
@@ -546,24 +807,22 @@ def pin(proof, digest, marker, native, entry, mode):
                 observed_mount(observation, expected, pinned=False)
             elif record['mount'] is not None:
                 own = observed_mount(observation, expected, pinned=True)
-                saved = record['mount']
-                # A crash after the claimed make-private effect may have removed
-                # propagation tags. Reconcile only that exact same mount ID.
-                reconciled = (set(saved) == set(own) and isinstance(saved.get('optional'), list)
-                    and all(isinstance(v, str) and re.fullmatch(r'(shared|master|propagate_from):[1-9][0-9]*', v)
-                            for v in saved['optional']) and own['optional'] == []
-                    and {k: v for k, v in own.items() if k != 'optional'}
-                        == {k: v for k, v in saved.items() if k != 'optional'})
-                require(own == saved or reconciled, 'marker-mount-changed')
+                require(same_mount_or_private_transition(record['mount'], own), 'marker-mount-changed')
             else:
                 exists = any(m['target'] == str(TARGET) for m in observation['mounts'])
-                observed_mount(observation, expected, pinned=exists)
+                own = observed_mount(observation, expected, pinned=exists)
+                if own is not None:
+                    require(record['cloneMountId'] == own['id'], 'preclaimed-mount-id-changed')
+                elif record['cloneMountId'] is not None:
+                    # No background mount worker exists, but do not replace a
+                    # durable preclaimed clone ID or erase uncertain evidence.
+                    raise Refused('preclaimed-clone-absent-review-required')
         # No mount, marker claim, directory creation or ACL operation before these gates.
         preflight_children(entry)
-        native.stopped(proof, fd)
+        native.stopped(proof, fd, record=record, observation=observation)
         current = kernel()
         expected_inode = {k: expected[k] for k in ('device', 'inode')}
-        require(current == observation and identity(TARGET.lstat()) == expected_inode
+        require(boundary_view(current) == boundary_view(observation) and identity(TARGET.lstat()) == expected_inode
                 and identity(os.fstat(fd)) == expected_inode
                 and os.fstatvfs(fd).f_fsid == expected['filesystemId'], 'namespace-observation-changed')
         reserves()
@@ -571,38 +830,59 @@ def pin(proof, digest, marker, native, entry, mode):
             marker.open(True)
             require(marker.load() is None, 'marker-created-concurrently')
         if record is None:
-            record = {'version': 1, 'state': 'claimed', 'owner': secrets.token_hex(16), 'evidenceSha256': digest,
-                      'namespace': expected, 'bootId': current['bootId'], 'mountNamespace': current['mountNamespace'], 'mount': None}
+            record = {'version': 2, 'state': 'claimed', 'owner': secrets.token_hex(16), 'evidenceSha256': digest,
+                      'namespace': expected, 'bootId': current['bootId'], 'mountNamespace': current['mountNamespace'],
+                      'mount': None, 'cloneMountId': None}
         else:
             record.update(state='claimed', bootId=current['bootId'], mountNamespace=current['mountNamespace'], evidenceSha256=digest)
             if not same_boot:
-                record['mount'] = None
-        marker.save(record)  # Durable claim before the fixed mount effect.
-        own = [m for m in current['mounts'] if m['target'] == str(TARGET)]
-        if not own:
-            native.bind(fd)
-        current = kernel()
-        own = observed_mount(current, expected, pinned=True)
-        require(current['bootId'] == record['bootId'] and current['mountNamespace'] == record['mountNamespace']
-                and identity(TARGET.lstat()) == expected_inode, 'namespace-observation-changed')
-        record['mount'] = own
-        marker.save(record)
-        # Reopen through the newly pinned path: pre-bind FD still names the old
-        # covering mount, so it must NEVER be used for --make-private.
-        mounted_fd = namespace(expected)
-        try:
-            reserves()
-            native.make_private(mounted_fd)
-        finally:
-            os.close(mounted_fd)
-        current = kernel()
-        own = observed_mount(current, expected, pinned=True)
-        private_mount(own)
-        require(current['bootId'] == record['bootId'] and current['mountNamespace'] == record['mountNamespace'], 'namespace-observation-changed')
-        record['mount'] = own
-        # Still claimed until every fixed child custody check/provision succeeds.
-        marker.save(record)
+                record['mount'], record['cloneMountId'] = None, None
+        marker.save(record)  # Durable operation claim before any clone/effect.
+        parent_before = next(m for m in current['mounts'] if m['target'] == str(SHARED))
+        def verify_attached(mount_id, *, require_private):
+            require(record['cloneMountId'] == mount_id, 'preclaimed-mount-id-changed')
+            observed = kernel()
+            own = observed_mount(observed, expected, pinned=True)
+            require(own['id'] == mount_id, 'preclaimed-mount-id-changed')
+            require(observed['bootId'] == record['bootId'] and observed['mountNamespace'] == record['mountNamespace']
+                    and next(m for m in observed['mounts'] if m['target'] == str(SHARED)) == parent_before,
+                    'namespace-observation-changed')
+            checked = namespace(expected)
+            os.close(checked)
+            if require_private:
+                private_mount(own)
+            return own
+        own = next((m for m in current['mounts'] if m['target'] == str(TARGET)), None)
+        if own is None:
+            def claim_clone(mount_id):
+                require(record['cloneMountId'] is None and not any(m['id'] == mount_id for m in kernel()['mounts']),
+                        'clone-id-not-fresh')
+                record['cloneMountId'] = mount_id
+                marker.save(record)  # Exact detached clone ID BEFORE move_mount.
+            def before_attach():
+                reserves()
+                native.stopped(proof, fd, record=record, observation=observation)
+            native.pin_namespace(fd, expected, claim_clone=claim_clone,
+                                 before_attach=before_attach, verify_attached=verify_attached)
+        else:
+            require(record['cloneMountId'] == own['id'], 'preclaimed-mount-id-changed')
+            if any(v.startswith(('shared:', 'master:', 'propagate_from:')) or v == 'unbindable' for v in own['optional']):
+                # Only the preclaimed exact attached mount may be repaired. The
+                # old namespace FD points to its covering mount, so reopen first.
+                mounted_fd = namespace(expected)
+                try:
+                    reserves()
+                    native.privatize_owned(mounted_fd, expected, record['cloneMountId'], verify_attached=verify_attached)
+                finally:
+                    os.close(mounted_fd)
+        record['mount'] = verify_attached(record['cloneMountId'], require_private=True)
+        marker.save(record)  # Claimed until children and canonical native gates pass.
         create_children(entry)
+        # Changed authority, not a pathname fallback: the actual private pin and
+        # durable Root claim now protect literal canonical Rootful store access.
+        # Every native observation rechecks the pin and actual actor directories.
+        current = kernel()
+        native.stopped(proof, fd, record=record, observation=current)
         record['state'] = 'pinned'
         marker.save(record)
         verify_marker(record, kernel(), expected)
@@ -614,7 +894,10 @@ def pin(proof, digest, marker, native, entry, mode):
 def report(record, mode):
     return {'version': 1, 'scope': 'p0-v2-namespace', 'mode': mode, 'state': record['state'],
             'namespace': record['namespace'], 'bootId': record['bootId'],
-            'mountId': record['mount']['id'], 'owner': record['owner'], 'installationCertified': False}
+            'mountId': record['mount']['id'], 'owner': record['owner'],
+            'authorityStrategy': 'canonical-after-verified-pin', 'existingRootfulRepinSupported': False,
+            'mountStrategy': 'open-tree-setattr-move-mount-setattr',
+            'installationCertified': False}
 
 
 class Parser(argparse.ArgumentParser):

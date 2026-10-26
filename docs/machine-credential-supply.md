@@ -19,7 +19,8 @@ The parent lifecycle owns deployment and must:
    import of user/core/service Python. Use a filesystem permitting execution.
 3. Independently hash-verify the staged inode **before execution**. The helper's
    subsequent self-check is defense in depth, not a bootstrap trust mechanism.
-4. Invoke `/usr/bin/python3 -I <staged-file>` with the exact arguments below.
+4. Invoke trusted `/usr/bin/python3 -I <staged-file>` from a clean privileged
+   launcher environment (no caller library/preload injection), with the arguments below.
    Non-isolated direct CLI execution refuses before filesystem-resolved imports.
    Do not import the helper into a privileged parent Python interpreter.
 5. Supply the explicitly approved, ordinary-service intent file and its exact
@@ -80,14 +81,29 @@ Modes:
 * `resources` has 1–64 entries with unique names. A name is at most 48 characters,
   matching `[a-z][a-z0-9]*(?:-[a-z0-9]+)*`. It is a resource identifier, not a path.
 * `actors` has 1–2 unique entries, only `rootless` and/or `rootful`.
-* `policy` is optional. If present, its exact closed shape is
-  `{"encoding":"base64url","entropyBytes":32}` or the same with `48`.
-  Omission normalizes to `base64url` with 48 entropy bytes. No standard `+/`
-  base64, hex, unpadded32-byte format, 16-byte policy, boolean size or extra field
-  is accepted. This is a generic size/encoding policy, not an application map.
-  32 random bytes encode into **44 URL-safe ASCII characters with one `=`**;
-  48 bytes encode into **64 URL-safe ASCII characters without padding**. This
-  supports a 32-byte-decoded cookie and safe 64-character ordinary credentials.
+* `policy` is optional. Its closed shape is
+  `{"encoding":"base64url","entropyBytes":32}` with encoding exactly one of
+  `base64url`, `base64url-unpadded`, `hex`, and entropyBytes exactly32 or48.
+  Omission **still** normalizes to padded `base64url` with48 entropy bytes.
+  Standard `+/` base64, unknown encodings, weak/other entropy sizes, boolean sizes
+  and extra fields refuse. This is a generic closed policy, not an application
+  map, expression evaluator or generator API.
+  * `base64url`:32 bytes =>44 characters with exactly one `=`;48 =>64 characters
+    with no padding. Existing OAuth-cookie/default behavior is unchanged.
+  * `base64url-unpadded`:32 bytes =>**43** characters;48 =>64. No `=` is accepted.
+  * `hex`:32 bytes =>64 lowercase hex characters;48 =>96. No prefix, uppercase,
+    whitespace or terminator is accepted.
+  All encodings round-trip to exactly the selected entropy count. Base64 pad bits
+  must be canonical, not merely decodable. Formats are policy-bound even where
+  padded/unpadded48-byte encodings happen to have identical bytes.
+  Consumer-owned declarations choose the format explicitly. For example, the
+  reviewed proposed catalog04 contract requires four independent32-byte hex
+  materials and one independent32-byte unpadded URL-safe material for Forgejo.
+  The latter must be43 characters, not hex64/padded44/default64: the consumer's
+  native decoder can otherwise silently regenerate plaintext INI. The helper
+  contains **no Forgejo resource inventory** and never guesses this format;
+  Parent must materialize the exact reviewed generic policies. Actual native
+  unchanged-INI checks and consumer acceptance remain Parent/consumer-owned.
 * Names containing `vault`, `keykeeper`, `bao` or `owner` refuse. `postgres-admin`
   is explicitly protected: **preexisting `p0-postgres-admin` is never inspected or
   touched**. The caller must deliberately exclude it. This is a reserved-name
@@ -119,7 +135,11 @@ non-symlink ancestors, with exactly one independently verified exception:
 `/mnt/stack` is preserved as UID1000:GID1000 mode2775. It is accepted only for
 paths at/below the exact Root0:0 mode0711 **kernel-pinned** `/mnt/stack/p0-v2`
 boundary, with a strict Root-private namespace marker matching current boot,
-host mount namespace, filesystem ID, device/inode and self-bind mount metadata.
+host mount namespace, filesystem ID, device/inode and actual private mount metadata.
+The namespace marker is **v2**, with an exact `cloneMountId` durably preclaimed
+before FD attachment and equal to the current kernel mount ID. Legacy namespace
+v1 markers cannot prove that ownership and are not auto-migrated. This is separate
+from credential record v2 and intent/evidence/report v1.
 No caller path outside that boundary gets an ancestor exemption. Missing,
 claimed, corrupt, stale, renamed, foreign, shared, stacked or unpinned mounts and
 any descendant mount refuse **before any native call**, including `info`.
@@ -154,6 +174,24 @@ Before **any secret operation**, filesystem/config checks run and native
 `info --format json` must report the exact expected `store.graphRoot`,
 `store.runRoot` and `store.graphDriverName`. In the CLI, these checks happen before
 creation of the custody directory, and are rechecked within the supply flow.
+Preflight captures the verified namespace marker bytes/file identity and current
+pin, plus actor directory device/inode/UID/GID/mode and exact rootless config
+bytes/file identity. Before **and after every native call**, including `info`,
+`exists`, `inspect` and `create`, those authorities are revalidated. A changed
+marker/mount/layout refuses, even after native exit0; uncertain effects retain
+claims rather than being replayed. Layout checks do not compare engine-directory
+mtime, which legitimate backend metadata operations may change.
+
+Every native graphroot is the literal canonical path in the table, never an
+inherited-FD alias or persisted FD-number identity. This is not a fallback from
+an alias failure: Host Root may use these paths only under the complete verified
+kernel pin. This credential helper has **no** unpinned/native observation mode.
+The namespace helper's separately bounded pre-pin observation is unprivileged
+Rootless-only and requires fresh absent/empty Rootful state; it grants no secret
+supply authority. Initialized unpinned Rootful stores and normal populated
+Rootful reboot/repin remain unsupported, not automatically repaired. Namespace
+preclaims without attachment likewise require reviewed disposition. Details and
+remaining native/lifecycle gates are in [runtime-namespace.md](runtime-namespace.md).
 The parent's namespaces must already be provisioned: even native `info` can
 initialize internal metadata within a dedicated store, so mutating modes are not
 advertised as side-effect-free preflight. Status/dry-run never call `info`.
@@ -203,8 +241,8 @@ rotation, legacy-label repair or force/replay API.
   resources: {
     <resource>: {
       version: <opaque-random-128-bit-hex>,
-      policy: { encoding: base64url, entropyBytes: 32|48 },
-      value: <canonical-padded-URL-safe-base64-of-exactly-policy-entropy-bytes>,
+      policy: { encoding: base64url|base64url-unpadded|hex, entropyBytes: 32|48 },
+      value: <canonical-selected-encoding-of-exactly-policy-entropy-bytes>,
       actors: { <actor>: { state: prepared|claimed|uncertain|complete, id: null|<native-id> } }
     }
   },
@@ -214,11 +252,15 @@ rotation, legacy-label repair or force/replay API.
 
 This is **active authoritative credential custody**, not an experiment backup,
 archive or snapshot. A value is generated exactly once per new resource using
-`secrets.token_bytes(policy.entropyBytes)` and canonical URL-safe base64 (44 or64
-ASCII bytes); the **same encoded bytes** are piped to every listed actor. The
+`secrets.token_bytes(policy.entropyBytes)` and the selected canonical encoding
+(43/44/64/96 ASCII bytes); the **same encoded bytes** are piped to every listed actor. Each
+resource draws independent entropy; distinct resources never share one generated
+value, even if their policies match. The
 normalized policy is bound to the exact intent, record and its opaque resource
 version. Load validates the policy against the intent, exact decoded length,
-URL-safe alphabet and canonical padding by an encode/decode round trip. A policy
+lowercase hex or URL-safe alphabet and exact selected padding by an encode/decode
+round trip. Unpadded policies never accept padded values or silently strip them;
+hex policies never normalize uppercase/prefixes/whitespace. A policy
 change never silently replaces or rotates any existing resource. Values never appear in reports, argv, environment,
 world-readable temporary files or native diagnostics. Native output is never
 forwarded. Ownership/version IDs are independently random, not credential-value
@@ -293,12 +335,18 @@ python3 -I -m unittest discover -s tests_v2 -p test_machine_credentials.py -v
 
 Tests import only this standalone source into an unprivileged test interpreter.
 They use private temporary fixture directories, test-local ownership mapping and
-fake native runners/processes. They prove both exact 32/48-byte URL-safe formats and equal generated bytes
+fake native runners/processes. They prove all three exact32/48-byte encoding policies, rejection of
+noncanonical hex/unpadded/padded forms, five independent consumer-format entropy
+draws, metadata-bound resume without regeneration, and equal generated bytes
 across actors without displaying them, independent incremental intents,
 cross-intent claim collision/locking, namespace-boundary refusals, durable claims
 before effects, crash/metadata resume,
 foreign-name rejection, changed IDs, uncertainty/no replay, schema/hash/integrity
 refusals, CAS/lock/link/mode/ancestor custody, fixed identity/store flags, output
 bounds/deadlines, sanitized errors, resource gates and read-only status/dry-run.
+Discriminating fake tests also reject missing preflight, marker/mount/directory
+changes before native process creation, and authority changes after an otherwise
+successful canonical native command. Native I/O-only tests stub authority checks
+explicitly; they do not qualify real filesystem or kernel ownership.
 No fixture is installed proof. **Actual native compatibility, private Root staging
 and installed service acceptance remain parent-owned and are not certified here.**
