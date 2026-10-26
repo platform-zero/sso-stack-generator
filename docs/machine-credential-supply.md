@@ -139,7 +139,7 @@ host mount namespace, filesystem ID, device/inode and actual private mount metad
 The namespace marker is **v2**, with an exact `cloneMountId` durably preclaimed
 before FD attachment and equal to the current kernel mount ID. Legacy namespace
 v1 markers cannot prove that ownership and are not auto-migrated. This is separate
-from credential record v2 and intent/evidence/report v1.
+from credential record v2, credential intent/report v1 and namespace evidence v1/v2.
 No caller path outside that boundary gets an ancestor exemption. Missing,
 claimed, corrupt, stale, renamed, foreign, shared, stacked or unpinned mounts and
 any descendant mount refuse **before any native call**, including `info`.
@@ -187,11 +187,22 @@ inherited-FD alias or persisted FD-number identity. This is not a fallback from
 an alias failure: Host Root may use these paths only under the complete verified
 kernel pin. This credential helper has **no** unpinned/native observation mode.
 The namespace helper's separately bounded pre-pin observation is unprivileged
-Rootless-only and requires fresh absent/empty Rootful state; it grants no secret
-supply authority. Initialized unpinned Rootful stores and normal populated
-Rootful reboot/repin remain unsupported, not automatically repaired. Namespace
-preclaims without attachment likewise require reviewed disposition. Details and
-remaining native/lifecycle gates are in [runtime-namespace.md](runtime-namespace.md).
+Rootless-only; it never grants secret supply authority. Initial pin still requires
+fresh absent/empty Rootful state. Task05 adds an explicit complete-owned stale-boot
+repin protocol with independently held Root-only descendants, but **no Root-native
+store call until the new verified private attachment/current claim**. It does not
+adopt/repair unclaimed, incomplete or foreign stores; native boot qualification
+remains Parent-owned. Detached preclaims without attachment still need review.
+
+The namespace helper also has explicit same-boot `review-units` evidence-only
+admission and an opt-in closed inactive relay contract. These change no credential
+API, record or namespace marker schema. A legitimate evidence-binding publication
+changes marker bytes/file identity and therefore invalidates an in-flight
+credential witness just like any other marker change; before/after guards remain
+mandatory. Parent serializes these operations under its interlock. This helper
+never updates namespace evidence, supplies an unpinned store, ignores an inactive
+relay or starts/stops a unit. Details and native qualification gates are in
+[runtime-namespace.md](runtime-namespace.md).
 The parent's namespaces must already be provisioned: even native `info` can
 initialize internal metadata within a dedicated store, so mutating modes are not
 advertised as side-effect-free preflight. Status/dry-run never call `info`.

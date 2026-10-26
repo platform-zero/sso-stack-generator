@@ -75,7 +75,7 @@ class FakeNative:
         self.crash_after_private = False
         self.next_mount_id = 101
 
-    def stopped(self, proof, fd, *, record, observation):
+    def stopped(self, proof, fd, *, record, observation, repin=None):
         n.require(not self.fail_stopped, 'runtime-unit-not-stopped')
 
     def pin_namespace(self, fd, expected, *, claim_clone, before_attach, verify_attached):
@@ -131,7 +131,7 @@ class NamespaceTests(unittest.TestCase):
         return [patch.object(n, 'namespace', side_effect=lambda expected: os.dup(self.fd)),
                 patch.object(n, 'kernel', side_effect=lambda: copy.deepcopy(obs)), patch.object(n, 'reserves'),
                 patch.object(n, 'preflight_children'), patch.object(n, 'create_children'),
-                patch.object(n, 'check_actor_directories'),
+                patch.object(n, 'check_actor_directories'), patch.object(n, 'RepinPermit'),
                 patch.object(n.Path, 'lstat', new=lambda p: target_stat if p == n.TARGET else real_lstat(p))]
 
     def run_pin(self, marker, native, obs, mode='apply'):
@@ -1061,12 +1061,12 @@ class ModernMountAndAuthorityTests(unittest.TestCase):
             seal(record)
             self.assertFalse(n.inventory_authority(self.fd, self.proof, record, self.obs))
 
-    def test_rootful_recheck_with_existing_metadata_has_no_native_store_or_mount_effect(self):
+    def test_stale_claimed_rootful_store_is_not_prior_complete_boot_authority(self):
         (self.root / 'rootful').mkdir(mode=0o700)
         engine = self.root / 'rootful/engine'
         engine.mkdir(mode=0o700)
         (engine / 'synthetic-native-metadata').write_text('not a credential')
-        old = marker_record(self.expected, observations(self.expected))
+        old = marker_record(self.expected, observations(self.expected), 'claimed')
         self.obs['bootId'] = '87654321-1234-1234-1234-123456789abc'
         native = n.Native(self.entry)
         marker = MemoryMarker(old)
@@ -1077,12 +1077,539 @@ class ModernMountAndAuthorityTests(unittest.TestCase):
              patch.object(n, 'preflight_children'), patch.object(n, 'reserves'), \
              patch.object(n.Path, 'lstat', new=lambda p: target_stat if p == n.TARGET else real_lstat(p)), \
              patch.object(native, 'call') as call, patch.object(native, 'pin_namespace') as mount:
-            with self.assertRaisesRegex(n.Refused, '^rootful-unpinned-existing-store-unsupported$'):
+            with self.assertRaisesRegex(n.Refused, '^prior-complete-pin-required$'):
                 n.pin(self.proof, 'b' * 64, marker, native, self.entry, 'recheck')
             call.assert_not_called()
             mount.assert_not_called()
         self.assertFalse(marker.writes)
         self.assertEqual(marker.record, old)
+
+
+class OwnedBootRecheckTests(unittest.TestCase):
+    """Actual permit/anchors and native guards, fake calls/mounts, new user fixtures."""
+    def setUp(self):
+        from contextlib import ExitStack
+        self.stack = self.enterContext(ExitStack())
+        self.temp = self.enterContext(tempfile.TemporaryDirectory(prefix='.p0-source05-owned-', dir=Path.home()))
+        self.root = Path(self.temp)
+        self.root.chmod(0o711)
+        self.fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, self.fd)
+        self.entry = types.SimpleNamespace(pw_uid=os.getuid(), pw_gid=os.getgid())
+        for actor in ('rootless', 'rootful'):
+            (self.root / actor).mkdir(mode=0o700)
+            (self.root / actor / 'engine').mkdir(mode=0o700)
+        self.engine = self.root / 'rootful/engine'
+        self.data = self.engine / 'synthetic-data'
+        self.data.write_bytes(b'new-fixture-only-not-application-data')
+        initial_bytes = self.data.read_bytes()
+        self.data_before = self.data.stat(), initial_bytes
+        self.expected = dict(n.identity(os.fstat(self.fd)), filesystemId=os.fstatvfs(self.fd).f_fsid)
+        self.proof = {'version': 1, 'namespace': self.expected, 'units': {'rootless': [], 'rootful': []}}
+        self.old = marker_record(self.expected, observations(self.expected))
+        self.obs = observations(self.expected, False)
+        self.obs['bootId'] = '87654321-1234-1234-1234-123456789abc'
+        self.marker = MemoryMarker(copy.deepcopy(self.old))
+        self.native = n.Native(self.entry)
+        self.mounts = FakeNative(self.expected, self.obs, self.marker)
+        self.calls, self.hook, self.containers = [], None, []
+        real_owned, real_lstat = n.owned_directory_fd, Path.lstat
+        self.stack.enter_context(patch.object(n, 'owned_directory_fd', side_effect=lambda fd, uid, gid, mode=0o700:
+            real_owned(fd, os.getuid() if uid == 0 else uid, os.getgid() if gid == 0 else gid, mode)))
+        self.stack.enter_context(patch.object(n, 'namespace', side_effect=lambda expected: os.dup(self.fd)))
+        self.stack.enter_context(patch.object(n, 'kernel', side_effect=lambda: copy.deepcopy(self.obs)))
+        for name in ('reserves', 'preflight_children', 'create_children', 'check_actor_directories'):
+            self.stack.enter_context(patch.object(n, name))
+        target = types.SimpleNamespace(st_dev=self.expected['device'], st_ino=self.expected['inode'])
+        self.stack.enter_context(patch.object(n.Path, 'lstat', new=lambda p: target if p == n.TARGET else real_lstat(p)))
+        self.stack.enter_context(patch.object(self.native, 'call', side_effect=self.call))
+        self.stack.enter_context(patch.object(self.native, 'pin_namespace', side_effect=self.mounts.pin_namespace))
+
+    def call(self, args, actor='rootful', pass_fds=()):
+        self.calls.append((list(args), actor))
+        if args[0] == '/usr/bin/systemctl':
+            return b''
+        self.assertEqual(args[0], '/usr/bin/podman')
+        self.assertEqual(pass_fds, ())
+        if actor == 'rootful':
+            self.assertIn(self.marker.record['state'], ('claimed', 'pinned'))
+            self.assertEqual(self.marker.record['mount']['id'], self.marker.record['cloneMountId'])
+            self.assertEqual(self.obs['mounts'][-1]['optional'], [])
+            self.assertTrue(n.inventory_authority(self.fd, self.proof, self.marker.record, self.obs))
+        if self.hook:
+            self.hook(args, actor)
+        if 'info' in args:
+            return json.dumps({'store': {'graphRoot': args[2], 'graphDriverName': 'overlay',
+                'runRoot': str(n.RUNFUL) if actor == 'rootful' else f'/run/user/{self.entry.pw_uid}/containers'}}).encode()
+        if 'ps' in args:
+            return json.dumps(self.containers if actor == 'rootful' else []).encode()
+        raise AssertionError('unexpected native API')
+
+    def run_pin(self, mode='recheck'):
+        return n.pin(self.proof, 'b' * 64, self.marker, self.native, self.entry, mode)
+
+    def root_calls(self):
+        return [a for a, actor in self.calls if actor == 'rootful' and a[0] == '/usr/bin/podman']
+
+    def test_initialized_complete_old_claim_repins_before_any_root_native_and_preserves_data(self):
+        result = self.run_pin()
+        self.assertTrue(result['existingRootfulRepinSupported'])
+        self.assertFalse(result['installationCertified'])
+        self.assertEqual(len(self.root_calls()), 2)
+        self.assertEqual(self.marker.record['owner'], self.old['owner'])
+        self.assertEqual(self.marker.record['state'], 'pinned')
+        self.assertEqual(self.marker.record['bootId'], self.obs['bootId'])
+        self.assertEqual([r['cloneMountId'] for r in self.marker.writes[:2]], [None, 101])
+        self.assertTrue(all(r['mount'] is None for r in self.marker.writes[:2]))
+        self.assertEqual((self.data.stat(), self.data.read_bytes()), self.data_before)
+        self.assertEqual([e[0] for e in self.mounts.effects], ['clone', 'private-detached', 'attach', 'private-attached'])
+
+    def test_same_boot_new_typed_unit_review_runs_real_native_guards_without_repin(self):
+        self.run_pin()
+        before = copy.deepcopy(self.marker.record)
+        writes, effects = len(self.marker.writes), list(self.mounts.effects)
+        name = 'p0-v2-new-network.service'
+        source = b'NEW SYNTHETIC NETWORK QUADLET'
+        self.proof['units']['rootful'] = [{'name': name, 'kind': 'network',
+                                         'sourceSha256': hashlib.sha256(source).hexdigest()}]
+        original = self.call
+        def installed(args, actor='rootful', pass_fds=()):
+            if actor == 'rootful' and ('list-unit-files' in args or 'p0-v2-*.service' in args):
+                return (name + ' generated -\n').encode()
+            if actor == 'rootful' and 'show' in args:
+                props = {'LoadState': 'loaded', 'ActiveState': 'inactive', 'MainPID': '0', 'ControlGroup': '',
+                         'Job': '', 'TriggeredBy': '', 'DropInPaths': '',
+                         'SourcePath': '/etc/containers/systemd/p0-v2-new.network',
+                         'FragmentPath': '/run/systemd/generator/' + name}
+                return ''.join(k + '=' + v + '\n' for k, v in props.items()).encode()
+            return original(args, actor, pass_fds)
+        self.calls.clear()
+        with patch.object(self.native, 'call', side_effect=installed), patch.object(n, 'strict_directory'), \
+             patch.object(n, 'no_quadlet_dropins'), patch.object(n, 'read_exact', return_value=(source, None)):
+            n.pin(self.proof, 'c' * 64, self.marker, self.native, self.entry, 'review-units', previous_digest='b' * 64)
+        self.assertEqual(len(self.root_calls()), 4)
+        self.assertEqual(self.mounts.effects, effects)
+        self.assertEqual(len(self.marker.writes), writes + 1)
+        self.assertEqual({k: v for k, v in self.marker.record.items() if k not in ('evidenceSha256', 'integrity')},
+                         {k: v for k, v in before.items() if k not in ('evidenceSha256', 'integrity')})
+
+    def test_host_mount_namespace_change_is_explicit_same_safe_transition(self):
+        self.obs['bootId'] = self.old['bootId']
+        self.obs['mountNamespace']['inode'] += 1
+        self.run_pin()
+        self.assertEqual(len(self.root_calls()), 2)
+
+    def test_initial_unclaimed_populated_store_still_refuses_before_all_native(self):
+        self.marker = MemoryMarker()
+        with self.assertRaisesRegex(n.Refused, '^rootful-unpinned-existing-store-unsupported$'):
+            self.run_pin('apply')
+        self.assertEqual(self.calls, [])
+        self.assertFalse(self.marker.writes)
+
+    def test_incomplete_stale_claim_and_wrong_prior_clone_never_authorize_root(self):
+        for change in (lambda r: r.update(state='claimed'), lambda r: r.update(cloneMountId=999),
+                       lambda r: r.update(mount=None), lambda r: r['namespace'].update(inode=999),
+                       lambda r: r['mount'].update(optional=['shared:7']), lambda r: r.update(version=1)):
+            self.marker.record = copy.deepcopy(self.old)
+            change(self.marker.record)
+            seal(self.marker.record)
+            with self.subTest(record=self.marker.record), self.assertRaises(n.Refused):
+                self.run_pin()
+            self.assertFalse(self.calls)
+            self.assertFalse(self.marker.writes)
+
+    def test_wrong_physical_store_owner_refuses_before_native(self):
+        real = n.os.fstat
+        def foreign(fd):
+            observed = real(fd)
+            if observed.st_ino == (self.root / 'rootful').stat().st_ino:
+                return types.SimpleNamespace(st_mode=observed.st_mode, st_uid=999, st_gid=999)
+            return observed
+        with patch.object(n.os, 'fstat', side_effect=foreign):
+            with self.assertRaisesRegex(n.Refused, '^anchored-engine-custody$'):
+                self.run_pin()
+        self.assertFalse(self.calls)
+        self.assertFalse(self.marker.writes)
+
+    def test_wrong_integrity_and_opaque_owner_are_not_prior_authority(self):
+        for key, value in (('integrity', '0' * 64), ('owner', 'bad')):
+            self.marker.record = copy.deepcopy(self.old)
+            self.marker.record[key] = value
+            if key != 'integrity':
+                seal(self.marker.record)
+            with self.subTest(key=key), self.assertRaises(n.Refused):
+                self.run_pin()
+            self.assertFalse(self.calls)
+
+    def test_wrong_root_store_mode_or_missing_engine_refuses_before_native(self):
+        self.engine.chmod(0o750)
+        with self.assertRaisesRegex(n.Refused, '^anchored-engine-custody$'):
+            self.run_pin()
+        self.engine.chmod(0o700)
+        self.engine.rename(self.engine.with_name('held-original-fixture'))
+        with self.assertRaises(FileNotFoundError):
+            self.run_pin()
+        self.assertFalse(self.calls)
+        self.assertFalse(self.marker.writes)
+
+    def test_pre_pin_store_replacement_is_detected_after_rootless_call_before_any_root_or_mount(self):
+        def replace(args, actor):
+            if actor == 'rootless' and 'info' in args:
+                self.engine.rename(self.engine.with_name('retained-fixture'))
+                self.engine.mkdir(mode=0o700)
+        self.hook = replace
+        with self.assertRaisesRegex(n.Refused, '^engine-identity-changed$'):
+            self.run_pin()
+        self.assertFalse(self.root_calls())
+        self.assertFalse(self.mounts.effects)
+        self.assertFalse(self.marker.writes)
+
+    def test_detached_boot_claim_identity_race_is_retained_and_never_replayed(self):
+        def replace(args, actor):
+            if actor == 'rootless' and 'info' in args and self.marker.record['state'] == 'claimed':
+                self.engine.rename(self.engine.with_name('retained-detached-fixture'))
+                self.engine.mkdir(mode=0o700)
+        self.hook = replace
+        with self.assertRaisesRegex(n.Refused, '^engine-identity-changed$'):
+            self.run_pin()
+        self.assertEqual([e[0] for e in self.mounts.effects], ['clone', 'private-detached'])
+        self.assertEqual(self.marker.record['cloneMountId'], 101)
+        self.assertIsNone(self.marker.record['mount'])
+        self.assertFalse(self.root_calls())
+        retained = copy.deepcopy(self.marker.record)
+        self.hook = None
+        for mode, reason in (('resume', 'preclaimed-clone-absent-review-required'),
+                             ('recheck', 'explicit-namespace-recheck-required')):
+            with self.subTest(mode=mode), self.assertRaisesRegex(n.Refused, '^' + reason + '$'):
+                self.run_pin(mode)
+            self.assertEqual(self.marker.record, retained)
+        self.assertFalse(self.root_calls())
+
+    def test_post_pin_authority_loss_is_detected_before_next_root_native(self):
+        def lose(args, actor):
+            if actor == 'rootful' and 'info' in args:
+                self.obs['mounts'][-1]['id'] += 1
+        self.hook = lose
+        with self.assertRaisesRegex(n.Refused, '^namespace-observation-changed$'):
+            self.run_pin()
+        self.assertEqual(len(self.root_calls()), 1)
+        self.assertEqual(self.marker.record['state'], 'claimed')
+        self.assertEqual((self.data.stat(), self.data.read_bytes()), self.data_before)
+
+    def test_stopped_native_objects_are_not_deleted_to_make_recheck_pass(self):
+        self.containers = [{'Id': 'synthetic-stopped-object', 'State': 'exited'}]
+        with self.assertRaisesRegex(n.Refused, '^engine-containers-remain$'):
+            self.run_pin()
+        self.assertEqual(self.marker.record['state'], 'claimed')
+        self.assertEqual(len(self.root_calls()), 2)
+        self.assertFalse(any(x in a for a, _ in self.calls for x in ('rm', 'prune', 'reset')))
+        self.assertEqual((self.data.stat(), self.data.read_bytes()), self.data_before)
+
+    def test_foreign_current_submount_blocks_repin_before_any_native(self):
+        descendant = copy.deepcopy(observations(self.expected)['mounts'][-1])
+        descendant.update(target=str(n.TARGET / 'rootful/engine/unknown-overlay'), id=999)
+        self.obs['mounts'].append(descendant)
+        with self.assertRaises(n.Refused):
+            self.run_pin()
+        self.assertFalse(self.calls)
+        self.assertFalse(self.mounts.effects)
+
+    def test_unknown_installed_rootful_service_blocks_before_store_and_claim(self):
+        original = self.call
+        def unreviewed(args, actor='rootful', pass_fds=()):
+            if actor == 'rootful' and 'list-unit-files' in args:
+                return b'p0-v2-unknown.service disabled disabled\n'
+            return original(args, actor, pass_fds)
+        with patch.object(self.native, 'call', side_effect=unreviewed):
+            with self.assertRaisesRegex(n.Refused, '^unreviewed-runtime-unit$'):
+                self.run_pin()
+        self.assertFalse(self.root_calls())
+        self.assertFalse(self.marker.writes)
+
+
+class EvidenceAdmissionTests(unittest.TestCase):
+    # Reuse synthetic FD/kernel setup only; do not duplicate inherited test counts.
+    setUp = NamespaceTests.setUp
+    contexts = NamespaceTests.contexts
+    def review(self, marker, native, previous='b' * 64, digest='c' * 64):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            for context in self.contexts(self.obs):
+                stack.enter_context(context)
+            return n.pin(self.proof, digest, marker, native, self.entry, 'review-units', previous_digest=previous)
+
+    def test_review_updates_only_digest_and_preserves_independent_credential_marker_contract(self):
+        marker = MemoryMarker(copy.deepcopy(self.record))
+        native = FakeNative(self.expected, self.obs, marker)
+        result = self.review(marker, native)
+        self.assertEqual(result['mode'], 'review-units')
+        self.assertEqual(marker.record['evidenceSha256'], 'c' * 64)
+        self.assertEqual({k: v for k, v in marker.record.items() if k not in ('integrity', 'evidenceSha256')},
+                         {k: v for k, v in self.record.items() if k not in ('integrity', 'evidenceSha256')})
+        self.assertEqual(n.verify_marker(marker.record, self.obs, self.expected),
+                         c.validate_namespace_marker(marker.record, self.obs, self.expected))
+        self.assertEqual(len(marker.writes), 1)
+        self.assertFalse(native.effects)
+
+    def test_previous_digest_is_mandatory_exact_and_cannot_change_other_modes(self):
+        for previous in (None, 'x' * 64, 'a' * 64):
+            marker = MemoryMarker(copy.deepcopy(self.record))
+            native = FakeNative(self.expected, self.obs, marker)
+            with self.subTest(previous=previous), self.assertRaises(n.Refused):
+                self.review(marker, native, previous)
+            self.assertFalse(marker.writes)
+            self.assertFalse(native.effects)
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            for context in self.contexts(self.obs):
+                stack.enter_context(context)
+            with self.assertRaisesRegex(n.Refused, '^previous-evidence-argument$'):
+                n.pin(self.proof, 'b' * 64, MemoryMarker(self.record), native, self.entry, 'apply', previous_digest='b' * 64)
+
+    def test_review_refuses_missing_claimed_stale_or_wrong_current_pin_without_effect(self):
+        variants = [None, marker_record(self.expected, self.obs, 'claimed'), copy.deepcopy(self.record)]
+        variants[-1]['bootId'] = '87654321-1234-1234-1234-123456789abc'
+        seal(variants[-1])
+        for record in variants:
+            marker = MemoryMarker(record)
+            native = FakeNative(self.expected, self.obs, marker)
+            with self.subTest(record=record), self.assertRaises(n.Refused):
+                self.review(marker, native)
+            self.assertFalse(marker.writes)
+            self.assertFalse(native.effects)
+
+    def test_review_closed_gates_and_second_observation_race_prevent_publication(self):
+        for failure in ('first-gate', 'second-gate', 'kernel-race'):
+            marker = MemoryMarker(copy.deepcopy(self.record))
+            native = FakeNative(self.expected, self.obs, marker)
+            calls = []
+            def stopped(*args, **kwargs):
+                calls.append(1)
+                if failure == 'first-gate' or (failure == 'second-gate' and len(calls) == 2):
+                    raise n.Refused('runtime-unit-not-stopped')
+                if failure == 'kernel-race':
+                    self.obs['mounts'][-1]['id'] += 1
+            with patch.object(native, 'stopped', side_effect=stopped):
+                with self.subTest(failure=failure), self.assertRaises(n.Refused):
+                    self.review(marker, native)
+            self.obs = observations(self.expected)
+            self.assertFalse(marker.writes)
+            self.assertEqual(marker.record, self.record)
+
+    def test_review_retains_prior_marker_on_publication_cas_failure(self):
+        marker = MemoryMarker(copy.deepcopy(self.record))
+        native = FakeNative(self.expected, self.obs, marker)
+        with patch.object(marker, 'save', side_effect=n.Refused('marker-cas')):
+            with self.assertRaisesRegex(n.Refused, '^marker-cas$'):
+                self.review(marker, native)
+        self.assertEqual(marker.record, self.record)
+        self.assertFalse(native.effects)
+
+
+class RelayMaintenanceTests(unittest.TestCase):
+    def setUp(self):
+        self.entry = types.SimpleNamespace(pw_uid=1234, pw_gid=1234)
+        self.native = n.Native(self.entry)
+        self.relay = {'id': 'private-search', 'address': '127.0.0.1', 'port': 18200,
+                      'serviceSha256': 'a' * 64, 'socketSha256': 'b' * 64}
+        self.sources = n.relay_sources(self.relay)
+        service, socket = n.relay_names(self.relay)
+        self.relay.update(serviceSha256=hashlib.sha256(self.sources[service]).hexdigest(),
+                          socketSha256=hashlib.sha256(self.sources[socket]).hexdigest())
+        self.proof = {'version': 2, 'namespace': {'device': 1, 'inode': 2, 'filesystemId': 3},
+                      'units': {'rootless': [], 'rootful': []}, 'relays': [self.relay]}
+        common = {'LoadState': 'loaded', 'ActiveState': 'inactive', 'SubState': 'dead', 'ControlPID': '0',
+                  'ControlGroup': '', 'Job': '', 'SourcePath': '', 'DropInPaths': '', 'NeedDaemonReload': 'no'}
+        self.props = {service: dict(common, MainPID='0', User='p0-runtime', Group='p0-runtime',
+                                   FragmentPath=str(n.RELAY_UNITS / service), TriggeredBy=socket),
+                      socket: dict(common, FragmentPath=str(n.RELAY_UNITS / socket), TriggeredBy='', Triggers=service)}
+        self.extra = None
+        self.calls = []
+
+    def call(self, args, actor='rootful', pass_fds=()):
+        self.calls.append((args, actor))
+        service, socket = n.relay_names(self.relay)
+        if actor == 'rootless':
+            return b''
+        if 'show' in args:
+            return ''.join(k + '=' + v + '\n' for k, v in self.props[args[2]].items()).encode()
+        if 'list-unit-files' in args:
+            names = [service, socket] + ([self.extra] if self.extra else [])
+        elif 'p0-v2-*.service' in args:
+            names = [service]
+        else:
+            names = [socket]
+        return ''.join(name + ' static -\n' for name in names).encode()
+
+    def stopped(self):
+        def source(path, *args, **kwargs):
+            return self.sources[path.name], ('synthetic-inode', path.name)
+        with patch.object(self.native, 'call', side_effect=self.call), patch.object(n, 'strict_directory'), \
+             patch.object(n, 'no_native_dropins'), patch.object(n, 'read_exact', side_effect=source), \
+             patch.object(n, 'closed_relay_listener') as listener:
+            self.native.stopped_units(self.proof)
+            return listener.call_count
+
+    def test_exact_inactive_ordinary_native_pair_is_not_a_quadlet(self):
+        self.assertEqual(n.evidence(json.dumps(self.proof).encode()), self.proof)
+        self.assertEqual(self.stopped(), 2)
+        self.assertTrue(all(actor == 'rootful' for args, actor in self.calls if 'show' in args))
+
+    def test_independent_closed_bytes_match_pure_parent_renderer_without_root_import(self):
+        # Import read-only core only in the UNPRIVILEGED source test interpreter.
+        sys.path.insert(0, str(ROOT))
+        try:
+            from p0core import socketrelay
+            provider = types.SimpleNamespace(runtime='rootless', declaration={
+                'endpoints': [{'port': 8200, 'hostPort': 18200, 'bind': '127.0.0.1'}], 'probes': [{}]})
+            for address in ('127.0.0.1', '::1'):
+                provider.declaration['endpoints'][0]['bind'] = address
+                declaration = {'id': self.relay['id'], 'kind': 'http-socket-relay', 'runtime': 'rootful',
+                               'requires': [], 'relay': {'service': 'provider', 'port': 8200},
+                               'resources': {'memoryMax': 67108864, 'tasksMax': 32}}
+                service = types.SimpleNamespace(id=self.relay['id'], runtime='rootful', image=None,
+                    declaration=declaration, requires=[types.SimpleNamespace(service='provider', kind='ready')],
+                    unit_name=n.relay_names(self.relay)[0])
+                catalog = types.SimpleNamespace(services={'provider': provider})
+                relay = dict(self.relay, address=address, resources=declaration['resources'])
+                expected = {Path(k).name: v.encode() for k, v in socketrelay.render(catalog, service).items()}
+                self.assertEqual(n.relay_sources(relay), expected)
+        finally:
+            sys.path.remove(str(ROOT))
+
+    def test_closed_schema_rejects_hostnames_commands_paths_unknown_options_and_collisions(self):
+        mutations = [dict(address='localhost'), dict(address='0.0.0.0'), dict(address='::1%lo'),
+                     dict(port=True), dict(port=65536), dict(id='../escape'), dict(command='/bin/false'),
+                     dict(socketPath='/tmp/arbitrary'), dict(user='root'), dict(resources={'cpuQuota': 10}),
+                     dict(resources={'tasksMax': True})]
+        for mutation in mutations:
+            proof = copy.deepcopy(self.proof)
+            proof['relays'][0].update(mutation)
+            with self.subTest(mutation=mutation), self.assertRaises(n.Refused):
+                n.evidence(json.dumps(proof).encode())
+        for collision in ('duplicate', 'quadlet'):
+            proof = copy.deepcopy(self.proof)
+            if collision == 'duplicate':
+                proof['relays'].append(copy.deepcopy(self.relay))
+            else:
+                proof['units']['rootful'].append({'name': n.relay_names(self.relay)[0], 'sourceSha256': 'a' * 64})
+            with self.subTest(collision=collision), self.assertRaisesRegex(n.Refused, '^evidence-relay-collision$'):
+                n.evidence(json.dumps(proof).encode())
+        proof = copy.deepcopy(self.proof)
+        proof['version'] = 1
+        with self.assertRaisesRegex(n.Refused, '^evidence-schema$'):
+            n.evidence(json.dumps(proof).encode())
+
+    def test_known_socket_never_allows_unknown_scoped_trigger_service_or_resource(self):
+        for extra in ('p0-v2-other.socket', 'p0-v2-other.timer', 'p0-v2-other.path',
+                      'p0-v2-other.service', 'p0-v2-other-volume.service'):
+            self.extra = extra
+            with self.subTest(extra=extra), self.assertRaises(n.Refused):
+                self.stopped()
+
+    def test_removed_relay_rows_cannot_launder_installed_native_units(self):
+        self.proof['relays'] = []
+        with self.assertRaisesRegex(n.Refused, '^unreviewed-runtime-unit$'):
+            self.stopped()
+
+    def test_active_service_listener_jobs_pids_cgroups_extra_relations_and_fragment_facts_refuse(self):
+        service, socket = n.relay_names(self.relay)
+        cases = [(service, 'ActiveState', 'active'), (service, 'MainPID', '123'), (socket, 'ActiveState', 'active'),
+                 (socket, 'ControlPID', '3'), (service, 'ControlPID', '3'), (socket, 'Job', '1/start'),
+                 (service, 'ControlGroup', '/own/nonempty'), (socket, 'ControlGroup', '/own/socket'),
+                 (service, 'TriggeredBy', socket + ' p0-v2-foreign.socket'), (service, 'TriggeredBy', ''),
+                 (socket, 'Triggers', 'p0-v2-foreign.service'), (socket, 'TriggeredBy', 'p0-v2-foreign.path'),
+                 (service, 'SourcePath', '/etc/containers/systemd/not-a-relay.container'),
+                 (socket, 'FragmentPath', '/run/systemd/system/' + socket),
+                 (service, 'DropInPaths', '/etc/systemd/system/service.d/extra.conf'),
+                 (socket, 'NeedDaemonReload', 'yes'), (service, 'User', 'root'), (service, 'Group', 'root')]
+        for name, key, value in cases:
+            old = self.props[name][key]
+            self.props[name][key] = value
+            with self.subTest(name=name, key=key), self.assertRaisesRegex(n.Refused, '^relay-not-stopped$'):
+                self.stopped()
+            self.props[name][key] = old
+        self.props[service]['ActiveState'] = self.props[service]['SubState'] = 'failed'
+        self.stopped()  # Failed-but-closed service, socket still strictly inactive.
+
+    def test_changed_bytes_refuse_even_with_approved_hash_for_nonbuiltin(self):
+        service, _ = n.relay_names(self.relay)
+        self.sources[service] += b'ExecStartPost=/bin/false\n'
+        self.relay['serviceSha256'] = hashlib.sha256(self.sources[service]).hexdigest()
+        with self.assertRaisesRegex(n.Refused, '^relay-source-binding$'):
+            self.stopped()
+
+    def test_source_hash_and_post_observation_identity_are_not_inferred_from_fragment(self):
+        self.relay['serviceSha256'] = 'c' * 64
+        with self.assertRaisesRegex(n.Refused, '^relay-source-binding$'):
+            self.stopped()
+        service, _ = n.relay_names(self.relay)
+        self.relay['serviceSha256'] = hashlib.sha256(self.sources[service]).hexdigest()
+        count = []
+        def race(path, *args, **kwargs):
+            count.append(1)
+            return self.sources[path.name], ('inode', len(count))
+        with patch.object(self.native, 'call', side_effect=self.call), patch.object(n, 'strict_directory'), \
+             patch.object(n, 'no_native_dropins'), patch.object(n, 'read_exact', side_effect=race), \
+             patch.object(n, 'closed_relay_listener'):
+            with self.assertRaisesRegex(n.Refused, '^relay-source-changed$'):
+                self.native.stopped_units(self.proof)
+
+    def test_generic_exact_dash_prefix_native_dropins_refuse(self):
+        with tempfile.TemporaryDirectory(prefix='.p0-source05-dropins-', dir=Path.home()) as directory:
+            root = Path(directory)
+            with patch.object(n, 'NATIVE_UNIT_ROOTS', (root,)):
+                for suffix in ('service', 'socket'):
+                    name = 'p0-v2-private-search.' + suffix
+                    n.no_native_dropins(name)
+                    for prefix in ('', 'p0-.', 'p0-v2-.', 'p0-v2-private-.', 'p0-v2-private-search.'):
+                        target = root / (prefix + suffix + '.d')
+                        target.mkdir()
+                        with self.subTest(path=target), self.assertRaisesRegex(n.Refused, '^native-source-dropins$'):
+                            n.no_native_dropins(name)
+                        target.rmdir()
+
+    def test_alternate_native_fragment_refuses_even_when_exact_etc_fragment_is_loaded(self):
+        service, _ = n.relay_names(self.relay)
+        with tempfile.TemporaryDirectory(prefix='.p0-source05-fragment-', dir=Path.home()) as directory:
+            root = Path(directory)
+            (root / service).write_bytes(b'new-unprivileged-fixture-only')
+            with patch.object(n, 'NATIVE_UNIT_ROOTS', (root,)):
+                with self.assertRaisesRegex(n.Refused, '^native-alternate-fragment$'):
+                    n.no_native_dropins(service)
+
+    def test_bounded_kernel_unix_table_detects_actual_path_even_when_units_inactive(self):
+        header = b'Num       RefCount Protocol Flags    Type St Inode Path\n'
+        path = str(n.RELAY_BASE / self.relay['id'] / 'http.sock')
+        view = types.SimpleNamespace(st_dev=4, st_ino=5)
+        with patch.object(n.os, 'stat', return_value=view), patch.object(n.os.path, 'lexists', return_value=False):
+            for flags, state in (('00010000', '01'), ('00000000', '03')):
+                row = f'0000000000000000: 00000002 00000000 {flags} 0001 {state} 123 {path}\n'.encode()
+                with patch.object(n, 'bounded_read', return_value=header + row):
+                    with self.assertRaisesRegex(n.Refused, '^relay-kernel-socket-remains$'):
+                        n.closed_relay_listener(self.relay, self.entry)
+            with patch.object(n, 'bounded_read', return_value=header + b'0: 2 0 0 1 1 123 /unrelated\n') as read:
+                n.closed_relay_listener(self.relay, self.entry)
+                read.assert_called_once_with('/proc/net/unix', 4 * 1024**2)
+            with patch.object(n, 'bounded_read', return_value=b'wrong header\n'):
+                with self.assertRaisesRegex(n.Refused, '^unix-table-schema$'):
+                    n.closed_relay_listener(self.relay, self.entry)
+
+    def test_wrong_network_namespace_stale_socket_path_and_directory_custody_refuse(self):
+        views = [types.SimpleNamespace(st_dev=4, st_ino=i) for i in (5, 6)]
+        with patch.object(n.os, 'stat', side_effect=views), patch.object(n, 'bounded_read') as read:
+            with self.assertRaisesRegex(n.Refused, '^not-host-network-namespace$'):
+                n.closed_relay_listener(self.relay, self.entry)
+            read.assert_not_called()
+        view = types.SimpleNamespace(st_dev=4, st_ino=5)
+        with patch.object(n.os, 'stat', return_value=view), patch.object(n.os.path, 'lexists', return_value=True), \
+             patch.object(n, 'strict_directory'), patch.object(n.Path, 'lstat', return_value=types.SimpleNamespace(st_gid=1234)):
+            with self.assertRaisesRegex(n.Refused, '^relay-socket-path-remains$'):
+                n.closed_relay_listener(self.relay, self.entry)
+        with patch.object(n.os, 'stat', return_value=view), patch.object(n.os.path, 'lexists', return_value=True), \
+             patch.object(n, 'strict_directory'), patch.object(n.Path, 'lstat', return_value=types.SimpleNamespace(st_gid=999)):
+            with self.assertRaisesRegex(n.Refused, '^relay-directory-custody$'):
+                n.closed_relay_listener(self.relay, self.entry)
 
 
 if __name__ == '__main__':

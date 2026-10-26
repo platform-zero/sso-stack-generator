@@ -10,6 +10,7 @@ import ctypes
 import fcntl
 import grp
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -250,8 +251,9 @@ def reserves():
 
 def evidence(raw):
     value = strict_json(raw)
-    require(isinstance(value, dict) and set(value) == {'version', 'namespace', 'units'}
-            and type(value['version']) is int and value['version'] == 1, 'evidence-schema')
+    require(isinstance(value, dict) and type(value.get('version')) is int
+            and ((value['version'] == 1 and set(value) == {'version', 'namespace', 'units'})
+                 or (value['version'] == 2 and set(value) == {'version', 'namespace', 'units', 'relays'})), 'evidence-schema')
     expected = value['namespace']
     require(isinstance(expected, dict) and set(expected) == {'device', 'inode', 'filesystemId'}
             and all(type(v) is int and v > 0 for v in expected.values()), 'evidence-identity')
@@ -268,6 +270,15 @@ def evidence(raw):
                     and isinstance(entry['sourceSha256'], str) and HEX.fullmatch(entry['sourceSha256']), 'evidence-unit')
             quadlet_name(entry)  # Bind native service suffix to its explicitly reviewed source kind.
             seen.add(entry['name'])
+    relays = value.get('relays', [])
+    require(isinstance(relays, list) and len(relays) <= 64, 'evidence-relays')
+    names = {e['name'] for e in value['units']['rootful']}
+    for relay in relays:
+        relay_contract(relay)
+        service, socket = relay_names(relay)
+        require(service not in names, 'evidence-relay-collision')
+        names.add(service)
+    require(len(names) <= 256, 'evidence-units')
     return value
 
 
@@ -292,6 +303,104 @@ def no_quadlet_dropins(source):
         except FileNotFoundError:
             continue
         raise Refused('quadlet-source-dropins')
+
+
+RELAY_BASE = Path('/run/p0-v2-upstreams')
+RELAY_UNITS = Path('/etc/systemd/system')
+RELAY_PROXY = '/usr/lib/systemd/systemd-socket-proxyd'
+NATIVE_UNIT_ROOTS = tuple(Path(p) for p in (
+    '/etc/systemd/system.control', '/run/systemd/system.control', '/run/systemd/transient',
+    '/run/systemd/generator.early', '/etc/systemd/system', '/etc/systemd/system.attached',
+    '/run/systemd/system', '/run/systemd/system.attached', '/run/systemd/generator',
+    '/usr/local/lib/systemd/system', '/usr/lib/systemd/system', '/lib/systemd/system', '/run/systemd/generator.late'))
+
+
+def relay_names(relay):
+    name = 'p0-v2-' + relay['id']
+    return name + '.service', name + '.socket'
+
+
+def relay_contract(relay):
+    require(isinstance(relay, dict) and set(relay) in (
+        {'id', 'address', 'port', 'serviceSha256', 'socketSha256'},
+        {'id', 'address', 'port', 'serviceSha256', 'socketSha256', 'resources'}), 'relay-schema')
+    require(isinstance(relay['id'], str) and re.fullmatch(r'[a-z][a-z0-9]*(?:-[a-z0-9]+)*', relay['id'])
+            and len(relay_names(relay)[0]) <= 128
+            and len(str(RELAY_BASE / relay['id'] / 'http.sock').encode()) <= 107, 'relay-id')
+    require(isinstance(relay['address'], str) and '%' not in relay['address'], 'relay-address')
+    try:
+        address = ipaddress.ip_address(relay['address'])
+    except ValueError:
+        raise Refused('relay-address') from None
+    require(address.is_loopback and str(address) == relay['address'], 'relay-address')
+    require(type(relay['port']) is int and 1 <= relay['port'] <= 65535
+            and all(isinstance(relay[k], str) and HEX.fullmatch(relay[k]) for k in ('serviceSha256', 'socketSha256')), 'relay-binding')
+    resources = relay.get('resources', {})
+    require(isinstance(resources, dict) and set(resources) <= {'memoryMax', 'tasksMax'}
+            and all(type(v) is int and 1 <= v < 2**63 for v in resources.values()), 'relay-resources')
+
+
+def relay_sources(relay):
+    # Independent closed Root contract. Never import core/service renderer code.
+    relay_contract(relay)
+    service, socket = relay_names(relay)
+    address = ipaddress.ip_address(relay['address'])
+    host = '[' + str(address) + ']' if address.version == 6 else str(address)
+    prefix = '# Generated closed P0 HTTP socket relay; no auto-start.\n'
+    sock = (prefix + '[Unit]\nDescription=P0 private upstream listener\n\n[Socket]\n'
+            + f'ListenStream={RELAY_BASE / relay["id"] / "http.sock"}\nService={service}\n'
+            + 'SocketUser=p0-runtime\nSocketGroup=p0-runtime\nSocketMode=0600\n'
+            + 'DirectoryMode=0710\nRemoveOnStop=true\n')
+    unit = (prefix + '[Unit]\nDescription=P0 fixed upstream forwarding\n\n[Service]\n'
+            + f'ExecStart={RELAY_PROXY} --exit-idle-time=5min {host}:{relay["port"]}\n'
+            + 'User=p0-runtime\nGroup=p0-runtime\nUMask=0077\nNoNewPrivileges=true\n'
+            + 'CapabilityBoundingSet=\nAmbientCapabilities=\nPrivateTmp=true\nPrivateDevices=true\n'
+            + 'ProtectSystem=strict\nProtectHome=true\nProtectKernelTunables=true\n'
+            + 'ProtectKernelModules=true\nProtectControlGroups=true\n'
+            + 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\nRestrictSUIDSGID=true\n'
+            + 'TimeoutStartSec=30\nTimeoutStopSec=30\nRestart=no\n')
+    for key, directive in (('memoryMax', 'MemoryMax'), ('tasksMax', 'TasksMax')):
+        if key in relay.get('resources', {}):
+            unit += f'{directive}={relay["resources"][key]}\n'
+    return {service: unit.encode(), socket: sock.encode()}
+
+
+def no_native_dropins(name):
+    stem, extension = name.rsplit('.', 1)
+    names = {extension + '.d', name + '.d'}
+    names.update(stem[:i + 1] + '.' + extension + '.d' for i, char in enumerate(stem) if char == '-')
+    for root in NATIVE_UNIT_ROOTS:
+        if root != RELAY_UNITS:
+            try:
+                (root / name).lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                raise Refused('native-alternate-fragment')
+        for directory in names:
+            try:
+                (root / directory).lstat()
+            except FileNotFoundError:
+                continue
+            raise Refused('native-source-dropins')
+
+
+def closed_relay_listener(relay, entry):
+    require(identity(os.stat('/proc/self/ns/net')) == identity(os.stat('/proc/1/ns/net')), 'not-host-network-namespace')
+    path = RELAY_BASE / relay['id'] / 'http.sock'
+    if os.path.lexists(RELAY_BASE):
+        strict_directory(RELAY_BASE)
+    if os.path.lexists(path.parent):
+        strict_directory(path.parent, mode=0o710)
+        require(path.parent.lstat().st_gid == entry.pw_gid, 'relay-directory-custody')
+    require(not os.path.lexists(path), 'relay-socket-path-remains')
+    raw = bounded_read('/proc/net/unix', 4 * 1024**2).decode('ascii')
+    lines = raw.splitlines()
+    require(lines and lines[0].split() == ['Num', 'RefCount', 'Protocol', 'Flags', 'Type', 'St', 'Inode', 'Path'], 'unix-table-schema')
+    for line in lines[1:]:
+        parts = line.split(maxsplit=7)
+        require(len(parts) in (7, 8), 'unix-table-schema')
+        require(len(parts) == 7 or parts[7] != str(path), 'relay-kernel-socket-remains')
 
 
 class Native:
@@ -356,9 +465,11 @@ class Native:
         return ['/usr/bin/podman', '--root', graph, '--runroot', str(RUNFUL),
                 '--storage-driver', 'overlay', '--network-config-dir', str(NETWORK)]
 
-    def stopped(self, proof, fd, *, record, observation):
+    def stopped(self, proof, fd, *, record, observation, repin=None):
         protected = inventory_authority(fd, proof, record, observation)
-        fresh = fresh_rootful(fd, proof) if not protected else None
+        if repin is not None:
+            repin.verify(fd)
+        fresh = fresh_rootful(fd, proof) if not protected and repin is None else None
         self.stopped_units(proof)
         # No Host Root Podman command may resolve an unpinned shared-ancestor path.
         # The sole pre-pin native store observer is the unprivileged fixed actor.
@@ -375,17 +486,21 @@ class Native:
                     continue
                 else:
                     anchor.close()
-            self.observe_empty_engine(actor, fd, proof, record, observation)
+            self.observe_empty_engine(actor, fd, proof, record, observation, repin=repin)
         require(inventory_authority(fd, proof, record, observation) == protected, 'inventory-authority-changed')
-        if not protected:
+        if repin is not None:
+            repin.verify(fd)
+        if not protected and repin is None:
             require(fresh_rootful(fd, proof) == fresh, 'fresh-rootful-changed')
 
-    def observe_empty_engine(self, actor, fd, proof, record, observation):
+    def observe_empty_engine(self, actor, fd, proof, record, observation, *, repin=None):
         require(actor == 'rootless' or inventory_authority(fd, proof, record, observation), 'rootful-pin-required')
         check_actor_directories(self.entry, actor)
         anchor = EngineAnchor(fd, actor, self.entry)
         try:
             def guard():
+                if repin is not None:
+                    repin.verify(fd)
                 protected = inventory_authority(fd, proof, record, observation)
                 require(actor == 'rootless' or protected, 'rootful-pin-required')
                 anchor.verify(fd)
@@ -407,7 +522,9 @@ class Native:
     def stopped_units(self, proof):
         for actor, units in proof['units'].items():
             prefix = ['/usr/bin/systemctl'] + (['--user'] if actor == 'rootless' else [])
-            expected = {entry['name'] for entry in units}
+            relays = proof.get('relays', []) if actor == 'rootful' else []
+            sockets = {relay_names(r)[1] for r in relays}
+            expected = {entry['name'] for entry in units} | {relay_names(r)[0] for r in relays}
             scope = 'p0-v2-' if actor == 'rootful' else 'p0-'
             require(all(name.startswith(scope) for name in expected), 'unit-runtime-scope')
             for command in (['list-units', '--all', '--plain', '--no-legend', scope + '*.service'],
@@ -422,13 +539,16 @@ class Native:
                     if not token.startswith(scope.encode('ascii')):
                         continue  # Foreign manager scope, no stop/adoption authority.
                     name = token.decode('ascii')
+                    if name in sockets:
+                        continue  # Still must pass exact inactive source/kernel checks below.
                     require(not name.endswith(('.timer', '.socket', '.path')), 'runtime-triggers-remain')
                     require(UNIT.fullmatch(name), 'unit-inventory-schema')
                     names.add(name)
                 require(names <= expected, 'unreviewed-runtime-unit')
             triggers = [scope + '*' + suffix for suffix in ('.timer', '.socket', '.path')]
             for command in (['list-units', '--all', '--plain', '--no-legend'] + triggers,):
-                require(not self.call(prefix + command, actor).strip(), 'runtime-triggers-remain')
+                raw = self.call(prefix + command, actor)
+                require(all(line.split()[0].decode('ascii') in sockets for line in raw.splitlines()), 'runtime-triggers-remain')
             for entry in units:
                 name = entry['name']
                 source = (HOME / '.config/containers/systemd' if actor == 'rootless'
@@ -451,6 +571,42 @@ class Native:
                         and props['MainPID'] == '0' and props['ControlGroup'] == '' and props['Job'] == ''
                         and props['SourcePath'] == str(source) and props['FragmentPath'] in fragments
                         and props['DropInPaths'] == '' and props['TriggeredBy'] == '', 'runtime-unit-not-stopped')
+
+        for relay in proof.get('relays', []):
+            self.stopped_relay(relay)
+
+    def stopped_relay(self, relay):
+        service, socket = relay_names(relay)
+        closed_relay_listener(relay, self.entry)
+        for name, expected in relay_sources(relay).items():
+            source = RELAY_UNITS / name
+            strict_directory(source.parent)
+            no_native_dropins(name)
+            raw, initial = read_exact(source, 0)
+            digest_key = 'serviceSha256' if name == service else 'socketSha256'
+            require(hashlib.sha256(raw).hexdigest() == relay[digest_key] and raw == expected, 'relay-source-binding')
+            common = {'LoadState', 'ActiveState', 'SubState', 'Job', 'ControlGroup', 'ControlPID',
+                      'SourcePath', 'FragmentPath', 'DropInPaths', 'TriggeredBy', 'NeedDaemonReload'}
+            fields = common | ({'MainPID', 'User', 'Group'} if name == service else {'Triggers'})
+            raw = self.call(['/usr/bin/systemctl', 'show', name, '--no-pager', '--property=' + ','.join(sorted(fields))])
+            props = {}
+            for line in raw.decode('utf-8').splitlines():
+                key, value = line.split('=', 1)
+                require(key not in props, 'relay-properties-schema')
+                props[key] = value
+            require(set(props) == fields and props['LoadState'] == 'loaded'
+                    and props['Job'] == props['ControlGroup'] == props['SourcePath'] == props['DropInPaths'] == ''
+                    and props['ControlPID'] == '0' and props['FragmentPath'] == str(source)
+                    and props['NeedDaemonReload'] == 'no', 'relay-not-stopped')
+            if name == service:
+                require(props['ActiveState'] in ('inactive', 'failed') and props['SubState'] in ('dead', 'failed')
+                        and props['MainPID'] == '0' and props['User'] == props['Group'] == 'p0-runtime'
+                        and props['TriggeredBy'] == socket, 'relay-not-stopped')
+            else:
+                require(props['ActiveState'] == 'inactive' and props['SubState'] == 'dead'
+                        and props['TriggeredBy'] == '' and props['Triggers'] == service, 'relay-not-stopped')
+            require(read_exact(source, 0) == (expected, initial), 'relay-source-changed')
+        closed_relay_listener(relay, self.entry)
 
     def pin_namespace(self, fd, expected, *, claim_clone, before_attach, verify_attached):
         modern_private_pin(fd, expected, claim_clone=claim_clone,
@@ -504,9 +660,60 @@ class EngineAnchor:
         self.fds = []
 
 
+class RepinPermit:
+    """Ephemeral held custody, NEVER permission for pre-pin Host Root native I/O.
+
+    Marker v2 records namespace, not historical engine inode. Root-only descendants
+    under that SAME namespace are trusted; compare their current held identities
+    throughout this operation. Do not pretend prior store inode history exists.
+    """
+    def __init__(self, fd, proof, prior, observation, entry):
+        record_binding(prior, proof['namespace'])
+        require(prior['state'] == 'pinned' and prior['mount'] is not None
+                and (prior['bootId'] != observation['bootId'] or prior['mountNamespace'] != observation['mountNamespace']),
+                'prior-complete-pin-required')
+        observed_mount(observation, proof['namespace'], pinned=False)
+        # Validate the saved complete PRIVATE mount against the stable filesystem
+        # geometry. Its old ID is NOT authority for any current mount.
+        parent = dict(next(m for m in observation['mounts'] if m['target'] == str(SHARED)))
+        saved = prior['mount']
+        require(set(saved) == {'id', 'parent', 'device', 'root', 'target', 'options', 'optional', 'fsType', 'source'}
+                and all(type(saved[k]) is int and 0 < saved[k] < 2**64 for k in ('id', 'parent'))
+                and saved['id'] != saved['parent']
+                and all(isinstance(saved[k], str) and 0 < len(saved[k]) <= 4096
+                        for k in ('device', 'root', 'target', 'fsType', 'source'))
+                and all(isinstance(saved[k], list) and len(saved[k]) <= 128
+                        and all(isinstance(v, str) and 0 < len(v) <= 256 for v in saved[k])
+                        for k in ('options', 'optional')), 'prior-mount-binding')
+        parent['id'] = prior['mount']['parent']
+        verify_marker(prior, {'bootId': prior['bootId'], 'mountNamespace': prior['mountNamespace'],
+                              'mounts': [parent, prior['mount']]}, proof['namespace'])
+        self.expected = dict(proof['namespace'])
+        self.anchor = EngineAnchor(fd, 'rootful', entry)
+        try:
+            self.verify(fd)
+        except BaseException:
+            self.close()
+            raise
+
+    def verify(self, fd):
+        owned_directory_fd(fd, 0, 0, 0o711)
+        require(dict(identity(os.fstat(fd)), filesystemId=os.fstatvfs(fd).f_fsid) == self.expected,
+                'repin-namespace-changed')
+        current = namespace(self.expected)
+        try:
+            self.anchor.verify(current)
+            self.anchor.verify(fd)
+        finally:
+            os.close(current)
+
+    def close(self):
+        self.anchor.close()
+
+
 def fresh_rootful(fd, proof):
     """No native Root store access. Absence/empty directory is not an adoption API."""
-    require(not proof['units']['rootful'], 'rootful-unpinned-units-unsupported')
+    require(not proof['units']['rootful'] and not proof.get('relays'), 'rootful-unpinned-units-unsupported')
     fds, identities, parent = [], [], fd
     try:
         for name in ('rootful', 'engine'):
@@ -818,12 +1025,34 @@ class Marker:
             self.fd = None
 
 
-def pin(proof, digest, marker, native, entry, mode):
+def pin(proof, digest, marker, native, entry, mode, *, previous_digest=None):
     expected = proof['namespace']
     fd = namespace(expected)
+    repin = None
     try:
         observation = kernel()
         record = marker.load()
+        require((mode == 'review-units' and isinstance(previous_digest, str) and HEX.fullmatch(previous_digest))
+                or (mode != 'review-units' and previous_digest is None), 'previous-evidence-argument')
+        if mode == 'review-units':
+            require(record is not None and record.get('evidenceSha256') == previous_digest, 'previous-evidence-changed')
+            verify_marker(record, observation, expected)
+            before = json.loads(json.dumps(record))
+            reserves()
+            check_actor_directories(entry, 'rootless')
+            check_actor_directories(entry, 'rootful')
+            native.stopped(proof, fd, record=record, observation=observation)
+            verify_marker(record, kernel(), expected)
+            native.stopped(proof, fd, record=record, observation=kernel())
+            verify_marker(record, kernel(), expected)
+            require(record == before, 'review-marker-changed')
+            reserves()
+            record['evidenceSha256'] = digest
+            marker.save(record)  # EX lock + exact prior byte/stat CAS; metadata only.
+            verify_marker(record, kernel(), expected)
+            require({k: v for k, v in record.items() if k not in ('evidenceSha256', 'integrity')}
+                    == {k: v for k, v in before.items() if k not in ('evidenceSha256', 'integrity')}, 'review-marker-changed')
+            return report(record, mode)
         if mode in ('status', 'check'):
             require(record is not None, 'marker-missing')
             require(record.get('evidenceSha256') == digest, 'namespace-evidence-changed')
@@ -851,6 +1080,8 @@ def pin(proof, digest, marker, native, entry, mode):
             if not same_boot:
                 # A prior boot's mount ID is not authority for a new mount.
                 observed_mount(observation, expected, pinned=False)
+                require(record['state'] == 'pinned', 'prior-complete-pin-required')
+                repin = RepinPermit(fd, proof, record, observation, entry)
             elif record['mount'] is not None:
                 own = observed_mount(observation, expected, pinned=True)
                 require(same_mount_or_private_transition(record['mount'], own), 'marker-mount-changed')
@@ -865,7 +1096,7 @@ def pin(proof, digest, marker, native, entry, mode):
                     raise Refused('preclaimed-clone-absent-review-required')
         # No mount, marker claim, directory creation or ACL operation before these gates.
         preflight_children(entry)
-        native.stopped(proof, fd, record=record, observation=observation)
+        native.stopped(proof, fd, record=record, observation=observation, repin=repin)
         current = kernel()
         expected_inode = {k: expected[k] for k in ('device', 'inode')}
         require(boundary_view(current) == boundary_view(observation) and identity(TARGET.lstat()) == expected_inode
@@ -907,7 +1138,7 @@ def pin(proof, digest, marker, native, entry, mode):
                 marker.save(record)  # Exact detached clone ID BEFORE move_mount.
             def before_attach():
                 reserves()
-                native.stopped(proof, fd, record=record, observation=observation)
+                native.stopped(proof, fd, record=record, observation=observation, repin=repin)
             native.pin_namespace(fd, expected, claim_clone=claim_clone,
                                  before_attach=before_attach, verify_attached=verify_attached)
         else:
@@ -928,12 +1159,14 @@ def pin(proof, digest, marker, native, entry, mode):
         # durable Root claim now protect literal canonical Rootful store access.
         # Every native observation rechecks the pin and actual actor directories.
         current = kernel()
-        native.stopped(proof, fd, record=record, observation=current)
+        native.stopped(proof, fd, record=record, observation=current, repin=repin)
         record['state'] = 'pinned'
         marker.save(record)
         verify_marker(record, kernel(), expected)
         return report(record, mode)
     finally:
+        if repin is not None:
+            repin.close()
         os.close(fd)
 
 
@@ -941,7 +1174,7 @@ def report(record, mode):
     return {'version': 1, 'scope': 'p0-v2-namespace', 'mode': mode, 'state': record['state'],
             'namespace': record['namespace'], 'bootId': record['bootId'],
             'mountId': record['mount']['id'], 'owner': record['owner'],
-            'authorityStrategy': 'canonical-after-verified-pin', 'existingRootfulRepinSupported': False,
+            'authorityStrategy': 'canonical-after-verified-pin', 'existingRootfulRepinSupported': True, 'repinRequiresCompletePriorPin': True,
             'mountStrategy': 'open-tree-setattr-move-mount-setattr',
             'installationCertified': False}
 
@@ -953,11 +1186,12 @@ class Parser(argparse.ArgumentParser):
 
 def main(argv=None):
     p = Parser(description=__doc__)
-    p.add_argument('mode', choices=('apply', 'resume', 'recheck', 'status', 'check'))
+    p.add_argument('mode', choices=('apply', 'resume', 'recheck', 'review-units', 'status', 'check'))
     p.add_argument('--helper-sha256', required=True)
     p.add_argument('--evidence', required=True)
     p.add_argument('--evidence-sha256', required=True)
     p.add_argument('--evidence-uid', required=True, type=int)
+    p.add_argument('--previous-evidence-sha256')
     a = p.parse_args(argv)
     require(os.geteuid() == 0, 'root-required')
     os.umask(0o077)
@@ -974,13 +1208,14 @@ def main(argv=None):
     require(hashlib.sha256(raw).hexdigest() == a.evidence_sha256, 'evidence-sha256')
     proof = evidence(raw)
     entry = account()
-    mutating = a.mode in ('apply', 'resume', 'recheck')
+    mutating = a.mode in ('apply', 'resume', 'recheck', 'review-units')
     if mutating:
         reserves()
     marker = Marker()
     try:
         marker.open(mutating, create=False)
-        result = pin(proof, a.evidence_sha256, marker, Native(entry), entry, a.mode)
+        result = pin(proof, a.evidence_sha256, marker, Native(entry), entry, a.mode,
+                     previous_digest=a.previous_evidence_sha256)
     finally:
         marker.close()
     print(json.dumps(result, sort_keys=True))
