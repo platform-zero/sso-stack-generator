@@ -1,4 +1,4 @@
-"""Critical07 source-only containment/protocol fixtures; NO Root/native execution."""
+"""Custody source fixtures; no Root/native backend, isolated ordinary-UID own-child signal tests."""
 import copy
 import hashlib
 import importlib.util
@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
+import sys
 import tempfile
 import types
 import unittest
@@ -669,6 +671,223 @@ class Source08MetadataTests(unittest.TestCase):
             read.assert_not_called()
 
 
+class Source08ChildSignalTests(unittest.TestCase):
+    def test_setup_resets_default_and_exact_empty_mask_before_ready(self):
+        events = []
+        def mask(how, value):
+            events.append(('mask', how, value, n._CHILD_SUPERVISION_READY))
+            return set()
+        with patch.object(n, '_CHILD_SUPERVISION_READY', True), \
+             patch.object(n.signal, 'signal', side_effect=lambda *a: events.append(('signal', *a, n._CHILD_SUPERVISION_READY))), \
+             patch.object(n.signal, 'getsignal', return_value=n.signal.SIG_DFL), \
+             patch.object(n.signal, 'pthread_sigmask', side_effect=mask):
+            n.establish_child_supervision()
+            self.assertTrue(n._CHILD_SUPERVISION_READY)
+            n.check_child_supervision()
+        self.assertEqual(events[:3], [('signal', n.signal.SIGCHLD, n.signal.SIG_DFL, False),
+            ('mask', n.signal.SIG_SETMASK, set(), False), ('mask', n.signal.SIG_BLOCK, set(), False)])
+
+    def test_setup_failures_never_mark_profile_ready(self):
+        for operation in ('signal', 'pthread_sigmask'):
+            with self.subTest(operation=operation), patch.object(n, '_CHILD_SUPERVISION_READY', True), \
+                 patch.object(n.signal, 'signal'), patch.object(n.signal, 'pthread_sigmask', return_value=set()), \
+                 patch.object(n.signal, operation, side_effect=OSError('SYNTHETIC')):
+                with self.assertRaisesRegex(n.Refused, '^child-signal-profile-unavailable$'):
+                    n.establish_child_supervision()
+                self.assertFalse(n._CHILD_SUPERVISION_READY)
+        for handler, mask in ((n.signal.SIG_IGN, set()), (n.signal.SIG_DFL, {n.signal.SIGCHLD})):
+            with patch.object(n, '_CHILD_SUPERVISION_READY', False), patch.object(n.signal, 'signal'), \
+                 patch.object(n.signal, 'getsignal', return_value=handler), \
+                 patch.object(n.signal, 'pthread_sigmask', return_value=mask):
+                with self.assertRaisesRegex(n.Refused, '^child-signal-profile-unavailable$'):
+                    n.establish_child_supervision()
+                self.assertFalse(n._CHILD_SUPERVISION_READY)
+
+    def test_missing_or_changed_profile_refuses_before_pidfd_open_without_repair(self):
+        for ready, handler, mask in ((False, n.signal.SIG_DFL, set()),
+                                     (True, n.signal.SIG_IGN, set()),
+                                     (True, n.signal.SIG_DFL, {n.signal.SIGCHLD})):
+            with self.subTest(ready=ready, handler=handler, mask=mask), \
+                 patch.object(n, '_CHILD_SUPERVISION_READY', ready), \
+                 patch.object(n.signal, 'getsignal', return_value=handler), \
+                 patch.object(n.signal, 'pthread_sigmask', return_value=mask), \
+                 patch.object(n.signal, 'signal') as repair, patch.object(n.os, 'pidfd_open') as opened:
+                with self.assertRaisesRegex(n.Refused, '^child-signal-profile-required$'):
+                    n.OwnedChild(73)  # Fake only: no foreign PID opened/signalled.
+                repair.assert_not_called(); opened.assert_not_called()
+
+    def test_metadata_profile_precedes_popen_and_failure_cannot_spawn(self):
+        args = ['show', n.MANAGER, '--property=' + ','.join(n.MANAGER_PROPERTIES)]
+        events = []
+        def spawn(*a, **kw):
+            events.append('spawn'); raise n.Refused('SYNTHETIC-spawn')
+        with patch.object(n, 'binary_snapshot', return_value={
+                'sha256': '848c70d7e2c2f43f4f93287897ac8946e8eda45e7daa5f2975d9728071856b1a'}), \
+             patch.object(n, 'establish_child_supervision', side_effect=lambda: events.append('profile')), \
+             patch.object(n.subprocess, 'Popen', side_effect=spawn):
+            with self.assertRaisesRegex(n.Refused, '^SYNTHETIC-spawn$'):
+                n.metadata_call(args)
+        self.assertEqual(events, ['profile', 'spawn'])
+        with patch.object(n, 'binary_snapshot', return_value={
+                'sha256': '848c70d7e2c2f43f4f93287897ac8946e8eda45e7daa5f2975d9728071856b1a'}), \
+             patch.object(n, 'establish_child_supervision', side_effect=n.Refused('SYNTHETIC-profile')), \
+             patch.object(n.subprocess, 'Popen') as spawn:
+            with self.assertRaisesRegex(n.Refused, '^SYNTHETIC-profile$'):
+                n.metadata_call(args)
+            spawn.assert_not_called()
+
+    def test_both_fork_sites_establish_profile_before_fork_and_refuse_setup_failure(self):
+        backend = n.KernelBackend.__new__(n.KernelBackend)  # No libc/syscalls.
+        calls = (lambda: backend.create_projection(None, None, {'anchor': {'result': {}}}, {}, lambda x: None, lambda: None),
+                 lambda: backend.readonly_consumer(None, None, None))
+        for call in calls:
+            events = []
+            def fork():
+                events.append('fork'); raise n.Refused('SYNTHETIC-fork')
+            with patch.object(n, 'establish_child_supervision', side_effect=lambda: events.append('profile')), \
+                 patch.object(n.os, 'fork', side_effect=fork):
+                with self.assertRaisesRegex(n.Refused, '^SYNTHETIC-fork$'):
+                    call()
+            self.assertEqual(events, ['profile', 'fork'])
+            with patch.object(n, 'establish_child_supervision', side_effect=n.Refused('SYNTHETIC-profile')), \
+                 patch.object(n.os, 'fork') as fork:
+                with self.assertRaisesRegex(n.Refused, '^SYNTHETIC-profile$'):
+                    call()
+                fork.assert_not_called()
+
+    def test_main_establishes_profile_before_guard_or_metadata(self):
+        with patch.object(n.os, 'getuid', return_value=0), patch.object(n.os, 'geteuid', return_value=0), \
+             patch.object(n.os, 'getgid', return_value=0), patch.object(n.os, 'getegid', return_value=0), \
+             patch.object(n, 'establish_child_supervision', side_effect=n.Refused('SYNTHETIC-profile')), \
+             patch.object(n, 'SelfGuard') as guard, patch.object(n, 'MetadataObserver') as metadata:
+            with self.assertRaisesRegex(n.Refused, '^SYNTHETIC-profile$'):
+                n.main(['observe-manager', '--helper-sha256', 'a' * 64, '--expected-previous-sha256', 'b' * 64])
+            guard.assert_not_called(); metadata.assert_not_called()
+
+    def test_normal_child_exit_is_reaped_once_without_cleanup_signal(self):
+        child = n.OwnedChild.__new__(n.OwnedChild)
+        child.pid, child.fd, child.reaped = 73, 44, False
+        with patch.object(n.selectors, 'DefaultSelector') as selector, \
+             patch.object(n.os, 'waitpid', return_value=(73, 0)) as wait, \
+             patch.object(n.signal, 'pidfd_send_signal') as signal_child, patch.object(n.os, 'close'):
+            selector.return_value.__enter__.return_value.select.return_value = [(None, None)]
+            child.wait(); child.close()
+            self.assertTrue(child.reaped)
+            wait.assert_called_once_with(73, 0); signal_child.assert_not_called()
+
+    def test_failed_child_wait_is_reaped_once_and_close_does_not_signal(self):
+        child = n.OwnedChild.__new__(n.OwnedChild)
+        child.pid, child.fd, child.reaped = 73, 44, False  # All process operations fake.
+        with patch.object(n.selectors, 'DefaultSelector') as selector, \
+             patch.object(n.os, 'waitpid', return_value=(73, 7 << 8)) as wait, \
+             patch.object(n.signal, 'pidfd_send_signal') as signal_child, patch.object(n.os, 'close'):
+            selector.return_value.__enter__.return_value.select.return_value = [(None, None)]
+            with self.assertRaisesRegex(n.Refused, '^owned-worker-failed$'):
+                child.wait()
+            self.assertTrue(child.reaped)
+            child.close()
+            wait.assert_called_once_with(73, 0); signal_child.assert_not_called()
+
+    def test_timeout_cleanup_uses_only_exact_pidfd_and_reaps_once(self):
+        child = n.OwnedChild.__new__(n.OwnedChild)
+        child.pid, child.fd, child.reaped = 73, 44, False
+        with patch.object(n.selectors, 'DefaultSelector') as selector, \
+             patch.object(n.os, 'waitpid', return_value=(73, 9)) as wait, \
+             patch.object(n.signal, 'pidfd_send_signal') as signal_child, \
+             patch.object(n.os, 'kill') as pid_signal, patch.object(n.os, 'close'):
+            selector.return_value.__enter__.return_value.select.side_effect = [[], [(None, None)]]
+            with self.assertRaisesRegex(n.Refused, '^owned-worker-exit-timeout$'):
+                child.wait()
+            child.close()
+            signal_child.assert_called_once_with(44, n.signal.SIGKILL)
+            wait.assert_called_once_with(73, 0); pid_signal.assert_not_called()
+            self.assertTrue(child.reaped)  # Forced cleanup is NOT clean-stop evidence.
+
+    def own_child_primitive(self, kind):
+        # Runs ONLY ordinary-UID isolated own-child signal/pidfd primitives.
+        # No helper main, Root, mount, unshare, setns, systemctl or foreign PID.
+        body = r'''
+import ctypes, importlib.util, json, os, selectors, signal, sys
+assert os.getuid() == os.geteuid() != 0
+spec = importlib.util.spec_from_file_location('own_signal_source_fixture', sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+assert signal.SIGCHLD in signal.pthread_sigmask(signal.SIG_BLOCK, set())
+assert signal.SIGTERM in signal.pthread_sigmask(signal.SIG_BLOCK, set())
+if sys.argv[2] == 'ignored':
+    assert signal.getsignal(signal.SIGCHLD) == signal.SIG_IGN
+else:
+    assert os.uname().machine == 'x86_64' and sys.platform == 'linux'
+    class Action(ctypes.Structure):
+        _fields_ = [('handler', ctypes.c_void_p), ('mask', ctypes.c_ulong * 16),
+                    ('flags', ctypes.c_int), ('restorer', ctypes.c_void_p)]
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.sigaction.argtypes = [ctypes.c_int, ctypes.POINTER(Action), ctypes.POINTER(Action)]
+    libc.sigaction.restype = ctypes.c_int
+    action = Action(); action.flags = 2  # Linux SA_NOCLDWAIT, test process ONLY.
+    assert libc.sigaction(signal.SIGCHLD, ctypes.byref(action), None) == 0
+    check = Action(); assert libc.sigaction(signal.SIGCHLD, None, ctypes.byref(check)) == 0
+    assert check.flags & 2
+m.establish_child_supervision(); m.check_child_supervision()
+assert signal.getsignal(signal.SIGCHLD) == signal.SIG_DFL
+assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == set()
+if sys.argv[2] != 'ignored':
+    check = Action(); assert libc.sigaction(signal.SIGCHLD, None, ctypes.byref(check)) == 0
+    assert not check.flags & 2
+pid = os.fork()
+if pid == 0:
+    os._exit(7)
+child = None
+try:
+    # WNOWAIT explicitly witnesses immediate failure retained before pidfd_open.
+    status = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
+    assert status.si_pid == pid and status.si_status == 7
+    child = m.OwnedChild(pid)
+    assert child.pid == pid and child.start > 0
+    with selectors.DefaultSelector() as poll:
+        poll.register(child.fd, selectors.EVENT_READ); assert poll.select(2)
+    try:
+        child.wait()
+    except m.Refused as e:
+        assert str(e) == 'owned-worker-failed'
+    else:
+        raise AssertionError('failed-child-not-reported')
+    assert child.reaped
+    try:
+        os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        pass
+    else:
+        raise AssertionError('not-once-only-reap')
+finally:
+    if child is not None:
+        child.close()
+    else:
+        os.waitpid(pid, 0)  # Exact retained own child, never signal by PID.
+print(json.dumps({'ownChildRetained': True, 'pidfdAssociated': True,
+                  'failedExitReported': True, 'reapedOnce': True, 'root': False}))
+'''
+        launcher = r'''
+import os, signal, sys
+assert os.getuid() == os.geteuid() != 0
+signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGCHLD, signal.SIGTERM})
+os.execv(sys.executable, [sys.executable, '-I', '-c', sys.argv[1], *sys.argv[2:]])
+'''
+        result = subprocess.run([sys.executable, '-I', '-c', launcher, body,
+            str(ROOT / 'ops/host-admin/provision-p0-v2-view.py'), kind],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr[-4096:].decode(errors='replace'))
+        self.assertEqual(json.loads(result.stdout), {'ownChildRetained': True, 'pidfdAssociated': True,
+            'failedExitReported': True, 'reapedOnce': True, 'root': False})
+
+    def test_inherited_ignored_sigchld_across_exec_fast_failure_keeps_own_pidfd_association(self):
+        self.own_child_primitive('ignored')
+
+    @unittest.skipUnless(sys.platform == 'linux' and os.uname().machine == 'x86_64', 'pinned Linux x86_64 signal ABI only')
+    def test_supported_default_setup_clears_nocldwait_and_inherited_mask(self):
+        self.own_child_primitive('nocldwait')
+
+
 class Source08TypedPropertyTests(unittest.TestCase):
     # Independent source fixtures, not native systemctl/introspection evidence.
     common = ('Id', 'LoadState', 'ActiveState', 'SubState', 'Job', 'FragmentPath',
@@ -1033,7 +1252,8 @@ class Source08KernelBackendTests(unittest.TestCase):
         def fork():
             self.assertEqual(self.claims[-1]['phase'], 'creator-claimed')
             raise n.Refused('synthetic-fork-not-executed')
-        with patch.object(n.os, 'fork', side_effect=fork), self.assertRaisesRegex(n.Refused, '^synthetic-fork-not-executed$'):
+        with patch.object(n, 'establish_child_supervision'), patch.object(n.os, 'fork', side_effect=fork), \
+             self.assertRaisesRegex(n.Refused, '^synthetic-fork-not-executed$'):
             self.kernel.create_projection(55, 66, self.record, {}, self.claims.append, lambda: None)
         self.assertEqual(self.claims[-1]['phase'], 'creator-claimed')
 

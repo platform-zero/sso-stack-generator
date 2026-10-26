@@ -457,6 +457,33 @@ boot/manager/complete or installed authority. Both receipts remain retained; no
 actual handle capture/recovery fields or syscalls were added. Never use old NativeExecStop
 cleanup to stop a manager under the old unsafe view.
 
+## Own-process child supervision signal premise
+
+Before any metadata Popen or creator/readonly-consumer fork, the trusted
+single-threaded helper establishes its **own** closed signal profile: SIGCHLD is
+reset through supported CPython/Linux `signal.signal(SIG_DFL)` (clearing inherited
+SIG_IGN/SA_NOCLDWAIT), and `pthread_sigmask(SIG_SETMASK, empty)` explicitly clears
+the inherited mask. It checks default disposition/empty mask before marking the
+local profile ready. Python's other dispositions, including SIGPIPE, are unchanged.
+Failure refuses before spawn. Startup also establishes this profile before the
+self guard; externally independently verified private source remains mandatory.
+
+`OwnedChild` checks the established premise **before pidfd_open**, without trying
+to repair it after fork: a child already auto-reaped under SIG_IGN cannot be
+re-associated safely by resetting the signal later. The retained-child premise
+also depends on the trusted single-threaded helper having no asynchronous/wait-any
+reaper. Only its exact direct children are waited; no PID-signalling fallback.
+This changes no Host service signal state and grants no manager/pause authority.
+
+Isolated ordinary-user own-child tests cover ignored SIGCHLD inherited across
+exec, explicitly blocked SIGCHLD/termination mask, immediate failed child retained
+with WNOWAIT before pidfd_open, exact pidfd/starttime and once-only reap. A separate
+Linux x86_64 test-only sigaction fixture verifies SA_NOCLDWAIT is cleared by the
+supported default setup. Signal changes stay inside fresh test processes; helper
+main/Root/mount/unshare/setns/systemctl are not executed. Normal cleanup/timeout
+coverage uses fake process adapters, not real signals. These primitives are not
+whole-backend or installed proof; native staging still needs independent review.
+
 ## Every native lifecycle phase needs custody (Parent integration)
 
 **ExecStartPre alone is insufficient.** Generated ExecStop/ExecStopPost cleanup
@@ -479,6 +506,12 @@ Root helpers entering a namespace use the held verified FD with before/after
 identity, not replaceable paths. Parent owns renderer/freezing/wrapper integration
 and installed zero-native-exec fault proofs across **all** generated phases.
 This proposal is not an implemented execution wrapper or installed gate.
+Coverage must include **Rootless as well as Rootful** invocation paths; an
+unreadable Root0400 guard is not a Rootless execution boundary. Pinned native
+reexec/descendant cleanup (including conmon hooks) needs a separate call-site and
+configuration audit plus zero-native-exec fault oracle, not only generated PID1
+Exec-line grep. These are open integration coverage questions, not an observed
+installed bypass and not authority for a new proxy or guessed engine protocol.
 
 ## Reserves and preservation
 

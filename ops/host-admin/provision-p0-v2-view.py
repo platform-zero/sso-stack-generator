@@ -738,6 +738,35 @@ def binary_snapshot(path):
         os.close(fd)
 
 
+_CHILD_SUPERVISION_READY = False
+
+
+def check_child_supervision():
+    # Single-threaded trusted helper: no asynchronous handler/wait-any reaper.
+    # Never repair after fork: an already auto-reaped PID cannot be recovered.
+    need(_CHILD_SUPERVISION_READY and signal.getsignal(signal.SIGCHLD) == signal.SIG_DFL
+         and not signal.pthread_sigmask(signal.SIG_BLOCK, set()), 'child-signal-profile-required')
+
+
+def establish_child_supervision():
+    """Own process only; before EVERY fork/Popen, not a Host signal operation.
+
+    CPython/Linux signal.signal installs a fresh sigaction, clearing inherited
+    SIG_IGN/SA_NOCLDWAIT. Empty mask is explicit, not inherited launcher state.
+    Python's other dispositions (including SIGPIPE) are deliberately unchanged.
+    """
+    global _CHILD_SUPERVISION_READY
+    _CHILD_SUPERVISION_READY = False
+    try:
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+        signal.pthread_sigmask(signal.SIG_SETMASK, set())
+        need(signal.getsignal(signal.SIGCHLD) == signal.SIG_DFL
+             and not signal.pthread_sigmask(signal.SIG_BLOCK, set()), 'child-signal-profile-unavailable')
+    except (OSError, ValueError):
+        raise Refused('child-signal-profile-unavailable') from None
+    _CHILD_SUPERVISION_READY = True
+
+
 def metadata_call(arguments):
     """Only fixed systemctl READ operations; bounded child/pipe, no raw stderr."""
     need(arguments in (['show', MANAGER, '--property=' + ','.join(MANAGER_PROPERTIES)],
@@ -748,6 +777,7 @@ def metadata_call(arguments):
     before = binary_snapshot('/usr/bin/systemctl')
     need(before['sha256'] == '848c70d7e2c2f43f4f93287897ac8946e8eda45e7daa5f2975d9728071856b1a',
          'systemctl-os-code-profile-unqualified')
+    establish_child_supervision()
     child = subprocess.Popen(['/usr/bin/systemctl', '--no-pager', *arguments], stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C',
         'SYSTEMD_PAGER': 'cat', 'SYSTEMD_COLORS': '0'}, close_fds=True)
@@ -956,6 +986,7 @@ def receive_frame(fd):
 class OwnedChild:
     """Only direct unreaped children; exact pidfd, bounded wait, no global scan."""
     def __init__(self, pid):
+        check_child_supervision()
         self.pid, self.fd, self.reaped = pid, os.pidfd_open(pid, 0), False
         self.start = process_start(bounded('/proc/' + str(pid) + '/stat', 4096))
 
@@ -1089,6 +1120,7 @@ class KernelBackend:
         try:
             facts.update(phase='creator-claimed')
             claim(dict(facts))  # Durable effect claim before fork/unshare.
+            establish_child_supervision()
             pid = os.fork()
             if pid == 0:
                 os.close(to_child); os.close(from_child)
@@ -1207,6 +1239,7 @@ class KernelBackend:
         reader, writer = os.pipe2(os.O_CLOEXEC)
         child = None
         try:
+            establish_child_supervision()
             pid = os.fork()
             if pid == 0:
                 os.close(reader)
@@ -2035,6 +2068,7 @@ def main(argv=None):
     parser.add_argument('--expected-previous-sha256', required=True)
     args = parser.parse_args(argv)
     need(os.getuid() == os.geteuid() == os.getgid() == os.getegid() == 0, 'root-required')
+    establish_child_supervision()
     guard = SelfGuard(args.helper_sha256)
     if args.mode in ('observe-manager', 'observe-pause', 'observe-actor-sources', 'observe-control-peer'):
         result = {'observe-manager': lambda: MetadataObserver().manager(),
