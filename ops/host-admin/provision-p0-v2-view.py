@@ -1,5 +1,8 @@
 #!/usr/bin/python3 -I
-"""Critical07 protected-view transition protocol; unqualified Host effects REFUSE."""
+"""Protected native view: bounded SOURCE08 bootstrap, never secret authority.
+
+Whole backend/manager/pause acceptance is NOT established by primitive14.
+"""
 import sys
 if __name__ == '__main__' and not sys.flags.isolated:
     sys.stdout.write('{"version":1,"refused":true,"reason":"isolated-python-required"}\n')
@@ -14,6 +17,10 @@ import os
 from pathlib import Path
 import re
 import stat
+import selectors
+import signal
+import subprocess
+import time
 
 PHYSICAL = Path('/mnt/stack/p0-v2')
 BASE = Path('/var/lib/p0-v2-view')
@@ -495,7 +502,19 @@ class ViewStore:
         root_ancestors(self.base.parent)
         if not os.path.lexists(self.base):
             need(create, 'view-record-missing')
-            self.base.mkdir(mode=0o700)  # Fresh private inode only, no normalization.
+            parent_fd = os.open(self.base.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                no_default_acl(parent_fd)
+                os.mkdir(self.base.name, mode=0o700, dir_fd=parent_fd)
+                fresh = os.open(self.base.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+                try:
+                    os.fchmod(fresh, 0o700)  # This operation's fresh control inode only.
+                    os.fsync(fresh)
+                finally:
+                    os.close(fresh)
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
         root_ancestors(self.base, leaf_mode=0o700)
         self.fd = os.open(self.base, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -630,6 +649,1051 @@ class Transition:
                 'installationCertified': False, 'remaining': ['manager-private-view', 'exact-old-pause-closure', 'actual-unshare-guard']}
 
 
+# SOURCE08: private bootstrap ledger is outside the as-yet-uncreated target tree.
+BOOTSTRAP = Path('/var/lib/p0-v2-view-bootstrap')
+# Public packaged OS hashes independently observed by Parent15; source profile,
+# not caller-supplied approval. PID/cgroup/view observations remain live facts.
+QUALIFIED_MANAGER_SOURCES = {
+    '/usr/lib/systemd/system/user@.service': '3e64dd11e1f9f5b39e31b689adecebf6f2e79153d271acd4c55172002e468236',
+    '/usr/lib/systemd/system/user@.service.d/10-login-barrier.conf': '1c1452839b609b0609cccaba3c648d780372df6f244deb487da6da5ee002a993'}
+MANAGER_PROPERTIES = ('Id', 'LoadState', 'ActiveState', 'SubState', 'MainPID',
+    'ControlPID', 'Job', 'ControlGroup', 'FragmentPath', 'DropInPaths', 'User',
+    'Group', 'NeedDaemonReload', 'Triggers', 'TriggeredBy')
+
+
+def same_file(path, expected):
+    raw, snapshot = owned_file(path)
+    need(snapshot == expected, 'held-source-snapshot-changed')
+    return raw
+
+
+class SelfGuard:
+    """Exact private source snapshot, not an executable permit for other code."""
+    def __init__(self, digest):
+        self.path = Path(__file__).absolute()
+        need(self.path.is_relative_to('/var/lib') and HEX.fullmatch(digest or ''), 'private-source-location')
+        root_ancestors(self.path.parent, leaf_mode=0o700)
+        need(self.path.name == 'provision-p0-v2-view.py', 'private-source-name')
+        self.raw, self.snapshot = owned_file(self.path)
+        need(sha(self.raw) == digest, 'helper-sha256')
+        need(not os.statvfs(self.path).f_flag & os.ST_NOEXEC, 'source-filesystem-noexec')
+        self.digest = digest
+
+    def check(self):
+        root_ancestors(self.path.parent, leaf_mode=0o700)
+        need(same_file(self.path, self.snapshot) == self.raw, 'helper-source-changed')
+
+
+def binary_snapshot(path):
+    """Read/hash only trusted fixed OS executable/default source, never import."""
+    path = Path(path)
+    root_ancestors(path.parent)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        value = os.fstat(fd)
+        need(stat.S_ISREG(value.st_mode) and value.st_uid == value.st_gid == 0
+             and not value.st_mode & 0o022 and value.st_size <= 64 * 1024**2, 'os-source-custody')
+        digest, count = hashlib.sha256(), 0
+        while True:
+            raw = os.read(fd, 65536)
+            if not raw:
+                break
+            count += len(raw)
+            need(count <= 64 * 1024**2, 'os-source-limit')
+            digest.update(raw)
+        need(count == value.st_size and file_snapshot(value) == file_snapshot(os.fstat(fd)), 'os-source-changed')
+        return {'sha256': digest.hexdigest(), 'snapshot': list(file_snapshot(value))}
+    finally:
+        os.close(fd)
+
+
+def metadata_call(arguments):
+    """Only fixed systemctl READ operations; bounded child/pipe, no raw stderr."""
+    need(arguments in (['show', MANAGER, '--property=' + ','.join(MANAGER_PROPERTIES)],
+                       ['list-units', '--all', '--plain', '--no-legend', 'p0-v2-*'])
+         or (len(arguments) == 3 and arguments[0] == 'show'
+             and re.fullmatch(r'p0-v2-[a-z0-9][a-z0-9-]{0,62}\.(service|socket|timer|path|target)', arguments[1])
+             and arguments[2] == '--property=' + ','.join(MANAGER_PROPERTIES)), 'metadata-command-not-closed')
+    before = binary_snapshot('/usr/bin/systemctl')
+    child = subprocess.Popen(['/usr/bin/systemctl', '--no-pager', *arguments], stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C',
+        'SYSTEMD_PAGER': 'cat', 'SYSTEMD_COLORS': '0'}, close_fds=True)
+    raw, deadline = bytearray(), time.monotonic() + 10
+    try:
+        with selectors.DefaultSelector() as poller:
+            poller.register(child.stdout, selectors.EVENT_READ)
+            while True:
+                need(time.monotonic() < deadline, 'metadata-timeout')
+                if not poller.select(min(0.25, max(0, deadline - time.monotonic()))):
+                    continue
+                chunk = os.read(child.stdout.fileno(), min(4096, 65537 - len(raw)))
+                if not chunk:
+                    break
+                raw.extend(chunk)
+                need(len(raw) <= 65536, 'metadata-limit')
+        need(child.wait(timeout=max(0.01, deadline - time.monotonic())) == 0, 'metadata-unavailable')
+        need(binary_snapshot('/usr/bin/systemctl') == before, 'metadata-executable-changed')
+        return bytes(raw)
+    finally:
+        if child.poll() is None:
+            child.kill()  # Exact supervised metadata child only, never a Host service.
+            child.wait(timeout=2)
+        child.stdout.close()
+
+
+def properties(raw):
+    need(len(raw) <= 65536, 'metadata-limit')
+    result = {}
+    for line in raw.decode('ascii').splitlines():
+        key, sep, value = line.partition('=')
+        need(sep and key in MANAGER_PROPERTIES and key not in result and len(value) <= 8192, 'metadata-property')
+        result[key] = value
+    need(set(result) == set(MANAGER_PROPERTIES), 'metadata-properties-incomplete')
+    return result
+
+
+def inactive(facts):
+    need(facts['LoadState'] == 'loaded' and facts['ActiveState'] in ('inactive', 'failed')
+         and facts['MainPID'] == facts['ControlPID'] == '0'
+         and facts['Job'] in ('', '0') and facts['ControlGroup'] == ''
+         and facts['Triggers'] == facts['TriggeredBy'] == '', 'scoped-unit-not-stopped')
+
+
+class MetadataObserver:
+    """Readonly facts; unknown OS defaults are observations, NEVER an approval."""
+    def manager(self):
+        facts = properties(metadata_call(['show', MANAGER, '--property=' + ','.join(MANAGER_PROPERTIES)]))
+        need(facts['Id'] == MANAGER and facts['FragmentPath'] == '/usr/lib/systemd/system/user@.service', 'manager-fragment')
+        names = facts['DropInPaths'].split()
+        need(len(names) <= 64 and len(set(names)) == len(names), 'manager-dropin-limit')
+        sources = {facts['FragmentPath']: binary_snapshot(facts['FragmentPath'])}
+        unknown = []
+        for name in names:
+            path = Path(name)
+            # Collect immutable OS defaults without assuming this machine has none.
+            # Authored /etc or runtime overrides cannot become a qualified default.
+            if (path.parent.parent == Path('/usr/lib/systemd/system') and
+                    path.parent.name in ('user@.service.d', 'user-.service.d', 'service.d') and
+                    re.fullmatch(r'[A-Za-z0-9_.-]+\.conf', path.name)):
+                sources[name] = binary_snapshot(path)
+            elif path == DROPIN:
+                raw, snapshot = owned_file(path)
+                need(raw == DROPIN_BYTES, 'manager-owned-source-bytes')
+                sources[name] = {'sha256': sha(raw), 'snapshot': list(snapshot)}
+            else:
+                unknown.append(name)
+        approved = {k: v['sha256'] for k, v in sources.items() if k != str(DROPIN)}
+        process = None
+        if facts['MainPID'].isdigit() and int(facts['MainPID']) > 1:
+            process = ProcessObserver().observe(int(facts['MainPID']), 'manager')
+        need(properties(metadata_call(['show', MANAGER, '--property=' + ','.join(MANAGER_PROPERTIES)])) == facts,
+             'manager-observation-changed')
+        return {'version': 1, 'facts': facts, 'sources': sources, 'process': process,
+                'unknownDropins': len(unknown), 'profileQualified': bool(QUALIFIED_MANAGER_SOURCES)
+                    and approved == QUALIFIED_MANAGER_SOURCES and not unknown}
+
+    def stopped_scope(self):
+        raw = metadata_call(['list-units', '--all', '--plain', '--no-legend', 'p0-v2-*'])
+        names = []
+        for line in raw.decode('ascii').splitlines():
+            fields = line.split()
+            need(fields and re.fullmatch(r'p0-v2-[a-z0-9][a-z0-9-]{0,62}\.(service|socket|timer|path|target)', fields[0]), 'scoped-unit-inventory')
+            names.append(fields[0])
+        need(len(names) <= 256 and len(names) == len(set(names)), 'scoped-unit-limit')
+        result = {}
+        for name in sorted(names):
+            facts = properties(metadata_call(['show', name, '--property=' + ','.join(MANAGER_PROPERTIES)]))
+            need(facts['Id'] == name, 'scoped-unit-identity')
+            inactive(facts)
+            result[name] = sha(encoded(facts))
+        return result
+
+
+def boot_id():
+    value = bounded('/proc/sys/kernel/random/boot_id', 128).decode('ascii').strip()
+    need(UUID.fullmatch(value), 'boot-id')
+    return value
+
+
+def host_namespace():
+    own, host = os.stat('/proc/self/ns/mnt'), os.stat('/proc/1/ns/mnt')
+    need((own.st_dev, own.st_ino) == (host.st_dev, host.st_ino), 'not-host-mount-namespace')
+    return {'device': own.st_dev, 'inode': own.st_ino}
+
+
+def available_ram():
+    values = [line.split() for line in bounded('/proc/meminfo', 65536).decode('ascii').splitlines()
+              if line.startswith('MemAvailable:')]
+    need(len(values) == 1 and len(values[0]) == 3 and values[0][2] == 'kB', 'ram-observation')
+    return int(values[0][1]) * 1024
+
+
+def no_default_acl(fd):
+    try:
+        value = os.getxattr(fd, 'system.posix_acl_default')
+    except OSError as error:
+        import errno
+        need(error.errno in (errno.ENODATA, errno.ENOTSUP), 'default-acl-observation')
+    else:
+        need(not value, 'inherited-default-acl')
+
+
+def fd_mount_id(fd):
+    values = [line.split(':', 1)[1].strip() for line in
+              bounded('/proc/self/fdinfo/' + str(fd), 4096).decode('ascii').splitlines() if line.startswith('mnt_id:')]
+    need(len(values) == 1 and values[0].isdigit() and int(values[0]) > 0, 'fd-mount-id')
+    return int(values[0])
+
+
+def mount_row(path, fd=None, fs_type=None):
+    found = []
+    for line in bounded('/proc/self/mountinfo', 4 * 1024**2).decode('ascii').splitlines():
+        left, right = line.split(' - ')
+        fields, tail = left.split(), right.split()
+        need(len(fields) >= 6 and len(tail) == 3, 'mountinfo-schema')
+        if fields[4] == str(path):
+            need(fs_type is None or tail[0] == fs_type, 'mount-filesystem-type')
+            found.append({'id': int(fields[0]), 'parent': int(fields[1]), 'target': fields[4],
+                          'device': fields[2], 'optional': fields[6:]})
+    need(len(found) == 1, 'exact-mount-required')
+    row = found[0]
+    need(not any(v.startswith(('shared:', 'master:', 'propagate_from:')) or v == 'unbindable'
+                 for v in row['optional']), 'private-mount-required')
+    if fd is not None:
+        need(fd_mount_id(fd) == row['id'], 'mount-descriptor-changed')
+    return row
+
+
+def projection_now(expected_parent, expected_data):
+    parent, data = fd_node_path('/mnt/stack'), fd_node_path(PHYSICAL)
+    ns = os.stat('/proc/self/ns/mnt')
+    return projection({'parent': parent, 'data': data,
+        'mountNamespace': {'device': ns.st_dev, 'inode': ns.st_ino},
+        'parentMount': mount_row('/mnt/stack'), 'dataMount': mount_row(PHYSICAL)}, expected_parent, expected_data)
+
+
+def send_frame(fd, value):
+    raw = encoded(value) + b'\n'
+    need(len(raw) <= 8192, 'worker-frame-limit')
+    while raw:
+        count = os.write(fd, raw)
+        need(count > 0, 'worker-write')
+        raw = raw[count:]
+
+
+def receive_frame(fd):
+    raw, deadline = bytearray(), time.monotonic() + 15
+    with selectors.DefaultSelector() as poller:
+        poller.register(fd, selectors.EVENT_READ)
+        while not raw.endswith(b'\n'):
+            need(time.monotonic() < deadline, 'worker-timeout')
+            if not poller.select(min(0.25, max(0, deadline - time.monotonic()))):
+                continue
+            chunk = os.read(fd, 8193 - len(raw))
+            need(chunk, 'worker-closed')
+            raw.extend(chunk)
+            need(len(raw) <= 8192 and raw.count(b'\n') <= 1, 'worker-frame-limit')
+    return parse(bytes(raw))
+
+
+class OwnedChild:
+    """Only direct unreaped children; exact pidfd, bounded wait, no global scan."""
+    def __init__(self, pid):
+        self.pid, self.fd, self.reaped = pid, os.pidfd_open(pid, 0), False
+        self.start = process_start(bounded('/proc/' + str(pid) + '/stat', 4096))
+
+    def wait(self):
+        with selectors.DefaultSelector() as poller:
+            poller.register(self.fd, selectors.EVENT_READ)
+            need(poller.select(15), 'owned-worker-exit-timeout')
+        got, status = os.waitpid(self.pid, 0)
+        self.reaped = True
+        need(got == self.pid and os.waitstatus_to_exitcode(status) == 0, 'owned-worker-failed')
+
+    def close(self):
+        try:
+            if not self.reaped:
+                try:
+                    signal.pidfd_send_signal(self.fd, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                with selectors.DefaultSelector() as poller:
+                    poller.register(self.fd, selectors.EVENT_READ)
+                    need(poller.select(5), 'owned-worker-cleanup-timeout')
+                os.waitpid(self.pid, 0)
+                self.reaped = True
+        finally:
+            os.close(self.fd)
+
+
+class KernelBackend:
+    """Source implementation of primitive14, NOT whole-backend qualification.
+
+    Only fixed mount/projection/readonly child operations. No exec, Podman,
+    migration, cleanup/unmount, ancestor privatization or caller code API.
+    """
+    def __init__(self):
+        need(os.uname().machine == 'x86_64' and ctypes.sizeof(MountAttr) == 32, 'modern-mount-abi')
+        self.libc = ctypes.CDLL(None, use_errno=True)
+        self.libc.syscall.restype = ctypes.c_long
+        self.libc.syscall.argtypes = [ctypes.c_long]
+        self.libc.unshare.argtypes = [ctypes.c_int]
+        self.libc.unshare.restype = ctypes.c_int
+        self.libc.setns.argtypes = [ctypes.c_int, ctypes.c_int]
+        self.libc.setns.restype = ctypes.c_int
+
+    def clone_anchor(self, source_fd, target_fd, *, claim, recheck, verify):
+        independent_clone(self.libc.syscall, source_fd, target_fd, mount_id=fd_mount_id,
+                          claim=claim, before_attach=recheck, verify=verify)
+
+    def attach(self, source, target, path, claim, recheck, *, nsfs=False):
+        # Self-clone is permitted ONLY for this operation's new private holder;
+        # all data anchors still require independent_clone's different inode.
+        tree = self.libc.syscall(428, ctypes.c_int(source), ctypes.c_char_p(b''), ctypes.c_uint(0x1001 | os.O_CLOEXEC))
+        need(tree >= 0, 'modern-clone-unavailable')
+        try:
+            mid = fd_mount_id(tree)
+            claim(mid)
+            attr = MountAttr(0, 0, 1 << 18, 0)
+            def private():
+                need(self.libc.syscall(442, ctypes.c_int(tree), ctypes.c_char_p(b''), ctypes.c_uint(0x1000),
+                     ctypes.byref(attr), ctypes.c_size_t(32)) == 0, 'modern-private-unavailable')
+            private()
+            recheck()
+            need(self.libc.syscall(429, ctypes.c_int(tree), ctypes.c_char_p(b''), ctypes.c_int(target),
+                 ctypes.c_char_p(b''), ctypes.c_uint(0x44)) == 0, 'modern-attach-unavailable')
+            private()
+            reopened = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                a, b = os.fstat(source), os.fstat(reopened)
+                need((a.st_dev, a.st_ino) == (b.st_dev, b.st_ino) and fd_mount_id(reopened) == mid, 'modern-attached-identity')
+                mount_row(path, reopened, 'nsfs' if nsfs else None)
+            finally:
+                os.close(reopened)
+            return mid
+        finally:
+            os.close(tree)
+
+    def persist_namespace(self, parent_fd, record, *, claim, recheck):
+        anchor = record['anchor']['result']
+        facts = {'phase': 'holder-directory-claimed'}
+        need(not os.path.lexists(HANDLE.parent), 'namespace-holder-exists')
+        root_ancestors(HANDLE.parent.parent)
+        run = os.open(HANDLE.parent.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        no_default_acl(run)
+        claim(dict(facts))  # Before fresh directory; uncertain mkdir never replayed.
+        holder = cover = None
+        try:
+            recheck()
+            os.mkdir(HANDLE.parent.name, 0o700, dir_fd=run)
+            holder = os.open(HANDLE.parent.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=run)
+            os.fchmod(holder, 0o700)
+            no_default_acl(holder)
+            identity = fd_node(holder)
+            node(identity, mode=0o700)
+            os.fsync(holder); os.fsync(run)
+            facts.update(phase='holder-prepared', holder={'identity': identity})
+            claim(dict(facts))
+            def holder_claim(mid):
+                facts.update(phase='holder-mount-preclaimed', holder={'identity': identity, 'mountId': mid})
+                claim(dict(facts))
+            # Primitive14 correction: PRIVATE fresh holder mount BEFORE forking.
+            self.attach(holder, holder, HANDLE.parent, holder_claim, recheck)
+            os.close(holder)
+            holder = os.open(HANDLE.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            need(fd_node(holder) == identity and fd_mount_id(holder) == facts['holder']['mountId'], 'holder-mount-changed')
+            mount_row(HANDLE.parent, holder)
+            facts.update(phase='holder-private')
+            claim(dict(facts))
+            facts.update(phase='handle-file-claimed')
+            claim(dict(facts))
+            cover = os.open(HANDLE.name, os.O_RDONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400, dir_fd=holder)
+            os.fchmod(cover, 0o400)
+            os.fsync(cover); os.fsync(holder)
+            facts.update(phase='handle-file-prepared', coverSnapshot=list(file_snapshot(os.fstat(cover))))
+            claim(dict(facts))
+            recheck()
+            result = self.create_projection(parent_fd, cover, record, facts, claim, recheck)
+            return result
+        finally:
+            for fd in (cover, holder, run):
+                if fd is not None:
+                    os.close(fd)
+
+    def create_projection(self, parent_fd, cover, record, facts, claim, recheck):
+        anchor = record['anchor']['result']
+        from_parent, to_child = os.pipe2(os.O_CLOEXEC)
+        from_child, to_parent = os.pipe2(os.O_CLOEXEC)
+        creator = None
+        try:
+            facts.update(phase='creator-claimed')
+            claim(dict(facts))  # Durable effect claim before fork/unshare.
+            pid = os.fork()
+            if pid == 0:
+                os.close(to_child); os.close(from_child)
+                try:
+                    need(self.libc.unshare(0x20000) == 0, 'worker-unshare-unavailable')
+                    now = os.stat('/proc/self/ns/mnt')
+                    need({'device': now.st_dev, 'inode': now.st_ino} != record['anchor']['bootstrap']['hostNamespace'], 'worker-still-host-namespace')
+                    root = os.open('/', os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+                    try:
+                        attr = MountAttr(0, 0, 1 << 18, 0)
+                        # Only this NEW child namespace, never Host propagation.
+                        need(self.libc.syscall(442, ctypes.c_int(root), ctypes.c_char_p(b''), ctypes.c_uint(0x9000),
+                             ctypes.byref(attr), ctypes.c_size_t(32)) == 0, 'worker-private-root-unavailable')
+                    finally:
+                        os.close(root)
+                    # Reopen in the NEW namespace: inherited Host mount FDs
+                    # witness identity but are not its local clone source mount.
+                    local_parent = os.open(STACK, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+                    target = os.open('/mnt/stack', os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+                    try:
+                        need(fd_node(local_parent) == fd_node(parent_fd) == anchor['parent'], 'worker-protected-parent-changed')
+                        def preclaim(ids):
+                            send_frame(to_parent, {'kind': 'projection-claim', 'ids': ids})
+                            need(receive_frame(from_parent) == {'ack': 'projection-claim'}, 'worker-claim-ack')
+                        recursive_projection(self.libc.syscall, local_parent, target, mount_id=fd_mount_id,
+                            claim=preclaim, before_attach=lambda: None,
+                            verify=lambda ids, private: projection_now(anchor['parent'], anchor['data']) if private else None)
+                    finally:
+                        os.close(target)
+                        os.close(local_parent)
+                    send_frame(to_parent, {'kind': 'projection-bound', 'projection': projection_now(anchor['parent'], anchor['data'])})
+                    need(receive_frame(from_parent) == {'exit': True}, 'worker-exit-ack')
+                    os._exit(0)
+                except BaseException:
+                    os._exit(2)
+            creator = OwnedChild(pid)
+            os.close(from_parent); from_parent = None
+            os.close(to_parent); to_parent = None
+            message = receive_frame(from_child)
+            need(set(message) == {'kind', 'ids'} and message['kind'] == 'projection-claim'
+                 and set(message['ids']) == {'parent', 'data'} and all(type(v) is int and v > 0 for v in message['ids'].values())
+                 and message['ids']['parent'] != message['ids']['data'], 'projection-claim-frame')
+            recheck()
+            facts.update(phase='projection-preclaimed', projectionPreclaim=message['ids'],
+                         creator={'pid': pid, 'startTime': creator.start, 'exited': False})
+            claim(dict(facts))
+            send_frame(to_child, {'ack': 'projection-claim'})
+            message = receive_frame(from_child)
+            need(set(message) == {'kind', 'projection'} and message['kind'] == 'projection-bound', 'projection-bound-frame')
+            observed = projection(message['projection'], anchor['parent'], anchor['data'])
+            need(observed['parentMount']['id'] == facts['projectionPreclaim']['parent']
+                 and observed['dataMount']['id'] == facts['projectionPreclaim']['data'], 'projection-preclaim-changed')
+            nsfd = os.open('/proc/' + str(pid) + '/ns/mnt', os.O_RDONLY | os.O_CLOEXEC)
+            try:
+                ns = os.fstat(nsfd)
+                need(fcntl.ioctl(nsfd, 0xb703) == 0x20000 and {'device': ns.st_dev, 'inode': ns.st_ino} == observed['mountNamespace'], 'creator-namespace-changed')
+                def handle_claim(mid):
+                    facts.update(phase='handle-mount-preclaimed', handlePreclaim=mid, projection=observed)
+                    claim(dict(facts))
+                mid = self.attach(nsfd, cover, HANDLE, handle_claim, recheck, nsfs=True)
+                facts['handle'] = {'device': ns.st_dev, 'inode': ns.st_ino, 'mountId': mid, 'type': 'mnt', 'fsType': 'nsfs'}
+            finally:
+                os.close(nsfd)  # Original namespace FD gone BEFORE creator exit.
+            send_frame(to_child, {'exit': True})
+            creator.wait()
+            facts['creator']['exited'] = True
+            facts.update(phase='creator-exited')
+            claim(dict(facts))
+            # Reopen persistent handle and independently setns in readonly child.
+            temporary = dict(record, native=facts)
+            self.verify_bound(temporary)
+            facts.update(phase='bound')
+            claim(dict(facts))
+            return facts
+        finally:
+            for fd in (from_parent, to_child, from_child, to_parent):
+                if fd is not None:
+                    os.close(fd)
+            if creator is not None:
+                creator.close()
+
+    def verify_bound(self, record):
+        need(record['bootId'] == boot_id(), 'native-view-boot-changed')
+        native, anchor = record['native'], record['anchor']['result']
+        need(observe_anchor_mount(anchor['mountId'], record['data']) == anchor, 'native-anchor-changed')
+        need(native['phase'] in ('creator-exited', 'bound') and native['creator']['exited'] is True, 'native-creator-not-closed')
+        root_ancestors(HANDLE.parent, leaf_mode=0o700)
+        holder = os.open(HANDLE.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        nsfd = None
+        try:
+            need(fd_node(holder) == native['holder']['identity']
+                 and mount_row(HANDLE.parent, holder)['id'] == native['holder']['mountId'], 'native-holder-changed')
+            nsfd = os.open(HANDLE, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            value = os.fstat(nsfd)
+            need(value.st_uid == value.st_gid == 0 and fcntl.ioctl(nsfd, 0xb703) == 0x20000
+                 and {'device': value.st_dev, 'inode': value.st_ino} == native['projection']['mountNamespace']
+                 and (value.st_dev, value.st_ino) == (native['handle']['device'], native['handle']['inode'])
+                 and mount_row(HANDLE, nsfd, 'nsfs')['id'] == native['handle']['mountId'], 'native-handle-changed')
+            self.readonly_consumer(nsfd, native['projection'], anchor)
+            need(fd_mount_id(nsfd) == native['handle']['mountId'], 'native-held-handle-changed')
+        finally:
+            os.close(holder)
+            if nsfd is not None:
+                os.close(nsfd)
+
+    def readonly_consumer(self, nsfd, expected, anchor):
+        reader, writer = os.pipe2(os.O_CLOEXEC)
+        child = None
+        try:
+            pid = os.fork()
+            if pid == 0:
+                os.close(reader)
+                try:
+                    need(self.libc.setns(nsfd, 0x20000) == 0, 'consumer-setns-unavailable')
+                    os.chdir('/')
+                    observed = projection_now(anchor['parent'], anchor['data'])
+                    need(observed == expected, 'consumer-projection-changed')
+                    send_frame(writer, {'observed': True})
+                    os._exit(0)
+                except BaseException:
+                    os._exit(2)
+            child = OwnedChild(pid)
+            os.close(writer); writer = None
+            need(receive_frame(reader) == {'observed': True}, 'consumer-observation-failed')
+            child.wait()
+        finally:
+            os.close(reader)
+            if writer is not None:
+                os.close(writer)
+            if child is not None:
+                child.close()
+
+
+class BootstrapHost:
+    """Real readonly bootstrap and fresh-only effects, not native store authority."""
+    targets = ((BASE, 0o700), (STACK, 0o711), (ANCHOR, 0o711))
+
+    def __init__(self, guard, previous_sha):
+        self.guard, self.previous_sha = guard, previous_sha
+        self.raw, self.previous_snapshot = read_previous(previous_sha)
+        prior = parse(self.raw)
+        self.prior = previous_claim(self.raw, previous_sha, prior.get('namespace'))
+        self.boot, self.namespace = boot_id(), host_namespace()
+        self.data_fd = None
+
+    def check(self):
+        self.guard.check()
+        need(read_previous(self.previous_sha) == (self.raw, self.previous_snapshot), 'previous-snapshot-changed')
+        need(boot_id() == self.boot and host_namespace() == self.namespace, 'bootstrap-epoch-changed')
+
+    def hold_data(self, anchored=False):
+        path = ANCHOR if anchored else PHYSICAL
+        fd = os.open(path, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            actual = fd_node(fd)
+            node(actual)
+            need({k: actual[k] for k in self.prior['namespace']} == self.prior['namespace'], 'bootstrap-data-changed')
+            data_reserves(fd, self.prior['namespace'], available_ram=available_ram())
+            if self.data_fd is not None:
+                need(fd_node(self.data_fd) == actual, 'bootstrap-held-data-changed')
+            else:
+                self.data_fd, fd = fd, None
+            return actual
+        finally:
+            if fd is not None:
+                os.close(fd)
+
+    def preflight(self, *, anchored=False):
+        self.check()
+        actual = self.hold_data(anchored)
+        manager = MetadataObserver().manager()
+        facts = manager['facts']
+        # Qualification is necessary before publishing manager source or starting
+        # it, NOT to collect facts or make a fresh independent protected anchor.
+        inactive(facts)
+        need(facts['User'] in ('1004', 'p0-runtime') and facts['Group'] in ('1004', 'p0-runtime')
+             and not manager['unknownDropins'] and str(DROPIN) not in manager['sources'], 'manager-bootstrap-not-stopped')
+        scope = MetadataObserver().stopped_scope()
+        self.check()
+        return {'manager': manager, 'stoppedScope': scope, 'data': actual}
+
+    def plan(self):
+        facts = self.preflight()
+        for path, _ in self.targets:
+            need(not os.path.lexists(path), 'bootstrap-target-exists')
+            # Existing nearest ancestor is trusted; future parents are fresh.
+            parent = path.parent
+            while not parent.exists():
+                parent = parent.parent
+            root_ancestors(parent)
+        return {'version': 1, 'scope': 'p0-native-view', 'state': 'planned',
+                'nativeAuthority': False, 'installationCertified': False,
+                'previousSha256': self.previous_sha, 'bootId': self.boot,
+                'targets': [str(p) for p, _ in self.targets],
+                'managerProfileQualified': facts['manager']['profileQualified'],
+                'next': 'explicit-transition-fresh-targets-then-native12-boundary'}
+
+    def close(self):
+        if self.data_fd is not None:
+            os.close(self.data_fd)
+            self.data_fd = None
+
+
+class Bootstrap:
+    """Bounded real phase backend. Every uncertain effect is retained/refused."""
+    def __init__(self, host, store, kernel=None):
+        self.host, self.store = host, store
+        self.kernel = KernelBackend() if kernel is None else kernel
+
+    def save(self, record):
+        self.host.check()
+        self.store.save(seal(record))
+
+    def validate_binding(self, record):
+        validate_record(record)
+        journal = record['anchor']['bootstrap']
+        need(record['owner'] == self.host.prior['owner'] and record['previousSha256'] == self.host.previous_sha
+             and record['evidenceSha256'] == self.host.prior['evidenceSha256'] and record['bootId'] == self.host.boot
+             and record['data'] == self.host.prior['namespace']
+             and journal['sourceSha256'] == self.host.guard.digest
+             and journal['previousSnapshot'] == list(self.host.previous_snapshot)
+             and journal['hostNamespace'] == self.host.namespace, 'bootstrap-record-binding')
+        need(set(journal) == {'sourceSha256', 'previousSnapshot', 'hostNamespace', 'effects'}, 'bootstrap-journal-schema')
+        effects = journal['effects']
+        need(isinstance(effects, list) and len(effects) <= len(self.host.targets), 'bootstrap-effect-limit')
+        for effect, (path, mode) in zip(effects, self.host.targets):
+            need(set(effect) == {'path', 'mode', 'state', 'identity'} and effect['path'] == str(path)
+                 and effect['mode'] == mode and effect['state'] in ('claimed', 'prepared'), 'bootstrap-effect-schema')
+            if effect['state'] == 'claimed':
+                raise Refused('mkdir-effect-review-required')  # Even absent: no replay.
+            root_ancestors(path, leaf_mode=mode)
+            fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                expected = effect['identity']
+                if path == ANCHOR and record['state'] in ('anchor-private', 'native-namespace-claimed', 'native-view-bound'):
+                    expected = record['anchor']['result']['data']
+                    observe_anchor_mount(record['anchor']['preclaimedId'], record['data'])
+                need(fd_node(fd) == expected, 'bootstrap-created-inode-changed')
+                no_default_acl(fd)
+            finally:
+                os.close(fd)
+        return journal
+
+    def mkdir(self, record, path, mode):
+        journal = record['anchor']['bootstrap']
+        need(not os.path.lexists(path), 'bootstrap-target-exists')
+        root_ancestors(path.parent)
+        parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            held = fd_node(parent)
+            no_default_acl(parent)
+            effect = {'path': str(path), 'mode': mode, 'state': 'claimed', 'identity': None}
+            journal['effects'].append(effect)
+            self.save(record)  # Durable intent BEFORE mkdir, never adopt existing.
+            need(fd_node(parent) == held and fd_node_path(path.parent) == held, 'bootstrap-parent-changed')
+            self.host.check()
+            os.mkdir(path.name, mode=mode, dir_fd=parent)
+            child = os.open(path.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            try:
+                os.fchmod(child, mode)  # This operation's new inode ONLY; umask independent.
+                no_default_acl(child)
+                value = fd_node(child)
+                node(value, mode=mode)
+                need(fd_node_path(path) == value and fd_node_path(path.parent) == held, 'bootstrap-created-inode-changed')
+                os.fsync(child)
+                os.fsync(parent)
+                effect.update(state='prepared', identity=value)
+                self.save(record)
+            finally:
+                os.close(child)
+        finally:
+            os.close(parent)
+
+    def run(self, mode):
+        need(mode in ('transition', 'resume'), 'bootstrap-mode')
+        record = self.store.load()
+        if record is not None:
+            retained, _ = owned_file(self.store.base / 'previous-v2.json')
+            need(retained == self.host.raw, 'bootstrap-retention-incomplete')
+        anchored = record is not None and record['state'] in ('anchor-private', 'native-namespace-claimed', 'native-view-bound')
+        self.host.preflight(anchored=anchored)
+        if record is None:
+            need(mode == 'transition', 'view-record-required')
+            # Validate all absences before claiming ANY target effect.
+            for path, _ in self.host.targets:
+                need(not os.path.lexists(path), 'bootstrap-target-exists')
+            record = {'version': 3, 'state': 'claimed', 'owner': self.host.prior['owner'],
+                'previousSha256': self.host.previous_sha, 'evidenceSha256': self.host.prior['evidenceSha256'],
+                'bootId': self.host.boot, 'data': self.host.prior['namespace'],
+                'anchor': {'bootstrap': {'sourceSha256': self.host.guard.digest,
+                    'previousSnapshot': list(self.host.previous_snapshot), 'hostNamespace': self.host.namespace, 'effects': []}},
+                'native': None, 'manager': None, 'pause': None}
+            self.save(record)
+            self.store.retain_previous(self.host.raw, self.host.previous_sha)
+        else:
+            need(mode == 'resume', 'explicit-transition-resume-required')
+            self.validate_binding(record)
+            need(record['state'] in ('claimed', 'anchor-private', 'native-view-bound'), 'detached-or-namespace-effect-review-required')
+        journal = self.validate_binding(record)
+        if record['state'] == 'claimed':
+            for path, mode_bits in self.host.targets[len(journal['effects']):]:
+                self.mkdir(record, path, mode_bits)
+            target = os.open(ANCHOR, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                def claim(mid):
+                    need(type(mid) is int and mid > 0, 'anchor-clone-id')
+                    record['state'] = 'anchor-preclaimed'
+                    record['anchor']['preclaimedId'] = mid
+                    self.save(record)
+                def verify(mid, private):
+                    observed = observe_anchor_mount(mid, self.host.prior['namespace'])
+                    if private:
+                        record['anchor']['result'] = observed
+                self.kernel.clone_anchor(self.host.data_fd, target, claim=claim,
+                    recheck=lambda: self.host.preflight(), verify=verify)
+            finally:
+                os.close(target)
+            need(record['state'] == 'anchor-preclaimed' and 'result' in record['anchor'], 'anchor-observation-required')
+            record['state'] = 'anchor-private'
+            self.save(record)
+        if record['state'] == 'anchor-private':
+            observe_anchor_mount(record['anchor']['preclaimedId'], self.host.prior['namespace'])
+            parent = os.open(STACK, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                def claim_namespace(facts):
+                    record['state'] = 'native-namespace-claimed'
+                    record['native'] = facts
+                    self.save(record)
+                native = self.kernel.persist_namespace(parent, record, claim=claim_namespace, recheck=self.host.check)
+            finally:
+                os.close(parent)
+            need(record['state'] == 'native-namespace-claimed', 'namespace-preclaim-required')
+            projection(native['projection'], record['anchor']['result']['parent'], record['anchor']['result']['data'])
+            record.update(state='native-view-bound', native=native)
+            self.save(record)
+        need(record['state'] == 'native-view-bound', 'bootstrap-phase-incomplete')
+        return {'version': 1, 'state': record['state'], 'nativeAuthority': False, 'installationCertified': False,
+                'next': ['readonly-manager-pause-metadata', 'explicit-fresh-manager-publication', 'qualified-manager-transition']}
+
+
+def fd_node_path(path):
+    fd = os.open(path, os.O_PATH | os.O_NOFOLLOW | os.O_DIRECTORY)
+    try:
+        return fd_node(fd)
+    finally:
+        os.close(fd)
+
+
+def observe_anchor_mount(expected_id, expected_data):
+    root_ancestors(STACK, leaf_mode=0o711)
+    root_ancestors(ANCHOR, leaf_mode=0o711)
+    parent, data = fd_node_path(STACK), fd_node_path(ANCHOR)
+    node(parent)
+    node(data)
+    need({k: data[k] for k in expected_data} == expected_data, 'anchor-data-changed')
+    rows = []
+    for line in bounded('/proc/self/mountinfo', 4 * 1024**2).decode('ascii').splitlines():
+        left, right = line.split(' - ')
+        fields = left.split()
+        if fields[4] == str(ANCHOR):
+            rows.append({'id': int(fields[0]), 'parent': int(fields[1]), 'device': fields[2],
+                         'target': fields[4], 'optional': fields[6:]})
+    need(len(rows) == 1 and private_mount(rows[0], ANCHOR, device(data)) == expected_id, 'anchor-mount-changed')
+    return {'parent': parent, 'data': data, 'mountId': expected_id}
+
+
+# Parent15 metadata fixes the current old-pause candidate, never a release permit.
+# A changed incarnation/cgroup requires review, not broad prefix signaling.
+PAUSE_PROFILE = {
+    'pidfile': '/run/user/1004/libpod/tmp/pause.pid', 'executable': '/usr/bin/catatonit',
+    'sha256': '84e9bde9a352e11949c9a09abe64b81e83d5dc345a9d99c62eefdfdfc359bb96',
+    'cgroup': '/user.slice/user-1004.slice/user@1004.service/user.slice/podman-pause-bd390fb9.scope'}
+
+
+def process_start(raw):
+    # comm may contain spaces and parentheses; fields after final ')' start at3.
+    text = raw.decode('ascii')
+    end = text.rfind(')')
+    need(end > 1 and text[end + 1:end + 2] == ' ', 'process-stat-schema')
+    fields = text[end + 2:].split()
+    need(len(fields) >= 20 and fields[19].isdigit(), 'process-stat-schema')
+    return int(fields[19])
+
+
+class PauseObserver:
+    """Direct bounded proc metadata with retained pidfd. NO signals/absence proof.
+
+    The PIDfile location/executable profile is deliberately not guessed. A failed
+    or missing read never returns oldPauseClosed. CLI can report exact missing
+    decisions until Parent gathers the actual dedicated-runtime OS contract.
+    """
+    def collect(self):
+        if PAUSE_PROFILE is None:
+            return {'version': 1, 'available': False, 'reason': 'pause-os-profile-required',
+                    'required': ['exact-pidfile', 'immutable-executable-sha256', 'owned-cgroup-profile'],
+                    'oldPauseClosed': False, 'signalAuthority': False}
+        return self.observe(PAUSE_PROFILE)
+
+    def observe(self, profile):
+        need(isinstance(profile, dict) and set(profile) == {'pidfile', 'executable', 'sha256', 'cgroup'}, 'pause-profile-schema')
+        path = Path(profile['pidfile'])
+        need(path.is_absolute() and '..' not in path.parts and path.is_relative_to('/run/user/1004')
+             and isinstance(profile['sha256'], str) and HEX.fullmatch(profile['sha256'])
+             and isinstance(profile['cgroup'], str) and profile['cgroup'].startswith('/user.slice/user-1004.slice/')
+             and '..' not in Path(profile['cgroup']).parts, 'pause-profile-binding')
+        # Mutable actor-owned PIDfile is merely a candidate, never signal authority.
+        descriptors = []
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+            descriptors.append(fd)
+            value = os.fstat(fd)
+            need(stat.S_ISREG(value.st_mode) and value.st_uid == value.st_gid == 1004
+                 and value.st_nlink == 1 and value.st_size <= 32 and not value.st_mode & 0o022, 'pause-pidfile-custody')
+            raw = os.read(fd, 33)
+            need(re.fullmatch(rb'[1-9][0-9]{0,9}\n?', raw) and len(raw) == value.st_size, 'pause-pidfile-schema')
+            pid = int(raw)
+            need(1 < pid < 2**31, 'pause-pid-range')
+            process = Path('/proc') / str(pid)
+            start = process_start(bounded(process / 'stat', 4096))
+            pidfd = os.pidfd_open(pid, 0)
+            descriptors.append(pidfd)
+            procfd = os.open(process, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            descriptors.append(procfd)
+            status = {}
+            for line in bounded(process / 'status', 16384).decode('ascii').splitlines():
+                key, _, val = line.partition(':')
+                if key in ('Uid', 'Gid', 'CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'NoNewPrivs'):
+                    need(key not in status, 'pause-status-schema')
+                    status[key] = val.split()
+            need(status.get('Uid') == status.get('Gid') == ['1004'] * 4, 'pause-process-identity')
+            # Parent15 pause is root inside its userNS: CapPrm/Eff are NOT zero.
+            # Observe capabilities; do not mistake userNS privileges for Host0,
+            # or turn either observation into permission to signal/release.
+            need(all(status.get(k) and len(status[k]) == 1 and re.fullmatch(r'[0-9a-f]{16}', status[k][0])
+                     for k in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd')), 'pause-status-capabilities')
+            exe = os.readlink(process / 'exe')
+            need(exe == profile['executable'] and Path(exe).is_absolute()
+                 and Path(exe).is_relative_to('/usr') and '..' not in Path(exe).parts, 'pause-executable-profile')
+            expected = binary_snapshot(exe)
+            need(expected['sha256'] == profile['sha256'], 'pause-executable-sha256')
+            # Open the actual running executable, not only its pathname target.
+            actual_exe = os.open(process / 'exe', os.O_RDONLY)
+            descriptors.append(actual_exe)
+            need(list(file_snapshot(os.fstat(actual_exe))) == expected['snapshot'], 'pause-running-executable-changed')
+            cgroup = bounded(process / 'cgroup', 4096).decode('ascii')
+            need(cgroup == '0::' + profile['cgroup'] + '\n', 'pause-cgroup-changed')
+            maps = {}
+            for kind in ('uid', 'gid'):
+                rows = [[int(v) for v in line.split()] for line in bounded(process / (kind + '_map'), 8192).decode('ascii').splitlines()]
+                maps[kind] = mapping(rows, 1004)
+            views = {}
+            for key, relative in (('parent', 'mnt/stack'), ('data', 'mnt/stack/p0-v2')):
+                viewfd = os.open(process / 'root' / relative, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+                descriptors.append(viewfd)
+                views[key] = fd_node(viewfd)
+            namespaces = {}
+            for kind in ('user', 'mnt'):
+                ns = os.open(process / 'ns' / kind, os.O_RDONLY | os.O_CLOEXEC)
+                descriptors.append(ns)
+                ns_stat = os.fstat(ns)
+                need(fcntl.ioctl(ns, 0xb703) == {'user': 0x10000000, 'mnt': 0x20000}[kind], 'pause-namespace-type')
+                namespaces[kind] = {'device': ns_stat.st_dev, 'inode': ns_stat.st_ino}
+            info = bounded('/proc/self/fdinfo/' + str(pidfd), 4096).decode('ascii').splitlines()
+            need([v.split(':', 1)[1].strip() for v in info if v.startswith('Pid:')] == [str(pid)], 'pause-pidfd-changed')
+            with selectors.DefaultSelector() as poller:
+                poller.register(pidfd, selectors.EVENT_READ)
+                need(not poller.select(0), 'pause-process-exited')
+            need(process_start(bounded(process / 'stat', 4096)) == start
+                 and file_snapshot(os.fstat(fd)) == file_snapshot(value)
+                 and file_snapshot(os.stat(path, follow_symlinks=False)) == file_snapshot(value)
+                 and os.readlink(process / 'exe') == exe, 'pause-observation-changed')
+            return {'version': 1, 'available': True, 'pid': pid, 'startTime': start,
+                    'uid': 1004, 'gid': 1004, 'pidfileSnapshot': list(file_snapshot(value)),
+                    'executableSha256': expected['sha256'], 'namespaces': namespaces, 'maps': maps, 'view': views,
+                    'cgroup': profile['cgroup'], 'bootId': boot_id(), 'oldPauseClosed': False,
+                    'capabilities': {k: status[k][0] for k in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd')},
+                    'signalAuthority': False, 'emptyContainerReceipt': None}
+        except (OSError, ValueError):
+            raise Refused('pause-metadata-unavailable') from None
+        finally:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+
+
+class ProcessObserver:
+    """Fixed manager metadata only; PID from actual exact unit, no command API."""
+    def observe(self, pid, role):
+        need(role == 'manager' and type(pid) is int and pid > 1, 'process-observer-scope')
+        expected_hash = '799fd89964a716fb5f26c4506047190b6e842ac2745b473bd45351c4d8cbd929'
+        base = Path('/proc') / str(pid)
+        descriptors = []
+        try:
+            pidfd = os.pidfd_open(pid, 0)
+            descriptors.append(pidfd)
+            before = process_start(bounded(base / 'stat', 8192))
+            status = {}
+            for line in bounded(base / 'status', 65536).decode('ascii').splitlines():
+                key, _, val = line.partition(':')
+                if key in ('Uid', 'Gid', 'Groups', 'CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb', 'NoNewPrivs'):
+                    need(key not in status, 'manager-process-status')
+                    status[key] = val.split()
+            need(status.get('Uid') == status.get('Gid') == ['1004'] * 4
+                 and status.get('Groups') == ['1004'], 'manager-process-principal')
+            exe = os.readlink(base / 'exe')
+            need(exe == '/usr/lib/systemd/systemd', 'manager-process-executable')
+            code = binary_snapshot(exe)
+            need(code['sha256'] == expected_hash, 'manager-process-code-profile')
+            actual = os.open(base / 'exe', os.O_RDONLY)
+            descriptors.append(actual)
+            need(list(file_snapshot(os.fstat(actual))) == code['snapshot'], 'manager-running-code-changed')
+            cgroup = bounded(base / 'cgroup', 4096).decode('ascii')
+            need(cgroup == '0::/user.slice/user-1004.slice/user@1004.service/init.scope\n', 'manager-process-cgroup')
+            namespaces = {}
+            for kind, flag in (('user', 0x10000000), ('mnt', 0x20000)):
+                nsfd = os.open(base / 'ns' / kind, os.O_RDONLY | os.O_CLOEXEC)
+                descriptors.append(nsfd)
+                value = os.fstat(nsfd)
+                need(fcntl.ioctl(nsfd, 0xb703) == flag, 'manager-process-namespace')
+                namespaces[kind] = {'device': value.st_dev, 'inode': value.st_ino}
+            views = {}
+            for name, relative in (('parent', 'mnt/stack'), ('data', 'mnt/stack/p0-v2')):
+                # Metadata only via exact process root; no env/cmdline/log/data read.
+                fd = os.open(base / 'root' / relative, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+                descriptors.append(fd)
+                views[name] = fd_node(fd)
+            with selectors.DefaultSelector() as poller:
+                poller.register(pidfd, selectors.EVENT_READ)
+                need(not poller.select(0), 'manager-process-exited')
+            need(before == process_start(bounded(base / 'stat', 8192)) and os.readlink(base / 'exe') == exe
+                 and bounded(base / 'cgroup', 4096).decode('ascii') == cgroup, 'manager-process-changed')
+            return {'pid': pid, 'startTime': before, 'namespaces': namespaces, 'view': views,
+                    'code': code, 'status': status, 'cgroup': cgroup.strip()[3:],
+                    'signalAuthority': False, 'viewAuthority': False}
+        except (OSError, ValueError):
+            raise Refused('manager-process-metadata-unavailable') from None
+        finally:
+            for fd in reversed(descriptors):
+                os.close(fd)
+
+
+def phase_operations(record):
+    """Closed operation vocabulary, not an authorization certificate."""
+    validate_record(record)
+    return {'claimed': ('prepare-fresh-targets',), 'anchor-preclaimed': (),
+            'anchor-private': ('create-private-native-namespace',), 'native-namespace-claimed': (),
+            'native-view-bound': ('observe-manager', 'observe-pause', 'publish-manager-source'),
+            'manager-pending': ('observe-manager', 'observe-pause', 'explicit-manager-transition'),
+            'complete': ()}[record['state']]
+
+
+def rename_fresh(parent, source, destination):
+    # Fixed same-held-directory publication only. No overwrite/legacy fallback.
+    need(source == '.p0-view-manager-publish' and destination == DROPIN.name, 'manager-publication-name')
+    libc = ctypes.CDLL(None, use_errno=True)
+    rename = libc.renameat2
+    rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    rename.restype = ctypes.c_int
+    need(rename(parent, source.encode(), parent, destination.encode(), 1) == 0, 'manager-source-publication-unavailable')
+    os.fsync(parent)
+
+
+class ManagerPublication:
+    """Only one literal drop-in; live bounded namespace authority is mandatory.
+
+    New directory/source are claimed before effects. Interruptions never adopt
+    matching data. Explicit publication recovery accepts a recorded inode at
+    exactly its stage OR final name, not a content-only equivalence.
+    """
+    def __init__(self, bootstrap):
+        self.bootstrap = bootstrap
+
+    def gate(self, record):
+        need('publish-manager-source' in phase_operations(record), 'manager-publication-phase')
+        self.bootstrap.host.check()
+        self.bootstrap.validate_binding(record)
+        # Exact concrete Native12 reopen/live projection verifier, not a caller
+        # boolean, historic result or default-store Podman observation.
+        self.bootstrap.kernel.verify_bound(record)
+        observed = MetadataObserver().manager()
+        inactive(observed['facts'])
+        need(observed['profileQualified'] and not observed['unknownDropins'], 'manager-os-profile-unqualified')
+        MetadataObserver().stopped_scope()
+        return observed
+
+    def run(self):
+        b = self.bootstrap
+        record = b.store.load()
+        need(record is not None, 'view-record-required')
+        self.gate(record)
+        claim = record['manager']
+        root_ancestors(DROPIN.parent.parent)
+        if claim is None:
+            need(not os.path.lexists(DROPIN.parent), 'manager-directory-exists')
+            record['manager'] = {'state': 'directory-claimed', 'directory': None, 'source': None}
+            b.save(record)
+            os.mkdir(DROPIN.parent, mode=0o700)
+            fd = os.open(DROPIN.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fchmod(fd, 0o700)
+                no_default_acl(fd)
+                directory = fd_node(fd)
+                node(directory, mode=0o700)
+                os.fsync(fd)
+                parent = os.open(DROPIN.parent.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    os.fsync(parent)
+                finally:
+                    os.close(parent)
+                record['manager'].update(state='directory-prepared', directory=directory)
+                b.save(record)
+            finally:
+                os.close(fd)
+            claim = record['manager']
+        need(isinstance(claim, dict) and set(claim) == {'state', 'directory', 'source'}, 'manager-publication-claim')
+        need(claim['state'] not in ('directory-claimed', 'source-claimed'), 'manager-publication-effect-review-required')
+        root_ancestors(DROPIN.parent, leaf_mode=0o700)
+        parent = os.open(DROPIN.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            need(fd_node(parent) == claim['directory'] == fd_node_path(DROPIN.parent), 'manager-directory-changed')
+            no_default_acl(parent)
+            allowed = {'.p0-view-manager-publish', DROPIN.name}
+            need(set(os.listdir(parent)) <= allowed, 'manager-directory-unknown-source')
+            stage = DROPIN.parent / '.p0-view-manager-publish'
+            if claim['state'] == 'directory-prepared':
+                need(not os.path.lexists(stage) and not os.path.lexists(DROPIN), 'manager-source-exists')
+                claim['state'] = 'source-claimed'
+                b.save(record)
+                fd = os.open(stage.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400, dir_fd=parent)
+                try:
+                    os.fchmod(fd, 0o400)
+                    need(os.write(fd, DROPIN_BYTES) == len(DROPIN_BYTES), 'manager-source-short-write')
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                os.fsync(parent)
+                raw, snapshot = owned_file(stage)
+                need(raw == DROPIN_BYTES, 'manager-source-bytes')
+                claim.update(state='source-prepared', source=list(snapshot))
+                b.save(record)
+            if claim['state'] in ('source-prepared', 'publish-claimed'):
+                names = [p for p in (stage, DROPIN) if os.path.lexists(p)]
+                need(len(names) == 1, 'manager-publication-position')
+                raw, snapshot = owned_file(names[0])
+                need(raw == DROPIN_BYTES and (list(snapshot) == claim['source'] if names[0] == stage
+                     else list(snapshot)[:8] == claim['source'][:8]), 'manager-source-inode-changed')
+                if names[0] == stage:
+                    self.gate(record)
+                    claim['state'] = 'publish-claimed'
+                    b.save(record)
+                    need(fd_node_path(DROPIN.parent) == claim['directory'], 'manager-directory-changed')
+                    rename_fresh(parent, stage.name, DROPIN.name)
+                else:
+                    need(claim['state'] == 'publish-claimed', 'manager-source-not-owned')
+                raw, snapshot = owned_file(DROPIN)
+                # rename changes ctime; bind dev/inode/mode/owner/link/size/mtime.
+                need(raw == DROPIN_BYTES and list(snapshot)[:8] == claim['source'][:8], 'manager-published-inode-changed')
+                claim.update(state='published', source=list(snapshot))
+                b.save(record)
+            need(claim['state'] == 'published' and owned_file(DROPIN) == (DROPIN_BYTES, tuple(claim['source'])), 'manager-publication-incomplete')
+            return {'version': 1, 'state': 'native-view-bound', 'managerSource': 'published',
+                    'daemonReloadRequired': True, 'nativeAuthority': False, 'installationCertified': False,
+                    'next': 'explicit-manager-transition-after-owned-offline-app-trigger-inventory'}
+        finally:
+            os.close(parent)
+
+
 class ClosedHost:
     def preflight(self, previous):
         raise Refused('native-manager-pause-gates-unqualified')
@@ -642,14 +1706,42 @@ class Parser(argparse.ArgumentParser):
 
 def main(argv=None):
     parser = Parser(description=__doc__)
-    parser.add_argument('mode', choices=('plan', 'transition', 'resume'))
+    parser.add_argument('mode', choices=('plan', 'transition', 'resume', 'observe-manager', 'observe-pause', 'publish-manager'))
     parser.add_argument('--helper-sha256', required=True)
     parser.add_argument('--expected-previous-sha256', required=True)
     args = parser.parse_args(argv)
     need(os.getuid() == os.geteuid() == os.getgid() == os.getegid() == 0, 'root-required')
-    # No Host mutation path is exposed while stopped/manager/pause ABI is unqualified.
-    # Deliberately refuse BEFORE source/old-record access or target/private mkdir.
-    raise Refused('native-manager-pause-gates-unqualified')
+    guard = SelfGuard(args.helper_sha256)
+    if args.mode in ('observe-manager', 'observe-pause'):
+        result = (MetadataObserver().manager() if args.mode == 'observe-manager' else PauseObserver().collect())
+        guard.check()
+        print(json.dumps({'version': 1, 'scope': 'p0-native-view-metadata', 'observation': result,
+                          'nativeAuthority': False, 'installationCertified': False}, sort_keys=True))
+        return
+    host, store = BootstrapHost(guard, args.expected_previous_sha256), None
+    try:
+        if args.mode == 'plan':
+            result = host.plan()
+        else:
+            host.check()
+            if os.path.lexists(BOOTSTRAP):
+                # Never adopt an empty/unknown private directory or crash window.
+                need(os.path.lexists(BOOTSTRAP / 'active.json'), 'bootstrap-ledger-setup-review-required')
+            else:
+                need(args.mode == 'transition', 'bootstrap-ledger-required')
+                host.preflight()  # Stopped/resource gates BEFORE private setup.
+            store = ViewStore(BOOTSTRAP)
+            store.open(create=args.mode == 'transition')
+            if args.mode == 'publish-manager':
+                result = ManagerPublication(Bootstrap(host, store)).run()
+            else:
+                result = Bootstrap(host, store).run(args.mode)
+        guard.check()
+        print(json.dumps(result, sort_keys=True))
+    finally:
+        host.close()
+        if store is not None:
+            store.close()
 
 
 if __name__ == '__main__':

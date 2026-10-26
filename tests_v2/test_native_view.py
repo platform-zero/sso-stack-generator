@@ -496,5 +496,362 @@ class TransitionTests(unittest.TestCase):
         self.assertFalse(self.effects)
 
 
+class Source08MetadataTests(unittest.TestCase):
+    def facts(self):
+        value = {key: '' for key in n.MANAGER_PROPERTIES}
+        value.update(Id=n.MANAGER, LoadState='loaded', ActiveState='inactive', SubState='dead',
+            MainPID='0', ControlPID='0', FragmentPath='/usr/lib/systemd/system/user@.service',
+            DropInPaths='/usr/lib/systemd/system/user@.service.d/10-login-barrier.conf',
+            User='1004', Group='1004', NeedDaemonReload='no')
+        return value
+
+    def test_packaged_os_default_is_explicit_hash_profile_not_empty_dropin_assumption(self):
+        facts = self.facts()
+        raw = b'\n'.join((k + '=' + v).encode() for k, v in facts.items())
+        def snapshot(path):
+            return {'sha256': n.QUALIFIED_MANAGER_SOURCES[str(path)], 'snapshot': [1] * 9}
+        with patch.object(n, 'metadata_call', return_value=raw), patch.object(n, 'binary_snapshot', side_effect=snapshot):
+            result = n.MetadataObserver().manager()
+        self.assertTrue(result['profileQualified'])
+        self.assertEqual(len(result['sources']), 2)
+        self.assertIsNone(result['process'])
+
+    def test_unknown_authored_dropin_is_not_read_or_approved(self):
+        facts = self.facts()
+        facts['DropInPaths'] += ' /etc/systemd/system/user@.service.d/authored.conf'
+        raw = b'\n'.join((k + '=' + v).encode() for k, v in facts.items())
+        called = []
+        def snapshot(path):
+            called.append(str(path))
+            return {'sha256': n.QUALIFIED_MANAGER_SOURCES[str(path)], 'snapshot': [1] * 9}
+        with patch.object(n, 'metadata_call', return_value=raw), patch.object(n, 'binary_snapshot', side_effect=snapshot):
+            result = n.MetadataObserver().manager()
+        self.assertFalse(result['profileQualified'])
+        self.assertEqual(result['unknownDropins'], 1)
+        self.assertNotIn('/etc/systemd/system/user@.service.d/authored.conf', called)
+
+    def test_os_default_changed_hash_does_not_qualify(self):
+        facts = self.facts()
+        raw = b'\n'.join((k + '=' + v).encode() for k, v in facts.items())
+        with patch.object(n, 'metadata_call', return_value=raw), patch.object(n, 'binary_snapshot',
+                return_value={'sha256': '0' * 64, 'snapshot': [1] * 9}):
+            self.assertFalse(n.MetadataObserver().manager()['profileQualified'])
+
+    def test_metadata_command_vocabulary_rejects_mutation_arbitrary_unit_and_extra_args(self):
+        for command in (['start', n.MANAGER], ['show', 'user@1000.service'], ['daemon-reload'],
+                        ['show', n.MANAGER, '--property=Environment'], ['show', 'p0-v2-x.service', '--all']):
+            with self.subTest(command=command), patch.object(n, 'binary_snapshot') as binary:
+                with self.assertRaisesRegex(n.Refused, '^metadata-command-not-closed$'):
+                    n.metadata_call(command)
+                binary.assert_not_called()
+
+    def test_incomplete_duplicate_or_extra_properties_refuse(self):
+        facts = self.facts()
+        raw = b'\n'.join((k + '=' + v).encode() for k, v in facts.items())
+        n.properties(raw)
+        for bad in (b'Id=' + n.MANAGER.encode(), raw + b'\nId=duplicate', raw + b'\nEnvironment=FORBIDDEN'):
+            with self.subTest(raw=bad), self.assertRaises(n.Refused):
+                n.properties(bad)
+
+    def test_pause_observer_never_turns_missing_pidfile_into_absence_or_signal_authority(self):
+        with patch.object(n.os, 'open', side_effect=FileNotFoundError):
+            with self.assertRaisesRegex(n.Refused, '^pause-metadata-unavailable$'):
+                n.PauseObserver().collect()
+        with patch.object(n, 'PAUSE_PROFILE', None):
+            result = n.PauseObserver().collect()
+        self.assertFalse(result['oldPauseClosed'])
+        self.assertFalse(result['signalAuthority'])
+        self.assertEqual(n.PAUSE_PROFILE['pidfile'], '/run/user/1004/libpod/tmp/pause.pid')
+
+    def test_pause_profile_cannot_point_at_arbitrary_root_file(self):
+        for path in ('/etc/shadow', '/run/user/1000/pause.pid', '/run/user/1004/../1000/pause.pid'):
+            profile = dict(n.PAUSE_PROFILE, pidfile=path)
+            with self.subTest(path=path), patch.object(n.os, 'open') as opened:
+                with self.assertRaises(n.Refused):
+                    n.PauseObserver().observe(profile)
+                opened.assert_not_called()
+
+    def test_process_stat_parser_handles_spaces_and_closing_parentheses_in_comm(self):
+        raw = ('77 (fixture ) comm) S ' + ' '.join(['1'] * 18 + ['12345', '0'])).encode()
+        self.assertEqual(n.process_start(raw), 12345)
+
+    def test_phase_vocabulary_does_not_grant_secrets_store_or_complete(self):
+        record, _ = complete_fixture()
+        for state in n.STATES:
+            record['state'] = state
+            n.seal(record)
+            operations = n.phase_operations(record)
+            self.assertNotIn('provision-secrets', operations)
+            self.assertNotIn('native-podman', operations)
+            self.assertNotIn('publish-complete', operations)
+        record['state'] = 'native-view-bound'
+        n.seal(record)
+        self.assertIn('publish-manager-source', n.phase_operations(record))
+        self.assertNotIn('explicit-manager-transition', n.phase_operations(record))
+
+    def test_source_guard_refuses_development_tree_before_read(self):
+        with patch.object(n, 'owned_file') as read:
+            with self.assertRaisesRegex(n.Refused, '^private-source-location$'):
+                n.SelfGuard('a' * 64)
+            read.assert_not_called()
+
+
+class Source08BootstrapTests(unittest.TestCase):
+    def setUp(self):
+        # Reuse ONLY fixture setup, no inherited/duplicated test counting.
+        LedgerTests.setUp(self)
+        self.source = self.root / 'source-data'
+        self.source.mkdir(mode=0o711)
+        self.source.chmod(0o711)
+        self.fd = os.open(self.source, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+        self.addCleanup(os.close, self.fd)
+        self.data = n.fd_node(self.fd)
+        self.prior = previous()
+        self.prior['namespace'] = {k: self.data[k] for k in ('device', 'inode', 'filesystemId')}
+        n.seal(self.prior)
+        self.raw = n.encoded(self.prior)
+        self.host = types.SimpleNamespace(prior=self.prior, previous_sha=n.sha(self.raw), raw=self.raw,
+            previous_snapshot=(1, 2, 3), namespace={'device': 4, 'inode': 9}, boot=self.prior['bootId'],
+            guard=types.SimpleNamespace(digest='c' * 64), check=lambda: None,
+            preflight=lambda **kwargs: None, data_fd=self.fd)
+        self.base = self.root / 'protected'
+        self.targets = ((self.base, 0o700), (self.base / 'stack', 0o711), (self.base / 'stack/p0-v2', 0o711))
+        self.host.targets = self.targets
+        self.stack.enter_context(patch.object(n, 'BASE', self.base))
+        self.stack.enter_context(patch.object(n, 'STACK', self.base / 'stack'))
+        self.stack.enter_context(patch.object(n, 'ANCHOR', self.base / 'stack/p0-v2'))
+        self.kernel = types.SimpleNamespace(clone_anchor=lambda *a, **k: (_ for _ in ()).throw(n.Refused('synthetic-before-clone')))
+        self.bootstrap = n.Bootstrap(self.host, self.store, self.kernel)
+
+    def prepare(self):
+        with self.assertRaisesRegex(n.Refused, '^synthetic-before-clone$'):
+            self.bootstrap.run('transition')
+        return self.store.load()
+
+    def test_fresh_targets_are_durably_claimed_before_each_mkdir_and_umask_independent(self):
+        real_mkdir, observations = n.os.mkdir, []
+        def mkdir(path, *args, **kwargs):
+            if path in ('protected', 'stack', 'p0-v2'):
+                record = self.store.load()
+                effect = record['anchor']['bootstrap']['effects'][-1]
+                self.assertEqual(effect['state'], 'claimed')
+                self.assertIsNone(effect['identity'])
+                observations.append(effect['path'])
+            return real_mkdir(path, *args, **kwargs)
+        old = os.umask(0o077)
+        try:
+            with patch.object(n.os, 'mkdir', side_effect=mkdir):
+                record = self.prepare()
+        finally:
+            os.umask(old)
+        self.assertEqual(observations, [str(path) for path, _ in self.targets])
+        self.assertEqual(record['state'], 'claimed')
+        for effect, (path, mode) in zip(record['anchor']['bootstrap']['effects'], self.targets):
+            self.assertEqual(effect['state'], 'prepared')
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), mode)
+        self.assertEqual((self.store.base / 'previous-v2.json').read_bytes(), self.raw)
+
+    def test_existing_matching_target_is_never_adopted_or_claimed(self):
+        self.base.mkdir(mode=0o700)
+        with self.assertRaisesRegex(n.Refused, '^bootstrap-target-exists$'):
+            self.bootstrap.run('transition')
+        self.assertIsNone(self.store.load())
+        self.assertFalse((self.store.base / 'previous-v2.json').exists())
+
+    def test_mkdir_interruption_refuses_even_if_target_absent_and_keeps_claim(self):
+        real_mkdir = n.os.mkdir
+        def mkdir(path, *args, **kwargs):
+            if path == 'stack':
+                raise OSError('SYNTHETIC_NEW_FIXTURE_MKDIR')
+            return real_mkdir(path, *args, **kwargs)
+        with patch.object(n.os, 'mkdir', side_effect=mkdir), self.assertRaises(OSError):
+            self.bootstrap.run('transition')
+        self.assertFalse((self.base / 'stack').exists())
+        with self.assertRaisesRegex(n.Refused, '^mkdir-effect-review-required$'):
+            self.bootstrap.run('resume')
+        self.assertEqual(self.store.load()['anchor']['bootstrap']['effects'][-1]['state'], 'claimed')
+
+    def test_prepared_exact_inode_can_resume_to_kernel_boundary_without_recreating(self):
+        self.prepare()
+        with patch.object(n.os, 'mkdir') as mkdir:
+            with self.assertRaisesRegex(n.Refused, '^synthetic-before-clone$'):
+                self.bootstrap.run('resume')
+            mkdir.assert_not_called()
+
+    def test_prepared_directory_substitution_refuses(self):
+        self.prepare()
+        path = self.base / 'stack/p0-v2'
+        path.rename(self.base / 'stack/retained-old-fixture')
+        path.mkdir(mode=0o711)
+        path.chmod(0o711)
+        with self.assertRaisesRegex(n.Refused, '^bootstrap-created-inode-changed$'):
+            self.bootstrap.run('resume')
+
+    def test_changed_source_boot_prior_snapshot_refuses_resume(self):
+        self.prepare()
+        for key, value in (('boot', '87654321-1234-1234-1234-123456789abc'), ('previous_snapshot', (9, 9))):
+            old = getattr(self.host, key)
+            setattr(self.host, key, value)
+            with self.subTest(key=key), self.assertRaisesRegex(n.Refused, '^bootstrap-record-binding$'):
+                self.bootstrap.run('resume')
+            setattr(self.host, key, old)
+        self.host.guard.digest = 'd' * 64
+        with self.assertRaisesRegex(n.Refused, '^bootstrap-record-binding$'):
+            self.bootstrap.run('resume')
+
+    def test_incomplete_retention_never_replays_target_creation(self):
+        self.prepare()
+        (self.store.base / 'previous-v2.json').unlink()  # Exact new fixture only.
+        with self.assertRaises(FileNotFoundError), patch.object(n.os, 'mkdir') as mkdir:
+            self.bootstrap.run('resume')
+        mkdir.assert_not_called()
+
+
+class Source08KernelBackendTests(unittest.TestCase):
+    def setUp(self):
+        LedgerTests.setUp(self)
+        self.handle = self.root / 'new-holder/namespace'
+        self.stack.enter_context(patch.object(n, 'HANDLE', self.handle))
+        self.kernel = n.KernelBackend.__new__(n.KernelBackend)
+        self.stack.enter_context(patch.object(n, 'fd_mount_id', return_value=777))
+        self.stack.enter_context(patch.object(n, 'mount_row', return_value={'id': 777}))
+        self.claims = []
+        self.record = {'anchor': {'result': {'parent': node(10), 'data': node(20), 'mountId': 150}}}
+
+    def test_fresh_holder_private_mount_precedes_file_and_namespace_and_is_durably_claimed(self):
+        def claim(value):
+            self.claims.append(copy.deepcopy(value))
+        def attach(source, target, path, preclaim, recheck):
+            self.assertEqual(source, target)  # ONLY fresh holder self-clone, not DATA.
+            self.assertEqual(path, self.handle.parent)
+            self.assertEqual(self.claims[-1]['phase'], 'holder-prepared')
+            self.assertFalse(self.handle.exists())
+            preclaim(777)
+            self.assertEqual(self.claims[-1]['phase'], 'holder-mount-preclaimed')
+            recheck()
+            return 777
+        self.kernel.attach = attach
+        def create(parent, cover, record, facts, claim, recheck):
+            self.assertEqual(facts['phase'], 'handle-file-prepared')
+            self.assertEqual(facts['holder']['mountId'], 777)
+            self.assertEqual(stat.S_IMODE(self.handle.parent.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(self.handle.stat().st_mode), 0o400)
+            raise n.Refused('synthetic-no-fork')
+        self.kernel.create_projection = create
+        with self.assertRaisesRegex(n.Refused, '^synthetic-no-fork$'):
+            self.kernel.persist_namespace(55, self.record, claim=claim, recheck=lambda: None)
+        self.assertEqual([c['phase'] for c in self.claims], ['holder-directory-claimed', 'holder-prepared',
+            'holder-mount-preclaimed', 'holder-private', 'handle-file-claimed', 'handle-file-prepared'])
+        self.assertTrue(self.handle.exists())  # No uncertain-effect cleanup.
+
+    def test_existing_holder_refuses_without_claim_or_adoption(self):
+        self.handle.parent.mkdir(mode=0o700)
+        with self.assertRaisesRegex(n.Refused, '^namespace-holder-exists$'):
+            self.kernel.persist_namespace(55, self.record, claim=self.claims.append, recheck=lambda: None)
+        self.assertFalse(self.claims)
+        self.assertFalse(self.handle.exists())
+
+    def test_creator_effect_is_claimed_before_fork_and_failure_retained(self):
+        def fork():
+            self.assertEqual(self.claims[-1]['phase'], 'creator-claimed')
+            raise n.Refused('synthetic-fork-not-executed')
+        with patch.object(n.os, 'fork', side_effect=fork), self.assertRaisesRegex(n.Refused, '^synthetic-fork-not-executed$'):
+            self.kernel.create_projection(55, 66, self.record, {}, self.claims.append, lambda: None)
+        self.assertEqual(self.claims[-1]['phase'], 'creator-claimed')
+
+    def test_framed_claim_ipc_exact_roundtrip_uses_only_new_unprivileged_pipe(self):
+        reader, writer = os.pipe()
+        try:
+            expected = {'kind': 'projection-claim', 'ids': {'parent': 701, 'data': 702}}
+            n.send_frame(writer, expected)
+            self.assertEqual(n.receive_frame(reader), expected)
+        finally:
+            os.close(reader); os.close(writer)
+
+    def test_frame_limit_refuses_before_pipe_write(self):
+        with patch.object(n.os, 'write') as write:
+            with self.assertRaisesRegex(n.Refused, '^worker-frame-limit$'):
+                n.send_frame(-1, {'payload': 'x' * 9000})
+            write.assert_not_called()
+
+
+class Source08ManagerPublicationTests(unittest.TestCase):
+    def setUp(self):
+        Source08BootstrapTests.setUp(self)
+        Source08BootstrapTests.prepare(self)
+        record = self.store.load()
+        record.update(state='native-view-bound', native={'fixtureOnly': True})
+        record['anchor']['result'] = {'parent': n.fd_node_path(self.base / 'stack'),
+            'data': n.fd_node_path(self.base / 'stack/p0-v2'), 'mountId': 150}
+        record['anchor']['preclaimedId'] = 150
+        self.store.save(n.seal(record))
+        self.stack.enter_context(patch.object(n, 'observe_anchor_mount', return_value=record['anchor']['result']))
+        self.kernel.verify_bound = lambda record: None  # Explicit mechanism-only fake.
+        self.system = self.root / 'system'
+        self.system.mkdir()
+        self.dropin = self.system / 'user@1004.service.d/50-p0-v2-view.conf'
+        self.stack.enter_context(patch.object(n, 'DROPIN', self.dropin))
+        facts = Source08MetadataTests().facts()
+        self.stack.enter_context(patch.object(n.MetadataObserver, 'manager', return_value={
+            'facts': facts, 'profileQualified': True, 'unknownDropins': 0}))
+        self.stack.enter_context(patch.object(n.MetadataObserver, 'stopped_scope', return_value={}))
+        def rename(parent, source, destination):
+            self.assertEqual(self.store.load()['manager']['state'], 'publish-claimed')
+            self.assertFalse(self.dropin.exists())
+            os.rename(source, destination, src_dir_fd=parent, dst_dir_fd=parent)
+            os.fsync(parent)
+        self.stack.enter_context(patch.object(n, 'rename_fresh', side_effect=rename))
+        self.publisher = n.ManagerPublication(self.bootstrap)
+
+    def test_literal_fresh_source_publication_does_not_reload_start_or_complete(self):
+        result = self.publisher.run()
+        self.assertEqual(self.dropin.read_bytes(), n.DROPIN_BYTES)
+        self.assertEqual(stat.S_IMODE(self.dropin.stat().st_mode), 0o400)
+        self.assertEqual(self.store.load()['manager']['state'], 'published')
+        self.assertTrue(result['daemonReloadRequired'])
+        self.assertFalse(result['nativeAuthority'])
+        self.assertEqual(self.store.load()['state'], 'native-view-bound')
+
+    def test_unknown_matching_directory_never_adopted(self):
+        self.dropin.parent.mkdir(mode=0o700)
+        with self.assertRaisesRegex(n.Refused, '^manager-directory-exists$'):
+            self.publisher.run()
+        self.assertIsNone(self.store.load()['manager'])
+
+    def test_rename_interruption_reconciles_only_recorded_exact_stage_inode(self):
+        with patch.object(n, 'rename_fresh', side_effect=OSError('SYNTHETIC_RENAME_BEFORE_EFFECT')):
+            with self.assertRaises(OSError):
+                self.publisher.run()
+        record = self.store.load()
+        self.assertEqual(record['manager']['state'], 'publish-claimed')
+        stage = self.dropin.parent / '.p0-view-manager-publish'
+        self.assertTrue(stage.exists())
+        self.publisher.run()
+        self.assertFalse(stage.exists())
+        self.assertEqual(self.store.load()['manager']['state'], 'published')
+
+    def test_lost_inode_proof_after_source_create_never_replays_or_adopts(self):
+        real_write = n.os.write
+        def write(fd, raw):
+            if raw == n.DROPIN_BYTES:
+                raise OSError('SYNTHETIC_NEW_SOURCE_WRITE')
+            return real_write(fd, raw)
+        with patch.object(n.os, 'write', side_effect=write), self.assertRaises(OSError):
+            self.publisher.run()
+        self.assertEqual(self.store.load()['manager']['state'], 'source-claimed')
+        with self.assertRaisesRegex(n.Refused, '^manager-publication-effect-review-required$'):
+            self.publisher.run()
+        self.assertEqual((self.dropin.parent / '.p0-view-manager-publish').read_bytes(), b'')
+
+    def test_other_phase_refuses_before_live_kernel_or_source_effect(self):
+        record = self.store.load()
+        record['state'] = 'anchor-private'
+        self.store.save(n.seal(record))
+        self.kernel.verify_bound = lambda record: self.fail('kernel called for unauthorized phase')
+        with self.assertRaisesRegex(n.Refused, '^manager-publication-phase$'):
+            self.publisher.run()
+        self.assertFalse(self.dropin.parent.exists())
+
+
 if __name__ == '__main__':
     unittest.main()

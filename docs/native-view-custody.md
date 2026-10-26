@@ -1,4 +1,4 @@
-# Critical07: protected native view, NOT a mutable-parent Host pin
+# Protected native view: Critical07 containment and SOURCE08 backend
 
 **Security supersession, source-only work in progress.** Native10 falsified the
 old custody premise: actual UID1000 in an older mount namespace renamed a Root0
@@ -13,6 +13,15 @@ recursive protected projection preserving the **same canonical data path/inode**
 despite the old-namespace physical-source rename. Protected-target rename denied.
 Only empty fixtures were used/removed. It does not qualify a whole helper,
 namespace persistence, manager transition, pause release, consumer or reboot.
+
+Parent empty primitive12/13 then failed NSFS `move_mount` with EINVAL22.
+Primitive14 succeeded only after giving the **fresh Root0700 handle holder its
+own preclaimed, exact-FD private self-clone mount before namespace creation**.
+Modern independent data clone, recursive parent+data preclaims and NSFS-file
+clone/attach/private then survived creator exit, original FD closure, independent
+handle reopen/setns and old-source rename. This qualifies those empty primitives,
+not the new whole backend, actual v3, manager, pause, reboot or installation.
+SOURCE08 implements the source backend below; Worker executed none of it natively.
 
 ## Immediate containment in current source
 
@@ -44,6 +53,9 @@ Credential native I/O/logic mocks likewise do not qualify real view authority.
   authority/                         proposed Root0700 private v3 custody
 /run/p0-v2-native-view/               Root0700
   namespace                          private persisted mount-namespace NSFS handle
+/var/lib/p0-v2-view-bootstrap/         fresh Root0700 control ledger/operation lock
+  active.json                        Root0400 source08 intermediate v3
+  previous-v2.json                   exclusive retained exact previous bytes
 ```
 
 The physical `/mnt/stack/p0-v2` is used only to obtain the exact reviewed original
@@ -85,7 +97,8 @@ inode remain correct. A changed protected parent/data identity still refuses.
    inode are refused as an independent target.
 5. Recursive protected-parent projection primitive: AT_RECURSIVE clone, hold the
    cloned data-child FD, durably preclaim **both** parent/data detached mount IDs,
-   recursive private before/after exact move. Actual ABI remains unqualified.
+   recursive private before/after exact move. Primitive14 qualifies the empty
+   kernel boundary; the new backend/child-supervision integration is unqualified.
 6. Source transition state machine and fixed unprivileged actual-unshare program.
 7. Physical capacity checks through held bound DATA FD, not shadow-parent RootFS.
 8. Independent `ViewStore` private Root0700/0400 ledger: nonblocking exclusive
@@ -95,19 +108,43 @@ inode remain correct. A changed protected parent/data identity still refuses.
    file snapshot, never edits the old marker. These file mechanisms have new
    unprivileged mapped-ownership fixture tests, not production Root qualification.
 
-**Production `ClosedHost.preflight` and CLI plan/transition/resume currently
-refuse `native-manager-pause-gates-unqualified` before source/old-record access or
-any mkdir/publication. `root_prefix` also always refuses consumer integration.**
-`proposed_root_prefix` is a pure argv contract only; it never executes or authorizes
-one. No actual Root private v3 record is written, no manager drop-in is published,
-no pause is signalled and no native namespace is created by this revision.
+**SOURCE08 CLI now has a bounded real bootstrap, not universal `ClosedHost`.**
+`ClosedHost`/`Transition` remain historical07 fixture mechanisms, not the CLI.
+`plan` is readonly; `transition`/`resume` use `SelfGuard`, `BootstrapHost`, private
+`ViewStore`, `Bootstrap` and `KernelBackend`. Production entry requires actual
+UID/GID/effective IDs0, isolated Python, exact independent helper SHA, Root0400
+single-link source named `provision-p0-v2-view.py` under executable private
+Root0700 `/var/lib`, held stat/byte snapshots rechecked throughout, exact prior
+complete-v2 SHA/snapshot and current boot/Host namespace. No caller test adapter,
+profile boolean, arbitrary path/command or v2 marker becomes native authority.
 
-This deliberate boundary prevents a self-consistent fake observation/receipt from
-becoming Root authority. Do not replace it with an input flag or treat a fixture
-backend as production. Before enabling a production path, implement/review the
-exact private staged Root0400/0700 self-and-independent hash bootstrap, locks/CAS,
-trusted observations and qualified backend. Current CLI arguments describe only
-the intended closed interface; refusal happens before they could grant authority.
+Only the original DATA FD is opened from the physical path for bootstrap; its
+prior recorded device/inode/FSID and Root0711 custody must match. Physical/RAM/
+Root/staging reserves and stopped manager/scoped-unit observations precede fresh
+control setup/targets. The fixed independent BASE/STACK/cover targets are each
+durably claimed before mkdir, exact new inodes read back/fsynced and fresh-only
+fchmod removes umask dependence. Existing matching targets are never adopted.
+Unknown/default ACLs, changed parents or source/snapshot/boot refuse. Uncertain
+mkdir/file/detached effects require explicit review even if now absent.
+
+Source `KernelBackend` implements modern held-FD primitives and the private-holder
+correction, child projection claim/ack IPC (Host alone writes ledger), own direct
+child pidfd/deadline supervision, persistent NSFS file and reopened readonly setns
+consumer after original FD closure/creator exit. It never runs Podman, imports
+service Python, unmounts/deletes failed effects or privatizes Host `/run`/ancestors.
+Only a new child namespace gets recursive root-private propagation. Its protected
+parent is reopened in that namespace and compared to held Host identity before
+recursive cloning. Every holder/handle/worker/preclaim subphase is retained.
+**Whole-source native qualification is still required before Parent executes it.**
+
+`observe-manager`/`observe-pause` only return bounded nonsecret metadata, never a
+release permit. `publish-manager` is a separate fixed-literal fresh-only operation
+requiring live namespace reopen/consumer verification and stopped reviewed manager
+sources/scoped units. It publishes no complete authority and never reloads/starts.
+`root_prefix` remains closed. Historical `proposed_root_prefix` is a pure07 argv
+fixture contract, **not safe to execute**: future Root helpers must enter using a
+held verified NSFS FD, not its replaceable pathname. No Worker-native operation
+or actual record/source/service change occurred.
 
 ## Proposed explicit v3 transition state machine
 
@@ -123,17 +160,26 @@ One Parent operation interlock, Root-private exclusive lock and byte/stat CAS:
 | `manager-pending` | native view bound but manager/pause/actual-unshare still absent; **no native authority** |
 | `complete` | all exact manager/private-view, pause closure, actual-unshare and consumer before/after observations independently qualified; not published by current implementation |
 
-`ViewStore` implements the private file/CAS primitives; the fake test backend
-models kernel/manager facts, not a production Root observer. Trusted staged
-bootstrap/previous-snapshot binding and production store/backend wiring remain
-closed. The private ledger's parent must already have safe Root custody; creating
-that private authority container is not permission to adopt a matching data mount
-target. Current transition implementation stops at manager-pending
-with nativeAuthority=false. Existing/partial states refuse automatic continuation
-or new-boot replay pending reviewed exact reconciliation. Detached/preclaim-absent
-or uncertain handles/effects remain, not deleted/reset/adopted. Complete prior
-custody may eventually support explicit fresh per-boot handles; that backend and
-boot reconciliation are **not implemented**, and stable IDs changing must refuse.
+SOURCE08's intermediate `anchor.bootstrap` journal binds source SHA, old file
+snapshot, Host namespace and each exact prepared target. Its `anchor.result`
+contains the observed private data mount. Fresh target creation can explicitly
+resume only prepared exact inodes; a `claimed` mkdir without inode proof cannot
+replay. After attachment, verify the mounted DATA identity, not the now-covered
+empty cover inode. A lost detached/worker/NSFS effect refuses reviewed continuation.
+A missing retained previous snapshot refuses, never recreates/adopts it.
+
+Concrete holder subphases are `holder-directory-claimed`, `holder-prepared`,
+`holder-mount-preclaimed`, `holder-private`, `handle-file-claimed`,
+`handle-file-prepared`, `creator-claimed`, `projection-preclaimed`,
+`handle-mount-preclaimed`, `creator-exited`, `bound`. Parent-only ledger claims
+precede each effect/child acknowledgement. The current CLI stops at
+`native-view-bound`, **nativeAuthority=false**, not manager-pending or complete.
+That phase permits only bounded observations and the exact manager-source
+publication. Manager transition needs separate approved offline user-unit/trigger
+inventory and old-pause/no-container gates; it is not implemented/authorized by
+this phase. No complete record is published. No automatic boot reconciliation,
+uncertain-handle repair or retained-epoch reset is implemented; changed boot and
+source/snapshot bindings refuse.
 
 Actual namespace creation/persistence needs exact qualification: unshare only its
 new namespace, privatize recursively there before projecting, persist an exact
@@ -159,8 +205,21 @@ legacy Root p0-* unit, existing authored/unrelated drop-in or shared lane is alt
 Verify actual manager template fragment/source hash, UID/GID, stopped PID0/empty
 cgroup/job, old state and drop-in inventory **before** new publication. Existing
 foreign files refuse; do not overwrite/normalize them. No default activation or
-restart is authorized. Current source provides stopped schema checks, not this
-publication implementation or actual template-path qualification.
+restart is authorized. Parent15 supplied actual readonly packaged template/default hashes. The source
+profile includes `/usr/lib/systemd/system/user@.service` and its
+`10-login-barrier.conf` OS default, not a false dropins-empty assumption. Authored
+or unknown overrides refuse qualification. Manager metadata also pins exact
+systemd executable hash/starttime/pidfd/namespace/cgroup and observes parent/data
+metadata without reading environment/cmdline/logs. Active old manager is observed,
+not stopped by this helper; publication requires explicit independent shutdown.
+
+`ManagerPublication` implements only fresh literal directory/file publication:
+Root-private durable directory/source claims, held parents, exclusive stage,
+exact bytes/inode snapshot, fsync and same-directory `renameat2(NOREPLACE)` with
+no overwrite/fallback. It can explicitly reconcile `publish-claimed` only at its
+recorded stage OR final inode. Unknown matching files/directories, unproven
+source-create effects, hardlinks/substitutions or changed source/epoch refuse.
+No daemon reload, manager start/restart or app/socket activation occurs.
 
 Parent actor commands must use a `systemd-run --user` transient **service** inheriting
 the manager view. `--scope` inherits the caller's unsafe namespace and is forbidden.
@@ -180,11 +239,19 @@ no-container/native metadata under independently proved engine custody, then exa
 owned PID-file identity, process UID/GID/executable qualification, starttime, boot,
 user+mount namespaces, exact nonempty own cgroup and held pidfd identity. Only an
 explicit future exact pidfd-stop operation may release that known old cache,
-followed by absence/identity guards. Source currently **refuses** an unqualified
-pause executable profile and implements no signaling. We do not guess whether
-this Host's pause executable is Podman/catatonit, signal unrelated processes or
-infer container absence through an unproved old path. The actual safe inventory/
-release/supervision sequence needs Parent qualification; it remains a precise gap.
+followed by absence/identity guards. Parent15 independently observed the current exact PIDfile
+`/run/user/1004/libpod/tmp/pause.pid`, `/usr/bin/catatonit` public code hash and
+old owned cgroup. The readonly source profile binds those facts without freezing
+PID15 as an authority or guessing another PIDfile. Other missing candidates do
+not prove absence. The observer holds pidfd/process/executable/namespace FDs,
+checks starttime, actual code snapshot, exact cgroup, maps, PIDfile before/after
+and bounded status/parent/data metadata. UserNS pause CapPrm/Eff were nonzero in15;
+observe them, do not incorrectly require zero or equate them to Host privileges.
+All observations say `oldPauseClosed:false`, `signalAuthority:false`; no signaling
+or no-container receipt producer/release protocol exists yet. Actual stopped
+owned-user-unit/trigger inventory, fixed unprivileged no-container receipt under
+approved private namespace, complete exact PIDFD release/absence and subsequent
+per-command actual-unshare binding remain separate closed integration gates.
 
 The fixed metadata-only `UNSHARE_PROGRAM` must run inside **actual Podman unshare**
 before every ordinary-secret/value/store/volume mutation. It checks O_PATH held
@@ -204,6 +271,29 @@ actual maps and kernel overflow IDs. Tests explicitly reject a mutable-parent
 inode despite identical raw overflow UID and unchanged data/mount IDs. O_PATH
 fstatvfs/map behavior and exact Rootless native command/reexec semantics still
 need actual qualification before mutation can be enabled.
+
+## Every native lifecycle phase needs custody (Parent integration)
+
+**ExecStartPre alone is insufficient.** Generated ExecStop/ExecStopPost cleanup
+can run after its failure and initialize an unsafe empty RootFS store. Keep all
+Rootful activation closed. Parent must wrap **every** generated native container,
+network and volume start/stop/post/cleanup command, not just startup, in a reviewed
+standalone independently staged immutable fixed-exec boundary.
+
+Proposed `p0-v2-native-exec-v1`: selectors are only frozen owned unit and closed
+phase ID, never arbitrary argv/executable/path/env/code. Root-private immutable
+reviewed supply freezes every approved native argv, resource/type, source/fragment/
+drop-in/image/config/binary hash, current v3 owner/epoch, exact CIDfile and canonical
+store options. Every invocation independently verifies self/supply CAS, COMPLETE
+current-boot authority, exact private holder/NSFS FD, actual own namespace's Root
+parent and separately **mounted** DATA identity/FSID/private geometry, exact own
+nonempty cgroup/systemd InvocationID and phase/resource/CIDfile association before
+fixed Podman exec. A previous probe or ExecStartPre success is never a permit.
+Refusal must also deny later cleanup; no unsafe fallback, broad rm or restart.
+Root helpers entering a namespace use the held verified FD with before/after
+identity, not replaceable paths. Parent owns renderer/freezing/wrapper integration
+and installed zero-native-exec fault proofs across **all** generated phases.
+This proposal is not an implemented execution wrapper or installed gate.
 
 ## Reserves and preservation
 
