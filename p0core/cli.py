@@ -27,6 +27,10 @@ def parser():
             child.add_argument('--inputs', type=Path, help='private image/config bindings; no implicit discovery')
         if command == "build":
             child.add_argument("--output", type=Path, required=True)
+    child = sub.add_parser('network-plan', help='pure new private-network IPAM; no Host mutation or activation')
+    child.add_argument('--snapshot', type=Path, required=True)
+    child.add_argument('--network', required=True)
+    child.add_argument('--interface', required=True)
     child = sub.add_parser('pack-configs', help='separate private noncredential site configuration supply')
     child.add_argument('--catalog', type=Path, required=True)
     child.add_argument('--target', action='append', required=True)
@@ -92,6 +96,9 @@ def main(argv=None):
                 output = runtime.status()
             else:
                 output = runtime.change(args.command, args.target, resources=getattr(args, 'resources', False))
+        elif args.command == 'network-plan':
+            from .netplan import plan_new
+            output = plan_new(load_json(args.snapshot), args.network, args.interface)
         elif args.command == 'pack-configs':
             from .inputs import pack_configurations
             output = pack_configurations(Catalog.read(args.catalog), args.target, load_json(args.inputs), args.output)
