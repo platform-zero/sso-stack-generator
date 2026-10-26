@@ -663,6 +663,26 @@ QUALIFIED_MANAGER_SOURCES = {
 MANAGER_PROPERTIES = ('Id', 'LoadState', 'ActiveState', 'SubState', 'MainPID',
     'ControlPID', 'Job', 'ControlGroup', 'FragmentPath', 'DropInPaths', 'User',
     'Group', 'NeedDaemonReload', 'Triggers', 'TriggeredBy')
+# Unit-interface keys are common; execution/cgroup keys are NOT universal.
+SCOPED_COMMON_PROPERTIES = ('Id', 'LoadState', 'ActiveState', 'SubState', 'Job',
+    'FragmentPath', 'DropInPaths', 'NeedDaemonReload', 'Triggers', 'TriggeredBy')
+SCOPED_PROPERTIES = {
+    'service': MANAGER_PROPERTIES,
+    'socket': SCOPED_COMMON_PROPERTIES + ('ControlPID', 'ControlGroup'),
+    'target': SCOPED_COMMON_PROPERTIES,
+    'timer': SCOPED_COMMON_PROPERTIES,
+    'path': SCOPED_COMMON_PROPERTIES}
+SCOPED_UNIT_PATTERN = r'p0-v2-[a-z0-9][a-z0-9-]{0,62}\.(service|socket|timer|path|target)'
+
+
+def scoped_unit_type(name):
+    match = re.fullmatch(SCOPED_UNIT_PATTERN, name)
+    need(match is not None, 'scoped-unit-type-not-closed')
+    return match.group(1)
+
+
+def unit_properties(name):
+    return MANAGER_PROPERTIES if name == MANAGER else SCOPED_PROPERTIES[scoped_unit_type(name)]
 
 
 def initial_host_user_namespace():
@@ -723,8 +743,8 @@ def metadata_call(arguments):
     need(arguments in (['show', MANAGER, '--property=' + ','.join(MANAGER_PROPERTIES)],
                        ['list-units', '--all', '--plain', '--no-legend', 'p0-v2-*'])
          or (len(arguments) == 3 and arguments[0] == 'show'
-             and re.fullmatch(r'p0-v2-[a-z0-9][a-z0-9-]{0,62}\.(service|socket|timer|path|target)', arguments[1])
-             and arguments[2] == '--property=' + ','.join(MANAGER_PROPERTIES)), 'metadata-command-not-closed')
+             and re.fullmatch(SCOPED_UNIT_PATTERN, arguments[1])
+             and arguments[2] == '--property=' + ','.join(unit_properties(arguments[1]))), 'metadata-command-not-closed')
     before = binary_snapshot('/usr/bin/systemctl')
     need(before['sha256'] == '848c70d7e2c2f43f4f93287897ac8946e8eda45e7daa5f2975d9728071856b1a',
          'systemctl-os-code-profile-unqualified')
@@ -754,14 +774,15 @@ def metadata_call(arguments):
         child.stdout.close()
 
 
-def properties(raw):
+def properties(raw, unit=MANAGER):
+    expected = unit_properties(unit)
     need(len(raw) <= 65536, 'metadata-limit')
     result = {}
     for line in raw.decode('ascii').splitlines():
         key, sep, value = line.partition('=')
-        need(sep and key in MANAGER_PROPERTIES and key not in result and len(value) <= 8192, 'metadata-property')
+        need(sep and key in expected and key not in result and len(value) <= 8192, 'metadata-property')
         result[key] = value
-    need(set(result) == set(MANAGER_PROPERTIES), 'metadata-properties-incomplete')
+    need(set(result) == set(expected), 'metadata-properties-incomplete')
     return result
 
 
@@ -770,6 +791,21 @@ def inactive(facts):
          and facts['MainPID'] == facts['ControlPID'] == '0'
          and facts['Job'] in ('', '0') and facts['ControlGroup'] == ''
          and facts['Triggers'] == facts['TriggeredBy'] == '', 'scoped-unit-not-stopped')
+
+
+def scoped_inactive(facts, name):
+    kind = scoped_unit_type(name)
+    need(facts['Id'] == name, 'scoped-unit-identity')
+    if kind == 'service':
+        inactive(facts)
+        return
+    need(facts['LoadState'] == 'loaded' and facts['ActiveState'] in ('inactive', 'failed')
+         and facts['Job'] in ('', '0') and facts['Triggers'] == facts['TriggeredBy'] == '',
+         'scoped-unit-not-stopped')
+    if kind == 'socket':
+        need(facts['ControlPID'] == '0' and facts['ControlGroup'] == '', 'scoped-unit-not-stopped')
+    # No PID/cgroup properties exist on target/timer/path. This is unit metadata,
+    # not kernel-task absence or native inventory authority.
 
 
 class MetadataObserver:
@@ -810,14 +846,13 @@ class MetadataObserver:
         names = []
         for line in raw.decode('ascii').splitlines():
             fields = line.split()
-            need(fields and re.fullmatch(r'p0-v2-[a-z0-9][a-z0-9-]{0,62}\.(service|socket|timer|path|target)', fields[0]), 'scoped-unit-inventory')
+            need(fields and re.fullmatch(SCOPED_UNIT_PATTERN, fields[0]), 'scoped-unit-inventory')
             names.append(fields[0])
         need(len(names) <= 256 and len(names) == len(set(names)), 'scoped-unit-limit')
         result = {}
         for name in sorted(names):
-            facts = properties(metadata_call(['show', name, '--property=' + ','.join(MANAGER_PROPERTIES)]))
-            need(facts['Id'] == name, 'scoped-unit-identity')
-            inactive(facts)
+            facts = properties(metadata_call(['show', name, '--property=' + ','.join(unit_properties(name))]), name)
+            scoped_inactive(facts, name)
             result[name] = sha(encoded(facts))
         return result
 

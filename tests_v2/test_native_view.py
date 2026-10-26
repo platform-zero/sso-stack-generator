@@ -669,6 +669,161 @@ class Source08MetadataTests(unittest.TestCase):
             read.assert_not_called()
 
 
+class Source08TypedPropertyTests(unittest.TestCase):
+    # Independent source fixtures, not native systemctl/introspection evidence.
+    common = ('Id', 'LoadState', 'ActiveState', 'SubState', 'Job', 'FragmentPath',
+              'DropInPaths', 'NeedDaemonReload', 'Triggers', 'TriggeredBy')
+    manager = ('Id', 'LoadState', 'ActiveState', 'SubState', 'MainPID', 'ControlPID',
+               'Job', 'ControlGroup', 'FragmentPath', 'DropInPaths', 'User', 'Group',
+               'NeedDaemonReload', 'Triggers', 'TriggeredBy')
+
+    def expected(self, kind):
+        return self.manager if kind == 'service' else self.common + (
+            ('ControlPID', 'ControlGroup') if kind == 'socket' else ())
+
+    def facts(self, kind):
+        result = dict.fromkeys(self.expected(kind), '')
+        result.update(Id='p0-v2-fixture.' + kind, LoadState='loaded', ActiveState='inactive',
+                      SubState='dead', NeedDaemonReload='no', FragmentPath='/SYNTHETIC/' + kind)
+        if kind in ('service', 'socket'):
+            result['ControlPID'] = '0'
+        if kind == 'service':
+            result.update(MainPID='0', User='1004', Group='1004')
+        return result
+
+    def raw(self, facts):
+        return b'\n'.join((key + '=' + value).encode('ascii') for key, value in facts.items())
+
+    def observe(self, facts):
+        name = facts['Id']
+        def query(args):
+            if args[0] == 'list-units':
+                return (name + ' loaded inactive dead fixture\n').encode('ascii')
+            self.assertEqual(args, ['show', name, '--property=' + ','.join(self.expected(name.rsplit('.', 1)[1]))])
+            return self.raw(facts)
+        with patch.object(n, 'metadata_call', side_effect=query):
+            return n.MetadataObserver().stopped_scope()
+
+    def test_all_five_types_use_exact_closed_native_style_source_fixtures(self):
+        facts = {kind: self.facts(kind) for kind in ('service', 'socket', 'target', 'timer', 'path')}
+        calls = []
+        def query(args):
+            calls.append(args)
+            if args[0] == 'list-units':
+                return b''.join((value['Id'] + ' loaded inactive dead fixture\n').encode('ascii')
+                                for value in facts.values())
+            kind = args[1].rsplit('.', 1)[1]
+            self.assertEqual(args, ['show', facts[kind]['Id'], '--property=' + ','.join(self.expected(kind))])
+            self.assertEqual(n.unit_properties(args[1]), self.expected(kind))
+            return self.raw(facts[kind])
+        with patch.object(n, 'metadata_call', side_effect=query):
+            result = n.MetadataObserver().stopped_scope()
+        self.assertEqual(result, {value['Id']: n.sha(n.encoded(value)) for value in facts.values()})
+        self.assertEqual(len(calls), 6)
+        self.assertNotIn('MainPID', self.facts('socket'))
+        for kind in ('target', 'timer', 'path'):
+            self.assertTrue({'MainPID', 'ControlPID', 'ControlGroup', 'User', 'Group'}.isdisjoint(facts[kind]))
+
+    def test_manager_tuple_and_default_parser_remain_exactly_strict(self):
+        self.assertEqual(n.MANAGER_PROPERTIES, self.manager)
+        self.assertEqual(n.unit_properties(n.MANAGER), self.manager)
+        facts = Source08MetadataTests().facts()
+        self.assertEqual(n.properties(self.raw(facts)), facts)
+        for key in self.manager:
+            missing = dict(facts); del missing[key]
+            with self.subTest(key=key), self.assertRaisesRegex(n.Refused, '^metadata-properties-incomplete$'):
+                n.properties(self.raw(missing))
+
+    def test_every_selected_property_is_required_on_each_type(self):
+        for kind in n.SCOPED_PROPERTIES:
+            facts = self.facts(kind)
+            for key in self.expected(kind):
+                missing = dict(facts); del missing[key]
+                with self.subTest(kind=kind, key=key), self.assertRaisesRegex(n.Refused, '^metadata-properties-incomplete$'):
+                    n.properties(self.raw(missing), facts['Id'])
+
+    def test_service_only_and_unknown_keys_are_not_optional_or_allowed_on_other_types(self):
+        for kind in n.SCOPED_PROPERTIES:
+            facts = self.facts(kind)
+            for key in ('Environment', *set(self.manager).difference(self.expected(kind))):
+                extra = dict(facts, **{key: ''})
+                with self.subTest(kind=kind, key=key), self.assertRaisesRegex(n.Refused, '^metadata-property$'):
+                    n.properties(self.raw(extra), facts['Id'])
+
+    def test_duplicate_properties_are_refused_for_every_type(self):
+        for kind in n.SCOPED_PROPERTIES:
+            facts = self.facts(kind)
+            with self.subTest(kind=kind), self.assertRaisesRegex(n.Refused, '^metadata-property$'):
+                n.properties(self.raw(facts) + b'\nId=duplicate', facts['Id'])
+
+    def test_all_types_refuse_not_loaded_active_job_and_trigger_relationships(self):
+        for kind in n.SCOPED_PROPERTIES:
+            for key, value in (('LoadState', 'not-found'), ('ActiveState', 'active'),
+                               ('ActiveState', 'activating'), ('Job', '42'),
+                               ('Triggers', 'p0-v2-other.service'), ('TriggeredBy', 'p0-v2-other.timer')):
+                facts = self.facts(kind); facts[key] = value
+                with self.subTest(kind=kind, key=key), self.assertRaisesRegex(n.Refused, '^scoped-unit-not-stopped$'):
+                    self.observe(facts)
+
+    def test_pid_and_cgroup_guards_apply_to_exact_supported_types(self):
+        for kind, keys in (('service', ('MainPID', 'ControlPID', 'ControlGroup')),
+                           ('socket', ('ControlPID', 'ControlGroup'))):
+            for key in keys:
+                facts = self.facts(kind); facts[key] = '73' if key.endswith('PID') else '/SYNTHETIC/nonempty'
+                with self.subTest(kind=kind, key=key), self.assertRaisesRegex(n.Refused, '^scoped-unit-not-stopped$'):
+                    self.observe(facts)
+
+    def test_wrong_returned_unit_identity_is_never_adopted(self):
+        for kind in n.SCOPED_PROPERTIES:
+            facts = self.facts(kind); name = facts['Id']; facts['Id'] = 'p0-v2-foreign.' + kind
+            with self.subTest(kind=kind), patch.object(n, 'metadata_call', side_effect=[
+                    (name + ' loaded inactive dead fixture\n').encode(), self.raw(facts)]):
+                with self.assertRaisesRegex(n.Refused, '^scoped-unit-identity$'):
+                    n.MetadataObserver().stopped_scope()
+
+    def test_failed_list_or_later_show_never_becomes_empty_or_partial_inventory(self):
+        one, two = self.facts('service'), self.facts('target')
+        listing = (one['Id'] + '\n' + two['Id'] + '\n').encode('ascii')
+        for responses in ([n.Refused('metadata-unavailable')],
+                          [listing, self.raw(one), n.Refused('metadata-unavailable')]):
+            with self.subTest(calls=len(responses)), patch.object(n, 'metadata_call', side_effect=responses):
+                with self.assertRaisesRegex(n.Refused, '^metadata-unavailable$'):
+                    n.MetadataObserver().stopped_scope()
+
+    def test_unsupported_unit_types_names_and_duplicates_refuse_before_show(self):
+        for name in ('p0-v2-x.mount', 'p0-v2-x.scope', 'p0-v2-x.slice', 'foreign.target',
+                     'p0-v2-x@instance.service', '../p0-v2-x.target', 'p0-v2-.timer'):
+            with self.subTest(name=name), patch.object(n, 'metadata_call', return_value=name.encode()) as query:
+                with self.assertRaisesRegex(n.Refused, '^scoped-unit-inventory$'):
+                    n.MetadataObserver().stopped_scope()
+                self.assertEqual(query.call_count, 1)
+            with self.assertRaisesRegex(n.Refused, '^scoped-unit-type-not-closed$'):
+                n.unit_properties(name)
+        with patch.object(n, 'metadata_call', return_value=b'p0-v2-x.target\np0-v2-x.target\n') as query:
+            with self.assertRaisesRegex(n.Refused, '^scoped-unit-limit$'):
+                n.MetadataObserver().stopped_scope()
+            self.assertEqual(query.call_count, 1)
+
+    def test_metadata_vocabulary_binds_each_show_query_to_its_type_before_spawn(self):
+        for kind in n.SCOPED_PROPERTIES:
+            name = self.facts(kind)['Id']
+            correct = ['show', name, '--property=' + ','.join(self.expected(kind))]
+            with self.subTest(kind=kind), patch.object(n, 'binary_snapshot', return_value={'sha256': '0' * 64}), \
+                 patch.object(n.subprocess, 'Popen') as spawn:
+                with self.assertRaisesRegex(n.Refused, '^systemctl-os-code-profile-unqualified$'):
+                    n.metadata_call(correct)
+                spawn.assert_not_called()
+            for profile in (self.expected(kind)[:-1], (*self.expected(kind), 'Environment')):
+                with patch.object(n, 'binary_snapshot') as binary:
+                    with self.assertRaisesRegex(n.Refused, '^metadata-command-not-closed$'):
+                        n.metadata_call(['show', name, '--property=' + ','.join(profile)])
+                    binary.assert_not_called()
+        with patch.object(n, 'binary_snapshot') as binary:
+            with self.assertRaisesRegex(n.Refused, '^metadata-command-not-closed$'):
+                n.metadata_call(['show', 'p0-v2-x.target', '--property=' + ','.join(self.manager)])
+            binary.assert_not_called()
+
+
 class Source08BootstrapTests(unittest.TestCase):
     def setUp(self):
         # Reuse ONLY fixture setup, no inherited/duplicated test counting.

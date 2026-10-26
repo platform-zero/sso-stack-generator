@@ -320,6 +320,28 @@ Source16 readonly comparison is not permission to use the old pause for native
 inventory. Parent must independently close current owned kernel/unit/cgroup and
 native receipt semantics before any release or explicit manager transition.
 
+### Closed typed stopped-unit metadata (not task absence)
+
+The manager keeps its original exact service property schema. Scoped ROOTFUL
+`p0-v2-*` metadata selects a separate **closed schema by unit type**, not arbitrary
+optional keys: services retain the full service schema; sockets query common
+Unit fields plus ControlPID/ControlGroup; targets/timers/paths query only common
+Unit fields. In particular, the latter do not fabricate MainPID/User/Group or
+PID/cgroup absence when systemd does not export those properties.
+
+Every selected property is mandatory exactly once. Missing/extra/duplicate keys,
+unsupported suffix/name, wrong Id or failed list/show query refuses; a failed
+query never becomes an empty or partial inventory. Each type must be loaded and
+inactive/failed with no pending job or Triggers/TriggeredBy relationship. Service
+MainPID/ControlPID and socket ControlPID must be zero, with empty ControlGroup
+for those two types. No schema relaxation applies to manager observations.
+
+These are bounded source/fake unit-state mechanisms, not selected Rootless source
+admission, kernel UID/task/cgroup absence, no-container or pause release evidence.
+There is still no quiesce or unsafe old native ExecStop protocol. An empty typed
+inventory cannot authorize manager transition, complete-v3 or native execution
+without the independent source/kernel/pause/current-view gates.
+
 ## Proposed unique manager bootstrap target (not adopted)
 
 Readonly16's public OS source shows default.target → basic.target → sockets,
