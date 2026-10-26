@@ -545,6 +545,28 @@ class Source08MetadataTests(unittest.TestCase):
                     n.metadata_call(command)
                 binary.assert_not_called()
 
+    def test_metadata_os_executable_hash_mismatch_refuses_before_spawn(self):
+        args = ['show', n.MANAGER, '--property=' + ','.join(n.MANAGER_PROPERTIES)]
+        with patch.object(n, 'binary_snapshot', return_value={'sha256': '0' * 64}), \
+             patch.object(n.subprocess, 'Popen') as spawn:
+            with self.assertRaisesRegex(n.Refused, '^systemctl-os-code-profile-unqualified$'):
+                n.metadata_call(args)
+            spawn.assert_not_called()
+
+    def test_unique_boot_target_is_hash_contract_only_without_default_graph_or_authority(self):
+        proposal = n.manager_boot_proposal()
+        self.assertEqual(proposal['targetSha256'], n.sha(n.BOOT_TARGET_BYTES))
+        self.assertEqual(proposal['dropinSha256'], n.sha(n.PROPOSED_MANAGER_BYTES))
+        self.assertEqual(proposal['targetMode'], 0o444)  # User1004 must read it; NOT Root0400.
+        self.assertIn(b'DefaultDependencies=no\n', n.BOOT_TARGET_BYTES)
+        for token in (b'Wants=', b'Requires=', b'[Install]', b'WantedBy=', b'Exec'):
+            self.assertNotIn(token, n.BOOT_TARGET_BYTES)
+        self.assertIn(b'ExecStart=\nExecStart=/usr/lib/systemd/systemd --user --unit=p0-v2-native.target\n',
+                      n.PROPOSED_MANAGER_BYTES)
+        self.assertNotIn(b'ExecStart=', n.DROPIN_BYTES)  # Current publisher NOT silently switched.
+        for key in ('qualified', 'publicationImplemented', 'transitionImplemented', 'nativeAuthority', 'installationCertified'):
+            self.assertFalse(proposal[key])
+
     def test_incomplete_duplicate_or_extra_properties_refuse(self):
         facts = self.facts()
         raw = b'\n'.join((k + '=' + v).encode() for k, v in facts.items())
@@ -575,6 +597,7 @@ class Source08MetadataTests(unittest.TestCase):
         raw, snapshot = b'SYNTHETIC_STAGED_SOURCE_ONLY', tuple(range(9))
         path = '/var/lib/UNCREATED-source08-fixture/provision-p0-v2-view.py'
         with patch.object(n, '__file__', path), patch.object(n, 'root_ancestors'), \
+             patch.object(n, 'bounded', return_value=b'0 0 4294967295\n'), \
              patch.object(n, 'owned_file', return_value=(raw, snapshot)) as reader, \
              patch.object(n.os, 'statvfs', return_value=types.SimpleNamespace(f_flag=0)):
             guard = n.SelfGuard(n.sha(raw))
@@ -583,6 +606,7 @@ class Source08MetadataTests(unittest.TestCase):
             with self.assertRaisesRegex(n.Refused, '^held-source-snapshot-changed$'):
                 guard.check()
         with patch.object(n, '__file__', path), patch.object(n, 'root_ancestors'), \
+             patch.object(n, 'bounded', return_value=b'0 0 4294967295\n'), \
              patch.object(n, 'owned_file', return_value=(raw, snapshot)), \
              patch.object(n.os, 'statvfs', return_value=types.SimpleNamespace(f_flag=n.os.ST_NOEXEC)):
             with self.assertRaisesRegex(n.Refused, '^source-filesystem-noexec$'):
@@ -1038,6 +1062,111 @@ class Source08PauseMetadataTests(unittest.TestCase):
         self.maps_root = True
         with self.assertRaisesRegex(n.Refused, '^rootless-host-root-mapped$'):
             n.PauseObserver().collect()
+
+
+class Source08ActorSourceTests(unittest.TestCase):
+    def setUp(self):
+        from contextlib import ExitStack
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix='.p0-actor-source08-', dir=Path.home())))
+        self.stack = self.enterContext(ExitStack())
+        self.config = self.root / '.config/containers'
+        self.units = self.config / 'systemd'
+        self.units.mkdir(parents=True, mode=0o700)
+        storage = self.config / 'storage.conf'
+        storage.write_bytes(n.STORAGE_BYTES)
+        storage.chmod(0o600)
+        self.stack.enter_context(patch.object(n, 'RUNTIME_HOME', self.root))
+        self.stack.enter_context(patch.object(n, 'runtime_account'))
+        self.stack.enter_context(patch.object(n, 'actor_directory', side_effect=lambda p: os.open(p, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)))
+        real_stat, real_fstat = os.stat, os.fstat
+        def mapped(value):
+            fields = {k: getattr(value, k) for k in dir(value) if k.startswith('st_')}
+            fields.update(st_uid=1004 if stat.S_ISREG(value.st_mode) else 0,
+                          st_gid=1004 if stat.S_ISREG(value.st_mode) else 0)
+            return types.SimpleNamespace(**fields)
+        self.stack.enter_context(patch.object(n.os, 'stat', side_effect=lambda *a, **kw: mapped(real_stat(*a, **kw))))
+        self.stack.enter_context(patch.object(n.os, 'fstat', side_effect=lambda fd: mapped(real_fstat(fd))))
+        class Entries:
+            def __init__(inner, fd): inner.fd = fd
+            def __enter__(inner):
+                return iter([types.SimpleNamespace(name=name, stat=lambda *, follow_symlinks=False, name=name:
+                    mapped(real_stat(name, dir_fd=inner.fd, follow_symlinks=follow_symlinks))) for name in os.listdir(inner.fd)])
+            def __exit__(inner, *args): pass
+        self.stack.enter_context(patch.object(n.os, 'scandir', Entries))
+
+    def test_fixed_storage_bytes_and_quadlet_hashes_are_metadata_not_any_kind_of_absence(self):
+        source = self.units / 'p0-fixture.container'
+        source.write_bytes(b'[Container]\nImage=fixture@sha256:' + b'a' * 64 + b'\n[Service]\nRestart=on-failure\n')
+        source.chmod(0o600)  # This NEW fixture's declared source custody.
+        with patch.object(n, 'metadata_call', side_effect=AssertionError('NO_NATIVE_CALL')):
+            report = n.ActorSourceObserver().collect()
+        self.assertEqual(report['storage']['sha256'], n.sha(n.STORAGE_BYTES))
+        self.assertEqual(len(report['quadlets']['files']), 1)
+        self.assertFalse(report['quadlets']['files'][0]['installReplay'])
+        self.assertTrue(report['quadlets']['files'][0]['requiresEveryNativeLifecycleGuard'])
+        for key in ('runningKernelTasksCertifiedAbsent', 'stoppedDatabaseObjectsCertifiedAbsent',
+                    'approvedProtectedViewUnshareProbe', 'oldPauseReleaseAuthorized'):
+            self.assertFalse(report[key])
+        self.assertFalse(report['quadlets']['frozenSupplyCompared'])
+        self.assertFalse(report['quadlets']['bootGraphCertified'])
+
+    def test_install_replay_is_conservative_and_unknown_authored_files_not_read(self):
+        (self.units / 'p0-fixture.container').write_bytes(b'[Container]\nImage=fixture\n[Install]\nWantedBy=default.target\n')
+        (self.units / 'p0-fixture.container').chmod(0o600)
+        (self.units / 'authored.txt').write_bytes(b'NEW_TEST_FIXTURE_NOT_TO_BE_READ')
+        (self.units / 'p0-foreign.volume').symlink_to(self.units / 'authored.txt')
+        report = n.ActorSourceObserver().quadlets()
+        self.assertTrue(report['files'][0]['installReplay'])
+        self.assertEqual(report['unknownEntries'], 1)
+        self.assertEqual(report['symlinks'], 1)
+        self.assertEqual(len(report['files']), 1)
+
+    def test_file_changed_after_hash_refuses_before_metadata_report(self):
+        path = self.units / 'p0-fixture.container'
+        path.write_bytes(b'[Container]\nImage=fixture\n')
+        path.chmod(0o600)
+        original = n.install_replay
+        def change(raw):
+            result = original(raw)
+            path.write_bytes(raw + b'# NEW_CHANGED_FIXTURE\n')
+            return result
+        with patch.object(n, 'install_replay', side_effect=change):
+            with self.assertRaisesRegex(n.Refused, '^actor-quadlet-source-changed$'):
+                n.ActorSourceObserver().quadlets()
+
+    def test_storage_path_same_byte_inode_replacement_refuses(self):
+        original = n.actor_directory
+        calls = []
+        def reopen(path):
+            calls.append(path)
+            if len(calls) == 2:
+                stage = self.config / 'new-storage-fixture'
+                stage.write_bytes(n.STORAGE_BYTES)
+                stage.chmod(0o600)
+                os.replace(stage, self.config / 'storage.conf')
+            return original(path)
+        with patch.object(n, 'actor_directory', side_effect=reopen):
+            with self.assertRaisesRegex(n.Refused, '^actor-storage-source-changed$'):
+                n.ActorSourceObserver().storage()
+
+    def test_missing_source_directory_does_not_certify_absence(self):
+        self.units.rmdir()  # Exact NEW empty fixture only.
+        report = n.ActorSourceObserver().quadlets()
+        self.assertFalse(report['available'])
+        self.assertFalse(report['absenceCertified'])
+        self.assertFalse(report['nativeAuthority'])
+
+    def test_changed_storage_graphroot_refuses_without_native_call(self):
+        path = self.config / 'storage.conf'
+        path.write_bytes(n.STORAGE_BYTES.replace(b'rootless/engine', b'rootless/FOREIGN'))
+        with self.assertRaises(n.Refused), patch.object(n, 'metadata_call', side_effect=AssertionError('NO_NATIVE_CALL')):
+            n.ActorSourceObserver().storage()
+
+    def test_user_namespace_root_is_not_host_root_bootstrap_authority(self):
+        for raw in (b'0 1000 1\n', b'0 0 1\n', b'0 0 4294967295\n1 1 1\n'):
+            with self.subTest(raw=raw), patch.object(n, 'bounded', return_value=raw):
+                with self.assertRaisesRegex(n.Refused, '^host-initial-user-namespace-required$'):
+                    n.initial_host_user_namespace()
 
 
 if __name__ == '__main__':

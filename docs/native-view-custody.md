@@ -137,8 +137,9 @@ parent is reopened in that namespace and compared to held Host identity before
 recursive cloning. Every holder/handle/worker/preclaim subphase is retained.
 **Whole-source native qualification is still required before Parent executes it.**
 
-`observe-manager`/`observe-pause` only return bounded nonsecret metadata, never a
-release permit. `publish-manager` is a separate fixed-literal fresh-only operation
+`observe-manager`/`observe-pause`/`observe-actor-sources` only return bounded
+nonsecret metadata, never a release permit. Host bootstrap also checks exact
+initial Host UID/GID maps: virtual UID0 in another user namespace is not Host0. `publish-manager` is a separate fixed-literal fresh-only operation
 requiring live namespace reopen/consumer verification and stopped reviewed manager
 sources/scoped units. It publishes no complete authority and never reloads/starts.
 `root_prefix` remains closed. Historical `proposed_root_prefix` is a pure07 argv
@@ -284,6 +285,76 @@ actual maps and kernel overflow IDs. Tests explicitly reject a mutable-parent
 inode despite identical raw overflow UID and unchanged data/mount IDs. O_PATH
 fstatvfs/map behavior and exact Rootless native command/reexec semantics still
 need actual qualification before mutation can be enabled.
+
+## Readonly actor sources are not a native inventory
+
+`ActorSourceObserver` reads only fixed dedicated-account storage configuration
+and scoped `p0-*.container/.network/.volume` source metadata under the new actor's
+configuration directory. It compares exact storage.conf bytes with the fixed
+canonical graphroot/runroot/overlay source contract (independently reimplemented,
+no Root import of core). Safe nofollow held directory traversal, regular-file
+custody/link/size limits, before/after inode/stat and directory-inventory snapshots
+bound hashes; unknown authored names and symlink targets are not read. Source
+`[Install]` nonempty WantedBy/RequiredBy/Also/Alias is conservatively flagged as
+possible replay. No source is adopted, normalized, enabled or executed.
+
+These live hashes must still be compared with Parent's frozen selected source;
+they do **not** qualify the OS user boot/generator/dependency/enablement graph.
+Even an exact container source with no WantedBy and Restart=on-failure can have
+unsafe generated native cleanup. Every Quadlet row reports that it requires the
+all-lifecycle guard below. Current selected three PG Quadlets remain Parent-owned;
+the generic helper does not hardcode an app inventory or claim they are stopped.
+
+Keep three independent questions distinct:
+
+1. Are there **running kernel container tasks** in the exact owned scopes?
+2. What **stopped database objects** exist in the owned engine?
+3. Did a separately approved fixed **no-container actual-unshare probe** execute
+   under the current protected view, not the cached old pause namespace?
+
+Readonly source/config metadata, a missing PIDfile/directory, PID exit, inactive
+unit, or historical successful probe answers none of these by itself. The source
+observer emits all three certification flags **false**, plus no old-pause release
+authority. It invokes no Podman, ps, info or unshare and reads no engine data.
+Source16 readonly comparison is not permission to use the old pause for native
+inventory. Parent must independently close current owned kernel/unit/cgroup and
+native receipt semantics before any release or explicit manager transition.
+
+## Proposed unique manager bootstrap target (not adopted)
+
+Readonly16's public OS source shows default.target → basic.target → sockets,
+timers and paths. Global socket wants include GPG/SSH; late XDG generator output
+also exists. Original global Worklane unit contents remain **excluded/unread/
+unhashed/unchanged**. A normal default user-manager start is not safe admission.
+
+`manager_boot_proposal()` freezes a **proposal only**: new
+`/etc/systemd/user/p0-v2-native.target`, Root0:G0 mode0444 (the UID1004 manager must
+read it), DefaultDependencies=no, no Requires/Wants/Install; and a separate fixed
+user@1004 drop-in resetting ExecStart to
+`/usr/lib/systemd/systemd --user --unit=p0-v2-native.target`. It reports literal
+hashes and qualified/publication/transition/nativeAuthority **false**. The current
+BindPaths-only publisher is deliberately **not** silently changed to this profile.
+No target file or new ExecStart has been published or started by this work.
+
+Before adoption, fresh target O_EXCL/inode/NOREPLACE/private CAS must cover only
+that new name under the held trusted existing global parent; never repair or
+inventory/read/hash original authored neighbors. Inventory every applicable
+user.control/transient/generator/config/data/usr-local/user search priority root
+for same-name alternates, aliases/type/dash-prefix overrides and target dependency
+links. Readonly16 did not cover every such root. Unknown relevant authored
+contents stay unread and refuse admission. A private target does not itself stop
+generators or environment generators: freeze their public code/symlink/source/
+output profile;16 left the Quadlet generator target unqualified. Control inherited
+search/environment overrides; do not assume no side effects from an empty target.
+
+Manager's `/run/user/1004/systemd/private` endpoint and fixed transient SERVICE
+transport must be independently qualified without starting default/basic/dbus/
+sockets targets or falling back to another bus. Bind socket inode/custody and
+current peer PID/starttime/pidfd/immutable code/config/own init.scope/namespace/
+InvocationID; same UID alone is not attestation. Current source implements no
+manager transition or old-pause release. Public Podman hash16, storage config and
+three-source equality are code profiles, **not** running-task/DB-object inventory,
+actual safe-unshare proof, source admission or release authority.
 
 ## Every native lifecycle phase needs custody (Parent integration)
 

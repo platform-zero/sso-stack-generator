@@ -663,6 +663,12 @@ MANAGER_PROPERTIES = ('Id', 'LoadState', 'ActiveState', 'SubState', 'MainPID',
     'Group', 'NeedDaemonReload', 'Triggers', 'TriggeredBy')
 
 
+def initial_host_user_namespace():
+    for kind in ('uid', 'gid'):
+        rows = [line.split() for line in bounded('/proc/self/' + kind + '_map', 4096).splitlines()]
+        need(rows == [[b'0', b'0', b'4294967295']], 'host-initial-user-namespace-required')
+
+
 def same_file(path, expected):
     raw, snapshot = owned_file(path)
     need(snapshot == expected, 'held-source-snapshot-changed')
@@ -676,6 +682,7 @@ class SelfGuard:
         need(self.path.is_relative_to('/var/lib') and HEX.fullmatch(digest or ''), 'private-source-location')
         root_ancestors(self.path.parent, leaf_mode=0o700)
         need(self.path.name == 'provision-p0-v2-view.py', 'private-source-name')
+        initial_host_user_namespace()
         self.raw, self.snapshot = owned_file(self.path)
         need(sha(self.raw) == digest, 'helper-sha256')
         need(not os.statvfs(self.path).f_flag & os.ST_NOEXEC, 'source-filesystem-noexec')
@@ -717,6 +724,8 @@ def metadata_call(arguments):
              and re.fullmatch(r'p0-v2-[a-z0-9][a-z0-9-]{0,62}\.(service|socket|timer|path|target)', arguments[1])
              and arguments[2] == '--property=' + ','.join(MANAGER_PROPERTIES)), 'metadata-command-not-closed')
     before = binary_snapshot('/usr/bin/systemctl')
+    need(before['sha256'] == '848c70d7e2c2f43f4f93287897ac8946e8eda45e7daa5f2975d9728071856b1a',
+         'systemctl-os-code-profile-unqualified')
     child = subprocess.Popen(['/usr/bin/systemctl', '--no-pager', *arguments], stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C',
         'SYSTEMD_PAGER': 'cat', 'SYSTEMD_COLORS': '0'}, close_fds=True)
@@ -1757,6 +1766,165 @@ class ManagerPublication:
             os.close(parent)
 
 
+BOOT_TARGET = Path('/etc/systemd/user/p0-v2-native.target')
+BOOT_TARGET_BYTES = (b'# P0 dedicated native-view bootstrap; no app activation.\n'
+                     b'[Unit]\nDescription=P0 native bootstrap only\nDefaultDependencies=no\n')
+PROPOSED_MANAGER_BYTES = (DROPIN_BYTES + b'ExecStart=\n'
+    b'ExecStart=/usr/lib/systemd/systemd --user --unit=p0-v2-native.target\n')
+
+
+def manager_boot_proposal():
+    """Pure versioned literal/hash contract, NOT publication or start authority.
+
+    Current ManagerPublication still publishes ONLY DROPIN_BYTES/BindPaths.
+    Search/generator/private-control qualification must precede adopting this.
+    """
+    return {'version': 1, 'scope': 'p0-v2-manager-bootstrap-target-v1',
+        'target': str(BOOT_TARGET), 'targetMode': 0o444, 'targetSha256': sha(BOOT_TARGET_BYTES),
+        'dropinSha256': sha(PROPOSED_MANAGER_BYTES), 'currentBindOnlySha256': sha(DROPIN_BYTES),
+        'managerExecutableSha256': '799fd89964a716fb5f26c4506047190b6e842ac2745b473bd45351c4d8cbd929',
+        'podmanPublicCodeSha256': '6e4993e061eb88205003892252e2e13bbf49c12a6f67f519881b9b3c94e980e6',
+        'qualified': False, 'publicationImplemented': False, 'transitionImplemented': False,
+        'nativeAuthority': False, 'installationCertified': False,
+        'required': ['closed-user-searchpath-and-overrides', 'generator-and-environment-source-output-profile',
+                     'private-control-socket-and-service-transport', 'stopped-owned-app-trigger-scope',
+                     'exact-old-pause-and-protected-native-inventory']}
+
+
+RUNTIME_HOME = Path('/var/lib/p0-runtime')
+STORAGE_BYTES = (b'[storage]\ndriver = "overlay"\nrunroot = "/run/user/1004/containers"\n'
+                 b'graphroot = "/mnt/stack/p0-v2/rootless/engine"\n')
+
+
+def actor_directory(path):
+    """Held nofollow walk of fixed actor metadata roots; never imports content."""
+    path = Path(path)
+    need(path.is_absolute() and '..' not in path.parts, 'actor-source-path')
+    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for name in path.parts[1:]:
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+            value = os.fstat(fd)
+            need(stat.S_ISDIR(value.st_mode) and value.st_uid in (0, 1004)
+                 and value.st_gid in (0, 1004) and not value.st_mode & 0o022, 'actor-source-directory-custody')
+        result, fd = fd, None
+        return result
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def install_replay(raw):
+    """Conservative source observation only; no enablement/absence certificate."""
+    section = ''
+    for line in raw.decode('utf-8').splitlines():
+        line = line.strip()
+        if not line or line.startswith(('#', ';')):
+            continue
+        if line.startswith('[') and line.endswith(']'):
+            section = line[1:-1]
+        elif section == 'Install':
+            key, sep, value = line.partition('=')
+            if sep and key.strip() in ('WantedBy', 'RequiredBy', 'Also', 'Alias') and value.strip():
+                return True
+    return False
+
+
+class ActorSourceObserver:
+    """Fixed dedicated-account source/config metadata, NEVER native inventory.
+
+    No Podman/unshare/ps/info invocation and no engine/data content read. File
+    comparisons do not prove running-task absence, stopped DB-object absence or
+    safety of cached pause reexec. Parent must supply the independent frozen
+    selected supply comparison; these live source hashes are not authority.
+    """
+    def storage(self):
+        runtime_account()
+        directory = RUNTIME_HOME / '.config/containers'
+        parent = actor_directory(directory)
+        fd = None
+        try:
+            identity = fd_node(parent)
+            fd = os.open('storage.conf', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+            value = os.fstat(fd)
+            need(stat.S_ISREG(value.st_mode) and value.st_uid == value.st_gid == 1004 and value.st_nlink == 1
+                 and stat.S_IMODE(value.st_mode) == 0o600 and value.st_size == len(STORAGE_BYTES), 'actor-storage-source-custody')
+            raw = os.read(fd, 4097)
+            need(raw == STORAGE_BYTES and file_snapshot(os.fstat(fd)) == file_snapshot(value), 'actor-storage-source-changed')
+            current = actor_directory(directory)
+            try:
+                need(fd_node(current) == identity, 'actor-source-parent-changed')
+                need(file_snapshot(os.stat('storage.conf', dir_fd=current, follow_symlinks=False)) == file_snapshot(value),
+                     'actor-storage-source-changed')
+            finally:
+                os.close(current)
+            return {'version': 1, 'sha256': sha(raw), 'snapshot': list(file_snapshot(value)),
+                    'nativeAuthority': False}
+        finally:
+            if fd is not None:
+                os.close(fd)
+            os.close(parent)
+
+    def quadlets(self):
+        runtime_account()
+        directory = RUNTIME_HOME / '.config/containers/systemd'
+        try:
+            parent = actor_directory(directory)
+        except FileNotFoundError:
+            return {'version': 1, 'available': False, 'reason': 'actor-source-directory-missing',
+                    'absenceCertified': False, 'nativeAuthority': False}
+        rows, unknown, links = [], 0, 0
+        try:
+            held = fd_node(parent)
+            directory_snapshot = file_snapshot(os.fstat(parent))
+            with os.scandir(parent) as entries:
+                for count, entry in enumerate(entries, 1):
+                    need(count <= 256, 'actor-source-inventory-limit')
+                    name = entry.name
+                    value = entry.stat(follow_symlinks=False)
+                    if stat.S_ISLNK(value.st_mode):
+                        links += 1  # Do not follow an unknown target or infer absence.
+                        continue
+                    if not re.fullmatch(r'p0-[a-z0-9][a-z0-9-]{0,62}\.(container|network|volume)', name):
+                        unknown += 1  # Never read authored/foreign content.
+                        continue
+                    need(stat.S_ISREG(value.st_mode) and value.st_uid in (0, 1004) and value.st_gid in (0, 1004)
+                         and value.st_nlink == 1 and not value.st_mode & 0o022 and value.st_size <= 65536,
+                         'actor-quadlet-source-custody')
+                    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+                    try:
+                        need(file_snapshot(os.fstat(fd)) == file_snapshot(value), 'actor-quadlet-source-changed')
+                        raw = os.read(fd, 65537)
+                        need(len(raw) == value.st_size and file_snapshot(os.fstat(fd)) == file_snapshot(value),
+                             'actor-quadlet-source-changed')
+                        rows.append({'name': name, 'snapshot': list(file_snapshot(value)), 'sha256': sha(raw),
+                                     'installReplay': install_replay(raw), 'requiresEveryNativeLifecycleGuard': True})
+                    finally:
+                        os.close(fd)
+            current = actor_directory(directory)
+            try:
+                need(fd_node(current) == held and file_snapshot(os.fstat(current)) == directory_snapshot,
+                     'actor-source-parent-changed')
+                # Recheck each collected file's inode/stat, not just directory inode.
+                for row in rows:
+                    actual = os.stat(row['name'], dir_fd=current, follow_symlinks=False)
+                    need(list(file_snapshot(actual)) == row['snapshot'], 'actor-quadlet-source-changed')
+            finally:
+                os.close(current)
+            return {'version': 1, 'available': True, 'files': sorted(rows, key=lambda row: row['name']),
+                    'unknownEntries': unknown, 'symlinks': links, 'nativeAuthority': False,
+                    'frozenSupplyCompared': False, 'bootGraphCertified': False, 'absenceCertified': False}
+        finally:
+            os.close(parent)
+
+    def collect(self):
+        return {'version': 1, 'storage': self.storage(), 'quadlets': self.quadlets(),
+                'runningKernelTasksCertifiedAbsent': False, 'stoppedDatabaseObjectsCertifiedAbsent': False,
+                'approvedProtectedViewUnshareProbe': False, 'oldPauseReleaseAuthorized': False}
+
+
 class ClosedHost:
     def preflight(self, previous):
         raise Refused('native-manager-pause-gates-unqualified')
@@ -1769,14 +1937,16 @@ class Parser(argparse.ArgumentParser):
 
 def main(argv=None):
     parser = Parser(description=__doc__)
-    parser.add_argument('mode', choices=('plan', 'transition', 'resume', 'observe-manager', 'observe-pause', 'publish-manager'))
+    parser.add_argument('mode', choices=('plan', 'transition', 'resume', 'observe-manager', 'observe-pause', 'observe-actor-sources', 'publish-manager'))
     parser.add_argument('--helper-sha256', required=True)
     parser.add_argument('--expected-previous-sha256', required=True)
     args = parser.parse_args(argv)
     need(os.getuid() == os.geteuid() == os.getgid() == os.getegid() == 0, 'root-required')
     guard = SelfGuard(args.helper_sha256)
-    if args.mode in ('observe-manager', 'observe-pause'):
-        result = (MetadataObserver().manager() if args.mode == 'observe-manager' else PauseObserver().collect())
+    if args.mode in ('observe-manager', 'observe-pause', 'observe-actor-sources'):
+        result = {'observe-manager': lambda: MetadataObserver().manager(),
+                  'observe-pause': lambda: PauseObserver().collect(),
+                  'observe-actor-sources': lambda: ActorSourceObserver().collect()}[args.mode]()
         guard.check()
         print(json.dumps({'version': 1, 'scope': 'p0-native-view-metadata', 'observation': result,
                           'nativeAuthority': False, 'installationCertified': False}, sort_keys=True))
