@@ -88,6 +88,12 @@ inode remain correct. A changed protected parent/data identity still refuses.
    recursive private before/after exact move. Actual ABI remains unqualified.
 6. Source transition state machine and fixed unprivileged actual-unshare program.
 7. Physical capacity checks through held bound DATA FD, not shadow-parent RootFS.
+8. Independent `ViewStore` private Root0700/0400 ledger: nonblocking exclusive
+   flock, byte/stat and held-directory CAS, fsync/rename/fsync, exact O_EXCL prior-v2
+   retention and hash/custody revalidation. Interrupted fixed `.publish-active`
+   remains and refuses. Fixed old-marker read returns exact SHA-bound bytes plus
+   file snapshot, never edits the old marker. These file mechanisms have new
+   unprivileged mapped-ownership fixture tests, not production Root qualification.
 
 **Production `ClosedHost.preflight` and CLI plan/transition/resume currently
 refuse `native-manager-pause-gates-unqualified` before source/old-record access or
@@ -117,8 +123,12 @@ One Parent operation interlock, Root-private exclusive lock and byte/stat CAS:
 | `manager-pending` | native view bound but manager/pause/actual-unshare still absent; **no native authority** |
 | `complete` | all exact manager/private-view, pause closure, actual-unshare and consumer before/after observations independently qualified; not published by current implementation |
 
-The test store/backend interfaces model durable order; they are not a production
-CAS implementation. Current transition implementation stops at manager-pending
+`ViewStore` implements the private file/CAS primitives; the fake test backend
+models kernel/manager facts, not a production Root observer. Trusted staged
+bootstrap/previous-snapshot binding and production store/backend wiring remain
+closed. The private ledger's parent must already have safe Root custody; creating
+that private authority container is not permission to adopt a matching data mount
+target. Current transition implementation stops at manager-pending
 with nativeAuthority=false. Existing/partial states refuse automatic continuation
 or new-boot replay pending reviewed exact reconciliation. Detached/preclaim-absent
 or uncertain handles/effects remain, not deleted/reset/adopted. Complete prior

@@ -457,6 +457,122 @@ def recursive_projection(api, parent_fd, target_fd, *, mount_id, claim, before_a
         os.close(tree)
 
 
+def file_snapshot(value):
+    return (value.st_dev, value.st_ino, value.st_mode, value.st_uid, value.st_gid,
+            value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+
+def owned_file(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        value = os.fstat(fd)
+        need(stat.S_ISREG(value.st_mode) and value.st_uid == value.st_gid == 0
+             and stat.S_IMODE(value.st_mode) == 0o400 and value.st_nlink == 1 and value.st_size <= LIMIT, 'private-file-custody')
+        raw = os.read(fd, LIMIT + 1)
+        need(len(raw) == value.st_size and file_snapshot(os.fstat(fd)) == file_snapshot(value), 'private-file-changed')
+        return raw, file_snapshot(value)
+    finally:
+        os.close(fd)
+
+
+def read_previous(expected_sha):
+    root_ancestors(PREVIOUS.parent, leaf_mode=0o700)
+    raw, snapshot = owned_file(PREVIOUS)
+    need(isinstance(expected_sha, str) and HEX.fullmatch(expected_sha) and sha(raw) == expected_sha, 'previous-sha256')
+    return raw, snapshot
+
+
+class ViewStore:
+    """Private source ledger only. Production CLI cannot yet reach this store.
+
+    Parent must preflight BEFORE private bootstrap; private authority container
+    setup is not authority to create/repair an independent mount target.
+    """
+    def __init__(self, base=AUTHORITY):
+        self.base, self.fd, self.previous = Path(base), None, None
+
+    def open(self, *, create=False):
+        root_ancestors(self.base.parent)
+        if not os.path.lexists(self.base):
+            need(create, 'view-record-missing')
+            self.base.mkdir(mode=0o700)  # Fresh private inode only, no normalization.
+        root_ancestors(self.base, leaf_mode=0o700)
+        self.fd = os.open(self.base, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        value = os.fstat(self.fd)
+        self.directory = (value.st_dev, value.st_ino)
+        self.check()
+        self.previous = self.current()
+
+    def check(self):
+        root_ancestors(self.base, leaf_mode=0o700)
+        value, held = self.base.lstat(), os.fstat(self.fd)
+        need((value.st_dev, value.st_ino) == self.directory == (held.st_dev, held.st_ino), 'view-ledger-directory-changed')
+        need(set(os.listdir(self.fd)) <= {'active.json', 'previous-v2.json'}, 'view-ledger-interrupted-publication')
+
+    def current(self):
+        self.check()
+        try:
+            return owned_file(self.base / 'active.json')
+        except FileNotFoundError:
+            return None
+
+    def load(self):
+        if self.previous is None:
+            return None
+        record = parse(self.previous[0])
+        validate_record(record)
+        retained = self.base / 'previous-v2.json'
+        if record['state'] != 'claimed' or os.path.lexists(retained):
+            raw, _ = owned_file(retained)
+            need(sha(raw) == record['previousSha256'], 'retained-previous-changed')
+        return record
+
+    def save(self, record):
+        need(self.current() == self.previous, 'view-ledger-cas')
+        validate_record(seal(record))
+        raw = encoded(record)
+        need(len(raw) <= LIMIT, 'view-ledger-size')
+        name = '.publish-active'
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400, dir_fd=self.fd)
+        try:
+            os.fchmod(fd, 0o400)  # Fresh O_EXCL private inode only.
+            need(os.write(fd, raw) == len(raw), 'view-ledger-short-write')
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        # check() deliberately rejects interrupted .publish on next invocation;
+        # during this exact publication compare old active bytes/stat directly.
+        root_ancestors(self.base, leaf_mode=0o700)
+        current_dir, held_dir = self.base.lstat(), os.fstat(self.fd)
+        need((current_dir.st_dev, current_dir.st_ino) == self.directory == (held_dir.st_dev, held_dir.st_ino), 'view-ledger-directory-changed')
+        old = None if not os.path.lexists(self.base / 'active.json') else owned_file(self.base / 'active.json')
+        need(old == self.previous, 'view-ledger-cas')
+        os.replace(name, 'active.json', src_dir_fd=self.fd, dst_dir_fd=self.fd)
+        os.fsync(self.fd)
+        self.previous = self.current()
+
+    def retain_previous(self, raw, expected_sha):
+        need(self.previous is not None and sha(raw) == expected_sha, 'previous-retention-binding')
+        record = self.load()
+        need(record['state'] == 'claimed' and record['previousSha256'] == expected_sha, 'previous-retention-claim')
+        need(self.current() == self.previous, 'view-ledger-cas')
+        fd = os.open('previous-v2.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400, dir_fd=self.fd)
+        try:
+            os.fchmod(fd, 0o400)
+            need(os.write(fd, raw) == len(raw), 'previous-retention-short-write')
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.fsync(self.fd)
+        need(owned_file(self.base / 'previous-v2.json')[0] == raw, 'previous-retention-readback')
+
+    def close(self):
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+
 class Transition:
     """Source state machine. Backend observes facts, not intent-supplied permits.
 
@@ -530,7 +646,7 @@ def main(argv=None):
     parser.add_argument('--helper-sha256', required=True)
     parser.add_argument('--expected-previous-sha256', required=True)
     args = parser.parse_args(argv)
-    need(os.getuid() == os.geteuid() == 0, 'root-required')
+    need(os.getuid() == os.geteuid() == os.getgid() == os.getegid() == 0, 'root-required')
     # No Host mutation path is exposed while stopped/manager/pause ABI is unqualified.
     # Deliberately refuse BEFORE source/old-record access or target/private mkdir.
     raise Refused('native-manager-pause-gates-unqualified')

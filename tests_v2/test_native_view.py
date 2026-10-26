@@ -355,6 +355,91 @@ class MountProtocolTests(unittest.TestCase):
             os.fstat(self.tree)
 
 
+class LedgerTests(unittest.TestCase):
+    def setUp(self):
+        from contextlib import ExitStack
+        self.temp = self.enterContext(tempfile.TemporaryDirectory(prefix='.p0-view-ledger07-', dir=Path.home()))
+        self.root = Path(self.temp)
+        self.stack = self.enterContext(ExitStack())
+        real_stat, real_fstat = os.stat, os.fstat
+        def mapped(value):
+            result = {k: getattr(value, k) for k in dir(value) if k.startswith('st_')}
+            result.update(st_uid=0, st_gid=0)
+            return types.SimpleNamespace(**result)
+        self.stack.enter_context(patch.object(n, 'root_ancestors'))
+        self.stack.enter_context(patch.object(n.os, 'stat', side_effect=lambda *a, **k: mapped(real_stat(*a, **k))))
+        self.stack.enter_context(patch.object(n.os, 'fstat', side_effect=lambda *a, **k: mapped(real_fstat(*a, **k))))
+        self.store = n.ViewStore(self.root / 'private')
+        self.store.open(create=True)
+        self.addCleanup(self.store.close)
+        self.record, _ = complete_fixture()
+        self.record.update(state='claimed', anchor=None, native=None, manager=None, pause=None)
+        n.seal(self.record)
+        self.raw = n.encoded(previous())
+        self.record['previousSha256'] = n.sha(self.raw)
+        n.seal(self.record)
+
+    def test_private_cas_claim_and_exclusive_exact_previous_retention(self):
+        self.store.save(self.record)
+        self.store.retain_previous(self.raw, n.sha(self.raw))
+        self.assertEqual((self.store.base / 'previous-v2.json').read_bytes(), self.raw)
+        self.assertEqual(stat.S_IMODE((self.store.base / 'previous-v2.json').stat().st_mode), 0o400)
+        self.assertEqual(self.store.load(), self.record)
+        with self.assertRaises(FileExistsError):
+            self.store.retain_previous(self.raw, n.sha(self.raw))
+
+    def test_retained_previous_corruption_refuses_and_preserves_bytes(self):
+        self.store.save(self.record)
+        self.store.retain_previous(self.raw, n.sha(self.raw))
+        path = self.store.base / 'previous-v2.json'
+        path.chmod(0o600)
+        path.write_bytes(b'NEW_CORRUPT_TEST_FIXTURE')
+        path.chmod(0o400)
+        with self.assertRaisesRegex(n.Refused, '^retained-previous-changed$'):
+            self.store.load()
+        self.assertEqual(path.read_bytes(), b'NEW_CORRUPT_TEST_FIXTURE')
+
+    def test_same_bytes_replaced_active_inode_fails_cas(self):
+        self.store.save(self.record)
+        path = self.store.base / 'active.json'
+        raw = path.read_bytes()
+        path.unlink()  # Exact new TEST fixture only.
+        path.write_bytes(raw)
+        path.chmod(0o400)
+        with self.assertRaisesRegex(n.Refused, '^view-ledger-cas$'):
+            self.store.save(self.record)
+
+    def test_failed_private_publication_retained_and_refused_on_reopen(self):
+        self.store.save(self.record)
+        with patch.object(n.os, 'replace', side_effect=OSError('SYNTHETIC_PRIVATE_PUBLICATION')):
+            with self.assertRaises(OSError):
+                self.store.save(self.record)
+        self.assertTrue((self.store.base / '.publish-active').exists())
+        self.store.close()
+        with self.assertRaisesRegex(n.Refused, '^view-ledger-interrupted-publication$'):
+            self.store.open()
+
+    def test_ledger_directory_swap_refuses_before_publish(self):
+        self.store.save(self.record)
+        self.store.base.rename(self.root / 'retained-original-ledger-fixture')
+        self.store.base.mkdir(mode=0o700)
+        with self.assertRaisesRegex(n.Refused, '^view-ledger-directory-changed$'):
+            self.store.save(self.record)
+        self.assertFalse(list(self.store.base.iterdir()))
+
+    def test_previous_read_is_fixed_hash_bound_and_rejects_links(self):
+        path = self.root / 'previous-fixture'
+        path.write_bytes(self.raw)
+        path.chmod(0o400)
+        with patch.object(n, 'PREVIOUS', path):
+            self.assertEqual(n.read_previous(n.sha(self.raw))[0], self.raw)
+            with self.assertRaisesRegex(n.Refused, '^previous-sha256$'):
+                n.read_previous('0' * 64)
+            os.link(path, self.root / 'new-fixture-hardlink')
+            with self.assertRaisesRegex(n.Refused, '^private-file-custody$'):
+                n.read_previous(n.sha(self.raw))
+
+
 class TransitionTests(unittest.TestCase):
     def setUp(self):
         self.record, self.observation = complete_fixture()
