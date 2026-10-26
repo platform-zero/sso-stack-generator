@@ -203,7 +203,11 @@ absence. Inspect must report one exact name, a bounded alphanumeric ID, driver
 `file` without driver options and the exact expected ownership labels. Native
 stdout is bounded to 256 KiB and parsed only as metadata; stderr is discarded.
 Native calls have 30-second deadlines; cleanup may wait at most another 5 seconds
-for the exact child. No global process observation or termination is used.
+for the exact newly created session/process group. Unsettled output/deadline
+failure sends SIGKILL to that group before reaping its leader; settled commands
+are not signalled. No global process observation or termination is used. Cleanup
+timeout remains indeterminate, not proof of no kernel-waiting descendant; Parent
+must reconcile its exact supervisor scope before another affected operation.
 
 ## Active Root custody and explicit recovery
 

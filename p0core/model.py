@@ -79,6 +79,17 @@ class Service:
     requires: tuple[Edge, ...]
     declaration: dict
 
+    @property
+    def unit_prefix(self) -> str:
+        # The system manager also owns protected historical p0-* services.
+        # Only new Rootful units use this reserved v2 scope. The dedicated
+        # p0-runtime user manager keeps its already-installed Rootless names.
+        return 'p0-v2-' if self.runtime == 'rootful' else 'p0-'
+
+    @property
+    def unit_name(self) -> str:
+        return self.unit_prefix + self.id + '.service'
+
 
 class Catalog:
     def __init__(self, manifests: list[dict]):

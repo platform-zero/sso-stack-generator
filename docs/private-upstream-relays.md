@@ -21,7 +21,10 @@ the native Unix socket path bound. Upstream readiness is a real graph edge, not
 fabricated cross-manager `After=` ordering.
 
 Rendering emits ordinary `.socket` and `.service` files under
-`systemd/rootful/`, not Quadlets. They are Root-managed but the trusted OS
+`systemd/rootful/p0-v2-<id>.socket` and `.service`, not Quadlets.
+Reserved `p0-v2-*` system-manager names separate this new application scope from
+protected existing Host `p0-*` services. Rootless units in the dedicated runtime
+user manager retain their installed `p0-*` names. They are Root-managed but the trusted OS
 `systemd-socket-proxyd` process runs as the existing `p0-runtime` account, with no
 new Host service user. They have no boot enablement merely from rendering.
 

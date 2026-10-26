@@ -526,6 +526,7 @@ class NamespaceTests(unittest.TestCase):
     def test_new_child_acl_normalization_touches_only_fresh_fixed_inodes(self):
         target = Path(self.temp.name) / 'target'
         target.mkdir(mode=0o711)
+        target.chmod(0o711)  # This fresh test inode, independent of operator umask.
         run = Path(self.temp.name) / 'runtime'
         var = Path(self.temp.name) / 'private'
         run.mkdir(mode=0o700)
@@ -562,6 +563,60 @@ class NamespaceTests(unittest.TestCase):
                 self.assertNotIn(forbidden, text)
 
 
+class TypedResourceSourceTests(unittest.TestCase):
+    def proof(self, entry):
+        return {'version': 1, 'namespace': {'device': 1, 'inode': 2, 'filesystemId': 3},
+                'units': {'rootless': [entry], 'rootful': []}}
+
+    def test_closed_resource_kind_and_unit_suffix_binding(self):
+        cases = [('container', 'p0-example.service', 'p0-example.container'),
+                 ('network', 'p0-network-identity-network.service', 'p0-network-identity.network'),
+                 ('volume', 'p0-postgres-data-volume.service', 'p0-postgres-data.volume')]
+        for kind, name, source in cases:
+            entry = {'name': name, 'kind': kind, 'sourceSha256': 'a' * 64}
+            self.assertEqual(n.quadlet_name(entry), source)
+            self.assertEqual(n.evidence(json.dumps(self.proof(entry)).encode()), self.proof(entry))
+        self.assertEqual(n.quadlet_name({'name': 'p0-example-network.service'}), 'p0-example-network.container')
+        for kind, name in [('network', 'p0-example.service'), ('volume', 'p0-example-network.service'),
+                           ('host-exec', 'p0-example.service'), ('socket', 'p0-example.socket')]:
+            with self.subTest(kind=kind, name=name), self.assertRaises(n.Refused):
+                n.evidence(json.dumps(self.proof({'name': name, 'kind': kind, 'sourceSha256': 'a' * 64})).encode())
+
+    def test_rootful_evidence_cannot_claim_protected_legacy_unit_names(self):
+        proof = self.proof({'name': 'p0-web.service', 'sourceSha256': 'a' * 64})
+        proof['units']['rootful'] = proof['units']['rootless']
+        proof['units']['rootless'] = []
+        with self.assertRaisesRegex(n.Refused, '^evidence-unit$'):
+            n.evidence(json.dumps(proof).encode())
+        proof['units']['rootful'][0]['name'] = 'p0-v2-edge.service'
+        n.evidence(json.dumps(proof).encode())
+
+    def test_bounded_full_service_and_resource_inventory(self):
+        proof = self.proof({'name': 'p0-example.service', 'sourceSha256': 'a' * 64})
+        proof['units']['rootless'] = [{'name': f'p0-service-{i}.service', 'sourceSha256': 'a' * 64} for i in range(256)]
+        self.assertEqual(len(n.evidence(json.dumps(proof).encode())['units']['rootless']), 256)
+        proof['units']['rootless'].append({'name': 'p0-extra.service', 'sourceSha256': 'a' * 64})
+        with self.assertRaisesRegex(n.Refused, '^evidence-units$'):
+            n.evidence(json.dumps(proof).encode())
+
+    def test_generic_exact_and_dash_prefix_quadlet_dropins_refuse(self):
+        with tempfile.TemporaryDirectory(prefix='.p0-source-dropin-fixture-', dir=Path.home()) as directory:
+            source = Path(directory) / 'p0-network-identity.network'
+            n.no_quadlet_dropins(source)
+            for name in ('network.d', 'p0-.network.d', 'p0-network-.network.d', 'p0-network-identity.network.d'):
+                target = source.parent / name
+                target.mkdir()
+                with self.subTest(name=name), self.assertRaisesRegex(n.Refused, '^quadlet-source-dropins$'):
+                    n.no_quadlet_dropins(source)
+                target.rmdir()
+            unrelated = source.parent / 'unrelated.network.d'
+            unrelated.mkdir()
+            n.no_quadlet_dropins(source)
+            with patch.object(n.Path, 'lstat', side_effect=PermissionError('synthetic')):
+                with self.assertRaises(PermissionError):
+                    n.no_quadlet_dropins(source)
+
+
 class NativeStoppedTests(unittest.TestCase):
     def setUp(self):
         self.entry = types.SimpleNamespace(pw_uid=1234, pw_gid=1234)
@@ -573,7 +628,9 @@ class NativeStoppedTests(unittest.TestCase):
         self.proof = {'namespace': self.expected, 'units': {'rootless': [{'name': 'p0-prototype.service',
                       'sourceSha256': hashlib.sha256(self.source).hexdigest()}], 'rootful': []}}
         self.props = {'LoadState': 'loaded', 'ActiveState': 'inactive', 'MainPID': '0', 'ControlGroup': '', 'Job': '',
-                      'SourcePath': str(n.HOME / '.config/containers/systemd/p0-prototype.container'), 'TriggeredBy': ''}
+                      'SourcePath': str(n.HOME / '.config/containers/systemd/p0-prototype.container'),
+                      'FragmentPath': '/run/user/1234/systemd/generator/p0-prototype.service',
+                      'DropInPaths': '', 'TriggeredBy': ''}
         self.containers = []
         self.trigger = False
         self.unreviewed = False
@@ -596,7 +653,7 @@ class NativeStoppedTests(unittest.TestCase):
 
     def stopped(self, *, protected=True, fresh_error=None):
         with patch.object(self.native, 'call', side_effect=self.call), patch.object(n, 'strict_directory'), \
-             patch.object(n, 'read_exact', return_value=(self.source, None)), \
+             patch.object(n, 'no_quadlet_dropins'), patch.object(n, 'read_exact', return_value=(self.source, None)), \
              patch.object(n, 'check_actor_directories'), patch.object(n, 'EngineAnchor'), \
              patch.object(n, 'inventory_authority', return_value=protected), \
              patch.object(n, 'fresh_rootful', side_effect=fresh_error, return_value=('absent', ())):
@@ -613,7 +670,9 @@ class NativeStoppedTests(unittest.TestCase):
 
     def test_active_pid_cgroup_job_trigger_and_unknown_unit_refuse(self):
         for key, value in (('ActiveState', 'active'), ('MainPID', '123'), ('ControlGroup', '/own/nonempty'),
-                           ('Job', '1/start'), ('TriggeredBy', 'p0-prototype.socket'), ('LoadState', 'not-found')):
+                           ('Job', '1/start'), ('TriggeredBy', 'p0-prototype.socket'), ('LoadState', 'not-found'),
+                           ('FragmentPath', '/etc/systemd/user/p0-prototype.service'),
+                           ('DropInPaths', '/etc/systemd/user/p0-prototype.service.d/override.conf')):
             old = self.props[key]
             self.props[key] = value
             with self.subTest(key=key), self.assertRaisesRegex(n.Refused, '^runtime-unit-not-stopped$'):
@@ -626,6 +685,74 @@ class NativeStoppedTests(unittest.TestCase):
         self.unreviewed = True
         with self.assertRaisesRegex(n.Refused, '^unreviewed-runtime-unit$'):
             self.stopped()
+
+    def test_explicit_network_and_volume_sources_use_native_generator_names(self):
+        for kind, name, source in (
+                ('network', 'p0-network-identity-network.service', 'p0-network-identity.network'),
+                ('volume', 'p0-postgres-data-volume.service', 'p0-postgres-data.volume')):
+            with self.subTest(kind=kind):
+                self.proof['units']['rootless'][0].update(kind=kind, name=name)
+                self.props['SourcePath'] = str(n.HOME / '.config/containers/systemd' / source)
+                self.props['FragmentPath'] = '/run/user/1234/systemd/generator/' + name
+                self.stopped()
+                self.assertEqual(n.quadlet_name(self.proof['units']['rootless'][0]), source)
+
+    def test_rootful_inventory_is_reserved_scope_not_protected_legacy_services(self):
+        self.stopped()
+        for args, actor, _ in self.calls:
+            if actor == 'rootful' and args[0] == '/usr/bin/systemctl':
+                patterns = [arg for arg in args if '*' in arg]
+                if 'list-unit-files' in args:
+                    self.assertEqual(args[-2:], ['list-unit-files', '--no-legend'])
+                else:
+                    self.assertTrue(patterns)
+                    self.assertTrue(all(pattern.startswith('p0-v2-') for pattern in patterns))
+                self.assertNotIn('p0-*.service', args)
+        original = self.call
+        def unreviewed(args, actor='rootful', pass_fds=()):
+            if actor == 'rootful' and 'p0-v2-*.service' in args:
+                return b'p0-v2-unreviewed.service generated -\n'
+            return original(args, actor, pass_fds)
+        with patch.object(self, 'call', side_effect=unreviewed):
+            with self.assertRaisesRegex(n.Refused, '^unreviewed-runtime-unit$'):
+                self.stopped()
+
+    def test_empty_inventory_never_accepts_filtered_list_files_exit_one(self):
+        original = self.call
+        def inventory(args, actor='rootful', pass_fds=()):
+            if 'list-unit-files' in args:
+                self.assertFalse(any('*' in argument for argument in args))
+                if actor == 'rootful':
+                    return b'p0-web.service enabled enabled\np0-native-historical.service transient -\nsshd.service enabled enabled\n'
+                return b'nonowned.service static -\n'
+            return original(args, actor, pass_fds)
+        with patch.object(self, 'call', side_effect=inventory):
+            self.stopped()
+        def scoped_trigger(args, actor='rootful', pass_fds=()):
+            if actor == 'rootful' and 'list-unit-files' in args:
+                return b'p0-v2-undeclared.socket disabled -\n'
+            return inventory(args, actor, pass_fds)
+        with patch.object(self, 'call', side_effect=scoped_trigger):
+            with self.assertRaisesRegex(n.Refused, '^runtime-triggers-remain$'):
+                self.stopped()
+
+    def test_native_deadline_cancels_group_before_reaping(self):
+        reader, writer = os.pipe()
+        self.addCleanup(os.close, writer)
+        output = os.fdopen(reader, 'rb')
+        process = types.SimpleNamespace(stdout=output, pid=7392)
+        events = []
+        process.poll = lambda: self.fail('must not reap group leader first')
+        process.wait = lambda **kwargs: events.append(('wait', kwargs)) or 0
+        with patch.object(n, 'strict_directory'), patch.object(n, 'read_exact'), \
+             patch.object(n.os, 'stat', return_value=types.SimpleNamespace(st_mode=0o755)), \
+             patch.object(n.subprocess, 'Popen', return_value=process), \
+             patch.object(n.os, 'killpg', side_effect=lambda pid, sig: events.append(('killpg', pid, sig))), \
+             patch.object(n.time, 'monotonic', side_effect=[0, 31]):
+            with self.assertRaisesRegex(n.Refused, '^native-timeout$'):
+                self.native.call(['/usr/bin/systemctl', 'show', 'p0-prototype.service'])
+        self.assertEqual(events, [('killpg', 7392, n.signal.SIGKILL), ('wait', {'timeout': 5})])
+        self.assertTrue(output.closed)
 
     def test_any_stopped_running_or_external_builder_container_refuses(self):
         for status in ('running', 'exited', 'storage'):
@@ -689,8 +816,8 @@ class NativeStoppedTests(unittest.TestCase):
     def test_future_inactive_native_relay_socket_still_blocks_current_contract(self):
         original = self.call
         def relay_files(args, actor='rootful', pass_fds=()):
-            if 'list-unit-files' in args and 'p0-*.socket' in args:
-                return b'p0-future-relay.socket disabled\n'
+            if actor == 'rootful' and 'list-unit-files' in args:
+                return b'p0-v2-future-relay.socket disabled\n'
             return original(args, actor, pass_fds)
         self.call = relay_files
         with self.assertRaisesRegex(n.Refused, '^runtime-triggers-remain$'):

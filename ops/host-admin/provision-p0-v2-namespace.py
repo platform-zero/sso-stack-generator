@@ -256,16 +256,42 @@ def evidence(raw):
     require(isinstance(expected, dict) and set(expected) == {'device', 'inode', 'filesystemId'}
             and all(type(v) is int and v > 0 for v in expected.values()), 'evidence-identity')
     require(isinstance(value['units'], dict) and set(value['units']) == {'rootless', 'rootful'}, 'evidence-actors')
-    for units in value['units'].values():
-        require(isinstance(units, list) and len(units) <= 64, 'evidence-units')
+    for actor, units in value['units'].items():
+        require(isinstance(units, list) and len(units) <= 256, 'evidence-units')
         seen = set()
         for entry in units:
-            require(isinstance(entry, dict) and set(entry) == {'name', 'sourceSha256'}
+            require(isinstance(entry, dict) and set(entry) in ({'name', 'sourceSha256'}, {'name', 'kind', 'sourceSha256'})
+                    and entry.get('kind', 'container') in ('container', 'network', 'volume')
                     and isinstance(entry['name'], str) and UNIT.fullmatch(entry['name'])
-                    and len(entry['name']) <= 96 and entry['name'] not in seen
+                    and len(entry['name']) <= 128 and entry['name'] not in seen
+                    and (actor != 'rootful' or entry['name'].startswith('p0-v2-'))
                     and isinstance(entry['sourceSha256'], str) and HEX.fullmatch(entry['sourceSha256']), 'evidence-unit')
+            quadlet_name(entry)  # Bind native service suffix to its explicitly reviewed source kind.
             seen.add(entry['name'])
     return value
+
+
+def quadlet_name(entry):
+    kind = entry.get('kind', 'container')
+    require(kind in ('container', 'network', 'volume'), 'evidence-unit-kind')
+    suffix = '.service' if kind == 'container' else '-' + kind + '.service'
+    require(entry['name'].endswith(suffix), 'evidence-unit-source-name')
+    stem = entry['name'][:-len(suffix)]
+    require(re.fullmatch(r'p0-[a-z][a-z0-9]*(?:-[a-z0-9]+)*', stem), 'evidence-unit-source-name')
+    return stem + '.' + kind
+
+
+def no_quadlet_dropins(source):
+    # Quadlet's generic and dash-prefix drop-ins can override an unchanged source.
+    stem, extension = source.stem, source.suffix
+    names = {extension[1:] + '.d', source.name + '.d'}
+    names.update(stem[:i + 1] + extension + '.d' for i, char in enumerate(stem) if char == '-')
+    for name in names:
+        try:
+            (source.parent / name).lstat()
+        except FileNotFoundError:
+            continue
+        raise Refused('quadlet-source-dropins')
 
 
 class Native:
@@ -290,6 +316,7 @@ class Native:
         p = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                              env=env, cwd='/', pass_fds=pass_fds, start_new_session=True)
         data = bytearray()
+        settled = False
         try:
             deadline = time.monotonic() + 30
             with selectors.DefaultSelector() as selector:
@@ -304,11 +331,18 @@ class Native:
                         else:
                             data.extend(block)
                             require(len(data) <= LIMIT, 'native-output-limit')
-            require(p.wait(timeout=max(0.01, deadline - time.monotonic())) == 0, 'native-operation-uncertain')
+            rc = p.wait(timeout=max(0.01, deadline - time.monotonic()))
+            settled = True
+            require(rc == 0, 'native-operation-uncertain')
             return bytes(data)
         finally:
-            if p.poll() is None:
-                p.kill()
+            if not settled:
+                # Kill before reaping: the unreaped leader reserves our group ID.
+                # Only our new session/process group; never UID-global cleanup.
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
                 p.wait(timeout=5)
             p.stdout.close()
 
@@ -374,37 +408,49 @@ class Native:
         for actor, units in proof['units'].items():
             prefix = ['/usr/bin/systemctl'] + (['--user'] if actor == 'rootless' else [])
             expected = {entry['name'] for entry in units}
-            for command in (['list-units', '--all', '--plain', '--no-legend', 'p0-*.service'],
-                            ['list-unit-files', '--no-legend', 'p0-*.service']):
+            scope = 'p0-v2-' if actor == 'rootful' else 'p0-'
+            require(all(name.startswith(scope) for name in expected), 'unit-runtime-scope')
+            for command in (['list-units', '--all', '--plain', '--no-legend', scope + '*.service'],
+                            ['list-unit-files', '--no-legend']):
+                # Filter names in memory: filtered list-unit-files returns exit1
+                # for no matches, indistinguishable from an operational failure.
+                # Never reinterpret exit1/empty stdout as successful absence.
                 raw = self.call(prefix + command, actor)
                 names = set()
-                for line in raw.decode('ascii').splitlines():
-                    name = line.split()[0]
+                for line in raw.splitlines():
+                    token = line.split()[0]
+                    if not token.startswith(scope.encode('ascii')):
+                        continue  # Foreign manager scope, no stop/adoption authority.
+                    name = token.decode('ascii')
+                    require(not name.endswith(('.timer', '.socket', '.path')), 'runtime-triggers-remain')
                     require(UNIT.fullmatch(name), 'unit-inventory-schema')
                     names.add(name)
                 require(names <= expected, 'unreviewed-runtime-unit')
-            triggers = ['p0-*.timer', 'p0-*.socket', 'p0-*.path']
-            for command in (['list-units', '--all', '--plain', '--no-legend'] + triggers,
-                            ['list-unit-files', '--no-legend'] + triggers):
+            triggers = [scope + '*' + suffix for suffix in ('.timer', '.socket', '.path')]
+            for command in (['list-units', '--all', '--plain', '--no-legend'] + triggers,):
                 require(not self.call(prefix + command, actor).strip(), 'runtime-triggers-remain')
             for entry in units:
                 name = entry['name']
                 source = (HOME / '.config/containers/systemd' if actor == 'rootless'
-                          else Path('/etc/containers/systemd')) / (name[:-8] + '.container')
+                          else Path('/etc/containers/systemd')) / quadlet_name(entry)
                 strict_directory(source.parent, (0, self.entry.pw_uid) if actor == 'rootless' else (0,))
+                no_quadlet_dropins(source)
                 raw, _ = read_exact(source, self.entry.pw_uid if actor == 'rootless' else 0)
                 require(hashlib.sha256(raw).hexdigest() == entry['sourceSha256'], 'unit-source-binding')
                 raw = self.call(prefix + ['show', name, '--no-pager',
-                     '--property=LoadState,ActiveState,MainPID,ControlGroup,Job,SourcePath,TriggeredBy'], actor)
+                     '--property=LoadState,ActiveState,MainPID,ControlGroup,Job,SourcePath,FragmentPath,DropInPaths,TriggeredBy'], actor)
                 props = {}
                 for line in raw.decode('utf-8').splitlines():
                     key, value = line.split('=', 1)
                     require(key not in props, 'unit-properties-schema')
                     props[key] = value
-                require(set(props) == {'LoadState', 'ActiveState', 'MainPID', 'ControlGroup', 'Job', 'SourcePath', 'TriggeredBy'}
+                generator = Path(f'/run/user/{self.entry.pw_uid}/systemd') if actor == 'rootless' else Path('/run/systemd')
+                fragments = {str(generator / directory / name) for directory in ('generator', 'generator.early', 'generator.late')}
+                require(set(props) == {'LoadState', 'ActiveState', 'MainPID', 'ControlGroup', 'Job', 'SourcePath', 'FragmentPath', 'DropInPaths', 'TriggeredBy'}
                         and props['LoadState'] == 'loaded' and props['ActiveState'] in ('inactive', 'failed')
                         and props['MainPID'] == '0' and props['ControlGroup'] == '' and props['Job'] == ''
-                        and props['SourcePath'] == str(source) and props['TriggeredBy'] == '', 'runtime-unit-not-stopped')
+                        and props['SourcePath'] == str(source) and props['FragmentPath'] in fragments
+                        and props['DropInPaths'] == '' and props['TriggeredBy'] == '', 'runtime-unit-not-stopped')
 
     def pin_namespace(self, fd, expected, *, claim_clone, before_attach, verify_attached):
         modern_private_pin(fd, expected, claim_clone=claim_clone,

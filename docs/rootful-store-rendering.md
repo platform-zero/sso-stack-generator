@@ -20,6 +20,19 @@ must retain all dedicated-store flags. No image, service or native store is
 created or accessed by this generator test. Missing generator is an explicit
 source-test skip, not installed proof.
 
+## Reserved system-manager scope
+
+New Rootful Quadlet filenames/generated service names and native Host relays use
+`p0-v2-*`, not the broad historical `p0-*` system-manager prefix. This prevents
+namespace maintenance from treating protected `p0-web.service` or historical
+transient engineering jobs as new application units. Container/network/volume
+native object names retain their explicit identities in the **separate store**;
+Quadlet network/volume references use their new scoped filenames. Same-manager
+`After=` uses the provider's runtime-scoped service name. Rootless names remain
+unchanged in the dedicated `p0-runtime` user manager, preserving installed
+PostgreSQL source bytes. Unknown units inside the new scope still refuse; no
+legacy service is stopped, adopted or renamed by this source change.
+
 ## Not activation authority
 
 Rendering is not safe Root installation/activation. Rootful selection is still

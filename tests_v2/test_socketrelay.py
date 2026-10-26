@@ -36,14 +36,14 @@ class SocketRelayTests(unittest.TestCase):
     def test_one_graph_has_closed_native_units_and_fail_if_absent_directory_mount(self):
         plan, files = render(catalog(declarations()), ['edge'])
         self.assertEqual(plan['services'], ['app','app-upstream','edge'])
-        self.assertIn('systemd/rootful/p0-app-upstream.socket', files)
-        unit = files['systemd/rootful/p0-app-upstream.service']
+        self.assertIn('systemd/rootful/p0-v2-app-upstream.socket', files)
+        unit = files['systemd/rootful/p0-v2-app-upstream.service']
         self.assertIn(PROXY+' --exit-idle-time=5min 127.0.0.1:28080', unit)
         self.assertIn('User=p0-runtime', unit)
         self.assertNotIn('DynamicUser=true', unit)
         self.assertNotIn('[Install]', unit)
-        self.assertIn('SocketMode=0600', files['systemd/rootful/p0-app-upstream.socket'])
-        edge = files['quadlet/rootful/p0-edge.container']
+        self.assertIn('SocketMode=0600', files['systemd/rootful/p0-v2-app-upstream.socket'])
+        edge = files['quadlet/rootful/p0-v2-edge.container']
         self.assertIn('Mount=type=bind,source=/run/p0-v2-upstreams/app-upstream,destination=/run/p0/upstreams/app-upstream,ro', edge)
         self.assertNotIn('Volume=/run/', edge)
         self.assertNotIn('Network=host', edge)
@@ -91,7 +91,7 @@ class SocketRelayTests(unittest.TestCase):
     def test_native_unix_path_bound_and_ipv6_target(self):
         items=declarations();items[0]['endpoints'][0]['bind']='::1'
         _,files=render(catalog(items),['edge'])
-        self.assertIn('[::1]:28080',files['systemd/rootful/p0-app-upstream.service'])
+        self.assertIn('[::1]:28080',files['systemd/rootful/p0-v2-app-upstream.service'])
         items=declarations();items[1]['id']='a'*80
         items[2]['requires'][0]['service']=items[1]['id']
         items[2]['mounts'][0]['source']=items[1]['id']
@@ -108,7 +108,7 @@ class SocketRelayTests(unittest.TestCase):
         _,files=render(catalog(declarations()),['edge'])
         with tempfile.TemporaryDirectory(prefix='p0-upstream-quadlet-') as temporary:
             root=Path(temporary)
-            (root/'p0-edge.container').write_text(files['quadlet/rootful/p0-edge.container'])
+            (root/'p0-v2-edge.container').write_text(files['quadlet/rootful/p0-v2-edge.container'])
             result=subprocess.run(['/usr/libexec/podman/quadlet','-dryrun','-no-kmsg-log'],
                                   cwd=root,env={'PATH':'/usr/bin:/bin','QUADLET_UNIT_DIRS':str(root)},
                                   stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,

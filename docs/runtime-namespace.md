@@ -117,11 +117,29 @@ Closed evidence schema v1 (illustrative IDs):
 No unknown/duplicate keys, nonfinite constants or boolean versions/IDs. Namespace
 IDs must be positive integers matching anchored `st_dev`, `st_ino`,
 `os.fstatvfs(fd).f_fsid`; unsupported/zero filesystem IDs refuse. Both actor lists
-are explicit, each <=64 unique `p0-[a-z][a-z0-9]*(?:-[a-z0-9]+)*.service` names
-<=96 characters. Empty means no installed units, not permission to ignore them.
-Sources are fixed `<unit-stem>.container` paths under
+are explicit, each <=256 unique `p0-[a-z][a-z0-9]*(?:-[a-z0-9]+)*.service` names
+<=128 characters. Rootless names remain `p0-*` in the dedicated runtime user
+manager. **Rootful application names must use reserved `p0-v2-*`**: the host
+system manager already owns protected historical `p0-*` services/transient jobs,
+which are not this namespace's inventory or authority. Bootstrap/control units
+must stay outside the application prefix, so the helper does not include itself
+in the stopped application inventory. Unknown units within the reserved scope
+still refuse; this is not a foreign-unit exception list.
+
+Empty means no installed scoped units, not permission to ignore them. Each entry
+accepts optional closed `kind: container|network|volume`, default `container` for
+existing v1 evidence. Source derivation is exact: `p0-x.service` maps to
+`p0-x.container`; explicit network `p0-network-x-network.service` maps to
+`p0-network-x.network`; explicit volume `p0-x-volume.service` maps to `p0-x.volume`.
+The same suffix rules apply to reserved Rootful `p0-v2-*` names. A mismatched kind
+or suffix refuses. Fixed source bases are
 `/var/lib/p0-runtime/.config/containers/systemd` or `/etc/containers/systemd`,
 with the exact reviewed hash. No caller SourcePath or source execution is allowed.
+Source-parent generic, exact and dash-prefix Quadlet drop-ins refuse; inaccessible
+metadata is not treated as absence. Native FragmentPath must be the exact
+service under its actor's generator/generator.early/generator.late runtime
+directory, with empty systemd DropInPaths. This does not certify arbitrary
+alternative Quadlet search roots or their configuration.
 Account/home/shell/config and native identity restrictions match the credential
 document. No extra host users, profiles or capabilities are provisioned.
 
@@ -185,8 +203,15 @@ before post-pin native inspection; missing volatile paths are not blanket repair
 authority. Do not operate on excluded shared/legacy lanes.
 
 For each actor, bounded fixed systemctl `list-units --all --plain --no-legend` and
-`list-unit-files --no-legend` inventories cover `p0-*.service` and
-`p0-*.timer/socket/path`. Unknown services and all such triggers refuse. Each
+`list-unit-files --no-legend` inventories cover dedicated-user `p0-*.service`
+and `p0-*.timer/socket/path`, but reserved system-manager `p0-v2-*.service`
+and `p0-v2-*.timer/socket/path`. Protected legacy system-manager `p0-*` services
+are outside this authority. The names-only `list-unit-files --no-legend` query is
+unfiltered and bounded, with exact scope filtering in memory. On the actual Host,
+a filtered query with no matches returns exit1/empty stdout, also a possible
+operational-failure shape; the helper never treats that ambiguous result as
+absence. The unfiltered query must succeed with exit0; foreign names are not
+reported, adopted or stopped. Unknown scoped services and all scoped triggers refuse. Each
 reviewed unit's `show --no-pager` must report loaded, inactive/failed, MainPID0,
 empty ControlGroup/Job/TriggeredBy, and exact SourcePath/hash. No cgroup traversal
 or global process fallback is used. Engines use only canonical explicit-store
@@ -198,7 +223,12 @@ Native binaries must be trusted Root-owned single-link files with safe ancestors
 Rootless execution uses fixed `setpriv`, resolved UID/GID, cleared supplementary/
 inheritable/ambient privileges and a freshly constructed environment. No native
 FD inheritance is allowed. Native stdout <=256 KiB, stderr discarded, deadline30
-seconds plus <=5 seconds cleanup of the exact child. No raw output, exceptions,
+seconds plus <=5 seconds cleanup of the exact newly created session/process group.
+On an unsettled output/deadline failure, SIGKILL targets that group **before**
+reaping its leader; no UID-global or unrelated-PID cleanup. Already settled
+commands are not signalled. A cleanup timeout remains indeterminate, not proof
+of no kernel-waiting descendant; Parent must reconcile its exact supervisor scope
+before further affected operations. No raw output, exceptions,
 locals or service source is reported. Kernel reads are bounded mountinfo (4 MiB),
 boot_id and mount-namespace identities; the process must share PID1's host mount
 namespace. Unrelated mounts outside the boundary are not native authority.
@@ -288,8 +318,8 @@ Remaining gates, not claims of success:
    first install can later enter this unsupported cell.
 4. **Conservative partial gap:** durable detached-ID claim without target attachment
    needs reviewed disposition; it is never overwritten to retry a fresh clone.
-5. **Future transport follow-up (not installed):** Source03 recognizes only
-   reviewed `.container` service sources and requires empty socket-file/unit
+5. **Future transport follow-up (not installed):** The Parent-corrected source recognizes only
+   reviewed `.container`/`.network`/`.volume` Quadlet sources and requires empty socket-file/unit
    inventories and empty `TriggeredBy`. It therefore intentionally rejects later
    maintenance/recheck after Parent's proposed `http-socket-relay` installation,
    even if the relay is inactive. Supporting that builtin requires a new closed,
@@ -298,7 +328,7 @@ Remaining gates, not claims of success:
      from container runtime actor; do not infer a `.container` source for a native
      `.service`;
    * derive and independently hash/custody-verify the immutable exact
-     `/etc/systemd/system/p0-<id>.socket` and `.service` source/fragment paths;
+     `/etc/systemd/system/p0-v2-<id>.socket` and `.service` source/fragment paths;
      verify actual typed SourcePath/FragmentPath semantics and reject alternate
      fragments, drop-ins, extra units or relationships;
    * require the declared socket inactive/closed before namespace maintenance,

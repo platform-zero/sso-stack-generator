@@ -73,7 +73,7 @@ def render(catalog, service):
     # Root activation. Systemd ordering cannot cross user/system managers.
     if not provider.declaration.get('probes'):
         raise ContractError('relay upstream lacks readiness probe')
-    name = 'p0-' + service.id
+    name = service.unit_name.removesuffix('.service')
     prefix = '# Generated closed P0 HTTP socket relay; no auto-start.\n'
     socket = (prefix + '[Unit]\nDescription=P0 private upstream listener\n\n[Socket]\n'
               + f'ListenStream={directory(service.id)}/http.sock\nService={name}.service\n'

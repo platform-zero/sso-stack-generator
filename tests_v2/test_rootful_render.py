@@ -24,7 +24,7 @@ class RootfulStoreRenderTests(unittest.TestCase):
         self.assertEqual(len(files), 3)
         for name, body in files.items():
             with self.subTest(name=name):
-                self.assertTrue(name.startswith('quadlet/rootful/'))
+                self.assertTrue(name.startswith('quadlet/rootful/p0-v2-'))
                 self.assertEqual(body.count('GlobalArgs=' + ROOTFUL_GLOBAL_ARGS), 1)
                 self.assertNotIn('/var/lib/containers/storage', body)
 
@@ -35,6 +35,14 @@ class RootfulStoreRenderTests(unittest.TestCase):
                 with self.subTest(runtime=runtime, name=name):
                     self.assertNotIn('GlobalArgs=', body)
                     self.assertNotIn('/mnt/stack/p0-v2/rootful', body)
+
+    def test_system_manager_names_are_reserved_and_rootless_names_unchanged(self):
+        for runtime, prefix in (('rootful', 'p0-v2-'), ('rootless', 'p0-'), ('test', 'p0-')):
+            graph = catalog(runtime)
+            self.assertEqual(graph.services['edge'].unit_name, prefix + 'edge.service')
+            _, files = render(graph, ['edge'])
+            self.assertIn('quadlet/' + runtime + '/' + prefix + 'edge.container', files)
+            self.assertIn('Network=' + prefix + 'network-private.network', files['quadlet/' + runtime + '/' + prefix + 'edge.container'])
 
     def test_caller_cannot_supply_global_arguments(self):
         for key in ('globalArgs', 'GlobalArgs', 'podmanArgs'):
@@ -61,5 +69,7 @@ class RootfulStoreRenderTests(unittest.TestCase):
                     for flag in ROOTFUL_GLOBAL_ARGS.split():
                         self.assertIn(flag, line)
                     self.assertNotIn('/var/lib/containers/storage', line)
-            self.assertIn('p0-network-private', result.stdout)
-            self.assertIn('p0-edge-data', result.stdout)
+            self.assertIn('p0-v2-network-private', result.stdout)
+            self.assertIn('p0-v2-edge-data', result.stdout)
+            self.assertIn('p0-v2-edge.service', result.stdout)
+            self.assertIn('VolumeName=p0-edge-data', files['quadlet/rootful/p0-v2-edge-data.volume'])

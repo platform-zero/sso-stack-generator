@@ -21,6 +21,7 @@ import re
 import resource
 import secrets
 import selectors
+import signal
 import stat
 import subprocess
 import time
@@ -288,6 +289,7 @@ class Native:
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                              env=self.environment(actor), cwd='/', start_new_session=True)
         output = bytearray()
+        settled = False
         try:
             if payload:
                 # Bounded generated ASCII payload (at most96 bytes) fits in one small pipe write.
@@ -307,11 +309,16 @@ class Native:
                             output.extend(block)
                             require(len(output) <= LIMIT, 'native-output-limit')
                 rc = p.wait(timeout=max(0.01, deadline - time.monotonic()))
+                settled = True
             self.check_authority(actor)
             return rc, bytes(output)
         finally:
-            if p.poll() is None:
-                p.kill()
+            if not settled:
+                # Signal only our own new session, before reaping its leader.
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
                 p.wait(timeout=5)
             p.stdout.close()
             if p.stdin and not p.stdin.closed:

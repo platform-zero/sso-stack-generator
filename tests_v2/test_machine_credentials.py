@@ -453,21 +453,21 @@ class MachineCredentialTests(unittest.TestCase):
                 with self.assertRaisesRegex(m.Refused, '^disk-reserve$'):
                     self.real_reserves()
 
-    def test_native_deadline_terminates_only_own_child(self):
+    def test_native_deadline_terminates_only_own_unreaped_process_group(self):
         native = m.Native(types.SimpleNamespace())
         reader, writer = os.pipe()
         output = os.fdopen(reader, 'rb')
         self.addCleanup(os.close, writer)
-        process = types.SimpleNamespace(stdout=output, stdin=None, returncode=None)
-        killed = []
-        process.poll = lambda: 0 if killed else None
-        process.kill = lambda: killed.append(True)
-        process.wait = lambda **kwargs: 0
+        process = types.SimpleNamespace(stdout=output, stdin=None, returncode=None, pid=7391)
+        events = []
+        process.poll = lambda: self.fail('must not reap before group cancellation')
+        process.wait = lambda **kwargs: events.append(('wait', kwargs)) or 0
         with patch.object(native, 'check_authority'), patch.object(m.subprocess, 'Popen', return_value=process), \
+             patch.object(m.os, 'killpg', side_effect=lambda pid, sig: events.append(('killpg', pid, sig))), \
              patch.object(m.time, 'monotonic', side_effect=[0, 31]):
             with self.assertRaisesRegex(m.Refused, '^native-timeout$'):
                 native.call('rootful', ['info', '--format', 'json'])
-        self.assertEqual(killed, [True])
+        self.assertEqual(events, [('killpg', 7391, m.signal.SIGKILL), ('wait', {'timeout': 5})])
 
     def test_claim_is_durable_before_each_native_effect(self):
         create = self.native.create
@@ -514,13 +514,14 @@ class MachineCredentialTests(unittest.TestCase):
         os.write(writer, b'X' * 256)
         os.close(writer)
         output = os.fdopen(reader, 'rb')
-        process = types.SimpleNamespace(stdout=output, stdin=None, returncode=0)
-        process.poll = lambda: 0
+        process = types.SimpleNamespace(stdout=output, stdin=None, returncode=0, pid=7391)
+        process.poll = lambda: self.fail('must not reap before group cancellation')
         process.wait = lambda **kwargs: 0
-        with patch.object(native, 'check_authority'), \
+        with patch.object(native, 'check_authority'), patch.object(m.os, 'killpg') as killpg, \
              patch.object(m.subprocess, 'Popen', return_value=process) as popen, patch.object(m, 'LIMIT', 128):
             with self.assertRaisesRegex(m.Refused, '^native-output-limit$'):
                 native.call('rootful', ['secret', 'inspect', 'p0-boot-shared'])
+        killpg.assert_called_once_with(7391, m.signal.SIGKILL)
         self.assertEqual(popen.call_args.kwargs['stderr'], m.subprocess.DEVNULL)
         self.assertEqual(popen.call_args.kwargs['cwd'], '/')
         self.assertTrue(output.closed)
