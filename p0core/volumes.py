@@ -157,7 +157,7 @@ try:
     raw = sys.stdin.buffer.read(4097)
     assert len(raw) <= 4096
     request = json.loads(raw)
-    assert set(request) == {'action','fd','identity','before','desired','fresh','resource','maps'}
+    assert set(request) == {'action','fd','identity','before','desired','fresh','resource','maps','protectedParent'}
     assert request['action'] in ('probe','chmod','chown')
     assert type(request['fd']) is int and request['fd'] >= 3
     assert type(request['fresh']) is bool and (request['fresh'] or request['action'] == 'probe')
@@ -176,6 +176,22 @@ try:
     assert request['maps'] is None or maps == request['maps']
     assert request['action'] == 'probe' or request['maps'] is not None
     data_path = '/mnt/stack/p0-v2/rootless/engine/volumes/p0-' + request['resource'] + '/_data'
+    def protected_parent():
+        expected = request['protectedParent']
+        assert set(expected) == {'device','inode'}
+        assert all(type(expected[k]) is int and expected[k] > 0 for k in expected)
+        current = os.open('/', os.O_PATH | os.O_DIRECTORY)
+        try:
+            for part in ('mnt','stack'):
+                child = os.open(part,os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW,dir_fd=current)
+                os.close(current)
+                current = child
+            s = os.fstat(current)
+            assert {'device':s.st_dev,'inode':s.st_ino} == expected
+            assert stat.S_IMODE(s.st_mode) == 0o711
+        finally:
+            os.close(current)
+    protected_parent()  # An OLD Podman pause mount namespace MUST refuse.
     def no_mounts():
         with open('/proc/self/mountinfo', 'rb') as source:
             mounts = source.read(4 * 1024**2 + 1)
@@ -224,6 +240,7 @@ try:
         after = observe()
         canonical_identity()
         no_mounts()
+        protected_parent()
         print(json.dumps(dict(maps,stat=after,empty=True if request['fresh'] else None)))
     finally:
         os.close(fd)
@@ -244,6 +261,13 @@ class NativeAdapter:
              and witness.get('uid') == self.actor_uid and witness.get('gid') == self.actor_gid,
              'volume-runtime-context')
         self.witness = encoded(witness)
+        parent = parse(self.witness).get('directories', {}).get('/mnt/stack', {})
+        need(isinstance(parent, dict) and type(parent.get('uid')) is int and parent['uid'] == 0
+             and type(parent.get('gid')) is int and parent['gid'] == 0
+             and parent.get('mode') == '0711'
+             and all(type(parent.get(k)) is int and parent[k] > 0 for k in ('device', 'inode')),
+             'volume-protected-parent')
+        self.protected_parent = {key: parent[key] for key in ('device', 'inode')}
 
     def call(self, arguments, *, input_bytes=None, pass_fds=()):
         need(encoded(self.runtime.verify_volume_context()) == self.witness, 'volume-context-changed')
@@ -344,7 +368,8 @@ class NativeAdapter:
     def probe(self, fd, record, *, fresh, action='probe', before=None):
         request = {'action': action, 'fd': fd, 'identity': inode(fd), 'fresh': fresh,
                    'desired': record['definition']['custody'], 'before': before,
-                   'resource': record['definition']['resource'], 'maps': record['maps']}
+                   'resource': record['definition']['resource'], 'maps': record['maps'],
+                   'protectedParent': dict(self.protected_parent)}
         return parse(self.call(['unshare', '/usr/bin/python3', '-I', '-c', INODE_PROGRAM],
                                input_bytes=encoded(request), pass_fds=(fd,)))
 

@@ -37,7 +37,9 @@ def verify_reserves(extra_bytes=0):
                       if line.startswith('MemAvailable:')), 0)
     if available < 16 * 1024 ** 3:
         raise ContractError('available RAM below reserve')
-    for path, floor in (('/', 50), ('/mnt/stack', 100)):
+    # The protected /mnt/stack VIEW parent can live on RootFS; the data
+    # child remains bound to the physical StackFS. Never count parent space.
+    for path, floor in (('/', 50), ('/mnt/stack/p0-v2', 100)):
         observed = os.statvfs(path)
         if observed.f_bavail * observed.f_frsize < floor * 1024 ** 3 + extra_bytes:
             raise ContractError('free storage below reserve')

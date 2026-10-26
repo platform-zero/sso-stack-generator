@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import pwd
@@ -11,7 +12,44 @@ import stat
 from .volumes import GRAPHROOT, VolumeError, need, open_directory, parse
 
 HOME = Path('/var/lib/p0-runtime')
-NAMESPACE = Path('/mnt/stack/p0-v2')
+STACK_PARENT = Path('/mnt/stack')
+NAMESPACE = STACK_PARENT / 'p0-v2'
+
+# Native Podman can join a PRE-view pause mount namespace. Check that actual
+# child view before info/store work, not merely the launching process's view.
+NATIVE_VIEW_PROGRAM = r'''
+import json, os, stat, sys
+try:
+    assert os.geteuid() == 0
+    for kind in ('uid','gid'):
+        with open('/proc/self/' + kind + '_map','rb') as source:
+            raw = source.read(65537)
+        assert len(raw) <= 65536
+        rows = [line.split() for line in raw.splitlines()]
+        assert rows and all(len(row) == 3 and int(row[1]) > 0 for row in rows)
+    raw = sys.stdin.buffer.read(4097)
+    assert len(raw) <= 4096
+    expected = json.loads(raw)
+    assert set(expected) == {'parent','namespace'}
+    for key, parts in (('parent',('mnt','stack')),('namespace',('mnt','stack','p0-v2'))):
+        assert set(expected[key]) == {'device','inode'}
+        assert all(type(x) is int and x > 0 for x in expected[key].values())
+        fd = os.open('/',os.O_PATH | os.O_DIRECTORY)
+        try:
+            for part in parts:
+                child = os.open(part,os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW,dir_fd=fd)
+                os.close(fd)
+                fd = child
+            s = os.fstat(fd)
+            assert {'device':s.st_dev,'inode':s.st_ino} == expected[key]
+            assert stat.S_IMODE(s.st_mode) == 0o711
+        finally:
+            os.close(fd)
+    print(json.dumps(dict(expected,protectedNativeView=True)))
+except BaseException:
+    print('{"refused":true}')
+    sys.exit(2)
+'''
 
 
 def _read(path, limit):
@@ -56,12 +94,23 @@ def _mount_identity(raw, mount_id):
     return result[0]
 
 
-def observe(runner):
-    """No Root-private record read; trust actual Host Root-owned private kernel pin.
+def _native_view(runner, prefix, directories):
+    expected = {key: {field: directories[str(path)][field] for field in ('device', 'inode')}
+                for key, path in (('parent', STACK_PARENT), ('namespace', NAMESPACE))}
+    observed = parse(runner(prefix + ['unshare', '/usr/bin/python3', '-I', '-c', NATIVE_VIEW_PROGRAM],
+                            input_bytes=json.dumps(expected, sort_keys=True).encode(), timeout=30))
+    need(json.dumps(observed, sort_keys=True) == json.dumps(dict(expected, protectedNativeView=True), sort_keys=True),
+         'volume-context-native-view')
+    return observed
 
-    Initial Host UID maps prevent a rootless nested namespace from faking raw
-    Host Root directory custody. Only Root can establish this protected mount;
-    the unprivileged component receives no authority to create/repair it.
+
+def observe(runner):
+    """Require protected parent VIEW, not a bind beneath a mutable parent.
+
+    Older mount namespaces can rename the source dentry despite a Host bind.
+    Initial Host UID maps establish raw Root ownership of the independent view
+    parent; the child unshare program must also bind that same parent inode.
+    No authority to create/repair the view is granted to this component.
     """
     from .lifecycle import verify_reserves
     verify_reserves()
@@ -76,7 +125,7 @@ def observe(runner):
         need(rows == [[b'0', b'0', b'4294967295']], 'volume-context-initial-host-namespace')
     need(Path.cwd() in (Path('/'), HOME), 'volume-context-parent-cwd')
     directories = {}
-    for path, owner, group, mode in ((NAMESPACE, 0, 0, 0o711),
+    for path, owner, group, mode in ((STACK_PARENT, 0, 0, 0o711), (NAMESPACE, 0, 0, 0o711),
             (HOME, uid, gid, 0o700), (HOME / '.config', uid, gid, 0o700),
             (HOME / '.config/containers', uid, gid, 0o700),
             (GRAPHROOT.parent, uid, gid, 0o700), (GRAPHROOT, uid, gid, 0o700),
@@ -115,6 +164,7 @@ def observe(runner):
         os.close(fd)
     prefix = ['/usr/bin/podman', '--root', str(GRAPHROOT), '--runroot',
               f'/run/user/{uid}/containers', '--storage-driver', 'overlay']
+    observed_view = _native_view(runner, prefix, directories)
     info = parse(runner(prefix + ['info', '--format', 'json'], timeout=30))
     need(isinstance(info, dict) and isinstance(info.get('store'), dict)
          and isinstance(info.get('host'), dict) and isinstance(info['host'].get('security'), dict),
@@ -139,4 +189,5 @@ def observe(runner):
             'runRoot': f'/run/user/{uid}/containers', 'driver': 'overlay',
             'home': str(HOME), 'commandCwd': str(HOME), 'boot': boot,
             'mountNamespace': [mount_ns.st_dev, mount_ns.st_ino], 'mount': mount,
-            'filesystemId': filesystem_id, 'directories': directories, 'configuration': configuration}
+            'filesystemId': filesystem_id, 'directories': directories, 'configuration': configuration,
+            'nativeView': observed_view}

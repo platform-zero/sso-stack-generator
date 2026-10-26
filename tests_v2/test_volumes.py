@@ -477,9 +477,13 @@ class VolumeTests(unittest.TestCase):
 
 
 class AdapterTests(unittest.TestCase):
-    def adapter(self):
+    def adapter(self, parent_change=None):
         runtime = types.SimpleNamespace()
-        runtime.context = {'graphRoot': str(v.GRAPHROOT), 'uid': 1004, 'gid': 1004, 'configSha256': 'a' * 64}
+        parent = {'uid': 0, 'gid': 0, 'mode': '0711', 'device': 12, 'inode': 34}
+        if parent_change:
+            parent.update(parent_change)
+        runtime.context = {'graphRoot': str(v.GRAPHROOT), 'uid': 1004, 'gid': 1004, 'configSha256': 'a' * 64,
+                           'directories': {'/mnt/stack': parent}}
         runtime.verify_volume_context = lambda: runtime.context
         runtime.run = lambda *args, **kwargs: b'[]'
         with patch.object(v.os, 'geteuid', return_value=1004), patch.object(v.os, 'getuid', return_value=1004), \
@@ -501,11 +505,18 @@ class AdapterTests(unittest.TestCase):
                 self.assertEqual(runner.call_args.kwargs['pass_fds'], (fd,))
                 self.assertEqual(runner.call_args.kwargs['timeout'], 30)
                 self.assertLess(len(runner.call_args.kwargs['input_bytes']), 4096)
+                self.assertEqual(json.loads(runner.call_args.kwargs['input_bytes'])['protectedParent'],
+                                 {'device': 12, 'inode': 34})
                 self.assertNotIn('/proc/self/fd/', ' '.join(args))
                 with self.assertRaisesRegex(v.VolumeError, '^volume-fd-command$'):
                     adapter.call(['volume', 'ls'], pass_fds=(fd,))
             finally:
                 os.close(fd)
+
+    def test_mutable_or_unbound_parent_never_authorizes_native_adapter(self):
+        for change in ({'uid': 1000}, {'gid': False}, {'uid': False}, {'mode': '2775'}, {'inode': True}, {'device': 0}):
+            with self.subTest(change=change), self.assertRaisesRegex(v.VolumeError, '^volume-protected-parent$'):
+                self.adapter(change)
 
     def test_context_snapshot_not_mutable_alias_and_native_failure_redaction(self):
         adapter = self.adapter()

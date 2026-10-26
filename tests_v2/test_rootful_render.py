@@ -26,6 +26,8 @@ class RootfulStoreRenderTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertTrue(name.startswith('quadlet/rootful/p0-v2-'))
                 self.assertEqual(body.count('GlobalArgs=' + ROOTFUL_GLOBAL_ARGS), 1)
+                self.assertIn('PrivateMounts=true', body)
+                self.assertIn('BindPaths=/var/lib/p0-v2-view/stack:/mnt/stack', body)
                 self.assertNotIn('/var/lib/containers/storage', body)
 
     def test_rootless_and_test_units_do_not_inherit_rootful_store(self):
@@ -36,6 +38,7 @@ class RootfulStoreRenderTests(unittest.TestCase):
                     self.assertNotIn('GlobalArgs=', body)
                     self.assertNotIn('/mnt/stack/p0-v2/rootful', body)
                     self.assertNotIn('DropCapability=', body)
+                    self.assertNotIn('BindPaths=', body)
 
     def test_system_manager_names_are_reserved_and_rootless_names_unchanged(self):
         for runtime, prefix in (('rootful', 'p0-v2-'), ('rootless', 'p0-'), ('test', 'p0-')):
@@ -74,4 +77,6 @@ class RootfulStoreRenderTests(unittest.TestCase):
             self.assertIn('p0-v2-edge-data', result.stdout)
             self.assertIn('p0-v2-edge.service', result.stdout)
             self.assertRegex(result.stdout, r'--cap-drop(?:=| )all')
+            self.assertIn('PrivateMounts=true', result.stdout)
+            self.assertIn('BindPaths=/var/lib/p0-v2-view/stack:/mnt/stack', result.stdout)
             self.assertIn('VolumeName=p0-edge-data', files['quadlet/rootful/p0-v2-edge-data.volume'])
